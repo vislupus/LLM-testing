@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galaxy Formation Simulation (10k Particles)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: rgb(220, 220, 220); }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-family: 'Courier New', monospace;
+            color: #333;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div><strong>Galaxy Formation</strong></div>
+    <div id="stats">Particles: 0</div>
+    <div><small>High-Performance Barnes-Hut</small></div>
+    <div><small>FPS: <span id="fps">--</span></small></div>
+</div>
+
+<script>
+// --- CONFIGURATION ---
+// Using var to allow re-running without reload errors
+var MAX_PARTICLES = 10000; 
+var G = 0.5;               // Reduced G for stability with high particle count
+var THETA = 0.9;           // Higher Theta = faster approximation, less accurate
+var SOFTENING = 6;         // Softening parameter
+var DT = 0.2;             // Smaller time step for stability
+var HALO_STRENGTH = 0.001; // Dark matter centripetal force
+
+let particles = [];
+let quadTree;
+let centerMass;
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    noStroke();
+    
+    // Initialize Central Supermassive Object
+    centerMass = new Particle(width/2, height/2, 0, 0, 5000);
+    centerMass.fixed = true;
+    centerMass.color = color(0);
+    centerMass.r = 6;
+    
+    // Spawn Particles
+    for (let i = 0; i < MAX_PARTICLES; i++) {
+        spawnParticle();
+    }
+}
+
+function spawnParticle() {
+    let angle = random(TWO_PI);
+    // Spiral distribution setup
+    let dist = randomGaussian(300, 120);
+    if (dist < 80) dist = 80; // Clear center slightly
+
+    let px = width/2 + cos(angle) * dist;
+    let py = height/2 + sin(angle) * dist;
+
+    // Keplerian-ish velocity: v ~ 1/sqrt(r)
+    // We account for central mass + fraction of disk mass
+    let enclosedMass = centerMass.mass + (particles.length * 0.5); 
+    let vMag = sqrt((G * enclosedMass) / dist);
+    
+    // Add randomness for temperature/chaos
+    vMag *= random(0.95, 1.05);
+
+    // Tangential Velocity
+    let vx = -sin(angle) * vMag;
+    let vy = cos(angle) * vMag;
+    
+    // Add slight spiral collapse component
+    // vx -= (px - width/2) * 0.0005;
+    // vy -= (py - height/2) * 0.0005;
+
+    let p = new Particle(px, py, vx, vy, random(0.1, 1.0));
+    particles.push(p);
+}
+
+function draw() {
+    // Use a slightly transparent background for trails
+    background(220, 220, 220); 
+    
+    // 1. Build Quadtree
+    // Using a slightly larger boundary to capture escaped particles without error
+    let boundary = new Rectangle(width/2, height/2, width*1.5, height*1.5);
+    quadTree = new QuadTree(boundary, 5); // Capacity 5
+    
+    quadTree.insert(centerMass);
+    for (let p of particles) {
+        quadTree.insert(p);
+    }
+    
+    quadTree.calculateMassDistribution();
+
+    // 2. Physics Loop
+    // Optimization: Direct coordinate math instead of Vector objects inside the loop
+    let cmX = centerMass.x;
+    let cmY = centerMass.y;
+    let w2 = width/2;
+    let h2 = height/2;
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        
+        // A. Reset Acceleration
+        p.ax = 0;
+        p.ay = 0;
+
+        // B. Barnes-Hut Gravity force
+        calculateForceOptimized(p, quadTree);
+
+        // C. Dark Matter Halo / Galaxy Rotation Curve
+        // Simple centripetal force preventing outer stars from flying off
+        let dx = w2 - p.x;
+        let dy = h2 - p.y;
+        let distSq = dx*dx + dy*dy;
+        let dist = Math.sqrt(distSq);
+        
+        if (dist > 10) {
+            let f = HALO_STRENGTH * p.mass; // Constant force roughly
+            p.ax += (dx / dist) * f;
+            p.ay += (dy / dist) * f;
+        }
+
+        // D. Update Kinematics
+        p.vx += p.ax * DT;
+        p.vy += p.ay * DT;
+        p.x += p.vx * DT;
+        p.y += p.vy * DT;
+
+        // E. Render
+        // Optimization: Manual drawing commands are faster than p5 object wrappers
+        fill(p.color);
+        ellipse(p.x, p.y, p.r);
+        
+        // F. Bounds cleanup
+        if (p.x < -1000 || p.x > width + 1000 || p.y < -1000 || p.y > height + 1000) {
+            particles.splice(i, 1);
+        }
+    }
+    
+    // Draw Center Mass
+    fill(0);
+    ellipse(centerMass.x, centerMass.y, 10);
+
+    // Stats
+    if (frameCount % 30 === 0) {
+        document.getElementById('stats').innerText = `Particles: ${particles.length}`;
+        document.getElementById('fps').innerText = frameRate().toFixed(1);
+    }
+}
+
+// Optimized Force Calculation (No Vector Objects)
+function calculateForceOptimized(p, node) {
+    // If empty or self
+    if (!node || node.totalMass === 0 || (node.body === p && node.isLeaf())) {
+        return;
+    }
+
+    let dx = node.comX - p.x;
+    let dy = node.comY - p.y;
+    let distSq = dx*dx + dy*dy;
+    let d = Math.sqrt(distSq);
+    let s = node.boundary.w;
+
+    // Barnes-Hut Condition
+    if ((s / d < THETA) || node.isLeaf()) {
+        if (d > SOFTENING) {
+            // F = G * m1 * m2 / r^2
+            let f = (G * node.totalMass) / (distSq + SOFTENING); // p.mass cancels out in a = F/m
+            p.ax += (dx / d) * f;
+            p.ay += (dy / d) * f;
+        }
+    } else {
+        // Recurse
+        if (node.nw) calculateForceOptimized(p, node.nw);
+        if (node.ne) calculateForceOptimized(p, node.ne);
+        if (node.sw) calculateForceOptimized(p, node.sw);
+        if (node.se) calculateForceOptimized(p, node.se);
+    }
+}
+
+// --- CLASSES (Optimized) ---
+
+class Particle {
+    constructor(x, y, vx, vy, m) {
+        // Flattened properties for speed
+        this.x = x;
+        this.y = y;
+        this.vx = vx;
+        this.vy = vy;
+        this.ax = 0;
+        this.ay = 0;
+        this.mass = m;
+        this.fixed = false;
+        
+        // Visuals
+        this.r = Math.sqrt(this.mass) * 1.5; // Size
+        
+        // Determine color based on mass
+        if (m > 4000) {
+            this.color = color(0);
+        } else if (m > 0.8) {
+            // Hotter/Bigger stars
+            this.color = color(20, 40, 100, 150); 
+        } else {
+            // Dimmer/Smaller stars
+            this.color = color(80, 40, 40, 120);
+        }
+    }
+}
+
+class Rectangle {
+    constructor(x, y, w, h) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+    }
+    contains(p) {
+        return (p.x >= this.x - this.w && p.x <= this.x + this.w &&
+                p.y >= this.y - this.h && p.y <= this.y + this.h);
+    }
+}
+
+class QuadTree {
+    constructor(boundary, n) {
+        this.boundary = boundary;
+        this.capacity = n;
+        this.body = null; 
+        this.divided = false;
+        this.totalMass = 0;
+        this.comX = 0;
+        this.comY = 0;
+        
+        // Children
+        this.nw = null;
+        this.ne = null;
+        this.sw = null;
+        this.se = null;
+    }
+
+    insert(p) {
+        if (!this.boundary.contains(p)) return false;
+
+        if (this.body == null && !this.divided) {
+            this.body = p;
+            return true;
+        }
+
+        if (!this.divided) {
+            this.subdivide();
+            if (this.body) {
+                this.insertToChild(this.body);
+                this.body = null;
+            }
+        }
+
+        return this.insertToChild(p);
+    }
+
+    insertToChild(p) {
+        return (this.nw.insert(p) || this.ne.insert(p) || 
+                this.sw.insert(p) || this.se.insert(p));
+    }
+
+    subdivide() {
+        let x = this.boundary.x;
+        let y = this.boundary.y;
+        let w = this.boundary.w / 2;
+        let h = this.boundary.h / 2;
+
+        this.nw = new QuadTree(new Rectangle(x - w, y - h, w, h), this.capacity);
+        this.ne = new QuadTree(new Rectangle(x + w, y - h, w, h), this.capacity);
+        this.sw = new QuadTree(new Rectangle(x - w, y + h, w, h), this.capacity);
+        this.se = new QuadTree(new Rectangle(x + w, y + h, w, h), this.capacity);
+        
+        this.divided = true;
+    }
+
+    isLeaf() {
+        return !this.divided;
+    }
+
+    calculateMassDistribution() {
+        if (this.isLeaf()) {
+            if (this.body) {
+                this.totalMass = this.body.mass;
+                this.comX = this.body.x;
+                this.comY = this.body.y;
+            } else {
+                this.totalMass = 0;
+                this.comX = 0;
+                this.comY = 0;
+            }
+        } else {
+            this.nw.calculateMassDistribution();
+            this.ne.calculateMassDistribution();
+            this.sw.calculateMassDistribution();
+            this.se.calculateMassDistribution();
+
+            this.totalMass = this.nw.totalMass + this.ne.totalMass + this.sw.totalMass + this.se.totalMass;
+
+            if (this.totalMass > 0) {
+                this.comX = (this.nw.comX * this.nw.totalMass + 
+                             this.ne.comX * this.ne.totalMass + 
+                             this.sw.comX * this.sw.totalMass + 
+                             this.se.comX * this.se.totalMass) / this.totalMass;
+                
+                this.comY = (this.nw.comY * this.nw.totalMass + 
+                             this.ne.comY * this.ne.totalMass + 
+                             this.sw.comY * this.sw.totalMass + 
+                             this.se.comY * this.se.totalMass) / this.totalMass;
+            }
+        }
+    }
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    if(centerMass) {
+        // Optional: shift everything if you want to keep galaxy centered
+        // For now, just reset the central mass position reference
+        centerMass.x = width/2;
+        centerMass.y = height/2;
+    }
+}
+</script>
+</body>
+</html>

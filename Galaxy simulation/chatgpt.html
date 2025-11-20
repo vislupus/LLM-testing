@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>p5.js Galaxy Formation (10k particles)</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+      font-family: system-ui, sans-serif;
+    }
+    #info {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      padding: 6px 10px;
+      background: rgba(0, 0, 0, 0.4);
+      color: #fff;
+      font-size: 12px;
+      border-radius: 4px;
+      z-index: 10;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+<div id="info">
+  Galaxy formation demo (p5.js)<br>
+  Particles: 10,000<br>
+  Self-organizing disc + spiral-like structure.
+</div>
+
+<script>
+  // ---------------- CONFIG ----------------
+  const NUM_PARTICLES = 10000;      // 10 000 частици
+  const G_CORE = 0.12;              // гравитационна константа за централното ядро
+  const G_HALO = 0.0009;            // сила на тъмния халo
+  const DT = 0.4;                   // стъпка по време
+  const MERGE_RADIUS = 3.0;         // радиус за сливане (в пиксели)
+  const MAX_SPEED = 6.0;            // ограничаване на скоростта
+  const GALAXY_RADIUS_FRACTION = 0.45; // начална "протогалактична" ширина
+  const TRAIL_FADE = 10;            // прозрачност на fade-запълването
+  const USE_TRAILS = true;          // орбитални следи
+
+  let particles = [];
+  let core;            // централна маса / черна дупка
+  let center;          // p5.Vector център на платното
+  let trailLayer;      // offscreen слой за следи
+
+  // ----- Particle -----
+  class Particle {
+    constructor(pos, vel, mass, brightness, radius) {
+      this.pos = pos.copy();
+      this.vel = vel.copy();
+      this.acc = createVector(0, 0);
+      this.mass = mass;
+      this.brightness = brightness;
+      this.radius = radius;
+      this.alive = true;
+    }
+
+    applyForce(force) {
+      // F = m * a -> a = F / m
+      this.acc.add(p5.Vector.div(force, this.mass));
+    }
+
+    update() {
+      this.vel.add(p5.Vector.mult(this.acc, DT));
+      // ограничаване на скоростта
+      const speed = this.vel.mag();
+      if (speed > MAX_SPEED) {
+        this.vel.mult(MAX_SPEED / speed);
+      }
+      this.pos.add(p5.Vector.mult(this.vel, DT));
+      this.acc.mult(0);
+    }
+
+    draw() {
+      fill(this.brightness);
+      circle(this.pos.x, this.pos.y, this.radius * 2);
+    }
+
+    drawTrail(g) {
+      g.noStroke();
+      g.fill(0, 0, 0, 18);
+      g.circle(this.pos.x, this.pos.y, this.radius * 1.5);
+    }
+  }
+
+  // ----- Quadtree structures -----
+  class Boundary {
+    // axis-aligned box
+    constructor(x, y, w, h) {
+      this.x = x; // center
+      this.y = y;
+      this.w = w; // half-width
+      this.h = h; // half-height
+    }
+
+    contains(p) {
+      return (
+        p.pos.x >= this.x - this.w &&
+        p.pos.x <  this.x + this.w &&
+        p.pos.y >= this.y - this.h &&
+        p.pos.y <  this.y + this.h
+      );
+    }
+
+    intersectsCircle(cx, cy, r) {
+      // най-близка точка от правоъгълника до центъра на кръга
+      const xDist = Math.abs(cx - this.x);
+      const yDist = Math.abs(cy - this.y);
+      const edges = (xDist - this.w) ** 2 + (yDist - this.h) ** 2;
+
+      // извън по x или y?
+      if (xDist > (r + this.w) || yDist > (r + this.h)) return false;
+      // вътре?
+      if (xDist <= this.w || yDist <= this.h) return true;
+
+      return edges <= r * r;
+    }
+  }
+
+  class Quadtree {
+    constructor(boundary, capacity) {
+      this.boundary = boundary;
+      this.capacity = capacity;
+      this.points = [];
+      this.divided = false;
+    }
+
+    subdivide() {
+      const x = this.boundary.x;
+      const y = this.boundary.y;
+      const w = this.boundary.w;
+      const h = this.boundary.h;
+
+      const ne = new Boundary(x + w / 2, y - h / 2, w / 2, h / 2);
+      const nw = new Boundary(x - w / 2, y - h / 2, w / 2, h / 2);
+      const se = new Boundary(x + w / 2, y + h / 2, w / 2, h / 2);
+      const sw = new Boundary(x - w / 2, y + h / 2, w / 2, h / 2);
+
+      this.northeast = new Quadtree(ne, this.capacity);
+      this.northwest = new Quadtree(nw, this.capacity);
+      this.southeast = new Quadtree(se, this.capacity);
+      this.southwest = new Quadtree(sw, this.capacity);
+
+      this.divided = true;
+    }
+
+    insert(p) {
+      if (!this.boundary.contains(p)) return false;
+
+      if (this.points.length < this.capacity) {
+        this.points.push(p);
+        return true;
+      } else {
+        if (!this.divided) {
+          this.subdivide();
+        }
+        if (this.northeast.insert(p)) return true;
+        if (this.northwest.insert(p)) return true;
+        if (this.southeast.insert(p)) return true;
+        if (this.southwest.insert(p)) return true;
+      }
+      return false;
+    }
+
+    queryCircle(cx, cy, r, found) {
+      if (!this.boundary.intersectsCircle(cx, cy, r)) {
+        return;
+      }
+      for (let p of this.points) {
+        const d = dist(cx, cy, p.pos.x, p.pos.y);
+        if (d <= r) {
+          found.push(p);
+        }
+      }
+      if (this.divided) {
+        this.northwest.queryCircle(cx, cy, r, found);
+        this.northeast.queryCircle(cx, cy, r, found);
+        this.southwest.queryCircle(cx, cy, r, found);
+        this.southeast.queryCircle(cx, cy, r, found);
+      }
+    }
+  }
+
+  // ---------------- SETUP & DRAW ----------------
+
+  function setup() {
+    createCanvas(window.innerWidth, window.innerHeight);
+    center = createVector(width / 2, height / 2);
+
+    // trail слой
+    trailLayer = createGraphics(width, height);
+    trailLayer.background(220);
+    trailLayer.noStroke();
+
+    initSystem();
+  }
+
+  function windowResized() {
+    resizeCanvas(window.innerWidth, window.innerHeight);
+    center.set(width / 2, height / 2);
+    trailLayer = createGraphics(width, height);
+    trailLayer.background(220);
+    trailLayer.noStroke();
+    initSystem();
+  }
+
+  function initSystem() {
+    particles = [];
+
+    // централна маса (черна дупка)
+    const coreMass = 5e4;
+    core = {
+      pos: center.copy(),
+      mass: coreMass,
+      radius: 10
+    };
+
+    const maxR = min(width, height) * GALAXY_RADIUS_FRACTION;
+
+    for (let i = 0; i < NUM_PARTICLES; i++) {
+      // Протогалактичен облак: почти сферично разпределение + лек завъртящ момент
+      const r = random(5, maxR);
+      const angle = random(TWO_PI);
+      const x = center.x + r * cos(angle);
+      const y = center.y + r * sin(angle);
+      const pos = createVector(x, y);
+
+      // леко общо въртене + малко шум
+      // базова тангенциална скорост, по-голяма за по-вътрешните
+      const dirToCenter = p5.Vector.sub(center, pos);
+      const distToCenter = dirToCenter.mag() + 1e-3;
+      dirToCenter.normalize();
+
+      // тангенциален вектор (перпендикулярен)
+      const tangent = createVector(-dirToCenter.y, dirToCenter.x);
+
+      // примитивна Kepler-like скорост: v ~ 1/sqrt(r), плюс halo за да не пада твърде
+      let vMag = 2.5 * (1 / sqrt(distToCenter / (maxR * 0.5)));
+      vMag += 0.3 * random(-1, 1);
+
+      const vel = p5.Vector.mult(tangent, vMag);
+
+      // маса, яркост и радиус
+      const mass = random(0.5, 3.0);
+      const radius = sqrt(mass) * random(1.1, 1.5);
+      const brightness = random(180, 255);
+
+      particles.push(new Particle(pos, vel, mass, brightness, radius));
+    }
+  }
+
+  function draw() {
+    // Задължително: фон 220
+    background(220);
+
+    // лек fade на trail слоя
+    if (USE_TRAILS) {
+      trailLayer.fill(220, TRAIL_FADE);
+      trailLayer.rect(0, 0, width, height);
+    }
+
+    // Quadtree за текущите частици
+    const boundary = new Boundary(width / 2, height / 2, width / 2, height / 2);
+    const qt = new Quadtree(boundary, 4);
+    for (let p of particles) {
+      if (p.alive) {
+        qt.insert(p);
+      }
+    }
+
+    // Гравитация + ъпдейт + сливане
+    applyForcesAndMerge(qt);
+    keepInBounds();
+    updateAndDraw();
+
+    // рисуваме централния обект (черна дупка + лек "lensing" glow)
+    drawCore();
+
+    // налепяме trail слоя отгоре
+    if (USE_TRAILS) {
+      image(trailLayer, 0, 0);
+    }
+  }
+
+  // ---------------- PHYSICS ----------------
+
+  function applyForcesAndMerge(qt) {
+    // Първо силите от централната маса и halo
+    for (let p of particles) {
+      if (!p.alive) continue;
+
+      const toCenter = p5.Vector.sub(core.pos, p.pos);
+      const r = toCenter.mag() + 1e-3;
+      const dir = toCenter.copy().div(r);
+
+      // централна маса: ~ G * M / r^2
+      let magCore = (G_CORE * core.mass) / (r * r + 50);
+      // тъмен халo: по-слабо намаляваща сила -> по-плоски криви
+      let magHalo = G_HALO * r;
+
+      const accCore = p5.Vector.mult(dir, magCore);
+      const accHalo = p5.Vector.mult(dir, magHalo);
+
+      // обща сила (F = m * a)
+      const totalAcc = p5.Vector.add(accCore, accHalo);
+      const force = p5.Vector.mult(totalAcc, p.mass);
+      p.applyForce(force);
+    }
+
+    // След това локални взаимодействия (сливане, леко привличане) чрез Quadtree
+    for (let p of particles) {
+      if (!p.alive) continue;
+
+      const neighbors = [];
+      qt.queryCircle(p.pos.x, p.pos.y, MERGE_RADIUS * 2.5, neighbors);
+
+      for (let other of neighbors) {
+        if (other === p || !other.alive) continue;
+
+        const d = p5.Vector.dist(p.pos, other.pos);
+        if (d > 0 && d < MERGE_RADIUS) {
+          // merge: по-голямата маса поглъща по-малката
+          let big = p;
+          let small = other;
+          if (small.mass > big.mass) {
+            big = other;
+            small = p;
+          }
+
+          // закон за запазване на импулса
+          const totalMass = big.mass + small.mass;
+          const newVel = p5.Vector.add(
+            p5.Vector.mult(big.vel, big.mass),
+            p5.Vector.mult(small.vel, small.mass)
+          ).div(totalMass);
+
+          big.mass = totalMass;
+          big.vel = newVel;
+          big.radius = sqrt(big.mass) * 1.2;
+          big.brightness = min(255, big.brightness + 5);
+
+          small.alive = false;
+        } else if (d > MERGE_RADIUS && d < MERGE_RADIUS * 3.5) {
+          // леко локално привличане за "clumping"
+          const dir = p5.Vector.sub(other.pos, p.pos).normalize();
+          const strength = 0.002 * (p.mass * other.mass) / (d * d + 1);
+          const localForce = p5.Vector.mult(dir, strength * p.mass);
+          p.applyForce(localForce);
+        }
+      }
+    }
+  }
+
+  function keepInBounds() {
+    const maxR = min(width, height) * 0.48;
+    for (let p of particles) {
+      if (!p.alive) continue;
+
+      const offset = p5.Vector.sub(p.pos, center);
+      const r = offset.mag();
+      if (r > maxR) {
+        // мек "bounce" обратно
+        offset.normalize();
+        // връщаме малко навътре
+        p.pos = p5.Vector.add(center, p5.Vector.mult(offset, maxR));
+        // отразяваме компонентата по радиуса
+        const radialVel = p5.Vector.mult(offset, p.vel.dot(offset));
+        const tangVel = p5.Vector.sub(p.vel, radialVel);
+        radialVel.mult(-0.4);
+        p.vel = p5.Vector.add(radialVel, tangVel);
+      }
+    }
+  }
+
+  function updateAndDraw() {
+    for (let p of particles) {
+      if (!p.alive) continue;
+      p.update();
+
+      if (USE_TRAILS) {
+        p.drawTrail(trailLayer);
+      }
+
+      p.draw();
+    }
+  }
+
+  // ---------------- RENDER CORE & LENSING EFFECT ----------------
+
+  function drawCore() {
+    push();
+    translate(core.pos.x, core.pos.y);
+
+    // тъмен диск (черна дупка)
+    noStroke();
+    fill(0);
+    circle(0, 0, core.radius * 2);
+
+    // лек "accretion" glow
+    for (let r = core.radius * 2.2; r < core.radius * 5; r += 2) {
+      const alpha = map(r, core.radius * 2.2, core.radius * 5, 120, 0);
+      stroke(255, 255, 255, alpha);
+      noFill();
+      circle(0, 0, r * 2);
+    }
+
+    // много груб "lensing" ефект – светъл halo
+    noStroke();
+    for (let r = core.radius * 4.5; r < core.radius * 7.5; r += 1.5) {
+      const alpha = map(r, core.radius * 4.5, core.radius * 7.5, 50, 0);
+      fill(220, 220, 255, alpha);
+      circle(0, 0, r * 2);
+    }
+
+    pop();
+  }
+</script>
+</body>
+</html>

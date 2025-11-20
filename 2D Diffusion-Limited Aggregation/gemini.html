@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diffusion-Limited Aggregation (DLA)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #222;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #ui-container {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            width: 220px;
+            backdrop-filter: blur(5px);
+        }
+        .control-group {
+            margin-bottom: 10px;
+        }
+        label {
+            display: block;
+            font-size: 12px;
+            margin-bottom: 4px;
+            color: #aaa;
+        }
+        input[type=range] {
+            width: 100%;
+            accent-color: #00d2ff;
+        }
+        .value-display {
+            float: right;
+            font-weight: bold;
+            color: #fff;
+        }
+        h2 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+            border-bottom: 1px solid #555;
+            padding-bottom: 5px;
+        }
+        #status {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #00ff9d;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-container">
+    <h2>DLA Settings</h2>
+    
+    <div class="control-group">
+        <label>Walkers Count <span id="val-count" class="value-display">100</span></label>
+        <input type="range" id="opt-count" min="10" max="500" value="100">
+    </div>
+
+    <div class="control-group">
+        <label>Sim Speed (Steps/Frame) <span id="val-speed" class="value-display">10</span></label>
+        <input type="range" id="opt-speed" min="1" max="50" value="10">
+    </div>
+
+    <div class="control-group">
+        <label>Inward Bias <span id="val-bias" class="value-display">0.1</span></label>
+        <input type="range" id="opt-bias" min="0" max="1" step="0.05" value="0.1">
+    </div>
+    
+    <div id="status">Growing...</div>
+    <div><small style="color:#777">Radius: <span id="rad-display">0</span>px</small></div>
+</div>
+
+<script>
+// --- VARIABLES ---
+// Changed let to var to avoid redeclaration errors on re-runs
+var tree = [];          // Array of fixed positions (mostly for data, not rendering)
+var walkers = [];       // Array of moving particles
+var r = 4;              // Radius of a particle
+var maxDist = 0;        // Furthest distance from center
+var treeBuffer;         // Graphics buffer for static tree
+var grid = [];          // Spatial lookup grid
+var cols, rows;
+var finished = false;
+
+// Config
+var conf = {
+    count: 100,
+    speed: 10,
+    bias: 0.1
+};
+
+function setup() {
+    // Ensure we have valid dimensions to start, forcing integer values > 0
+    // Sometimes windowWidth/Height can be 0 or fractional in hidden iframes
+    let w = (windowWidth && windowWidth > 100) ? ceil(windowWidth) : 800;
+    let h = (windowHeight && windowHeight > 100) ? ceil(windowHeight) : 600;
+    
+    createCanvas(w, h);
+    
+    // Initialize Graphics Buffer (optimization)
+    // We explicitly set dimensions to prevent 0-width buffer creation
+    treeBuffer = createGraphics(w, h);
+    treeBuffer.noStroke();
+    
+    // Initialize Spatial Grid
+    initGrid();
+
+    // Setup Controls
+    setupUI();
+
+    // Create Seed (Center)
+    let cx = width / 2;
+    let cy = height / 2;
+    addPointToTree(createVector(cx, cy));
+
+    // Create Initial Walkers
+    initWalkers();
+}
+
+function initGrid() {
+    if (width > 0 && height > 0) {
+        cols = ceil(width / r);
+        rows = ceil(height / r);
+        grid = new Array(cols * rows).fill(-1);
+    } else {
+        cols = 0;
+        rows = 0;
+        grid = [];
+    }
+}
+
+function initWalkers() {
+    walkers = [];
+    for(let i = 0; i < conf.count; i++) {
+        spawnWalker();
+    }
+}
+
+function draw() {
+    background(30);
+    
+    // Draw the static tree (cached image)
+    // Guard against invalid buffer state (0 width/height) using try-catch as last resort
+    if (treeBuffer) {
+        try {
+            // We check if the buffer has valid dimensions before drawing
+            if (treeBuffer.width > 0 && treeBuffer.height > 0) {
+                image(treeBuffer, 0, 0);
+            }
+        } catch (e) {
+            // Silently fail if drawing buffer fails (e.g. resize race condition)
+            // console.log("Buffer draw failed", e);
+        }
+    }
+
+    if (finished) return;
+
+    // Physics Sub-stepping
+    for (let n = 0; n < conf.speed; n++) {
+        
+        // Manage population (spawn/despawn)
+        while (walkers.length < conf.count) {
+            spawnWalker();
+        }
+        while (walkers.length > conf.count) {
+            walkers.pop();
+        }
+
+        // Update Walkers
+        for (let i = walkers.length - 1; i >= 0; i--) {
+            let w = walkers[i];
+            
+            // 1. Move
+            moveWalker(w);
+            
+            // 2. Constraint: Don't let them wander too far out
+            // If they go 2x radius beyond maxDist, respawn them randomly
+            let d = dist(w.x, w.y, width/2, height/2);
+            if (d > maxDist + 100 || d < 2) {
+                respawnWalker(w);
+            }
+
+            // 3. Check Collision
+            // We only check neighbors in the grid
+            if (checkStuck(w)) {
+                addPointToTree(w);
+                walkers.splice(i, 1); // Remove from active walkers
+                
+                // Check termination condition
+                let edgeDist = min(width, height) / 2 - maxDist;
+                if (edgeDist < 50) {
+                    finished = true;
+                    document.getElementById('status').innerText = "Finished (Edge Reached)";
+                    document.getElementById('status').style.color = "#ff5555";
+                    noLoop();
+                }
+            }
+        }
+        if (finished) break;
+    }
+
+    // Draw Active Walkers
+    noStroke();
+    fill(255);
+    for (let w of walkers) {
+        ellipse(w.x, w.y, r * 1.5);
+    }
+    
+    // Update UI text
+    if(frameCount % 10 === 0) {
+        document.getElementById('rad-display').innerText = floor(maxDist);
+    }
+}
+
+// --- LOGIC ---
+
+function spawnWalker() {
+    walkers.push(createRandomWalkerPos());
+}
+
+function respawnWalker(w) {
+    let newPos = createRandomWalkerPos();
+    w.x = newPos.x;
+    w.y = newPos.y;
+}
+
+function createRandomWalkerPos() {
+    // Spawn in a ring slightly outside the current structure
+    let spawnR = maxDist + 20;
+    let theta = random(TWO_PI);
+    let x = width/2 + spawnR * cos(theta);
+    let y = height/2 + spawnR * sin(theta);
+    return createVector(x, y);
+}
+
+function moveWalker(w) {
+    // Brownian Motion
+    let vel = p5.Vector.random2D();
+    
+    // Inward Bias
+    if (conf.bias > 0) {
+        let center = createVector(width/2, height/2);
+        let dir = p5.Vector.sub(center, w);
+        dir.normalize();
+        dir.mult(conf.bias); // Bias strength
+        vel.add(dir);
+    }
+    
+    w.add(vel);
+    
+    // Screen Bounds (hard clamp)
+    w.x = constrain(w.x, 0, width-1);
+    w.y = constrain(w.y, 0, height-1);
+}
+
+function checkStuck(w) {
+    // Convert x,y to grid coords
+    let gx = floor(w.x / r);
+    let gy = floor(w.y / r);
+    
+    // Check 3x3 neighbor grid cells
+    for (let x = -1; x <= 1; x++) {
+        for (let y = -1; y <= 1; y++) {
+            let neighborX = gx + x;
+            let neighborY = gy + y;
+            
+            // Bounds check
+            if (neighborX >= 0 && neighborX < cols && neighborY >= 0 && neighborY < rows) {
+                let index = neighborX + neighborY * cols;
+                if (grid[index] > -1) {
+                    // Found a neighbor!
+                    // Simple distance check to ensure we don't stick prematurely 
+                    // (grid is square, particles are round)
+                    let neighborPos = tree[grid[index]];
+                    let dSq = (w.x - neighborPos.x)**2 + (w.y - neighborPos.y)**2;
+                    
+                    // If distance is less than 2*radius (touching)
+                    if (dSq < (r * 2 * r * 2)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+function addPointToTree(pos) {
+    tree.push(pos);
+    
+    // Update grid
+    let gx = floor(pos.x / r);
+    let gy = floor(pos.y / r);
+    let index = gx + gy * cols;
+    // Ensure index is valid before assignment
+    if(index >= 0 && index < grid.length) {
+        grid[index] = tree.length - 1; 
+    }
+    
+    // Update Max Radius
+    let d = dist(pos.x, pos.y, width/2, height/2);
+    if (d > maxDist) {
+        maxDist = d;
+    }
+    
+    // Draw to Buffer (Rainbow color based on distance)
+    if (treeBuffer && treeBuffer.width > 0) {
+        let hue = map(d, 0, min(width,height)/2, 0, 360);
+        treeBuffer.fill(`hsl(${floor(hue)}, 80%, 60%)`);
+        treeBuffer.ellipse(pos.x, pos.y, r * 2);
+    }
+}
+
+// --- UI & HELPERS ---
+
+function setupUI() {
+    const bind = (id, key, isFloat) => {
+        let el = document.getElementById(id);
+        let valEl = document.getElementById('val-' + key);
+        // We will just add listener.
+        if(el) {
+            el.addEventListener('input', (e) => {
+                let v = parseFloat(e.target.value);
+                conf[key] = v;
+                if(valEl) valEl.innerText = v;
+            });
+        }
+    };
+
+    bind('opt-count', 'count', false);
+    bind('opt-speed', 'speed', false);
+    bind('opt-bias', 'bias', true);
+}
+
+function windowResized() {
+    // Only resize if dimensions are valid and significant
+    if (windowWidth > 100 && windowHeight > 100) {
+        resizeCanvas(windowWidth, windowHeight);
+        // We do not resize treeBuffer to preserve the generated art
+    }
+}
+</script>
+
+</body>
+</html>
