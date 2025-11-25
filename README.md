@@ -23,7 +23,7 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
+| **Gemini 3**        | **0/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **Grok 4.1**          | **0/10** |
 | **Claude Sonnet 4.5** | **0/10** |
@@ -35,10 +35,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **5/10** |
-| **ChatGPT 5.1**       | **3/10** |
+| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Excel%20clone/gemini.html)          | **5/10** |
+| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Excel%20clone/chatgpt.html)       | **3/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **5/10** |
+| [**Claude Sonnet 4.5**](https://vislupus.github.io/LLM-testing/Excel%20clone/claude.html) | **5/10** |
 
 ---
 
@@ -143,10 +143,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **3/10** |
-| **ChatGPT 5.1**       | **6/10** |
-| **Grok 4.1**          | **2/10** |
-| **Claude Sonnet 4.5** | **2/10** |
+| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Three-body%20problem/gemini.html)          | **3/10** |
+| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Three-body%20problem/chatgpt.html)       | **6/10** |
+| [**Grok 4.1**](https://vislupus.github.io/LLM-testing/Three-body%20problem/grok.html)          | **2/10** |
+| [**Claude Sonnet 4.5**](https://vislupus.github.io/LLM-testing/Three-body%20problem/claude.html) | **2/10** |
 
 ---
 
