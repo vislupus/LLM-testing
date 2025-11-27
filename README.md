@@ -23,10 +23,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **4/10** |
-| **ChatGPT 5.1**       | **3/10** |
-| **Grok 4.1**          | **3/10** |
-| **Claude Opus 4.5**   | **5/10** |
+| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Windows%2011%20clone/gemini_3.html)          | **4/10** |
+| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Windows%2011%20clone/chatgpt_5_1.html)       | **3/10** |
+| [**Grok 4.1**](https://vislupus.github.io/LLM-testing/Windows%2011%20clone/grok_4_1.html)          | **3/10** |
+| [**Claude Opus 4.5**](https://vislupus.github.io/LLM-testing/Windows%2011%20clone/claude_opus_4_5.html)   | **5/10** |
 
 ---
 
@@ -35,10 +35,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Excel%20clone/gemini.html)          | **5/10** |
-| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Excel%20clone/chatgpt.html)       | **3/10** |
+| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Excel%20clone/gemini_3.html)          | **5/10** |
+| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Excel%20clone/chatgpt_5_1.html)       | **3/10** |
 | **Grok 4.1**          | **0/10** |
-| [**Claude Sonnet 4.5**](https://vislupus.github.io/LLM-testing/Excel%20clone/claude.html) | **5/10** |
+| [**Claude Sonnet 4.5**](https://vislupus.github.io/LLM-testing/Excel%20clone/claude_sonnet_4_5.html) | **5/10** |
 
 ---
 
@@ -47,10 +47,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **7/10** |
-| **ChatGPT 5.1**       | **4/10** |
-| **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.5**   | **8/10** |
+| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Photoshop%20clone/gemini_3.html)          | **7/10** |
+| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Photoshop%20clone/chatgpt_5_1.html)       | **4/10** |
+| [**Grok 4.1**](https://vislupus.github.io/LLM-testing/Photoshop%20clone/grok_4_1.html)          | **2/10** |
+| [**Claude Opus 4.5**](https://vislupus.github.io/LLM-testing/Photoshop%20clone/claude_opus_4_5.html)   | **8/10** |
 
 ---
 
@@ -71,10 +71,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **8/10** |
-| **ChatGPT 5.1**       | **6/10** |
-| **Grok 4.1**          | **4/10** |
-| **Claude Opus 4.5**   | **3/10** |
+| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Space%20shooter%20game/gemini_3.html)          | **8/10** |
+| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Space%20shooter%20game/chatgpt_5_1.html)       | **6/10** |
+| [**Grok 4.1**](https://vislupus.github.io/LLM-testing/Space%20shooter%20game/grok_4_1.html)          | **4/10** |
+| [**Claude Opus 4.5**](https://vislupus.github.io/LLM-testing/Space%20shooter%20game/claude_opus_4_5.html)   | **3/10** |
 
 ---
 
@@ -155,10 +155,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Three-body%20problem/gemini.html)          | **3/10** |
-| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Three-body%20problem/chatgpt.html)       | **6/10** |
-| [**Grok 4.1**](https://vislupus.github.io/LLM-testing/Three-body%20problem/grok.html)          | **2/10** |
-| [**Claude Sonnet 4.5**](https://vislupus.github.io/LLM-testing/Three-body%20problem/claude.html) | **2/10** |
+| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Three-body%20problem/gemini_3.html)          | **3/10** |
+| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Three-body%20problem/chatgpt_5_1.html)       | **6/10** |
+| [**Grok 4.1**](https://vislupus.github.io/LLM-testing/Three-body%20problem/grok_4_1.html)          | **2/10** |
+| [**Claude Sonnet 4.5**](https://vislupus.github.io/LLM-testing/Three-body%20problem/claude_sonnet_4_5.html) | **2/10** |
 
 ---
 
