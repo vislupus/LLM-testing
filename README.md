@@ -102,6 +102,18 @@ Testing different LLMs to do software tasks
 
 ---
 
+### 3D terrain scene
+**Create a 3D terrain scene in **Babylon.js** as a single standalone HTML file (all HTML/CSS/JS in one file; Babylon.js may be loaded from a CDN). Use the provided images `Osogovo Height Map (Merged).png` as the height map and `Osogovo_map.jpg` as the diffuse texture to build a realistic 3D map, then place three visible marker points on several of the highest peaks, each with a text label that always faces the camera (billboard) so it is always readable. Under the terrain, add the lower half of a cube (as if the terrain has cut through a cube and only the bottom part is visible), and make sure the whole scene is orbit-camera controlled, nicely lit, and fully working when the HTML file is opened in a browser.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Sonnet 4.5** | **0/10** |
+
+---
+
 ### Ray tracing simulation
 **Develop a real-time ray tracing simulation featuring 2 metallic spheres suspended above a street scene. Use any publicly available 3D street view environment, and allow adjustable parameters such as reflectivity, roughness, and other material properties of the sphere. Put everything in a standalone html file.**
 
