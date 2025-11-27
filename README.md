@@ -86,31 +86,32 @@ Testing different LLMs to do software tasks
 | **Gemini 3**          | **0/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
 
 ---
 
 ### 3D scene
-**Code a beautiful 3D scene inspired by this image. Use Three.js in a single html file**
+**High-poly 3D floating island diorama with a large medieval stone castle at the center. Around it: a cozy medieval village with wooden houses, tavern, market stalls, and a riverside mill. Steep rocky cliffs, lush grass, pine trees, turquoise river with wooden bridges, waterfalls, and a ruined watchtower at the edge. Vibrant stylized colors, soft lighting, handcrafted tabletop-miniature look. Use Babylon.js as a single standalone HTML file (all HTML/CSS/JS in one file; Babylon.js may be loaded from a CDN).**
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
+| **Gemini 3**          | **3/10** |
+| **ChatGPT 5.1**       | **4/10** |
+| **Grok 4.1**          | **3/10** |
+| **Claude Opus 4.5**   | **5/10** |
+| **Glm 4.6**           | **3/10** |
 
 ---
 
 ### 3D terrain scene
-**Create a 3D terrain scene in **Babylon.js** as a single standalone HTML file (all HTML/CSS/JS in one file; Babylon.js may be loaded from a CDN). Use the provided images `Osogovo Height Map (Merged).png` as the height map and `Osogovo_map.jpg` as the diffuse texture to build a realistic 3D map, then place three visible marker points on several of the highest peaks, each with a text label that always faces the camera (billboard) so it is always readable. Under the terrain, add the lower half of a cube (as if the terrain has cut through a cube and only the bottom part is visible), and make sure the whole scene is orbit-camera controlled, nicely lit, and fully working when the HTML file is opened in a browser.**
+**Create a 3D terrain scene in **Babylon.js** as a single standalone HTML file (all HTML/CSS/JS in one file; Babylon.js may be loaded from a CDN). Use the provided images `Osogovo Height Map (Merged).png` as the height map and `Osogovo_map.jpg` as the diffuse texture to build a realistic 3D map, then place three visible marker points on several of the highest peaks, each with a text label that always faces the camera (billboard) so it is always readable. The terrain should act as the top surface (lid) of a box/pedestal. The walls should extend downward from the edges of the terrain, creating a diorama-style display case or terrain sample effect. The bottom of the box should be flat and closed. Make sure the whole scene is orbit-camera controlled, nicely lit, and fully working when the HTML file is opened in a browser.**
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
+| **Gemini 3**          | **5/10** |
+| **ChatGPT 5.1**       | **8/10** |
+| **Grok 4.1**          | **6/10** |
+| **Claude Opus 4.5**   | **7/10** |
 
 ---
 
@@ -122,7 +123,7 @@ Testing different LLMs to do software tasks
 | **Gemini 3**          | **0/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
 
 ---
 
