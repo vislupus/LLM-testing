@@ -19,14 +19,14 @@ Testing different LLMs to do software tasks
 ## Prompts
 
 ### Windows 11 clone
-**Make a clone of the Windows 11 desktop. Use the original wallpaper. On the desktop, there should be icons for MS Word, Paint, Calculator, and Chrome. Each program should work. Use working images. Put everything in a standalone html file**
+**Make a clone of the Windows 11 desktop. Use the original wallpaper. On the desktop, there should be icons for MS Word, Paint, Calculator, Notepad, File Explorer and Chrome. Each program should work. Use working images. Put everything in a standalone HTML file**
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**        | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
+| **Gemini 3**          | **4/10** |
+| **ChatGPT 5.1**       | **3/10** |
+| **Grok 4.1**          | **3/10** |
+| **Claude Opus 4.5**   | **5/10** |
 
 ---
 
@@ -47,27 +47,39 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
+| **Gemini 3**          | **7/10** |
+| **ChatGPT 5.1**       | **4/10** |
+| **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.5**   | **8/10** |
 
 ---
 
-### Beehive simulation
-**Make a visual simulation of a beehive construction, showing hexagonal cells forming, worker bee paths, and honey storage. Include sliders for colony size and resource availability. Put everything in a standalone html file**
+### City simulation
+**Make a 3D visual simulation of a growing city using WebGL or Three.js, showing buildings appearing, roads forming, traffic flow, and people/vehicles moving around. Include sliders to control city size (population/density), traffic intensity, and development speed, updating the simulation in real time. Put everything in a single standalone HTML file with all HTML, CSS, and JavaScript embedded (no external assets).**
 
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **0/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
 
 ---
 
 ### Space shooter game
 **Create a space shooter game where players pilot a ship through asteroid fields, dodging debris and firing lasers at alien invaders. Make it visually stunning with particle explosions. Use publicly available assets. Put everything in a standalone html file.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **8/10** |
+| **ChatGPT 5.1**       | **6/10** |
+| **Grok 4.1**          | **4/10** |
+| **Claude Opus 4.5**   | **3/10** |
+
+---
+
+### Tetris game
+**Create a complete Tetris game inside one standalone HTML file with all code (HTML, CSS, JS) embedded and no external assets. Include all tetromino shapes, movement, rotation, line clearing, scoring, speed increase, and a restartable game-over screen. Use clean, simple, procedurally drawn graphics and smooth animations.**
 
 | Model                 | Score    |
 | --------------------- | -------- |
