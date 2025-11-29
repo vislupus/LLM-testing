@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>p5.js Galaxy Formation Simulation</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+  </style>
+</head>
+<body>
+
+<script>
+class Body {
+  constructor(x, y, mass = 1) {
+    this.pos = createVector(x, y);
+    this.vel = createVector(0, 0);
+    this.mass = mass;
+  }
+}
+
+class QuadTree {
+  constructor(boundary, capacity = 8) {
+    this.boundary = boundary; // {x, y, w, h}
+    this.capacity = capacity;
+    this.bodies = [];
+    this.divided = false;
+    this.totalMass = 0;
+    this.centerOfMass = createVector(0, 0);
+  }
+
+  contains(pos) {
+    return (
+      pos.x >= this.boundary.x &&
+      pos.x < this.boundary.x + this.boundary.w &&
+      pos.y >= this.boundary.y &&
+      pos.y < this.boundary.y + this.boundary.h
+    );
+  }
+
+  insert(body) {
+    if (!this.contains(body.pos)) return false;
+
+    if (this.bodies.length < this.capacity && !this.divided) {
+      this.bodies.push(body);
+      return true;
+    }
+
+    if (!this.divided) this.subdivide();
+
+    return (
+      this.northwest.insert(body) ||
+      this.northeast.insert(body) ||
+      this.southwest.insert(body) ||
+      this.southeast.insert(body)
+    );
+  }
+
+  subdivide() {
+    let b = this.boundary;
+    let hw = b.w / 2;
+    let hh = b.h / 2;
+
+    this.northwest = new QuadTree({x: b.x,         y: b.y,         w: hw, h: hh}, this.capacity);
+    this.northeast = new QuadTree({x: b.x + hw,   y: b.y,         w: hw, h: hh}, this.capacity);
+    this.southwest = new QuadTree({x: b.x,         y: b.y + hh,   w: hw, h: hh}, this.capacity);
+    this.southeast = new QuadTree({x: b.x + hw,   y: b.y + hh,   w: hw, h: hh}, this.capacity);
+
+    this.divided = true;
+
+    for (let body of this.bodies) {
+      this.northwest.insert(body) ||
+      this.northeast.insert(body) ||
+      this.southwest.insert(body) ||
+      this.southeast.insert(body);
+    }
+    this.bodies = [];
+  }
+
+  calculateMassDistribution() {
+    if (this.divided) {
+      this.northwest.calculateMassDistribution();
+      this.northeast.calculateMassDistribution();
+      this.southwest.calculateMassDistribution();
+      this.southeast.calculateMassDistribution();
+
+      this.totalMass = 0;
+      this.centerOfMass.set(0, 0);
+
+      let children = [this.northwest, this.northeast, this.southwest, this.southeast];
+      for (let child of children) {
+        if (child.totalMass > 0) {
+          this.totalMass += child.totalMass;
+          this.centerOfMass.add(p5.Vector.mult(child.centerOfMass, child.totalMass));
+        }
+      }
+      if (this.totalMass > 0) this.centerOfMass.div(this.totalMass);
+    } else {
+      this.totalMass = 0;
+      this.centerOfMass.set(0, 0);
+      for (let body of this.bodies) {
+        this.totalMass += body.mass;
+        this.centerOfMass.add(p5.Vector.mult(body.pos, body.mass));
+      }
+      if (this.totalMass > 0) this.centerOfMass.div(this.totalMass);
+    }
+  }
+
+  getForce(body, G, theta, softening) {
+    let force = createVector(0, 0);
+
+    const traverse = (node) => {
+      if (node.totalMass <= 0) return;
+
+      let dvec = p5.Vector.sub(node.centerOfMass, body.pos);
+      let d = dvec.mag();
+      if (d === 0) return;
+
+      let s = node.boundary.w; // assume square boundaries
+
+      if (s / d < theta) {
+        // approximate as point mass
+        let fmag = (G * body.mass * node.totalMass) / (d * d + softening * softening);
+        force.add(dvec.normalize().mult(fmag));
+      } else {
+        if (node.divided) {
+          traverse(node.northwest);
+          traverse(node.northeast);
+          traverse(node.southwest);
+          traverse(node.southeast);
+        } else {
+          // leaf node → exact calculation
+          for (let other of node.bodies) {
+            if (other === body) continue;
+            let odvec = p5.Vector.sub(other.pos, body.pos);
+            let od = odvec.mag();
+            if (od === 0) continue;
+            let fmag = (G * body.mass * other.mass) / (od * od + softening * softening);
+            force.add(odvec.normalize().mult(fmag));
+          }
+        }
+      }
+    };
+
+    traverse(this);
+    return force;
+  }
+}
+
+let bodies = [];
+let qt;
+let G = 2.0;
+let theta = 0.8;
+let softening = 15;
+let haloV = 90;      // dark matter halo strength (flat rotation curve in outer regions)
+let bhMass = 25000;  // central black hole / core mass
+let mergeThreshold = 12;
+let trailAlpha = 18;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  colorMode(RGB);
+  background(0);
+
+  let sd = min(width, height) * 0.22;
+
+  for (let i = 0; i < 10000; i++) {
+    let angle = random(TWO_PI);
+    let r = randomGaussian(0, sd);
+    let pos = createVector(randomGaussian(0, sd), randomGaussian(0, sd));
+
+    let radial = pos.copy();
+    let dist = radial.mag();
+
+    let perp = createVector(-radial.y, radial.x).normalize();
+
+    let v_tang = 0;
+    if (dist > 10) {
+      v_tang = sqrt(G * bhMass / (dist + softening) + haloV * haloV) * 0.65; // slightly sub-Keplerian for gradual collapse
+    }
+
+    let vel = perp.mult(v_tang);
+    vel.add(randomGaussian(0, 9), randomGaussian(0, 9)); // small random dispersion for collapse + structure
+
+    bodies.push(new Body(pos.x, pos.y, 1));
+    bodies[i].vel = vel;
+  }
+}
+
+function draw() {
+  translate(width / 2, height / 2);  // center the view
+  fill(0, trailAlpha);
+  noStroke();
+  rect(-width / 2, -height / 2, width, height);
+
+  // Build quadtree covering extended area to catch flyaways
+  qt = new QuadTree({x: -width, y: -height, w: width * 2, h: height * 2}, 8);
+
+  for (let body of bodies) {
+    qt.insert(body);
+  }
+  qt.calculateMassDistribution();
+
+  let dt = deltaTime * 0.05; // slow-motion for beautiful formation
+
+  // Update physics
+  for (let body of bodies) {
+    let force = qt.getForce(body, G, theta, softening);
+
+    // Central black hole + dark matter halo
+    let radial = body.pos.copy(); // center at (0,0) after translate
+    let r = radial.mag();
+
+    if (r > 0) {
+      let unit = radial.normalize();
+
+      // BH
+      let bhForceMag = G * bhMass * body.mass / (r * r + softening * softening);
+      force.add(unit.mult(-bhForceMag));
+
+      // Dark matter halo (logarithmic potential → flat rotation curve)
+      let haloAccMag = haloV * haloV / (r + 20);
+      force.add(unit.mult(-haloAccMag * body.mass));
+    }
+
+    let acc = force.div(body.mass);
+    body.vel.add(p5.Vector.mult(acc, dt));
+    body.pos.add(p5.Vector.mult(body.vel, dt));
+  }
+
+  // Merging (reduces particle count over time → stays performant)
+  let i = 0;
+  while (i < bodies.length) {
+    let changed = false;
+    for (let j = i + 1; j < bodies.length; ) {
+      let b1 = bodies[i];
+      let b2 = bodies[j];
+      let dist = p5.Vector.sub(b1.pos, b2.pos).mag();
+
+      if (dist < mergeThreshold) {
+        let totalMass = b1.mass + b2.mass;
+        let newPos = p5.Vector.add(
+          p5.Vector.mult(b1.pos, b1.mass),
+          p5.Vector.mult(b2.pos, b2.mass)
+        ).div(totalMass);
+
+        let newVel = p5.Vector.add(
+          p5.Vector.mult(b1.vel, b1.mass),
+          p5.Vector.mult(b2.vel, b2.mass)
+        ).div(totalMass);
+
+        b1.pos = newPos;
+        b1.vel = newVel;
+        b1.mass = totalMass;
+
+        bodies.splice(j, 1);
+        changed = true;
+      } else {
+        j++;
+      }
+    }
+    if (!changed) i++;
+  }
+
+  // Render particles
+  noStroke();
+  for (let body of bodies) {
+    let sz = 1.5 + pow(body.mass, 0.45) * 3.2;
+    let brightness = constrain(180 + body.mass * 6, 180, 255);
+    fill(brightness, brightness + 35, 255, 220);
+    circle(body.pos.x, body.pos.y, sz);
+  }
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+}
+</script>
+</body>
+</html>

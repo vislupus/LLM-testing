@@ -23,10 +23,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Windows%2011%20clone/gemini_3.html)          | **4/10** |
-| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Windows%2011%20clone/chatgpt_5_1.html)       | **3/10** |
-| [**Grok 4.1**](https://vislupus.github.io/LLM-testing/Windows%2011%20clone/grok_4_1.html)          | **3/10** |
-| [**Claude Opus 4.5**](https://vislupus.github.io/LLM-testing/Windows%2011%20clone/claude_opus_4_5.html)   | **5/10** |
+| **Gemini 3**          | **4/10** |
+| **ChatGPT 5.1**       | **3/10** |
+| **Grok 4.1**          | **3/10** |
+| **Claude Opus 4.5**   | **5/10** |
 
 ---
 
@@ -35,10 +35,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Excel%20clone/gemini_3.html)          | **5/10** |
-| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Excel%20clone/chatgpt_5_1.html)       | **3/10** |
+| **Gemini 3**          | **5/10** |
+| **ChatGPT 5.1**       | **3/10** |
 | **Grok 4.1**          | **0/10** |
-| [**Claude Sonnet 4.5**](https://vislupus.github.io/LLM-testing/Excel%20clone/claude_sonnet_4_5.html) | **5/10** |
+| **Claude Sonnet 4.5** | **5/10** |
 
 ---
 
@@ -47,22 +47,46 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Photoshop%20clone/gemini_3.html)          | **7/10** |
-| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Photoshop%20clone/chatgpt_5_1.html)       | **4/10** |
-| [**Grok 4.1**](https://vislupus.github.io/LLM-testing/Photoshop%20clone/grok_4_1.html)          | **2/10** |
-| [**Claude Opus 4.5**](https://vislupus.github.io/LLM-testing/Photoshop%20clone/claude_opus_4_5.html)   | **8/10** |
+| **Gemini 3**          | **7/10** |
+| **ChatGPT 5.1**       | **4/10** |
+| **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.5**   | **8/10** |
 
 ---
 
-### City simulation
-**Make a 3D visual simulation of a growing city using WebGL or Three.js, showing buildings appearing, roads forming, traffic flow, and people/vehicles moving around. Include sliders to control city size (population/density), traffic intensity, and development speed, updating the simulation in real time. Put everything in a single standalone HTML file with all HTML, CSS, and JavaScript embedded (no external assets).**
+### Financial analysis report
+**make a comprehensive financial analysis report on the attached data. Include interactive charts and/or graphs. Make it visually appealing. Use advanced algorithms to suggest price forecasts, providing rationale and confidence intervals. Put everything in a standalone html file.**
 
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **0/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Claude Sonnet 4.5** | **0/10** |
+
+---
+
+### Builder like Figma
+**Develop a single-file, standalone HTML/JavaScript application for a drag-and-drop UI builder, similar to Figma, complete with advanced settings, drag-and-drop placement, snap-to-grid, canvas resizing, and alignment guides. The application must include a comprehensive library of UI components, such as Buttons, Inputs, Text Fields, Checkboxes, Dropdowns, Sliders, Steppers, and Progress Bars, alongside basic geometric shapes like rectangular, Circle, Triangle, and Line. Users must be able to resize any element directly on the canvas using drag handles and configure advanced visual settings, including border radius and box shadows, via a dedicated properties panel. The builder is required to support dynamic flowcharting, allowing users to connect two elements with adjustable lines that automatically maintain their attachment points when the elements are moved or resized. All components, shapes, styles, and defined connections must be cleanly exported into a single, runnable HTML file.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Sonnet 4.5** | **0/10** |
+
+---
+
+### create-DAW
+**Create a DAW. Include multiple instruments and drums. Include a step grid and piano roll. Include tempo control, multiple tracks, effects (reverb, delay), volume sliders, and more. Put everything in a standalone html file**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Sonnet 4.5** | **0/10** |
 
 ---
 
@@ -71,10 +95,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Space%20shooter%20game/gemini_3.html)          | **8/10** |
-| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Space%20shooter%20game/chatgpt_5_1.html)       | **6/10** |
-| [**Grok 4.1**](https://vislupus.github.io/LLM-testing/Space%20shooter%20game/grok_4_1.html)          | **4/10** |
-| [**Claude Opus 4.5**](https://vislupus.github.io/LLM-testing/Space%20shooter%20game/claude_opus_4_5.html)   | **3/10** |
+| **Gemini 3**          | **8/10** |
+| **ChatGPT 5.1**       | **6/10** |
+| **Grok 4.1**          | **4/10** |
+| **Claude Opus 4.5**   | **3/10** |
 
 ---
 
@@ -90,7 +114,7 @@ Testing different LLMs to do software tasks
 
 ---
 
-### 3D scene
+### 3D castle scene
 **High-poly 3D floating island diorama with a large medieval stone castle at the center. Around it: a cozy medieval village with wooden houses, tavern, market stalls, and a riverside mill. Steep rocky cliffs, lush grass, pine trees, turquoise river with wooden bridges, waterfalls, and a ruined watchtower at the edge. Vibrant stylized colors, soft lighting, handcrafted tabletop-miniature look. Use Babylon.js as a single standalone HTML file (all HTML/CSS/JS in one file; Babylon.js may be loaded from a CDN).**
 
 | Model                 | Score    |
@@ -115,51 +139,41 @@ Testing different LLMs to do software tasks
 
 ---
 
-### Ray tracing simulation
-**Develop a real-time ray tracing simulation featuring 2 metallic spheres suspended above a street scene. Use any publicly available 3D street view environment, and allow adjustable parameters such as reflectivity, roughness, and other material properties of the sphere. Put everything in a standalone html file.**
+### City simulation
+**Make a 3D visual simulation of a growing city using **Babylon.js**, showing buildings appearing, roads forming, traffic flow, and people/vehicles moving around. Include sliders to control city size (population/density), traffic intensity, and development speed, updating the simulation in real time. Put everything in a single standalone HTML file with all HTML, CSS, and JavaScript embedded (no external assets).**
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
+| **Gemini 3**          | **6/10** |
+| **ChatGPT 5.1**       | **6/10** |
+| **Grok 4.1**          | **3/10** |
+| **Claude Opus 4.5**   | **3/10** |
+| **Glm 4.6**           | **5/10** |
+
+---
+
+### Space battle simulation
+**A 3D space battle scene in **Babylon.js** as a single standalone HTML file (all HTML/CSS/JS in one file; Babylon.js may be loaded from a CDN). Between two opposing fleets, each with 10 ships. Every fleet has one larger flagship and nine smaller escort ships. The flagships are clearly bigger and more detailed, positioned at the center of each formation. Each ship has a visible health bar above it; when health reaches zero the ship explodes in a spectacular way, with bright fire, sparks, shockwaves and debris. If another ship is within roughly one ship‑width of the explosion, it also detonates in a chain reaction. Ships constantly move and maneuver in three‑dimensional space, turning and accelerating as they try to destroy the enemy fleet. One fleet fires bright blue glowing projectiles, the other fires bright red glowing projectiles, clearly distinguishing the two sides. Normal ships fire a single projectile every 3 seconds, while the two flagships fire two projectiles at once every 3 seconds. The scene should feel dynamic and cinematic, with trails behind projectiles, directional lighting from engine thrusters, and a starfield or nebula background. Make sure the whole scene is orbit-camera controlled, nicely lit, and fully working when the HTML file is opened in a browser.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **9/10** |
+| **ChatGPT 5.1**       | **7/10** |
+| **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.5**   | **7/10** |
+| **Glm 4.6**           | **0/10** |
+
+---
+
+### Ray tracing simulation
+**Develop a real-time ray tracing simulation in **Babylon.js** as a single standalone HTML file, featuring 2 metallic spheres suspended above a street scene. Use any publicly available 3D street view environment, and allow adjustable parameters such as reflectivity, roughness, and other material properties of the sphere. Put everything in a standalone html file.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **5/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **Grok 4.1**          | **0/10** |
 | **Claude Opus 4.5**   | **0/10** |
-
----
-
-### create-DAW
-**Create a DAW. Include multiple instruments and drums. Include a step grid and piano roll. Include tempo control, multiple tracks, effects (reverb, delay), volume sliders, and more. Put everything in a standalone html file**
-
-| Model                 | Score    |
-| --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
-
----
-
-### Financial analysis report
-**make a comprehensive financial analysis report on the attached data. Include interactive charts and/or graphs. Make it visually appealing. Use advanced algorithms to suggest price forecasts, providing rationale and confidence intervals. Put everything in a standalone html file.**
-
-| Model                 | Score    |
-| --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
-
----
-
-### Builder like Figma
-**Develop a drag-and-drop UI builder like Figma. Include snap-to-grid and alignment guides. Include many advanced settings. Include an export option to HTML.**
-
-| Model                 | Score    |
-| --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
 
 ---
 
@@ -168,10 +182,10 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| [**Gemini 3**](https://vislupus.github.io/LLM-testing/Three-body%20problem/gemini_3.html)          | **3/10** |
-| [**ChatGPT 5.1**](https://vislupus.github.io/LLM-testing/Three-body%20problem/chatgpt_5_1.html)       | **6/10** |
-| [**Grok 4.1**](https://vislupus.github.io/LLM-testing/Three-body%20problem/grok_4_1.html)          | **2/10** |
-| [**Claude Sonnet 4.5**](https://vislupus.github.io/LLM-testing/Three-body%20problem/claude_sonnet_4_5.html) | **2/10** |
+| **Gemini 3**          | **3/10** |
+| **ChatGPT 5.1**       | **6/10** |
+| **Grok 4.1**          | **2/10** |
+| **Claude Sonnet 4.5** | **2/10** |
 
 ---
 
@@ -182,7 +196,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3**          | **8/10** |
 | **ChatGPT 5.1**       | **3/10** |
-| **Grok 4.1**          | **0/10** |
+| **Grok 4.1**          | **1/10** |
 | **Claude Sonnet 4.5** | **2/10** |
 
 ---

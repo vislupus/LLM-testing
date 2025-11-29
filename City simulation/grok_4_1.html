@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>3D Growing City Simulation - Babylon.js</title>
+  <style>
+    html, body { overflow: hidden; width: 100%; height: 100%; margin: 0; padding: 0; }
+    #renderCanvas { width: 100%; height: 100%; touch-action: none; }
+    .gui-panel { background-color: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; }
+  </style>
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+</head>
+<body>
+<canvas id="renderCanvas"></canvas>
+
+<script>
+  const canvas = document.getElementById("renderCanvas");
+  const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+  const scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color3(0.85, 0.9, 0.95);
+
+  // Camera
+  const camera = new BABYLON.ArcRotateCamera("cam", Math.PI/2, Math.PI/3, 1200, BABYLON.Vector3.Zero(), scene);
+  camera.lowerRadiusLimit = 50;
+  camera.upperRadiusLimit = 3000;
+  camera.wheelPrecision = 0.5;
+  camera.attachControl(canvas, true);
+
+  // Lights
+  new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0,1,0), scene);
+  const dirLight = new BABYLON.DirectionalLight("dir", new BABYLON.Vector3(-1,-2,-0.5), scene);
+  dirLight.intensity = 0.8;
+
+  // Ground (grass/parks)
+  const ground = BABYLON.MeshBuilder.CreateGround("ground", {width:5000, height:5000}, scene);
+  ground.material = new BABYLON.StandardMaterial("groundMat", scene);
+  ground.material.diffuseColor = new BABYLON.Color3(0.25, 0.55, 0.25);
+
+  // Variables
+  let gridSize = 20;
+  let density = 0.85;
+  let trafficIntensity = 0.5;
+  let growthSpeed = 0.015; // per second
+  let progress = 0;
+  let currentNumBuildings = 0;
+
+  const step = 60;
+  // road + block spacing
+  const roadWidth = 12;
+  const blockSize = step - roadWidth;
+
+  let plots = [];
+  let roads = [];
+  let verticalRoadXs = [];
+  let horizontalRoadZs = [];
+  let vehicles = [];
+
+  // GUI
+  const ui = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI", true);
+
+  const panel = new BABYLON.GUI.StackPanel();
+  panel.width = "260px";
+  panel.paddingLeft = "20px";
+  panel.paddingTop = "20px";
+  panel.isVertical = true;
+  panel.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  panel.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
+  ui.addControl(panel);
+
+  function createSlider(labelText, min, max, initial, step = 0.01, callback) {
+    const header = new BABYLON.GUI.TextBlock();
+    header.text = labelText + ": " + initial;
+    header.height = "38px";
+    header.color = "white";
+    header.fontSize = 22;
+    header.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+    panel.addControl(header);
+
+    const slider = new BABYLON.GUI.Slider();
+    slider.minimum = min;
+    slider.maximum = max;
+    slider.value = initial;
+    slider.height = "24px";
+    slider.width = "220px";
+    slider.color = "#00ff00";
+    slider.background = "gray";
+    slider.step = step;
+    slider.onValueChangedObservable.add((value) => {
+      header.text = labelText + ": " + (labelText.includes("Speed") ? value.toFixed(3) : value % 1 === 0 ? Math.floor(value) : value.toFixed(2));
+      callback(value);
+    });
+    panel.addControl(slider);
+    return slider;
+  }
+
+  createSlider("City Scale", 8, 40, 20, 1, (v) => {
+    const newSize = Math.round(v);
+    if (newSize !== gridSize) {
+      gridSize = newSize;
+      recreateLayout();               // roads & plots change when scale changes
+      updateVehicles();
+    }
+    updateBuildings();               // in case density needs recalc
+  });
+
+  createSlider("Population Density", 0.1, 1, 0.85, 0.01, (v) => {
+    density = v;
+    updateBuildings();
+  });
+
+  createSlider("Traffic Intensity", 0, 1, 0.5, 0.01, (v) => {
+    trafficIntensity = v;
+    updateVehicles();
+  });
+
+  createSlider("Development Speed", 0, 0.08, 0.015, 0.001, (v) => {
+    growthSpeed = v;
+  });
+
+  function recreateLayout() {
+    // Dispose old roads & buildings & vehicles
+    roads.forEach(r => r.dispose());
+    plots.forEach(p => p.building && p.building.dispose());
+    vehicles.forEach(v => v.mesh.dispose());
+    vehicles = [];
+
+    roads = [];
+    verticalRoadXs = [];
+    horizontalRoadZs = [];
+    plots = [];
+
+    const numLines = gridSize + 1;
+    const offset = - (gridSize / 2) * step;
+
+    const roadMat = new BABYLON.StandardMaterial("roadMat", scene);
+    roadMat.diffuseColor = new BABYLON.Color3(0.15, 0.15, 0.15);
+
+    for (let i = 0; i < numLines; i++) {
+      const pos = offset + i * step;
+
+      // Vertical roads (vertical roads)
+      const vroad = BABYLON.MeshBuilder.CreateBox("vroad", {height: 0.2, width: roadWidth, depth: 5000}, scene);
+      vroad.position = new BABYLON.Vector3(pos, 0.1, 0);
+      vroad.material = roadMat;
+      roads.push(vroad);
+      verticalRoadXs.push(pos);
+
+      // Horizontal roads
+      const hroad = BABYLON.MeshBuilder.CreateBox("hroad", {height: 0.2, width: 5000, depth: roadWidth}, scene);
+      hroad.position = new BABYLON.Vector3(0, 0.1, pos);
+      hroad.material = roadMat;
+      roads.push(hroad);
+      horizontalRoadZs.push(pos);
+    }
+
+    // Create plots and sort by distance from center (for outward growth)
+    for (let ix = 0; ix < gridSize; ix++) {
+      for (let jx = 0; jx < gridSize; jx++) {
+        const x = offset + (ix + 0.5) * step;
+        const z = offset + (jx + 0.5) * step;
+        plots.push({x, z, dist: Math.hypot(x, z), building: null});
+      }
+    }
+    plots.sort((a, b) => a.dist - b.dist);
+  }
+
+  function addBuilding(plot) {
+    const height = 15 + Math.random() * 100;
+    const building = BABYLON.MeshBuilder.CreateBox("building", {height: height, width: blockSize * 0.9, depth: blockSize * 0.9}, scene);
+    building.position = new BABYLON.Vector3(plot.x, 0.1, plot.z);  // start at ground
+
+    const mat = new BABYLON.StandardMaterial("", scene);
+    mat.diffuseColor = BABYLON.Color3.FromInts(80 + Math.random() * 175, 80 + Math.random() * 175, 80 + Math.random() * 175);
+    building.material = mat;
+
+    plot.building = building;
+
+    // Grow animation (rise up)
+    const anim = new BABYLON.Animation("grow", "position.y", 60, BABYLON.Animation.ANIMATIONTYPE_FLOAT, BABYLON.Animation.ANIMATIONLOOPMODE_CONSTANT);
+    const keys = [];
+    keys.push({ frame: 0, value: 0.1 });
+    keys.push({ frame: 60, value: height / 2 + 0.1 });
+    anim.setKeys(keys);
+    scene.beginAnimation(building, 0, 60, false);
+  }
+
+  function updateBuildings() {
+    const target = Math.floor(gridSize * gridSize * density * progress);
+
+    if (target > currentNumBuildings) {
+      for (let i = currentNumBuildings; i < target; i++) {
+        addBuilding(plots[i]);
+      }
+    } else if (target < currentNumBuildings) {
+      for (let i = target; i < currentNumBuildings; i++) {
+        plots[i].building.dispose();
+        plots[i].building = null;
+      }
+    }
+    currentNumBuildings = target;
+  }
+
+  function addVehicle() {
+    const isHorizontal = Math.random() < 0.5;
+    const isPerson = Math.random() < 0.3;   // 30% people
+
+    let mesh;
+    let speed = isPerson ? 6 + Math.random() * 12 : 35 + Math.random() * 45;
+
+    if (isPerson) {
+      mesh = BABYLON.MeshBuilder.CreateCylinder("person", {height: 4.5, diameter: 1.8, tessellation: 12}, scene);
+      mesh.material = new BABYLON.StandardMaterial("", scene);
+      mesh.material.diffuseColor = new BABYLON.Color3(1, 0.7, 0.5);
+    } else {
+      mesh = BABYLON.MeshBuilder.CreateBox("car", {height: 2.5, width: 5, depth: 11}, scene);
+      mesh.material = new BABYLON.StandardMaterial("", scene);
+      mesh.material.diffuseColor = BABYLON.Color3.Random();
+    }
+
+    const direction = Math.random() < 0.5 ? 1 : -1;
+
+    const roadList = isHorizontal ? horizontalRoadZs : verticalRoadXs;
+    const fixed = roadList[Math.floor(Math.random() * roadList.length)];
+
+    const offset = isPerson ? (roadWidth / 2 + 4) * (Math.random() < 0.5 ? 1 : -1) : 0;
+
+    const variablePos = (Math.random() * 2 - 1) * (step * gridSize / 2 + 200);
+
+    if (isHorizontal) {
+      mesh.position = new BABYLON.Vector3(variablePos, isPerson ? 2.3 : 1.4, fixed + offset);
+      mesh.rotation.y = direction > 0 ? Math.PI / 2 : 3 * Math.PI / 2;
+    } else {
+      mesh.position = new BABYLON.Vector3(fixed + offset, isPerson ? 2.3 : 1.4, variablePos);
+      mesh.rotation.y = direction > 0 ? 0 : Math.PI;
+    }
+
+    vehicles.push({mesh, isHorizontal, direction, speed});
+  }
+
+  function updateVehicles() {
+    const target = Math.floor(trafficIntensity * gridSize * 6 * progress + 10);   // grows with city size & progress
+
+    if (target > vehicles.length) {
+      for (let i = vehicles.length; i < target; i++) addVehicle();
+    } else if (target < vehicles.length) {
+      for (let i = target; i < vehicles.length; i++) {
+        vehicles[i].mesh.dispose();
+      }
+      vehicles.length = target;
+    }
+  }
+
+  // Initial build
+  recreateLayout();
+  updateBuildings();
+  updateVehicles();
+
+  // Main loop - growth + traffic movement
+  scene.onBeforeRenderObservable.add(() => {
+    const deltaTime = engine.getDeltaTime() / 1000;
+
+    if (growthSpeed > 0 && progress < 1) {
+      progress += growthSpeed * deltaTime;
+      if (progress > 1) progress = 1;
+      updateBuildings();
+      updateVehicles();
+    }
+
+    const limit = step * gridSize / 2 + step * 2;
+
+    for (const v of vehicles) {
+      const deltaPos = v.direction * v.speed * deltaTime;
+      if (v.isHorizontal) {
+        v.mesh.position.x += deltaPos;
+        if (v.direction > 0 && v.mesh.position.x > limit) v.mesh.position.x -= limit * 2;
+        if (v.direction < 0 && v.mesh.position.x < -limit) v.mesh.position.x += limit * 2;
+      } else {
+        v.mesh.position.z += deltaPos;
+        if (v.direction > 0 && v.mesh.position.z > limit) v.mesh.position.z -= limit * 2;
+        if (v.direction < 0 && v.mesh.position.z < -limit) v.mesh.position.z += limit * 2;
+      }
+    }
+  });
+
+  engine.runRenderLoop(() => scene.render());
+  window.addEventListener("resize", () => engine.resize());
+</script>
+</body>
+</html>

@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Babylon.js Living City Simulation</title>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <style>
+        html, body {
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+            outline: none;
+        }
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 300px;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(5px);
+            padding: 20px;
+            border-radius: 10px;
+            color: #eee;
+            border: 1px solid #444;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        .control-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 14px;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+        input[type=range] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: #00bcd4;
+        }
+        h2 {
+            margin-top: 0;
+            font-size: 18px;
+            color: #00bcd4;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid #444;
+            padding-bottom: 10px;
+        }
+        .stat {
+            font-size: 12px;
+            color: #aaa;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-panel">
+        <h2>City Controls</h2>
+        
+        <div class="control-group">
+            <label><span>Max Radius (Size)</span> <span id="val-size">20</span></label>
+            <input type="range" id="slider-size" min="10" max="60" value="20">
+        </div>
+
+        <div class="control-group">
+            <label><span>Traffic Density</span> <span id="val-traffic">50</span></label>
+            <input type="range" id="slider-traffic" min="0" max="200" value="50">
+        </div>
+
+        <div class="control-group">
+            <label><span>Growth Speed</span> <span id="val-speed">Fast</span></label>
+            <input type="range" id="slider-speed" min="1" max="10" value="5">
+        </div>
+
+        <div class="control-group">
+            <button id="btn-reset" style="width:100%; padding: 8px; background: #333; color: white; border: 1px solid #555; cursor: pointer;">Reset Simulation</button>
+        </div>
+        
+        <div class="stat" id="stats-display">Population: 0 | Buildings: 0</div>
+    </div>
+
+    <canvas id="renderCanvas"></canvas>
+
+    <script>
+        window.addEventListener('DOMContentLoaded', function() {
+            const canvas = document.getElementById('renderCanvas');
+            const engine = new BABYLON.Engine(canvas, true);
+
+            // --- Game State & Configuration ---
+            const STATE = {
+                gridSize: 120, // Underlying map size
+                tileSize: 4,   // World units per tile
+                maxRadius: 20, // Controlled by slider
+                trafficCap: 50,
+                growthSpeed: 5, // Ticks per second roughly
+                tickCounter: 0,
+                population: 0,
+                buildings: 0
+            };
+
+            // Grid: 0=Empty, 1=Road, 2=Building
+            let mapGrid = []; 
+            // Objects storage
+            let buildingMeshes = [];
+            let roadMeshes = [];
+            let cars = [];
+            
+            // --- Scene Setup ---
+            const createScene = function() {
+                const scene = new BABYLON.Scene(engine);
+                scene.clearColor = new BABYLON.Color3(0.1, 0.1, 0.15);
+                scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
+                scene.fogDensity = 0.003;
+                scene.fogColor = new BABYLON.Color3(0.1, 0.1, 0.15);
+
+                // Camera
+                const camera = new BABYLON.ArcRotateCamera("Camera", Math.PI / 4, Math.PI / 3, 100, new BABYLON.Vector3(0, 0, 0), scene);
+                camera.attachControl(canvas, true);
+                camera.lowerRadiusLimit = 20;
+                camera.upperRadiusLimit = 300;
+                camera.wheelPrecision = 50;
+
+                // Lighting
+                const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+                light.intensity = 0.6;
+                light.groundColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+
+                const dirLight = new BABYLON.DirectionalLight("dirLight", new BABYLON.Vector3(-1, -2, -1), scene);
+                dirLight.intensity = 1.0;
+                dirLight.position = new BABYLON.Vector3(100, 100, 100);
+                
+                // Shadows
+                const shadowGenerator = new BABYLON.ShadowGenerator(1024, dirLight);
+                shadowGenerator.useBlurExponentialShadowMap = true;
+                shadowGenerator.blurKernel = 32;
+
+                // Ground
+                const ground = BABYLON.MeshBuilder.CreateGround("ground", {width: 500, height: 500}, scene);
+                const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+                groundMat.diffuseColor = new BABYLON.Color3(0.15, 0.15, 0.15);
+                groundMat.specularColor = new BABYLON.Color3(0, 0, 0);
+                ground.material = groundMat;
+                ground.receiveShadows = true;
+
+                return { scene, shadowGenerator };
+            };
+
+            const { scene, shadowGenerator } = createScene();
+
+            // --- Materials ---
+            const matRoad = new BABYLON.StandardMaterial("road", scene);
+            matRoad.diffuseColor = new BABYLON.Color3(0.25, 0.25, 0.25);
+            matRoad.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+
+            const matRes = new BABYLON.StandardMaterial("res", scene);
+            matRes.diffuseColor = new BABYLON.Color3(0.8, 0.7, 0.6); // Beige/White
+            matRes.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+
+            const matCom = new BABYLON.StandardMaterial("com", scene);
+            matCom.diffuseColor = new BABYLON.Color3(0.4, 0.6, 0.9); // Blue glass
+            matCom.emissiveColor = new BABYLON.Color3(0.05, 0.1, 0.2);
+
+            const matInd = new BABYLON.StandardMaterial("ind", scene);
+            matInd.diffuseColor = new BABYLON.Color3(0.6, 0.4, 0.3); // Brick/Rust
+
+            const matCarHead = new BABYLON.StandardMaterial("carHead", scene);
+            matCarHead.emissiveColor = new BABYLON.Color3(1, 1, 0.8);
+            
+            const matCarTail = new BABYLON.StandardMaterial("carTail", scene);
+            matCarTail.emissiveColor = new BABYLON.Color3(1, 0, 0);
+
+            // --- Logic: Grid Management ---
+            
+            function initGrid() {
+                // Clear old meshes
+                buildingMeshes.forEach(m => m.dispose());
+                roadMeshes.forEach(m => m.dispose());
+                cars.forEach(c => c.mesh.dispose());
+                buildingMeshes = [];
+                roadMeshes = [];
+                cars = [];
+                mapGrid = [];
+                STATE.population = 0;
+                STATE.buildings = 0;
+
+                // Init empty grid
+                for(let x=0; x<STATE.gridSize; x++) {
+                    mapGrid[x] = [];
+                    for(let y=0; y<STATE.gridSize; y++) {
+                        mapGrid[x][y] = 0; // 0: Empty
+                    }
+                }
+
+                // Start with a central cross of roads
+                const center = Math.floor(STATE.gridSize / 2);
+                createRoad(center, center);
+                createRoad(center+1, center);
+                createRoad(center-1, center);
+                createRoad(center, center+1);
+                createRoad(center, center-1);
+            }
+
+            function getGridCoords(worldX, worldZ) {
+                const centerOffset = (STATE.gridSize * STATE.tileSize) / 2;
+                const gx = Math.floor((worldX + centerOffset) / STATE.tileSize);
+                const gy = Math.floor((worldZ + centerOffset) / STATE.tileSize);
+                return { x: gx, y: gy };
+            }
+
+            function getWorldCoords(gx, gy) {
+                const centerOffset = (STATE.gridSize * STATE.tileSize) / 2;
+                return {
+                    x: (gx * STATE.tileSize) - centerOffset + (STATE.tileSize/2),
+                    z: (gy * STATE.tileSize) - centerOffset + (STATE.tileSize/2)
+                };
+            }
+
+            function createRoad(gx, gy) {
+                if (gx < 0 || gx >= STATE.gridSize || gy < 0 || gy >= STATE.gridSize) return;
+                if (mapGrid[gx][gy] !== 0) return;
+
+                mapGrid[gx][gy] = 1; // Road
+
+                const pos = getWorldCoords(gx, gy);
+                const road = BABYLON.MeshBuilder.CreateBox("road", {width: STATE.tileSize, depth: STATE.tileSize, height: 0.1}, scene);
+                road.position = new BABYLON.Vector3(pos.x, 0.05, pos.z);
+                road.material = matRoad;
+                road.receiveShadows = true;
+                roadMeshes.push(road);
+            }
+
+            function createBuilding(gx, gy) {
+                if (gx < 0 || gx >= STATE.gridSize || gy < 0 || gy >= STATE.gridSize) return;
+                if (mapGrid[gx][gy] !== 0) return;
+
+                mapGrid[gx][gy] = 2; // Building
+                STATE.buildings++;
+
+                const pos = getWorldCoords(gx, gy);
+                
+                // Determine Type based on randomness and distance from center
+                const center = STATE.gridSize / 2;
+                const dist = Math.sqrt((gx-center)**2 + (gy-center)**2);
+                
+                let height = 0;
+                let mat = matRes;
+                
+                if (dist < 4) {
+                    // Commercial Center (Tall)
+                    height = 8 + Math.random() * 15;
+                    mat = matCom;
+                    STATE.population += Math.floor(height * 10);
+                } else if (Math.random() > 0.7) {
+                    // Industrial/Office (Medium)
+                    height = 4 + Math.random() * 6;
+                    mat = matInd;
+                    STATE.population += Math.floor(height * 5);
+                } else {
+                    // Residential (Low)
+                    height = 2 + Math.random() * 4;
+                    mat = matRes;
+                    STATE.population += Math.floor(height * 2);
+                }
+
+                const build = BABYLON.MeshBuilder.CreateBox("b", {
+                    width: STATE.tileSize * 0.8, 
+                    depth: STATE.tileSize * 0.8, 
+                    height: height
+                }, scene);
+                
+                // Pivot at bottom for growing animation
+                build.setPivotPoint(new BABYLON.Vector3(0, -height/2, 0));
+                build.position = new BABYLON.Vector3(pos.x, height/2, pos.z);
+                build.material = mat;
+                shadowGenerator.addShadowCaster(build);
+                
+                // Grow Animation
+                build.scaling.y = 0.01;
+                // Add a custom property to animate in render loop
+                build.targetScale = 1;
+                build.growthSpeed = 0.05 + Math.random() * 0.05;
+                
+                buildingMeshes.push(build);
+            }
+
+            // --- Logic: Simulation Step ---
+
+            function growCity() {
+                // Pick random road tile
+                if (roadMeshes.length === 0) return;
+                
+                // Try X times to find a valid spot to grow
+                for(let i=0; i<3; i++) {
+                    const center = STATE.gridSize / 2;
+                    // Pick a random spot within current radius
+                    // Bias slightly towards existing infrastructure
+                    const randIndex = Math.floor(Math.random() * roadMeshes.length);
+                    const roadMesh = roadMeshes[randIndex];
+                    const coords = getGridCoords(roadMesh.position.x, roadMesh.position.z);
+                    
+                    // Neighbors: N, E, S, W
+                    const neighbors = [
+                        {x:0, y:1}, {x:1, y:0}, {x:0, y:-1}, {x:-1, y:0}
+                    ];
+                    
+                    const dir = neighbors[Math.floor(Math.random()*neighbors.length)];
+                    const tx = coords.x + dir.x;
+                    const ty = coords.y + dir.y;
+
+                    // Check bounds & Radius
+                    const dist = Math.sqrt((tx-center)**2 + (ty-center)**2);
+                    if (dist > STATE.maxRadius) continue;
+                    
+                    if (tx >= 0 && tx < STATE.gridSize && ty >= 0 && ty < STATE.gridSize) {
+                        if (mapGrid[tx][ty] === 0) {
+                            // Empty spot next to road. 
+                            // 30% chance to extend road, 70% chance to build building
+                            // Road chance higher if low density
+                            if (Math.random() < 0.3) {
+                                createRoad(tx, ty);
+                            } else {
+                                createBuilding(tx, ty);
+                            }
+                            break; // Did something, stop loop
+                        }
+                    }
+                }
+            }
+
+            // --- Logic: Traffic System ---
+
+            function spawnCar() {
+                if (cars.length >= STATE.trafficCap) return;
+                if (roadMeshes.length < 5) return;
+
+                const road = roadMeshes[Math.floor(Math.random() * roadMeshes.length)];
+                const mesh = BABYLON.MeshBuilder.CreateBox("car", {width: 1.5, height: 1, depth: 3}, scene);
+                mesh.position = road.position.clone();
+                mesh.position.y = 0.7;
+                
+                // Random color for car body
+                const mat = new BABYLON.StandardMaterial("carMat", scene);
+                mat.diffuseColor = new BABYLON.Color3(Math.random(), Math.random(), Math.random());
+                mesh.material = mat;
+
+                // Headlights
+                const h1 = BABYLON.MeshBuilder.CreateBox("h1", {width:0.4, height:0.2, depth:0.1}, scene);
+                h1.parent = mesh;
+                h1.position.z = 1.5; h1.position.x = 0.5; h1.material = matCarHead;
+                const h2 = h1.clone("h2"); h2.parent = mesh; h2.position.x = -0.5;
+
+                // Taillights
+                const t1 = BABYLON.MeshBuilder.CreateBox("t1", {width:0.4, height:0.2, depth:0.1}, scene);
+                t1.parent = mesh;
+                t1.position.z = -1.5; t1.position.x = 0.5; t1.material = matCarTail;
+                const t2 = t1.clone("t2"); t2.parent = mesh; t2.position.x = -0.5;
+
+                // Car Logic State
+                const carData = {
+                    mesh: mesh,
+                    dir: {x:0, y:0}, // Current grid direction
+                    target: null, // Target World Position
+                    speed: 0.2 + Math.random() * 0.1
+                };
+                
+                // Pick initial direction
+                const coords = getGridCoords(mesh.position.x, mesh.position.z);
+                const possible = [];
+                if (mapGrid[coords.x+1]?.[coords.y] === 1) possible.push({x:1, y:0});
+                if (mapGrid[coords.x-1]?.[coords.y] === 1) possible.push({x:-1, y:0});
+                if (mapGrid[coords.x]?.[coords.y+1] === 1) possible.push({x:0, y:1});
+                if (mapGrid[coords.x]?.[coords.y-1] === 1) possible.push({x:0, y:-1});
+
+                if(possible.length > 0) {
+                    carData.dir = possible[Math.floor(Math.random()*possible.length)];
+                    mesh.lookAt(mesh.position.add(new BABYLON.Vector3(carData.dir.x, 0, carData.dir.y)));
+                    cars.push(carData);
+                } else {
+                    mesh.dispose(); // Stuck on island
+                }
+            }
+
+            function updateCars() {
+                for (let i = cars.length - 1; i >= 0; i--) {
+                    const car = cars[i];
+                    
+                    // Move forward
+                    const forward = car.mesh.forward;
+                    car.mesh.position.addInPlace(forward.scale(car.speed));
+
+                    // Check center of tile to make decisions
+                    const currentPos = car.mesh.position;
+                    const gridPos = getGridCoords(currentPos.x, currentPos.z);
+                    const tileCenter = getWorldCoords(gridPos.x, gridPos.y);
+                    
+                    // Distance to center of current tile
+                    const dist = Math.sqrt((currentPos.x - tileCenter.x)**2 + (currentPos.z - tileCenter.z)**2);
+
+                    // If close to center of tile, maybe turn?
+                    if (dist < car.speed) {
+                        // Snap to center to prevent drift
+                        car.mesh.position.x = tileCenter.x;
+                        car.mesh.position.z = tileCenter.z;
+
+                        // Decide next move
+                        // Neighbors
+                        const moves = [
+                            {x:1, y:0}, {x:-1, y:0}, {x:0, y:1}, {x:0, y:-1}
+                        ];
+                        
+                        // Filter for valid roads, excluding 180 turn if possible
+                        const validMoves = moves.filter(m => {
+                            const tx = gridPos.x + m.x;
+                            const ty = gridPos.y + m.y;
+                            if (tx<0 || tx>=STATE.gridSize || ty<0 || ty>=STATE.gridSize) return false;
+                            return mapGrid[tx][ty] === 1; // Must be road
+                        });
+
+                        if (validMoves.length === 0) {
+                            // Dead end or trapped, despawn
+                            car.mesh.dispose();
+                            cars.splice(i, 1);
+                            continue;
+                        }
+
+                        // Prefer not to go backwards unless necessary
+                        const notBackwards = validMoves.filter(m => !(m.x === -car.dir.x && m.y === -car.dir.y));
+                        
+                        let nextDir;
+                        if (notBackwards.length > 0) {
+                            // 80% chance to go straight if possible
+                            const straight = notBackwards.find(m => m.x === car.dir.x && m.y === car.dir.y);
+                            if (straight && Math.random() < 0.8) {
+                                nextDir = straight;
+                            } else {
+                                nextDir = notBackwards[Math.floor(Math.random() * notBackwards.length)];
+                            }
+                        } else {
+                            // U-Turn
+                            nextDir = validMoves[0];
+                        }
+
+                        car.dir = nextDir;
+                        car.mesh.lookAt(car.mesh.position.add(new BABYLON.Vector3(nextDir.x, 0, nextDir.y)));
+                    }
+
+                    // Random despawn to keep traffic fresh
+                    if (Math.random() < 0.001) {
+                         car.mesh.dispose();
+                         cars.splice(i, 1);
+                    }
+                }
+
+                // Spawner
+                if (Math.random() < 0.1) spawnCar();
+            }
+
+            // --- UI Bindings ---
+            const uiSize = document.getElementById('slider-size');
+            const uiTraffic = document.getElementById('slider-traffic');
+            const uiSpeed = document.getElementById('slider-speed');
+            const uiReset = document.getElementById('btn-reset');
+            
+            uiSize.addEventListener('input', (e) => {
+                STATE.maxRadius = parseInt(e.target.value);
+                document.getElementById('val-size').innerText = STATE.maxRadius;
+            });
+
+            uiTraffic.addEventListener('input', (e) => {
+                STATE.trafficCap = parseInt(e.target.value);
+                document.getElementById('val-traffic').innerText = STATE.trafficCap;
+            });
+
+            uiSpeed.addEventListener('input', (e) => {
+                STATE.growthSpeed = parseInt(e.target.value);
+                // Map 1-10 to readable text
+                let txt = "Normal";
+                if(STATE.growthSpeed < 4) txt = "Slow";
+                if(STATE.growthSpeed > 7) txt = "Fast";
+                document.getElementById('val-speed').innerText = txt;
+            });
+
+            uiReset.addEventListener('click', () => {
+                initGrid();
+            });
+
+            // --- Main Loop ---
+            
+            initGrid();
+
+            let frames = 0;
+
+            scene.registerBeforeRender(() => {
+                // Growth Tick
+                frames++;
+                // Invert speed logic: higher slider = lower modulus
+                const tickRate = Math.max(1, 20 - (STATE.growthSpeed * 2)); 
+                
+                if (frames % tickRate === 0) {
+                    growCity();
+                    // Update Stats
+                    document.getElementById('stats-display').innerText = 
+                        `Population: ${STATE.population} | Buildings: ${STATE.buildings}`;
+                }
+
+                // Building Animations
+                for (let b of buildingMeshes) {
+                    if (b.scaling.y < b.targetScale) {
+                        b.scaling.y = BABYLON.Scalar.Lerp(b.scaling.y, b.targetScale, 0.1);
+                    }
+                }
+
+                // Traffic
+                updateCars();
+            });
+
+            engine.runRenderLoop(() => {
+                scene.render();
+            });
+
+            window.addEventListener('resize', () => {
+                engine.resize();
+            });
+        });
+    </script>
+</body>
+</html>
