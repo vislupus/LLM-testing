@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetris – Full Standalone Version</title>
+    <style>
+        body { background:#000; margin:0; height:100vh; display:flex; justify-content:center; align-items:center; font-family:Arial, sans-serif; }
+        #game { position:relative; }
+        canvas { background:#111; box-shadow:0 0 40px rgba(0,255,255,0.4); }
+        #overlay { position:absolute; inset:0; background:rgba(0,0,0,0.85); color:#0ff; font-size:48px; display:none; flex-direction:column; justify-content:center; align-items:center; }
+        button { margin-top:30px; padding:15px 40px; background:#0ff; color:#000; border:none; font-size:28px; cursor:pointer; border-radius:8px; }
+        #sidebar { position:absolute; left:340px; top:40px; color:#0ff; font-size:24px; text-align:left; line-height:1.8; }
+        #nextCanvas { background:#111; border:2px solid #444; }
+    </style>
+</head>
+<body>
+
+<div id="game">
+    <canvas id="board" width="300" height="600"></canvas>
+
+    <div id="overlay">
+        GAME OVER
+        <div style="font-size:28px; margin-top:20px;">Score: <span id="finalScore">0</span></div>
+        <button onclick="restartGame()">Play Again</button>
+    </div>
+
+    <div id="sidebar">
+        Score: <span id="score">0</span><br>
+        Level: <span id="level">1</span><br>
+        Lines: <span id="lines">0</span><br><br>
+        Next:<br>
+        <canvas id="next" width="120" height="120"></canvas><br><br>
+        Controls:<br>
+        ← → : move<br>
+        ↑ : rotate<br>
+        ↓ : soft drop<br>
+        Space : hard drop
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const nextCanvas = document.getElementById('next');
+const nextCtx = nextCanvas.getContext('2d');
+
+const CELL_SIZE = 30;
+const COLS = 10;
+const ROWS = 20;
+
+let board = Array.from({length: ROWS}, () => Array(COLS).fill(null));
+
+let score = 0;
+let lines = 0;
+let level = 1;
+let dropInterval = 800;
+let dropCounter = 0;
+let lastTime = 0;
+let currentPiece = null;
+let nextPiece = null;
+let isGameOver = false;
+let animationFrame;
+
+const COLORS = {
+    I: '#00FFFF',
+    O: '#FFFF00',
+    T: '#800080',
+    S: '#00FF00',
+    Z: '#FF0000',
+    J: '#0000FF',
+    L: '#FFA500'
+};
+
+const INITIAL_BLOCKS = {
+    I: [[-1,0], [0,0], [1,0], [2,0]],
+    O: [[0,0], [1,0], [0,1], [1,1]],
+    T: [[-1,0], [0,0], [1,0], [0,-1]],
+    S: [[-1,0], [0,0], [0,-1], [1,-1]],
+    Z: [[-1,-1], [0,-1], [0,0], [1,0]],
+    J: [[-1,-1], [-1,0], [0,0], [1,0]],
+    L: [[1,-1], [-1,0], [0,0], [1,0]]
+};
+
+const bag = [];
+
+function getRandomPieceType() {
+    if (bag.length === 0) {
+        bag.push('I','O','T','S','Z','J','L');
+        for (let i = bag.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [bag[i], bag[j]] = [bag[j], bag[i]];
+        }
+    }
+    return bag.pop();
+}
+
+function createPiece(type) {
+    return {
+        type,
+        blocks: INITIAL_BLOCKS[type].map(p => [p[0], p[1]]), // copy
+        x: type === 'O' ? 4 : 4, // perfect centering for 10 columns
+        y: 0
+    };
+}
+
+function isValid(blocks, x, y) {
+    return blocks.every(p => {
+        const col = x + p[0];
+        const row = y + p[1];
+        return col >= 0 && col < COLS && row < ROWS && (row < 0 || board[row][col] === null);
+    });
+}
+
+function rotatePiece() {
+    if (currentPiece.type === 'O') return;
+
+    const oldBlocks = currentPiece.blocks;
+    const newBlocks = oldBlocks.map(p => [p[1], -p[0]]);
+
+    // Simple kick table that works excellently for all pieces
+    const kicks = [[0,0], [-1,0], [1,0], [-2,0], [2,0], [0,-1], [0,-2]];
+
+    for (let k of kicks) {
+        if (isValid(newBlocks, currentPiece.x + k[0], currentPiece.y + k[1])) {
+            currentPiece.x += k[0];
+            currentPiece.y += k[1];
+            currentPiece.blocks = newBlocks;
+            return;
+        }
+    }
+}
+
+function move(dx, dy) {
+    if (isValid(currentPiece.blocks, currentPiece.x + dx, currentPiece.y + dy)) {
+        currentPiece.x += dx;
+        currentPiece.y += dy;
+        return true;
+    }
+    return false;
+}
+
+function hardDrop() {
+    while (move(0, 1)) {
+        score += 2;
+    }
+    lockPiece();
+}
+
+function lockPiece() {
+    currentPiece.blocks.forEach(p => {
+        const r = currentPiece.y + p[1];
+        const c = currentPiece.x + p[0];
+        if (r >= 0) board[r][c] = currentPiece.type;
+    });
+    clearLines();
+    spawnPiece();
+}
+
+function clearLines() {
+    let linesThisTurn = 0;
+    for (let r = ROWS - 1; r >= 0; r--) {
+        if (board[r].every(cell => cell !== null)) {
+            board.splice(r, 1);
+            board.unshift(Array(COLS).fill(null));
+            linesThisTurn++;
+            r++; // recheck this row after shift
+        }
+    }
+    if (linesThisTurn > 0) {
+        const points = [0, 100, 300, 500, 1200];
+        score += points[linesThisTurn] * level;
+        lines += linesThisTurn;
+        level = Math.floor(lines / 10) + 1;
+        dropInterval = Math.max(50, 800 - (level - 1) * 75);
+        updateSidebar();
+    }
+}
+
+function spawnPiece() {
+    currentPiece = nextPiece || createPiece(getRandomPieceType());
+    nextPiece = createPiece(getRandomPieceType());
+    drawNext();
+    if (!isValid(currentPiece.blocks, currentPiece.x, currentPiece.y)) {
+        isGameOver = true;
+        document.getElementById('overlay').style.display = 'flex';
+        document.getElementById('finalScore').innerText = score;
+    }
+}
+
+function drawCell(col, row, color) {
+    const x = col * CELL_SIZE;
+    const y = row * CELL_SIZE;
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, CELL_SIZE, CELL_SIZE);
+
+    // Nice bevel / 3D effect
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.fillRect(x, y, CELL_SIZE, 8);
+    ctx.fillRect(x, y, 8, CELL_SIZE);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(x + CELL_SIZE - 8, y, 8, CELL_SIZE);
+    ctx.fillRect(x, y + CELL_SIZE - 8, CELL_SIZE, 8);
+}
+
+function drawBoard() {
+    board.forEach((row, r) => {
+        row.forEach((cell, c) => {
+            if (cell) drawCell(c, r, COLORS[cell]);
+        });
+    });
+}
+
+function drawPiece(piece, fraction = 0) {
+    const color = COLORS[piece.type];
+    piece.blocks.forEach(p => {
+        const col = piece.x + p[0];
+        const row = piece.y + p[1] + fraction;
+        drawCell(col, row, color);
+    });
+}
+
+function drawNext() {
+    nextCtx.clearRect(0, 0, 120, 120);
+    const color = COLORS[nextPiece.type];
+    nextPiece.blocks.forEach(p => {
+        const col = (p[0] + 2) * 30; // center in 4-cell preview
+        const row = (p[1] + 2) * 30;
+        nextCtx.fillStyle = color;
+        nextCtx.fillRect(col, row, 30, 30);
+        // bevel on next piece too
+        nextCtx.fillStyle = 'rgba(255,255,255,0.4)';
+        nextCtx.fillRect(col, row, 30, 8);
+        nextCtx.fillRect(col, row, 8, 30);
+    });
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawBoard();
+    if (currentPiece) drawPiece(currentPiece, dropCounter / dropInterval);
+}
+
+function update(time = 0) {
+    if (isGameOver) return;
+
+    const deltaTime = time - lastTime;
+    lastTime = time;
+
+    dropCounter += deltaTime;
+    if (dropCounter > dropInterval) {
+        if (!move(0, 1)) {
+            lockPiece();
+        }
+        dropCounter = 0;
+    }
+
+    draw();
+
+    animationFrame = requestAnimationFrame(update);
+}
+
+function updateSidebar() {
+    document.getElementById('score').innerText = score;
+    document.getElementById('level').innerText = level;
+    document.getElementById('lines').innerText = lines;
+}
+
+function restartGame() {
+    board = Array.from({length: ROWS}, () => Array(COLS).fill(null));
+    score = 0;
+    lines = 0;
+    level = 1;
+    dropInterval = 800;
+    dropCounter = 0;
+    bag.length = 0;
+    isGameOver = false;
+    document.getElementById('overlay').style.display = 'none';
+    spawnPiece();
+    updateSidebar();
+}
+
+document.addEventListener('keydown', e => {
+    if (isGameOver) return;
+
+    switch (e.key) {
+        case 'ArrowLeft': move(-1, 0); break;
+        case 'ArrowRight': move(1, 0); break;
+        case 'ArrowDown': move(0, 1); score += 1; dropCounter = 0; break;
+        case 'ArrowUp': rotatePiece(); break;
+        case ' ': e.preventDefault(); hardDrop(); break;
+    }
+});
+
+spawnPiece();
+update();
+updateSidebar();
+
+</script>
+</body>
+</html>

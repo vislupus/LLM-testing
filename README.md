@@ -37,7 +37,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3**          | **5/10** |
 | **ChatGPT 5.1**       | **3/10** |
-| **Grok 4.1**          | **0/10** |
+| **Grok 4.1**          | **1/10** |
 | **Claude Sonnet 4.5** | **5/10** |
 
 ---
@@ -54,31 +54,31 @@ Testing different LLMs to do software tasks
 
 ---
 
-### Financial analysis report
-**make a comprehensive financial analysis report on the attached data. Include interactive charts and/or graphs. Make it visually appealing. Use advanced algorithms to suggest price forecasts, providing rationale and confidence intervals. Put everything in a standalone html file.**
+### Dashboard of climate change in Bulgaria
+****
 
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **0/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
 
 ---
 
-### Builder like Figma
+### UI Builder
 **Develop a single-file, standalone HTML/JavaScript application for a drag-and-drop UI builder, similar to Figma, complete with advanced settings, drag-and-drop placement, snap-to-grid, canvas resizing, and alignment guides. The application must include a comprehensive library of UI components, such as Buttons, Inputs, Text Fields, Checkboxes, Dropdowns, Sliders, Steppers, and Progress Bars, alongside basic geometric shapes like rectangular, Circle, Triangle, and Line. Users must be able to resize any element directly on the canvas using drag handles and configure advanced visual settings, including border radius and box shadows, via a dedicated properties panel. The builder is required to support dynamic flowcharting, allowing users to connect two elements with adjustable lines that automatically maintain their attachment points when the elements are moved or resized. All components, shapes, styles, and defined connections must be cleanly exported into a single, runnable HTML file.**
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
+| **Gemini 3**          | **9/10** |
+| **ChatGPT 5.1**       | **6/10** |
+| **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.5**   | **7/10** |
 
 ---
 
-### create-DAW
+### DAW clone
 **Create a DAW. Include multiple instruments and drums. Include a step grid and piano roll. Include tempo control, multiple tracks, effects (reverb, delay), volume sliders, and more. Put everything in a standalone html file**
 
 | Model                 | Score    |
@@ -86,7 +86,7 @@ Testing different LLMs to do software tasks
 | **Gemini 3**          | **0/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Sonnet 4.5** | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
 
 ---
 
@@ -107,10 +107,22 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3**          | **8/10** |
+| **ChatGPT 5.1**       | **8/10** |
+| **Grok 4.1**          | **4/10** |
+| **Claude Opus 4.5**   | **10/10** |
+
+---
+
+### Pirates island
+**Create a single‑file 3D browser game prototype using Babylon.js where the player commands three pirate ships protecting a small tropical island in the middle of an ocean. The scene should include a stylized water plane, a small green island with a few simple props (like rocks or palms), and three friendly ships arranged around it; the camera is freely orbiting above the scene. Each friendly ship can be selected (keys 1–3), steered around the island, and upgraded between waves (e.g., increased cannon damage, fire rate, or movement speed). Enemy ships periodically spawn from the horizon and sail toward the island; friendly ships automatically or manually fire cannonballs at enemies, and if enemies reach the island they damage its health. Everything (HTML, CSS, JavaScript, Babylon.js setup, basic UI overlay for gold, wave, HP and upgrade buttons) should be contained in one .html file, ready to open directly in a browser.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
 | **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
+| **ChatGPT 5.1**       | **7/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Claude Opus 4.5**   | **9/10** |
 
 ---
 
@@ -171,9 +183,9 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **5/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **ChatGPT 5.1**       | **6/10** |
+| **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.5**   | **8/10** |
 
 ---
 
@@ -208,5 +220,101 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3**          | **7/10** |
 | **ChatGPT 5.1**       | **5/10** |
-| **Grok 4.1**          | **0/10** |
+| **Grok 4.1**          | **3/10** |
 | **Claude Sonnet 4.5** | **2/10** |
+
+---
+
+### 2D Fluid simulation
+**Create a 2D fluid simulation in p5.js with realistic fluid dynamics that mimic real‑world liquid motion, including swirling, spreading, and natural‑looking patterns over time. The simulation should support either particle‑based or grid‑based methods (e.g., Navier–Stokes or SPH), with varying density and velocity, plus smooth color diffusion so differently colored fluids mix visually. Allow interactive control: the mouse can inject velocity or disturb the fluid, while keys can add different colors, forces, adjust viscosity, reset the scene, or toggle vortex behavior. Render the fluid in a visually appealing, smooth way using efficient techniques so it remains responsive even with many particles or a high‑resolution grid, and optionally include obstacles and real‑time shader effects to enhance realism. Put everything in a standalone html file.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
+
+---
+
+### 2D Heat‑diffusion simulation
+**Create a 2D heat‑diffusion simulation in p5.js that numerically solves the heat equation ∂T/∂t = α∇²T on a grid using finite‑difference methods (explicit or implicit), so temperature diffuses smoothly over time and can vary by material with different thermal conductivities. Represent temperature as a grid‑based field visualized with a heatmap gradient (blue = cold, red = hot), where heat naturally spreads and fades into realistic thermal patterns under configurable boundary conditions such as insulated edges or constant‑temperature borders. Let the user add heat sources by clicking, cool regions via keyboard input, and adjust parameters like conductivity, diffusion speed, resolution, and optionally convection strength. Ensure the update loop is efficient enough for real‑time interaction, and optionally support multiple heat sources, material presets, and GPU‑accelerated shaders to keep the simulation smooth at higher resolutions. Put everything in a standalone html file.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
+
+---
+
+### 2D Fluid‑flow animation
+**Create a computer‑generated 2D fluid‑flow animation in p5.js that simulates fluid moving through a tube past an obstacle and clearly shows the formation of a von Kármán vortex street (alternating vortices shed behind the object). Represent the fluid on a grid or with particles and solve a simple Navier–Stokes–style or lattice‑Boltzmann approximation so the flow bends around the shape and vortices naturally appear in its wake. The obstacle should not be fixed: allow the user to move it with the mouse, change its size and shape (e.g., from circle to ellipse/rectangle), and rotate it freely through 360 degrees, with the flow and vortex pattern updating in real time as the object moves. Use color or velocity vectors to visualize the flow field and vorticity, while keeping the simulation efficient enough for smooth, interactive frame rates in the browser. Put everything in a standalone html file.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
+
+---
+
+### 2D Monte Carlo simulation
+**Create a 2D Monte Carlo simulation in p5.js that models the evolution of an ecosystem on a grid, where each cell can contain different entities such as plants, herbivores, and predators. Use probabilistic rules for birth, death, movement, feeding, and mutation: at each time step, randomly select individuals and stochastically decide their actions based on parameters like energy, local population density, and resource availability. Allow traits (speed, vision range, reproduction rate, etc.) to mutate slightly during reproduction so that species can evolve over many generations, and visualize these traits with color or size variations. Let the user adjust parameters such as mutation rate, carrying capacity, initial populations, and interaction strengths via sliders or keys, and display simple statistics (population curves, average traits) alongside the main view. Keep the update loop efficient so large grids and many agents can run in real time, illustrating emergent patterns like extinction events, predator–prey cycles, and adaptation. Put everything in a standalone html file.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
+
+---
+
+### Tesseract animation
+**Create an interactive 4D tesseract animation in p5.js: render a wireframe projection of a rotating tesseract onto 2D, using a 4D → 3D → 2D projection pipeline (homogeneous coordinates or rotation matrices in 4D space). Animate continuous rotation around multiple 4D axes so the shape constantly morphs between cube‑within‑cube and other characteristic projections, with smooth interpolation and adjustable rotation speed. Let the user control parameters via mouse/keyboard: pause/resume rotation, change which 4D planes are rotating, adjust projection distance, and toggle between orthographic and perspective‑style projection. Use clean lines, subtle shading, and optional color gradients to distinguish inner and outer edges, keeping the frame rate high for a fluid, educational visualization of a tesseract. Put everything in a standalone html file.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
+
+---
+
+### Equal Earth projection
+**Create a single‑file interactive world map using SVG.js that renders the Earth in the Equal Earth projection and supports full coordinate ↔ screen conversion. The app should draw a clean vector world map in Equal Earth, with zoom and pan (mouse wheel + drag) that keep the projection mathematically correct at any scale. Implement forward projection: given geographic coordinates (latitude, longitude in degrees), convert them to projected x,y in the Equal Earth projection and plot a small SVG circle/marker at the correct location on the map. Implement inverse projection as well: when the user clicks on any point of the map (taking into account current zoom and pan), compute the corresponding latitude and longitude for that position and display them in a small overlay or console readout. All logic (HTML, CSS, JavaScript, SVG.js setup, projection formulas, zoom/pan handling, marker drawing and coordinate display) must be contained in a single self‑contained HTML file that runs directly in the browser.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
+
+---
+
+### 2D Gas simulation
+**Create a single‑file 2D gas simulation in p5.js that illustrates ideas from statistical mechanics as accurately as possible while still running in real time. Represent gas molecules as many small disks moving in a rectangular box with perfectly elastic collisions between particles and with the walls; conserve momentum and kinetic energy in each collision, and support adjustable particle mass and radius. Allow the user to change key parameters via on‑screen controls or keyboard: number of particles, initial temperature (speed distribution), box size, particle mass ratio (for mixture of species), and whether collisions are enabled/disabled. Continuously compute and display macroscopic quantities derived from the microscopic motion – e.g., kinetic‑energy‑based temperature, pressure on the walls (force per unit length or area), and simple histograms of speed distribution approaching a Maxwell–Boltzmann‑like curve. Everything (HTML, CSS, JavaScript, p5.js setup, UI, physics update and visualization) must be contained in a single self‑contained file that can be opened directly in the browser.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
+
+---
+
+### Strandbeest legs
+**Create a single‑file 3D demo in Babylon.js that uses a genetic algorithm to evolve walking Strandbeest‑style leg mechanisms. Represent each creature as a simple body with two or more multi‑segment legs in a plane, where each leg is defined by a genome encoding joint lengths, pivot positions, and possibly phase offsets for the leg cycle; decode the genome into a Babylon.js rig made of boxes/cylinders connected by rotating joints. Simulate a walking cycle on a flat ground plane using basic forward kinematics and simple physics or kinematic constraints, then evaluate each individual’s fitness by how far its body moves forward in a fixed time while remaining stable. Implement a full GA loop in JavaScript (selection, crossover, mutation, generation stepping), with controls to start/pause evolution, adjust population size, mutation rate, and cycle duration, and the option to highlight or replay the current best individual in the Babylon.js scene. All HTML, CSS, JavaScript, Babylon.js setup, GA logic, and visualization should live in one standalone .html file that runs directly in the browser.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
