@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galaxy Formation Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #dcdcdc;
+            overflow: hidden;
+        }
+        #info {
+            position: fixed;
+            top: 15px;
+            left: 15px;
+            color: #333;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            background: rgba(255, 255, 255, 0.85);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 100;
+        }
+        #info div {
+            margin: 4px 0;
+        }
+        #info span {
+            font-weight: bold;
+            color: #0066cc;
+        }
+        #controls {
+            position: fixed;
+            bottom: 15px;
+            left: 15px;
+            color: #555;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            background: rgba(255, 255, 255, 0.85);
+            padding: 12px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <div>🌌 Galaxy Formation Simulation</div>
+        <div>━━━━━━━━━━━━━━━━━━━━━</div>
+        <div>Particles: <span id="particleCount">10000</span></div>
+        <div>FPS: <span id="fps">0</span></div>
+        <div>Time: <span id="time">0</span> Myr</div>
+        <div>Phase: <span id="phase">Collapse</span></div>
+    </div>
+    <div id="controls">
+        Press [R] to restart | [Space] to pause
+    </div>
+    
+    <script>
+// ═══════════════════════════════════════════════════════════════
+// QUADTREE - Barnes-Hut Spatial Partitioning
+// ═══════════════════════════════════════════════════════════════
+class Rectangle {
+    constructor(x, y, w, h) {
+        this.x = x;
+        this.y = y;
+        this.w = w;
+        this.h = h;
+    }
+    
+    contains(point) {
+        return (point.x >= this.x - this.w &&
+                point.x < this.x + this.w &&
+                point.y >= this.y - this.h &&
+                point.y < this.y + this.h);
+    }
+}
+
+class QuadTree {
+    constructor(boundary, capacity) {
+        this.boundary = boundary;
+        this.capacity = capacity;
+        this.particles = [];
+        this.divided = false;
+        this.totalMass = 0;
+        this.centerOfMass = null;
+    }
+    
+    subdivide() {
+        let x = this.boundary.x;
+        let y = this.boundary.y;
+        let w = this.boundary.w / 2;
+        let h = this.boundary.h / 2;
+        
+        let ne = new Rectangle(x + w, y - h, w, h);
+        let nw = new Rectangle(x - w, y - h, w, h);
+        let se = new Rectangle(x + w, y + h, w, h);
+        let sw = new Rectangle(x - w, y + h, w, h);
+        
+        this.northeast = new QuadTree(ne, this.capacity);
+        this.northwest = new QuadTree(nw, this.capacity);
+        this.southeast = new QuadTree(se, this.capacity);
+        this.southwest = new QuadTree(sw, this.capacity);
+        
+        this.divided = true;
+    }
+    
+    insert(particle) {
+        if (!this.boundary.contains(particle.pos)) {
+            return false;
+        }
+        
+        // Update center of mass
+        if (this.centerOfMass === null) {
+            this.centerOfMass = createVector(particle.pos.x, particle.pos.y);
+            this.totalMass = particle.mass;
+        } else {
+            let newMass = this.totalMass + particle.mass;
+            this.centerOfMass.x = (this.centerOfMass.x * this.totalMass + particle.pos.x * particle.mass) / newMass;
+            this.centerOfMass.y = (this.centerOfMass.y * this.totalMass + particle.pos.y * particle.mass) / newMass;
+            this.totalMass = newMass;
+        }
+        
+        if (this.particles.length < this.capacity && !this.divided) {
+            this.particles.push(particle);
+            return true;
+        }
+        
+        if (!this.divided) {
+            this.subdivide();
+            for (let p of this.particles) {
+                this.insertIntoChildren(p);
+            }
+            this.particles = [];
+        }
+        
+        return this.insertIntoChildren(particle);
+    }
+    
+    insertIntoChildren(particle) {
+        if (this.northeast.insert(particle)) return true;
+        if (this.northwest.insert(particle)) return true;
+        if (this.southeast.insert(particle)) return true;
+        if (this.southwest.insert(particle)) return true;
+        return false;
+    }
+    
+    calculateForce(particle, theta, G, softening) {
+        if (this.totalMass === 0 || this.centerOfMass === null) {
+            return createVector(0, 0);
+        }
+        
+        let diff = p5.Vector.sub(this.centerOfMass, particle.pos);
+        let d = diff.mag();
+        
+        // Skip self-interaction
+        if (d < 0.01) {
+            if (this.divided) {
+                let force = createVector(0, 0);
+                force.add(this.northeast.calculateForce(particle, theta, G, softening));
+                force.add(this.northwest.calculateForce(particle, theta, G, softening));
+                force.add(this.southeast.calculateForce(particle, theta, G, softening));
+                force.add(this.southwest.calculateForce(particle, theta, G, softening));
+                return force;
+            }
+            return createVector(0, 0);
+        }
+        
+        let size = this.boundary.w * 2;
+        
+        // Barnes-Hut criterion
+        if (!this.divided || (size / d) < theta) {
+            let distSq = d * d + softening * softening;
+            let forceMag = (G * this.totalMass) / distSq;
+            diff.normalize();
+            diff.mult(forceMag);
+            return diff;
+        } else {
+            let force = createVector(0, 0);
+            force.add(this.northeast.calculateForce(particle, theta, G, softening));
+            force.add(this.northwest.calculateForce(particle, theta, G, softening));
+            force.add(this.southeast.calculateForce(particle, theta, G, softening));
+            force.add(this.southwest.calculateForce(particle, theta, G, softening));
+            return force;
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PARTICLE CLASS
+// ═══════════════════════════════════════════════════════════════
+class Particle {
+    constructor(x, y, mass) {
+        this.pos = createVector(x, y);
+        this.vel = createVector(0, 0);
+        this.acc = createVector(0, 0);
+        this.mass = mass;
+        this.alive = true;
+        this.trail = [];
+        this.maxTrail = 12;
+        this.age = 0;
+        this.temperature = random(0.5, 1); // Star temperature for color
+    }
+    
+    get radius() {
+        return pow(this.mass, 0.35) * 1.2 + 0.5;
+    }
+    
+    applyForce(force) {
+        this.acc.add(force);
+    }
+    
+    update(dt) {
+        // Velocity Verlet integration for better energy conservation
+        let halfVel = p5.Vector.add(this.vel, p5.Vector.mult(this.acc, dt * 0.5));
+        this.pos.add(p5.Vector.mult(halfVel, dt));
+        
+        // Store trail
+        if (frameCount % 3 === 0) {
+            this.trail.push(this.pos.copy());
+            if (this.trail.length > this.maxTrail) {
+                this.trail.shift();
+            }
+        }
+        
+        this.vel.add(p5.Vector.mult(this.acc, dt));
+        this.acc.mult(0);
+        this.age += dt;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GLOBAL SIMULATION VARIABLES
+// ═══════════════════════════════════════════════════════════════
+let particles = [];
+let G = 0.8;
+let theta = 0.6;
+let softening = 8;
+let centralBlackHoleMass = 15000;
+let darkMatterHaloMass = 80000;
+let darkMatterScaleRadius;
+let simulationTime = 0;
+let paused = false;
+let trailLayer;
+let centerX, centerY;
+
+// ═══════════════════════════════════════════════════════════════
+// SETUP
+// ═══════════════════════════════════════════════════════════════
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    pixelDensity(1);
+    
+    centerX = width / 2;
+    centerY = height / 2;
+    darkMatterScaleRadius = min(width, height) * 0.25;
+    
+    trailLayer = createGraphics(width, height);
+    trailLayer.background(220);
+    
+    initializeGalaxy();
+}
+
+function initializeGalaxy() {
+    particles = [];
+    simulationTime = 0;
+    trailLayer.background(220);
+    
+    let numParticles = 10000;
+    let cloudRadius = min(width, height) * 0.42;
+    
+    // Create initial protogalactic cloud with net angular momentum
+    for (let i = 0; i < numParticles; i++) {
+        // Spherical distribution with concentration toward center
+        let r = cloudRadius * pow(random(), 0.4);
+        let angle = random(TWO_PI);
+        
+        // Add vertical structure (disk-like tendency)
+        let zSpread = r * 0.4 * randomGaussian(0, 1);
+        let diskFactor = exp(-abs(zSpread) / (r * 0.3 + 10));
+        
+        let x = centerX + r * cos(angle);
+        let y = centerY + r * sin(angle) + zSpread * 0.3;
+        
+        // Mass distribution - most stars small, few giants
+        let massRand = random();
+        let mass;
+        if (massRand < 0.7) {
+            mass = random(0.3, 1.0);
+        } else if (massRand < 0.95) {
+            mass = random(1.0, 2.5);
+        } else {
+            mass = random(2.5, 6.0);
+        }
+        
+        let p = new Particle(x, y, mass);
+        
+        // Calculate Keplerian velocity for stable orbit
+        let distFromCenter = r + 1;
+        let enclosedMass = centralBlackHoleMass + getEnclosedDarkMatter(distFromCenter);
+        let orbitalSpeed = sqrt(G * enclosedMass / distFromCenter) * random(0.6, 0.85);
+        
+        // Tangential velocity (prograde rotation)
+        let tangent = createVector(-(y - centerY), x - centerX);
+        tangent.normalize();
+        p.vel = p5.Vector.mult(tangent, orbitalSpeed);
+        
+        // Add infall velocity for initial collapse
+        let radialDir = createVector(centerX - x, centerY - y);
+        radialDir.normalize();
+        p.vel.add(p5.Vector.mult(radialDir, random(0.3, 1.2)));
+        
+        // Thermal velocity dispersion
+        p.vel.add(createVector(randomGaussian(0, 0.5), randomGaussian(0, 0.5)));
+        
+        // Temperature for color (hotter near center)
+        p.temperature = map(r, 0, cloudRadius, 1.0, 0.3) + random(-0.1, 0.1);
+        p.temperature = constrain(p.temperature, 0.2, 1.0);
+        
+        particles.push(p);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DARK MATTER HALO - NFW Profile
+// ═══════════════════════════════════════════════════════════════
+function getEnclosedDarkMatter(r) {
+    let rs = darkMatterScaleRadius;
+    let x = r / rs;
+    // NFW enclosed mass profile
+    let factor = log(1 + x) - x / (1 + x);
+    let normalization = log(1 + 5) - 5 / 6; // Normalize at 5 scale radii
+    return darkMatterHaloMass * factor / normalization;
+}
+
+function darkMatterForce(particle) {
+    let toCenter = createVector(centerX - particle.pos.x, centerY - particle.pos.y);
+    let r = toCenter.mag();
+    if (r < 1) r = 1;
+    
+    let enclosedMass = getEnclosedDarkMatter(r);
+    let forceMag = G * enclosedMass / (r * r + softening * softening);
+    
+    toCenter.normalize();
+    toCenter.mult(forceMag);
+    return toCenter;
+}
+
+function centralBlackHoleForce(particle) {
+    let toCenter = createVector(centerX - particle.pos.x, centerY - particle.pos.y);
+    let r = toCenter.mag();
+    if (r < 1) r = 1;
+    
+    // Stronger softening near black hole to prevent numerical issues
+    let bhSoftening = softening * 2;
+    let forceMag = G * centralBlackHoleMass / (r * r + bhSoftening * bhSoftening);
+    
+    toCenter.normalize();
+    toCenter.mult(forceMag);
+    return toCenter;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PARTICLE MERGING
+// ═══════════════════════════════════════════════════════════════
+function mergeParticles() {
+    let mergeDistance = 4;
+    let cellSize = 25;
+    let grid = new Map();
+    
+    // Spatial hashing
+    for (let p of particles) {
+        if (!p.alive) continue;
+        let cellX = floor(p.pos.x / cellSize);
+        let cellY = floor(p.pos.y / cellSize);
+        let key = `${cellX},${cellY}`;
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(p);
+    }
+    
+    // Check neighbors
+    for (let [key, cell] of grid) {
+        for (let i = 0; i < cell.length; i++) {
+            let p1 = cell[i];
+            if (!p1.alive) continue;
+            
+            for (let j = i + 1; j < cell.length; j++) {
+                let p2 = cell[j];
+                if (!p2.alive) continue;
+                
+                let d = p5.Vector.dist(p1.pos, p2.pos);
+                let combinedRadius = p1.radius + p2.radius;
+                
+                if (d < mergeDistance && d < combinedRadius * 1.5) {
+                    // Merge with mass and momentum conservation
+                    let totalMass = p1.mass + p2.mass;
+                    
+                    let newVel = p5.Vector.add(
+                        p5.Vector.mult(p1.vel, p1.mass),
+                        p5.Vector.mult(p2.vel, p2.mass)
+                    );
+                    newVel.div(totalMass);
+                    
+                    let newPos = p5.Vector.add(
+                        p5.Vector.mult(p1.pos, p1.mass),
+                        p5.Vector.mult(p2.pos, p2.mass)
+                    );
+                    newPos.div(totalMass);
+                    
+                    p1.mass = totalMass;
+                    p1.vel = newVel;
+                    p1.pos = newPos;
+                    p1.temperature = (p1.temperature + p2.temperature) / 2;
+                    
+                    p2.alive = false;
+                }
+            }
+        }
+    }
+    
+    // Clean up dead particles periodically
+    if (frameCount % 120 === 0) {
+        particles = particles.filter(p => p.alive);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN DRAW LOOP
+// ═══════════════════════════════════════════════════════════════
+function draw() {
+    if (paused) {
+        image(trailLayer, 0, 0);
+        updateUI();
+        return;
+    }
+    
+    let dt = 0.4;
+    
+    // Fade trail layer for motion blur effect
+    trailLayer.noStroke();
+    trailLayer.fill(220, 25);
+    trailLayer.rect(0, 0, width, height);
+    
+    // Build Barnes-Hut quadtree
+    let boundary = new Rectangle(centerX, centerY, width, height);
+    let qtree = new QuadTree(boundary, 8);
+    
+    for (let p of particles) {
+        if (p.alive) {
+            qtree.insert(p);
+        }
+    }
+    
+    // Calculate forces and update particles
+    for (let p of particles) {
+        if (!p.alive) continue;
+        
+        // Central black hole gravity
+        let bhForce = centralBlackHoleForce(p);
+        p.applyForce(bhForce);
+        
+        // Dark matter halo
+        let dmForce = darkMatterForce(p);
+        p.applyForce(dmForce);
+        
+        // Self-gravity via Barnes-Hut
+        let selfGrav = qtree.calculateForce(p, theta, G * 0.015, softening);
+        p.applyForce(selfGrav);
+        
+        p.update(dt);
+        
+        // Boundary check - remove particles that escape
+        let distFromCenter = p5.Vector.dist(p.pos, createVector(centerX, centerY));
+        if (distFromCenter > max(width, height) * 0.8) {
+            p.alive = false;
+        }
+    }
+    
+    // Merge close particles
+    mergeParticles();
+    
+    // Render particles
+    renderParticles();
+    
+    // Draw to screen
+    image(trailLayer, 0, 0);
+    
+    // Draw central black hole glow
+    drawCentralBlackHole();
+    
+    simulationTime += dt;
+    updateUI();
+}
+
+function renderParticles() {
+    trailLayer.noStroke();
+    
+    for (let p of particles) {
+        if (!p.alive) continue;
+        
+        let distFromCenter = p5.Vector.dist(p.pos, createVector(centerX, centerY));
+        let speed = p.vel.mag();
+        
+        // Draw motion trail
+        for (let i = 0; i < p.trail.length; i++) {
+            let alpha = map(i, 0, p.trail.length, 5, 40);
+            let size = p.radius * map(i, 0, p.trail.length, 0.2, 0.7);
+            
+            let trailColor = getStarColor(p.temperature * 0.7, alpha);
+            trailLayer.fill(trailColor);
+            trailLayer.ellipse(p.trail[i].x, p.trail[i].y, size * 2, size * 2);
+        }
+        
+        // Main star rendering
+        let brightness = map(speed, 0, 8, 0.6, 1.0);
+        brightness = constrain(brightness, 0.5, 1.0);
+        
+        // Outer glow
+        let glowSize = p.radius * 3;
+        let glowColor = getStarColor(p.temperature, 30 * brightness);
+        trailLayer.fill(glowColor);
+        trailLayer.ellipse(p.pos.x, p.pos.y, glowSize, glowSize);
+        
+        // Core
+        let coreColor = getStarColor(p.temperature, 200 * brightness);
+        trailLayer.fill(coreColor);
+        trailLayer.ellipse(p.pos.x, p.pos.y, p.radius * 2, p.radius * 2);
+        
+        // Bright center for larger stars
+        if (p.mass > 2) {
+            trailLayer.fill(255, 255, 255, 150 * brightness);
+            trailLayer.ellipse(p.pos.x, p.pos.y, p.radius * 0.8, p.radius * 0.8);
+        }
+    }
+}
+
+function getStarColor(temp, alpha) {
+    // Temperature-based star color (blue hot, red cool)
+    let r, g, b;
+    
+    if (temp > 0.7) {
+        // Hot blue-white stars
+        r = map(temp, 0.7, 1.0, 200, 180);
+        g = map(temp, 0.7, 1.0, 220, 200);
+        b = 255;
+    } else if (temp > 0.4) {
+        // Yellow-white stars
+        r = map(temp, 0.4, 0.7, 255, 200);
+        g = map(temp, 0.4, 0.7, 200, 220);
+        b = map(temp, 0.4, 0.7, 150, 255);
+    } else {
+        // Cool red-orange stars
+        r = 255;
+        g = map(temp, 0.2, 0.4, 100, 200);
+        b = map(temp, 0.2, 0.4, 50, 150);
+    }
+    
+    // Darken for visibility on light background
+    r = r * 0.5;
+    g = g * 0.45;
+    b = b * 0.6;
+    
+    return color(r, g, b, alpha);
+}
+
+function drawCentralBlackHole() {
+    // Accretion disk glow
+    for (let i = 6; i > 0; i--) {
+        let alpha = map(i, 0, 6, 80, 10);
+        let size = i * 12;
+        
+        noStroke();
+        fill(255, 200, 100, alpha);
+        ellipse(centerX, centerY, size, size);
+    }
+    
+    // Event horizon
+    fill(20, 20, 40);
+    noStroke();
+    ellipse(centerX, centerY, 12, 12);
+    
+    // Bright accretion ring
+    noFill();
+    stroke(255, 220, 150, 100);
+    strokeWeight(2);
+    ellipse(centerX, centerY, 25, 25);
+    
+    stroke(255, 180, 100, 60);
+    strokeWeight(1);
+    ellipse(centerX, centerY, 35, 35);
+}
+
+function updateUI() {
+    let activeCount = particles.filter(p => p.alive).length;
+    document.getElementById('particleCount').textContent = activeCount.toLocaleString();
+    document.getElementById('fps').textContent = floor(frameRate());
+    document.getElementById('time').textContent = floor(simulationTime * 0.1);
+    
+    // Determine phase based on simulation time
+    let phase;
+    if (simulationTime < 200) {
+        phase = "Initial Collapse";
+    } else if (simulationTime < 500) {
+        phase = "Disk Formation";
+    } else if (simulationTime < 1000) {
+        phase = "Spiral Development";
+    } else {
+        phase = "Stable Galaxy";
+    }
+    document.getElementById('phase').textContent = phase;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EVENT HANDLERS
+// ═══════════════════════════════════════════════════════════════
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    centerX = width / 2;
+    centerY = height / 2;
+    darkMatterScaleRadius = min(width, height) * 0.25;
+    
+    let oldTrail = trailLayer;
+    trailLayer = createGraphics(width, height);
+    trailLayer.background(220);
+    trailLayer.image(oldTrail, 0, 0);
+}
+
+function keyPressed() {
+    if (key === 'r' || key === 'R') {
+        initializeGalaxy();
+    } else if (key === ' ') {
+        paused = !paused;
+    }
+}
+    </script>
+</body>
+</html>
