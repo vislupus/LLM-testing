@@ -54,15 +54,15 @@ Testing different LLMs to do software tasks
 
 ---
 
-### Dashboard of climate change in Bulgaria
-****
+### Climate‑change dashboard
+**Create a single‑file HTML climate dashboard for Sofia that loads local data from the CSV file temperature_Sofia_2809794_1952-01-01 - 2021-11-28.csv (same folder as the HTML file) using JavaScript in the browser. Parse the columns DATE, TAVG, TMAX, and TMIN, convert them from tenths of degrees to °C, and compute aggregates such as yearly mean temperature, yearly extremes (max/min), monthly means, and counts of very hot days (e.g., TMAX ≥ 30°C) and very cold days (e.g., TMIN ≤ −10°C). Visualize these metrics with interactive charts (for example, line charts for annual and monthly means and a bar chart for hot/cold days) using an external library like Chart.js or D3 loaded from a CDN, and include simple summary statistics (overall mean, estimated warming trend). Provide UI controls in the same page to choose a year range (start/end year) and automatically update all charts and statistics when the range changes. All HTML, CSS, and JavaScript should be self-contained in one HTML file.**
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Gemini 3**          | **8/10** |
+| **ChatGPT 5.1**       | **6/10** |
+| **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.5**   | **9/10** |
 
 ---
 
