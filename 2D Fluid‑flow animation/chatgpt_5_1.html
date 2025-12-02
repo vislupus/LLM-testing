@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Von Kármán Vortex Street - p5.js Lattice Boltzmann</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #050608;
+      color: #eee;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+<script>
+/*
+  2D Fluid Flow past a Moving Obstacle (Von Kármán Vortex Street)
+  --------------------------------------------------------------
+  - D2Q9 Lattice Boltzmann Method (LBM) for incompressible flow
+  - Constant background flow from left to right
+  - No-slip walls (top and bottom), no-slip moving obstacle
+  - User can move, scale, shape, and rotate obstacle
+  - Vorticity-colored flow field + optional velocity vectors
+
+  Controls:
+    Mouse drag        : Move obstacle
+    Mouse wheel       : Scale obstacle size
+    1                 : Circular obstacle
+    2                 : Elliptical obstacle
+    3                 : Rectangular obstacle
+    A / D             : Rotate obstacle CCW / CW
+    W / S             : Stretch vertically (ellipse/rect)
+    Q / E             : Stretch horizontally (ellipse/rect)
+    V                 : Toggle velocity vectors on/off
+    R                 : Reset simulation
+*/
+
+///////////////////////
+// Simulation Params //
+///////////////////////
+
+const NX = 220;   // Lattice width
+const NY = 80;    // Lattice height (tube height)
+const N  = NX * NY;
+
+const U0 = 0.08;  // Background inflow speed (lattice units)
+const tau = 0.56; // Relaxation time (viscosity) -> Re ~ 100 around typical obstacle
+
+// LBM constants
+const ex = [ 0, 1, 0, -1,  0, 1, -1, -1,  1];
+const ey = [ 0, 0, 1,  0, -1, 1,  1, -1, -1];
+const w  = [4/9,
+            1/9,1/9,1/9,1/9,
+            1/36,1/36,1/36,1/36];
+const opp = [0,3,4,1,2,7,8,5,6];
+
+let f = [];     // populations f[q][i]
+let fTmp = [];  // temporary for streaming
+let rho, ux, uy;
+
+let wallMask;       // top/bottom walls
+let obstacleMask;   // dynamic obstacle
+let obstacleMaskPrev;
+let solidMask;      // OR of wall + obstacle
+
+// Obstacle parameters (in lattice coordinates)
+let obsX, obsY;      // center (float)
+let obsRx, obsRy;    // radii (circle/ellipse) or half-width/half-height (rect)
+let obsAngle = 0;    // radians
+let shapeType = 'circle'; // 'circle', 'ellipse', 'rect'
+let dragging = false;
+
+// Rendering / interaction
+let cellW, cellH;
+let showVectors = true;
+let vorticity;       // store vorticity for coloring
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  noStroke();
+  initSimulation();
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  computeCellSize();
+}
+
+function initSimulation() {
+  computeCellSize();
+
+  rho = new Float32Array(N);
+  ux  = new Float32Array(N);
+  uy  = new Float32Array(N);
+  vorticity = new Float32Array(N);
+
+  wallMask      = new Uint8Array(N);
+  obstacleMask  = new Uint8Array(N);
+  obstacleMaskPrev = new Uint8Array(N);
+  solidMask     = new Uint8Array(N);
+
+  // Allocate distributions
+  f = new Array(9);
+  fTmp = new Array(9);
+  for (let q = 0; q < 9; q++) {
+    f[q]    = new Float32Array(N);
+    fTmp[q] = new Float32Array(N);
+  }
+
+  // Set wall boundaries (top and bottom rows)
+  for (let y = 0; y < NY; y++) {
+    for (let x = 0; x < NX; x++) {
+      let i = x + y * NX;
+      wallMask[i] = (y === 0 || y === NY-1) ? 1 : 0;
+    }
+  }
+
+  // Initial obstacle (circle) near left center
+  shapeType = 'circle';
+  obsX = NX * 0.25;
+  obsY = NY * 0.5;
+  obsRx = 6;
+  obsRy = 6;
+  obsAngle = 0;
+
+  updateObstacleMask(); // fills obstacleMask & solidMask and sets distributions for freed cells
+
+  // Initialize distributions with uniform flow u=(U0,0) in fluid
+  for (let y = 0; y < NY; y++) {
+    for (let x = 0; x < NX; x++) {
+      let i = x + y * NX;
+      if (solidMask[i]) {
+        rho[i] = 1.0;
+        ux[i] = 0;
+        uy[i] = 0;
+      } else {
+        rho[i] = 1.0;
+        ux[i] = U0;
+        uy[i] = 0;
+      }
+      setEquilibriumAtCell(i, rho[i], ux[i], uy[i], f);
+    }
+  }
+}
+
+function computeCellSize() {
+  cellW = width / NX;
+  cellH = height / NY;
+}
+
+///////////////////////
+// LBM Core Methods  //
+///////////////////////
+
+function setEquilibriumAtCell(i, r, uX, uY, arrF) {
+  let u2 = uX*uX + uY*uY;
+  for (let q = 0; q < 9; q++) {
+    let cu = 3 * (ex[q]*uX + ey[q]*uY);
+    arrF[q][i] = w[q] * r * (1 + cu + 0.5*cu*cu - 1.5*u2);
+  }
+}
+
+function computeMacros() {
+  for (let i = 0; i < N; i++) {
+    if (solidMask[i]) {
+      rho[i] = 0;
+      ux[i] = 0;
+      uy[i] = 0;
+      continue;
+    }
+    let sum = 0;
+    let vx = 0;
+    let vy = 0;
+    for (let q = 0; q < 9; q++) {
+      let fi = f[q][i];
+      sum += fi;
+      vx += fi * ex[q];
+      vy += fi * ey[q];
+    }
+    rho[i] = sum;
+    if (sum > 0) {
+      ux[i] = vx / sum;
+      uy[i] = vy / sum;
+    } else {
+      ux[i] = 0;
+      uy[i] = 0;
+    }
+  }
+}
+
+function collide() {
+  const omega = 1.0 / tau; // relaxation rate
+  for (let i = 0; i < N; i++) {
+    if (solidMask[i]) continue;
+    let r = rho[i];
+    let uX = ux[i];
+    let uY = uy[i];
+    let u2 = uX*uX + uY*uY;
+    for (let q = 0; q < 9; q++) {
+      let fi = f[q][i];
+      let cu = 3 * (ex[q]*uX + ey[q]*uY);
+      let feq = w[q] * r * (1 + cu + 0.5*cu*cu - 1.5*u2);
+      f[q][i] = fi - omega * (fi - feq);
+    }
+  }
+}
+
+function stream() {
+  // clear temp
+  for (let q = 0; q < 9; q++) {
+    fTmp[q].fill(0);
+  }
+
+  for (let y = 0; y < NY; y++) {
+    for (let x = 0; x < NX; x++) {
+      let i = x + y * NX;
+      for (let q = 0; q < 9; q++) {
+        let fi = f[q][i];
+        if (fi === 0) continue;
+
+        let x2 = x + ex[q];
+        let y2 = y + ey[q];
+
+        // Periodic in x
+        if (x2 < 0) x2 = NX - 1;
+        if (x2 >= NX) x2 = 0;
+
+        // Top/bottom or solid obstacle bounce-back
+        if (y2 < 0 || y2 >= NY) {
+          // bounce back at outside top/bottom
+          let qOpp = opp[q];
+          fTmp[qOpp][i] += fi;
+        } else {
+          let j = x2 + y2 * NX;
+          if (solidMask[j]) {
+            // bounce-back from solid cell
+            let qOpp = opp[q];
+            fTmp[qOpp][i] += fi;
+          } else {
+            fTmp[q][j] += fi;
+          }
+        }
+      }
+    }
+  }
+
+  // Swap
+  let temp = f;
+  f = fTmp;
+  fTmp = temp;
+}
+
+function applyInlet() {
+  // Force uniform inflow region near left edge (x=0..2)
+  for (let y = 1; y < NY-1; y++) {
+    for (let x = 0; x <= 2; x++) {
+      let i = x + y*NX;
+      if (solidMask[i]) continue;
+      let r = 1.0;
+      let uX = U0;
+      let uY = 0;
+      setEquilibriumAtCell(i, r, uX, uY, f);
+      rho[i] = r;
+      ux[i] = uX;
+      uy[i] = uY;
+    }
+  }
+}
+
+function lbmStep() {
+  computeMacros();  // from f
+  collide();
+  stream();
+  applyInlet();     // maintain inflow
+}
+
+/////////////////////////////
+// Obstacle Representation //
+/////////////////////////////
+
+function updateObstacleMask() {
+  // keep previous for detecting newly-fluid cells
+  obstacleMaskPrev.set(obstacleMask);
+  obstacleMask.fill(0);
+
+  // mark obstacle cells
+  let cosA = Math.cos(obsAngle);
+  let sinA = Math.sin(obsAngle);
+
+  for (let y = 1; y < NY-1; y++) {
+    for (let x = 0; x < NX; x++) {
+      let i = x + y*NX;
+      // cell center in lattice space
+      let dx = (x + 0.5) - obsX;
+      let dy = (y + 0.5) - obsY;
+
+      // rotate into obstacle's local frame
+      let xr =  dx * cosA + dy * sinA;
+      let yr = -dx * sinA + dy * cosA;
+
+      let inside = false;
+
+      if (shapeType === 'circle') {
+        inside = (dx*dx + dy*dy <= obsRx * obsRx);
+      } else if (shapeType === 'ellipse') {
+        let v = (xr*xr)/(obsRx*obsRx) + (yr*yr)/(obsRy*obsRy);
+        inside = (v <= 1.0);
+      } else if (shapeType === 'rect') {
+        inside = (Math.abs(xr) <= obsRx && Math.abs(yr) <= obsRy);
+      }
+
+      obstacleMask[i] = inside ? 1 : 0;
+    }
+  }
+
+  // update combined solid mask and reset newly-fluid cells
+  for (let i = 0; i < N; i++) {
+    const wasObs = obstacleMaskPrev[i];
+    const nowObs = obstacleMask[i];
+    const isWall = wallMask[i];
+    solidMask[i] = isWall || nowObs;
+
+    // if a cell just became fluid (obstacle moved away), reset it to ambient flow
+    if (!nowObs && wasObs && !isWall) {
+      rho[i] = 1.0;
+      ux[i] = U0;
+      uy[i] = 0;
+      setEquilibriumAtCell(i, rho[i], ux[i], uy[i], f);
+    }
+  }
+}
+
+//////////////////////
+// Vorticity / Draw //
+//////////////////////
+
+function computeVorticity() {
+  vorticity.fill(0);
+  for (let y = 1; y < NY-1; y++) {
+    for (let x = 1; x < NX-1; x++) {
+      let i = x + y*NX;
+      if (solidMask[i]) {
+        vorticity[i] = 0;
+        continue;
+      }
+      let uxUp   = ux[x + (y+1)*NX];
+      let uxDown = ux[x + (y-1)*NX];
+      let uyRight= uy[(x+1) + y*NX];
+      let uyLeft = uy[(x-1) + y*NX];
+
+      let dvy_dx = (uyRight - uyLeft) * 0.5;
+      let dvx_dy = (uxUp    - uxDown) * 0.5;
+      vorticity[i] = dvy_dx - dvx_dy; // ωz
+    }
+  }
+}
+
+function drawFlowField() {
+  noStroke();
+  computeVorticity();
+
+  // Color field by vorticity
+  for (let y = 1; y < NY-1; y++) {
+    for (let x = 0; x < NX; x++) {
+      let i = x + y*NX;
+
+      let px = x * cellW;
+      let py = y * cellH;
+
+      if (wallMask[i]) {
+        fill(40);
+      } else if (obstacleMask[i]) {
+        fill(230);
+      } else {
+        let w = vorticity[i];
+        // Map vorticity to colors: negative -> blue, positive -> red
+        let m = Math.tanh(w * 3); // keep in [-1,1] with smoother scaling
+        let r = 128 + 127 * m;
+        let b = 128 - 127 * m;
+        let g = 70;
+
+        fill(r, g, b);
+      }
+      rect(px, py, cellW+1, cellH+1);
+    }
+  }
+
+  // Velocity vectors
+  if (showVectors) {
+    stroke(255, 200);
+    strokeWeight(1);
+    for (let y = 2; y < NY-2; y += 4) {
+      for (let x = 1; x < NX-1; x += 4) {
+        let i = x + y*NX;
+        if (solidMask[i]) continue;
+
+        let uX = ux[i];
+        let uY = uy[i];
+        let mag = Math.sqrt(uX*uX + uY*uY);
+        if (mag < 0.001) continue;
+
+        let px = (x + 0.5) * cellW;
+        let py = (y + 0.5) * cellH;
+        let scale = 12; // arrow length scaling
+        let ax = px + uX * scale;
+        let ay = py + uY * scale;
+
+        line(px, py, ax, ay);
+      }
+    }
+  }
+}
+
+function drawHUD() {
+  noStroke();
+  fill(255);
+  textSize(12);
+  textAlign(LEFT, TOP);
+
+  text(
+    "Von Kármán Vortex Street (Lattice Boltzmann)\n" +
+    "Drag: Move obstacle | Mouse wheel: Size\n" +
+    "1: Circle, 2: Ellipse, 3: Rectangle\n" +
+    "A/D: Rotate | Q/E: Stretch X | W/S: Stretch Y\n" +
+    "V: Toggle vectors | R: Reset\n" +
+    "Shape: " + shapeType +
+    " | Angle: " + degrees(obsAngle).toFixed(0) + "°",
+    10, 10
+  );
+}
+
+/////////////////////////
+// p5 Main Loop       //
+/////////////////////////
+
+function draw() {
+  background(5);
+
+  // Keep obstacle inside valid region
+  obsX = constrain(obsX, 5, NX - 5);
+  obsY = constrain(obsY, 5, NY - 5);
+
+  // Update obstacle mask
+  updateObstacleMask();
+
+  // Advance simulation (a few steps per frame)
+  for (let s = 0; s < 3; s++) {
+    lbmStep();
+  }
+
+  // Recompute macroscopic variables for rendering
+  computeMacros();
+
+  // Draw flow
+  drawFlowField();
+  drawHUD();
+}
+
+//////////////////////
+// Interaction      //
+//////////////////////
+
+function mousePressed() {
+  dragging = true;
+  moveObstacleToMouse();
+}
+
+function mouseDragged() {
+  if (dragging) {
+    moveObstacleToMouse();
+  }
+}
+
+function mouseReleased() {
+  dragging = false;
+}
+
+function moveObstacleToMouse() {
+  // Map mouse to lattice coordinates
+  let x = mouseX / cellW;
+  let y = mouseY / cellH;
+  obsX = constrain(x, 3, NX - 3);
+  obsY = constrain(y, 3, NY - 3);
+}
+
+function mouseWheel(event) {
+  let factor = event.delta > 0 ? 0.9 : 1.1;
+  obsRx *= factor;
+  obsRy *= factor;
+  obsRx = constrain(obsRx, 2, NX*0.2);
+  obsRy = constrain(obsRy, 2, NY*0.4);
+  return false; // prevent page scroll
+}
+
+function keyPressed() {
+  if (key === '1') {
+    shapeType = 'circle';
+    obsRy = obsRx; // enforce circle
+  } else if (key === '2') {
+    shapeType = 'ellipse';
+  } else if (key === '3') {
+    shapeType = 'rect';
+  } else if (key === 'A' || key === 'a') {
+    obsAngle -= 0.1;
+  } else if (key === 'D' || key === 'd') {
+    obsAngle += 0.1;
+  } else if (key === 'W' || key === 'w') {
+    obsRy *= 1.1;
+    obsRy = constrain(obsRy, 2, NY*0.4);
+  } else if (key === 'S' || key === 's') {
+    obsRy *= 0.9;
+    obsRy = constrain(obsRy, 2, NY*0.4);
+  } else if (key === 'Q' || key === 'q') {
+    obsRx *= 1.1;
+    obsRx = constrain(obsRx, 2, NX*0.2);
+    if (shapeType === 'circle') obsRy = obsRx;
+  } else if (key === 'E' || key === 'e') {
+    obsRx *= 0.9;
+    obsRx = constrain(obsRx, 2, NX*0.2);
+    if (shapeType === 'circle') obsRy = obsRx;
+  } else if (key === 'V' || key === 'v') {
+    showVectors = !showVectors;
+  } else if (key === 'R' || key === 'r') {
+    initSimulation();
+  }
+}
+
+// Disable context menu on right-click (optional)
+document.addEventListener('contextmenu', e => e.preventDefault());
+</script>
+</body>
+</html>

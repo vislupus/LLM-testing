@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>2D Heat Diffusion Simulation (p5.js)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: #111;
+            color: #eee;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            overflow: hidden;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 260px;
+            background: rgba(0,0,0,0.8);
+            border-radius: 8px;
+            padding: 12px 14px;
+            border: 1px solid #444;
+            font-size: 12px;
+            user-select: none;
+            z-index: 10;
+        }
+        #controls h2 {
+            margin: 0 0 6px 0;
+            font-size: 16px;
+            color: #ffcc66;
+        }
+        .section {
+            margin-top: 8px;
+            padding-top: 6px;
+            border-top: 1px solid #333;
+        }
+        label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+            margin-bottom: 2px;
+        }
+        input[type=range] {
+            width: 100%;
+            cursor: pointer;
+        }
+        select {
+            width: 100%;
+            padding: 2px;
+            background: #222;
+            color: #eee;
+            border-radius: 3px;
+            border: 1px solid #555;
+            font-size: 11px;
+        }
+        button {
+            width: 100%;
+            margin-top: 5px;
+            padding: 6px;
+            background: #333;
+            border: 1px solid #555;
+            color: #eee;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        button:hover {
+            background: #555;
+        }
+        .small {
+            font-size: 10px;
+            color: #aaa;
+            margin-top: 4px;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <h2>Heat Diffusion</h2>
+    <div class="small">
+        Left-click: add heat<br>
+        Press C to toggle cooling mode (currently: <span id="coolModeLabel">HEAT</span>)<br>
+        B: toggle boundary type<br>
+        M: cycle materials<br>
+        R: reset field
+    </div>
+
+    <div class="section">
+        <label>Conductivity α <span id="alphaVal">0.20</span></label>
+        <input type="range" id="alphaSlider" min="0.02" max="1.0" step="0.02" value="0.2">
+
+        <label>Steps / frame <span id="stepsVal">3</span></label>
+        <input type="range" id="stepsSlider" min="1" max="10" step="1" value="3">
+
+        <label>Grid resolution (short side) <span id="resVal">80</span></label>
+        <input type="range" id="resSlider" min="40" max="160" step="10" value="80">
+
+        <label>Convection strength <span id="convVal">0.00</span></label>
+        <input type="range" id="convSlider" min="0" max="1" step="0.05" value="0">
+    </div>
+
+    <div class="section">
+        <label>Boundary</label>
+        <select id="boundarySelect">
+            <option value="insulated">Insulated (Neumann)</option>
+            <option value="fixed">Fixed T = ambient</option>
+        </select>
+    </div>
+
+    <div class="section">
+        <label>Material preset</label>
+        <select id="materialSelect">
+            <option value="uniform">Uniform</option>
+            <option value="checker">Checkerboard (metal / insulator)</option>
+            <option value="barrier">Hot plate core</option>
+        </select>
+        <button id="resetBtn">Reset Field</button>
+        <div class="small">
+            Stats: <span id="statsLabel">min 0.00, max 0.00</span>
+        </div>
+    </div>
+</div>
+
+<script>
+/*
+    2D Heat Diffusion in p5.js
+    Solves ∂T/∂t = α∇²T + (optional convection term) on a grid.
+
+    - Explicit finite-difference method
+    - Varying conductivity via material map
+    - Boundary conditions:
+        * Insulated edges (Neumann ∂T/∂n = 0)
+        * Fixed ambient temperature at borders (Dirichlet)
+    - Interactive:
+        * Click to add heat (cooling mode toggled by 'C')
+        * Adjust α (conductivity), steps per frame, resolution, convection
+        * Cycle materials, toggle boundary type
+*/
+
+let gridW, gridH;
+let T, Tnext, alphaMap;
+const ambientT = 0.0;
+
+let alphaBase = 0.2;     // Global conductivity scale
+let dt = 0.05;           // Time step (fixed; chosen for stability)
+let stepsPerFrame = 3;   // Simulation steps per draw()
+let convStrength = 0.0;  // 0..1
+let boundaryMode = 'insulated'; // or 'fixed'
+let materialPreset = 'uniform';
+
+let cellW, cellH;
+let coolingMode = false;
+
+let coldColor, midColor, hotColor;
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    colorMode(RGB);
+
+    coldColor = color(0, 0, 160);
+    midColor  = color(0, 255, 255);
+    hotColor  = color(255, 0, 0);
+
+    setupUI();
+    initGrid();
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    initGrid(); // Recreate grid for new aspect ratio
+}
+
+function setupUI() {
+    const alphaSlider = select('#alphaSlider');
+    const stepsSlider = select('#stepsSlider');
+    const resSlider   = select('#resSlider');
+    const convSlider  = select('#convSlider');
+    const boundarySel = select('#boundarySelect');
+    const materialSel = select('#materialSelect');
+    const resetBtn    = select('#resetBtn');
+
+    alphaSlider.input(() => {
+        alphaBase = parseFloat(alphaSlider.value());
+        select('#alphaVal').html(alphaBase.toFixed(2));
+    });
+
+    stepsSlider.input(() => {
+        stepsPerFrame = parseInt(stepsSlider.value());
+        select('#stepsVal').html(stepsPerFrame);
+    });
+
+    resSlider.input(() => {
+        const val = parseInt(resSlider.value());
+        select('#resVal').html(val);
+        initGrid(); // Rebuild with new resolution
+    });
+
+    convSlider.input(() => {
+        convStrength = parseFloat(convSlider.value());
+        select('#convVal').html(convStrength.toFixed(2));
+    });
+
+    boundarySel.changed(() => {
+        boundaryMode = boundarySel.value();
+    });
+
+    materialSel.changed(() => {
+        materialPreset = materialSel.value();
+        buildMaterialMap();
+    });
+
+    resetBtn.mousePressed(() => {
+        resetField();
+    });
+}
+
+function initGrid() {
+    // Choose grid size based on resolution slider and canvas aspect
+    const res = parseInt(select('#resSlider').value());
+    const aspect = width / height;
+    if (aspect >= 1) {
+        gridH = res;
+        gridW = Math.round(res * aspect);
+    } else {
+        gridW = res;
+        gridH = Math.round(res / aspect);
+    }
+
+    cellW = width  / gridW;
+    cellH = height / gridH;
+
+    const size = gridW * gridH;
+    T      = new Float32Array(size);
+    Tnext  = new Float32Array(size);
+    alphaMap = new Float32Array(size);
+
+    resetField();
+    buildMaterialMap();
+}
+
+function resetField() {
+    T.fill(ambientT);
+    Tnext.fill(ambientT);
+}
+
+// Build α(x,y) multiplier map based on preset
+function buildMaterialMap() {
+    for (let j = 0; j < gridH; j++) {
+        for (let i = 0; i < gridW; i++) {
+            let idx = i + j * gridW;
+            if (materialPreset === 'uniform') {
+                alphaMap[idx] = 1.0;
+            } else if (materialPreset === 'checker') {
+                // Alternate squares
+                const v = ((i >> 3) + (j >> 3)) % 2;
+                alphaMap[idx] = v === 0 ? 0.5 : 1.8;
+            } else if (materialPreset === 'barrier') {
+                // Hot plate core: high conductivity center patch
+                const cx = gridW / 2;
+                const cy = gridH / 2;
+                const dx = Math.abs(i - cx);
+                const dy = Math.abs(j - cy);
+                if (dx < gridW * 0.1 && dy < gridH * 0.1) {
+                    alphaMap[idx] = 2.0;
+                } else {
+                    alphaMap[idx] = 0.8;
+                }
+            } else {
+                alphaMap[idx] = 1.0;
+            }
+        }
+    }
+}
+
+function draw() {
+    // Advance simulation
+    for (let s = 0; s < stepsPerFrame; s++) {
+        stepHeat();
+    }
+
+    // Draw heatmap
+    background(0);
+    renderField();
+
+    // Small overlay text
+    noStroke();
+    fill(255);
+    textSize(11);
+    textAlign(LEFT, BOTTOM);
+    text('Boundary: ' + (boundaryMode === 'insulated' ? 'Insulated' : 'Fixed T=0') +
+         ' | Material: ' + materialPreset +
+         ' | Cooling mode: ' + (coolingMode ? 'COOL' : 'HEAT'),
+         10, height - 8);
+}
+
+function stepHeat() {
+    const w = gridW;
+    const h = gridH;
+    const aBase = alphaBase;
+    const v = convStrength * 0.5; // convection velocity (to the right)
+
+    // Update interior cells
+    for (let j = 1; j < h - 1; j++) {
+        let rowIndex = j * w;
+        for (let i = 1; i < w - 1; i++) {
+            const idx = rowIndex + i;
+            const T0  = T[idx];
+
+            const idxL = idx - 1;
+            const idxR = idx + 1;
+            const idxU = idx - w;
+            const idxD = idx + w;
+
+            const lap = T[idxL] + T[idxR] + T[idxU] + T[idxD] - 4.0 * T0;
+            const alphaLocal = aBase * alphaMap[idx];
+
+            let dConv = 0.0;
+            if (v !== 0.0) {
+                // 1D upwind advection to the right
+                if (v > 0) {
+                    dConv += -v * (T0 - T[idxL]);
+                } else {
+                    dConv += -v * (T[idxR] - T0);
+                }
+            }
+
+            Tnext[idx] = T0 + dt * (alphaLocal * lap + dConv);
+        }
+    }
+
+    // Apply boundary conditions to Tnext
+    applyBoundaryConditions(Tnext);
+
+    // Swap buffers
+    const tmp = T;
+    T = Tnext;
+    Tnext = tmp;
+}
+
+function applyBoundaryConditions(arr) {
+    const w = gridW;
+    const h = gridH;
+
+    if (boundaryMode === 'fixed') {
+        // Fixed temperature at edges
+        for (let i = 0; i < w; i++) {
+            arr[i] = ambientT;                 // top
+            arr[i + (h - 1) * w] = ambientT;   // bottom
+        }
+        for (let j = 0; j < h; j++) {
+            arr[j * w] = ambientT;             // left
+            arr[(w - 1) + j * w] = ambientT;   // right
+        }
+    } else {
+        // Insulated: zero-flux => copy neighbor
+        // Top/bottom
+        for (let i = 0; i < w; i++) {
+            arr[i] = arr[i + w];                   // top from row 1
+            arr[i + (h - 1) * w] = arr[i + (h - 2) * w]; // bottom from row h-2
+        }
+        // Left/right
+        for (let j = 0; j < h; j++) {
+            const idxLeft = j * w;
+            const idxRight = idxLeft + (w - 1);
+            arr[idxLeft] = arr[idxLeft + 1];
+            arr[idxRight] = arr[idxRight - 1];
+        }
+    }
+
+    // Corners can be averaged for smoothness (optional)
+    const topLeft     = 0;
+    const topRight    = w - 1;
+    const bottomLeft  = (h - 1) * w;
+    const bottomRight = bottomLeft + (w - 1);
+
+    arr[topLeft]     = 0.5 * (arr[topLeft + 1] + arr[topLeft + w]);
+    arr[topRight]    = 0.5 * (arr[topRight - 1] + arr[topRight + w]);
+    arr[bottomLeft]  = 0.5 * (arr[bottomLeft + 1] + arr[bottomLeft - w]);
+    arr[bottomRight] = 0.5 * (arr[bottomRight - 1] + arr[bottomRight - w]);
+}
+
+function renderField() {
+    const w = gridW;
+    const h = gridH;
+
+    // Find min/max temperatures for dynamic color scale
+    let minT = Infinity;
+    let maxT = -Infinity;
+    for (let i = 0; i < T.length; i++) {
+        const v = T[i];
+        if (v < minT) minT = v;
+        if (v > maxT) maxT = v;
+    }
+    if (!isFinite(minT)) { minT = 0; maxT = 1; }
+
+    // Slight padding to avoid degenerate mapping
+    if (Math.abs(maxT - minT) < 1e-3) {
+        maxT = minT + 1e-3;
+    }
+
+    // Show stats
+    select('#statsLabel').html(`min ${minT.toFixed(2)}, max ${maxT.toFixed(2)}`);
+
+    noStroke();
+    for (let j = 0; j < h; j++) {
+        const y = j * cellH;
+        const rowIndex = j * w;
+        for (let i = 0; i < w; i++) {
+            const idx = rowIndex + i;
+            const x = i * cellW;
+            const val = T[idx];
+
+            const tNorm = constrain((val - minT) / (maxT - minT), 0, 1);
+            let c;
+            if (tNorm < 0.5) {
+                c = lerpColor(coldColor, midColor, tNorm * 2);
+            } else {
+                c = lerpColor(midColor, hotColor, (tNorm - 0.5) * 2);
+            }
+            fill(c);
+            rect(x, y, cellW + 1, cellH + 1);
+        }
+    }
+}
+
+// Convert mouse position to grid index and add heat
+function mouseDragged() {
+    handleMouseHeat();
+}
+
+function mousePressed() {
+    handleMouseHeat();
+}
+
+function handleMouseHeat() {
+    // Ignore if over UI panel
+    const controlsRect = document.getElementById('controls').getBoundingClientRect();
+    if (mouseX >= controlsRect.left && mouseX <= controlsRect.right &&
+        mouseY >= controlsRect.top  && mouseY <= controlsRect.bottom) {
+        return;
+    }
+
+    if (mouseX < 0 || mouseX >= width || mouseY < 0 || mouseY >= height) return;
+
+    const i = Math.floor(mouseX / cellW);
+    const j = Math.floor(mouseY / cellH);
+    const radius = 2; // brush radius in cells
+    const delta = coolingMode ? -80 : 80; // amount of heat per click
+
+    for (let dj = -radius; dj <= radius; dj++) {
+        const y = j + dj;
+        if (y < 0 || y >= gridH) continue;
+        for (let di = -radius; di <= radius; di++) {
+            const x = i + di;
+            if (x < 0 || x >= gridW) continue;
+            const dist2 = di * di + dj * dj;
+            if (dist2 <= radius * radius) {
+                const idx = x + y * gridW;
+                T[idx] += delta * (1 - dist2 / (radius * radius + 0.01));
+            }
+        }
+    }
+}
+
+// Keyboard controls
+function keyPressed() {
+    if (key === 'c' || key === 'C') {
+        coolingMode = !coolingMode;
+        select('#coolModeLabel').html(coolingMode ? 'COOL' : 'HEAT');
+    } else if (key === 'b' || key === 'B') {
+        boundaryMode = boundaryMode === 'insulated' ? 'fixed' : 'insulated';
+        select('#boundarySelect').value(boundaryMode);
+    } else if (key === 'm' || key === 'M') {
+        // Cycle material presets
+        if (materialPreset === 'uniform') materialPreset = 'checker';
+        else if (materialPreset === 'checker') materialPreset = 'barrier';
+        else materialPreset = 'uniform';
+        select('#materialSelect').value(materialPreset);
+        buildMaterialMap();
+    } else if (key === 'r' || key === 'R') {
+        resetField();
+    }
+}
+</script>
+</body>
+</html>

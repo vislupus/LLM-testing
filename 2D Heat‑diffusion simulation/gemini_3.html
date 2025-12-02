@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive 2D Heat Diffusion</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            color: #eee;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            image-rendering: pixelated; /* Sharp look for the grid */
+        }
+        #ui-container {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            width: 280px;
+            background: rgba(0, 0, 0, 0.85);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            pointer-events: auto;
+            user-select: none;
+        }
+        h2 { margin: 0 0 10px 0; font-size: 18px; color: #ff5722; }
+        .control-group { margin-bottom: 12px; }
+        label { display: flex; justify-content: space-between; font-size: 12px; color: #ccc; }
+        span.val { color: #ff5722; font-weight: bold; }
+        input[type=range] { width: 100%; margin-top: 5px; cursor: pointer; }
+        .instructions { font-size: 11px; color: #888; margin-top: 10px; line-height: 1.4; border-top: 1px solid #333; padding-top: 8px; }
+        button {
+            width: 100%;
+            padding: 6px;
+            background: #333;
+            border: 1px solid #555;
+            color: white;
+            cursor: pointer;
+            border-radius: 4px;
+            margin-top: 5px;
+            font-size: 12px;
+        }
+        button:hover { background: #444; border-color: #777; }
+        button.active { background: #ff5722; border-color: #ff5722; color: white; }
+        .row { display: flex; gap: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="ui-container">
+    <h2>Heat Diffusion Solver</h2>
+    
+    <div class="control-group">
+        <label>Simulation Speed <span id="val-speed" class="val">10</span></label>
+        <input type="range" id="sl-speed" min="0" max="20" value="10">
+    </div>
+
+    <div class="control-group">
+        <label>Global Conductivity <span id="val-cond" class="val">0.2</span></label>
+        <input type="range" id="sl-cond" min="0.01" max="0.25" step="0.01" value="0.2">
+    </div>
+
+    <div class="control-group">
+        <label>Grid Resolution <span id="val-res" class="val">100</span></label>
+        <input type="range" id="sl-res" min="50" max="300" step="10" value="100">
+    </div>
+
+    <div class="control-group">
+        <label>Mode: <span id="val-mode" class="val">Add Heat</span></label>
+        <div class="row">
+            <button id="btn-heat" class="active">Heat</button>
+            <button id="btn-cold">Cool</button>
+            <button id="btn-wall">Wall (Insulator)</button>
+        </div>
+    </div>
+
+    <button id="btn-reset">Reset Grid</button>
+
+    <div class="instructions">
+        <strong>Left Click + Drag:</strong> Apply selected tool<br>
+        <strong>Right Click:</strong> Erase / Reset cell to ambient<br>
+        <strong>Boundary:</strong> Edges are insulated.
+    </div>
+</div>
+
+<script>
+    /**
+     * HEAT EQUATION SIMULATION
+     * Formula: dT/dt = alpha * Laplacian(T)
+     * Method: Finite Difference (Explicit)
+     * 
+     * We use two buffers (current and next) to calculate the state.
+     * We also use a 'material' buffer to store varying conductivity (alpha).
+     */
+
+    let gridW = 100;
+    let gridH = 100;
+    
+    // Physics State
+    let tempGrid;       // Float32Array: Temperature (0.0 to 1.0+)
+    let nextTempGrid;   // Float32Array: Next Step Buffer
+    let materialGrid;   // Float32Array: Conductivity multiplier (0.0 to 1.0)
+    
+    // Visuals
+    let heatImg;        // p5.Image for rendering
+    
+    // Parameters
+    let stepsPerFrame = 10;
+    let globalDiff = 0.2; // Alpha base value
+    let toolMode = 'heat'; // heat, cold, wall
+
+    // UI Elements
+    let slSpeed, slCond, slRes;
+    let valSpeed, valCond, valRes, valMode;
+
+    function setup() {
+        // Create canvas filling the window
+        let cnv = createCanvas(windowWidth, windowHeight);
+        cnv.style('display', 'block');
+        noSmooth(); // Keep pixels sharp
+
+        // Initialize UI references
+        slSpeed = select('#sl-speed');
+        slCond = select('#sl-cond');
+        slRes = select('#sl-res');
+        valSpeed = select('#val-speed');
+        valCond = select('#val-cond');
+        valRes = select('#val-res');
+        valMode = select('#val-mode');
+
+        // UI Event Listeners
+        slSpeed.input(() => { stepsPerFrame = parseInt(slSpeed.value()); valSpeed.html(stepsPerFrame); });
+        slCond.input(() => { globalDiff = parseFloat(slCond.value()); valCond.html(globalDiff); });
+        
+        slRes.changed(() => { 
+            gridW = parseInt(slRes.value()); 
+            // Calculate aspect ratio to keep grid cells square-ish
+            gridH = Math.floor(gridW * (height / width));
+            valRes.html(gridW); 
+            initSimulation(); 
+        });
+
+        select('#btn-heat').mousePressed(() => setTool('heat'));
+        select('#btn-cold').mousePressed(() => setTool('cold'));
+        select('#btn-wall').mousePressed(() => setTool('wall'));
+        select('#btn-reset').mousePressed(initSimulation);
+
+        initSimulation();
+    }
+
+    function windowResized() {
+        resizeCanvas(windowWidth, windowHeight);
+        // Re-calc grid height to match aspect ratio
+        gridH = Math.floor(gridW * (height / width));
+        initSimulation();
+    }
+
+    function setTool(mode) {
+        toolMode = mode;
+        valMode.html(mode.charAt(0).toUpperCase() + mode.slice(1));
+        
+        select('#btn-heat').removeClass('active');
+        select('#btn-cold').removeClass('active');
+        select('#btn-wall').removeClass('active');
+        select('#btn-' + mode).addClass('active');
+    }
+
+    function initSimulation() {
+        // Initialize Arrays
+        let size = gridW * gridH;
+        tempGrid = new Float32Array(size).fill(0.0);
+        nextTempGrid = new Float32Array(size).fill(0.0);
+        materialGrid = new Float32Array(size).fill(1.0); // 1.0 = standard conductor
+
+        // Create p5 image buffer
+        heatImg = createImage(gridW, gridH);
+    }
+
+    function draw() {
+        background(20);
+
+        // 1. Interaction
+        handleInput();
+
+        // 2. Physics Update (Sub-stepping for speed & stability)
+        // CFL Condition: alpha * dt / dx^2 < 0.25. 
+        // Since dx=1, alpha < 0.25. Our max slider is 0.25.
+        for (let k = 0; k < stepsPerFrame; k++) {
+            solveHeatEquation();
+            
+            // Swap buffers
+            let temp = tempGrid;
+            tempGrid = nextTempGrid;
+            nextTempGrid = temp;
+        }
+
+        // 3. Rendering
+        renderHeatmap();
+        
+        // Draw the image scaled to window size
+        image(heatImg, 0, 0, width, height);
+    }
+
+    function handleInput() {
+        if (mouseIsPressed) {
+            // Map mouse to grid coordinates
+            let gx = Math.floor(map(mouseX, 0, width, 0, gridW));
+            let gy = Math.floor(map(mouseY, 0, height, 0, gridH));
+            
+            // Brush size
+            let r = Math.floor(gridW * 0.03); 
+
+            // Identify Mouse Button (LEFT or RIGHT)
+            let isRightClick = (mouseButton === RIGHT) || (keyIsPressed && keyCode === SHIFT);
+
+            for (let dy = -r; dy <= r; dy++) {
+                for (let dx = -r; dx <= r; dx++) {
+                    if (dx*dx + dy*dy > r*r) continue; // Circle brush
+
+                    let x = gx + dx;
+                    let y = gy + dy;
+
+                    // Boundary check
+                    if (x >= 0 && x < gridW && y >= 0 && y < gridH) {
+                        let idx = x + y * gridW;
+
+                        if (isRightClick) {
+                            // Eraser / Reset
+                            tempGrid[idx] = 0;
+                            materialGrid[idx] = 1.0;
+                        } else {
+                            // Apply Tool
+                            if (toolMode === 'heat') {
+                                tempGrid[idx] = 1.0; // Set to max temp
+                            } else if (toolMode === 'cold') {
+                                tempGrid[idx] = 0.0; // Set to min temp
+                            } else if (toolMode === 'wall') {
+                                materialGrid[idx] = 0.0; // Zero conductivity
+                                tempGrid[idx] = 0.0; // Walls usually start neutral/cold
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The Finite Difference Solver
+    function solveHeatEquation() {
+        // We iterate through the grid, avoiding the absolute edges (Insulated Boundary Logic)
+        // For interior points:
+        for (let y = 0; y < gridH; y++) {
+            for (let x = 0; x < gridW; x++) {
+                let i = x + y * gridW;
+
+                // Get Material Conductivity
+                // If materialGrid[i] is 0 (wall), conductivity is 0, temp won't change via diffusion
+                let alpha = globalDiff * materialGrid[i];
+
+                if (alpha <= 0) {
+                    nextTempGrid[i] = tempGrid[i]; // Walls keep their temp (or stay 0)
+                    continue;
+                }
+
+                let u = tempGrid[i];
+
+                // Neighbor lookup with clamping for Neumann (Insulated) boundaries
+                // If we are at an edge, use 'u' (self) as the neighbor value -> gradient is 0 -> no flow
+                let u_left  = (x > 0) ? tempGrid[i - 1] : u;
+                let u_right = (x < gridW - 1) ? tempGrid[i + 1] : u;
+                let u_up    = (y > 0) ? tempGrid[i - gridW] : u;
+                let u_down  = (y < gridH - 1) ? tempGrid[i + gridW] : u;
+
+                // Laplacian (2D central difference)
+                // ∇²T ≈ T_left + T_right + T_up + T_down - 4*T_center
+                let laplacian = u_left + u_right + u_up + u_down - 4.0 * u;
+
+                // Explicit Euler step: T_new = T_old + alpha * Laplacian
+                nextTempGrid[i] = u + alpha * laplacian;
+                
+                // Optional: Simple cooling/dissipation term to prevent saturation over infinite time
+                // nextTempGrid[i] *= 0.999; 
+            }
+        }
+    }
+
+    function renderHeatmap() {
+        heatImg.loadPixels();
+        
+        // Pre-calculate colors for gradients to save per-pixel math
+        // We map 0.0 - 1.0 to a spectrum (Blue -> Cyan -> Green -> Yellow -> Red -> White)
+        
+        for (let i = 0; i < tempGrid.length; i++) {
+            let t = tempGrid[i];
+            let m = materialGrid[i];
+            let pixIdx = i * 4;
+
+            if (m < 0.1) {
+                // Render Walls (Dark Gray)
+                heatImg.pixels[pixIdx] = 60;
+                heatImg.pixels[pixIdx+1] = 60;
+                heatImg.pixels[pixIdx+2] = 60;
+                heatImg.pixels[pixIdx+3] = 255;
+            } else {
+                // Render Heat
+                // Clamp t to 0-1 for color mapping (though t can conceptually go higher)
+                let val = t > 1.0 ? 1.0 : (t < 0.0 ? 0.0 : t);
+                
+                let r, g, b;
+
+                // Simple Thermal Gradient Function
+                if (val < 0.25) {
+                    // Blue to Cyan
+                    let sub = val / 0.25;
+                    r = 0; g = Math.floor(sub * 255); b = 255;
+                } else if (val < 0.5) {
+                    // Cyan to Green
+                    let sub = (val - 0.25) / 0.25;
+                    r = 0; g = 255; b = Math.floor((1 - sub) * 255);
+                } else if (val < 0.75) {
+                    // Green to Yellow
+                    let sub = (val - 0.5) / 0.25;
+                    r = Math.floor(sub * 255); g = 255; b = 0;
+                } else {
+                    // Yellow to Red
+                    let sub = (val - 0.75) / 0.25;
+                    r = 255; g = Math.floor((1 - sub) * 255); b = 0;
+                }
+
+                // Whiten if very hot (>1.0, usually happens with continuous adding)
+                if (t > 1.0) {
+                    let burn = Math.min((t - 1.0) * 100, 255);
+                    r += burn; g += burn; b += burn;
+                }
+
+                heatImg.pixels[pixIdx] = r;
+                heatImg.pixels[pixIdx+1] = g;
+                heatImg.pixels[pixIdx+2] = b;
+                heatImg.pixels[pixIdx+3] = 255;
+            }
+        }
+        
+        heatImg.updatePixels();
+    }
+    
+    // Prevent right click context menu for better interaction
+    document.addEventListener('contextmenu', event => event.preventDefault());
+
+</script>
+</body>
+</html>

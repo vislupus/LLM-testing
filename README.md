@@ -27,6 +27,8 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.1**       | **3/10** |
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.5**   | **5/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -35,10 +37,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **5/10** |
+| **Gemini 3**          | **3/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Sonnet 4.5** | **5/10** |
+| **Claude Opus 4.5**   | **2/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -51,6 +55,8 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **8/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -63,6 +69,8 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **9/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -75,18 +83,22 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **7/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
-### DAW clone
-**Create a DAW. Include multiple instruments and drums. Include a step grid and piano roll. Include tempo control, multiple tracks, effects (reverb, delay), volume sliders, and more. Put everything in a standalone html file**
+### Educational game
+**Create a complete, self-contained educational board game implemented entirely in a single HTML file. The game should be original, engaging, and creatively designed for learning (any subject is acceptable — choose one you find inspiring). Use SVG.js to draw and animate all visual elements directly inside the HTML. Make the gameplay intuitive and fun, with clear objectives, interactive elements, and visually appealing components. Include all HTML, CSS, JavaScript, and SVG.js code in one file. Do not copy existing games; invent something unique, imaginative, and educational. Feel free to design the board layout, rules, characters, challenges, progression systems, or any additional creative mechanics that enhance learning. The final output should be a fully working one-file HTML board game using SVG.js.**
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Gemini 3**          | **4/10** |
+| **ChatGPT 5.1**       | **5/10** |
+| **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.5**   | **5/10** |
+| **Glm 4.6**           | **3/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -99,6 +111,8 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.5**   | **3/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -111,6 +125,8 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.1**       | **8/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.5**   | **10/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -119,10 +135,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
+| **Gemini 3**          | **7/10** |
 | **ChatGPT 5.1**       | **7/10** |
-| **Grok 4.1**          | **0/10** |
+| **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **9/10** |
+| **Glm 4.6**           | **8/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -136,6 +154,7 @@ Testing different LLMs to do software tasks
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Glm 4.6**           | **3/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -148,6 +167,8 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.1**       | **8/10** |
 | **Grok 4.1**          | **6/10** |
 | **Claude Opus 4.5**   | **7/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -161,6 +182,7 @@ Testing different LLMs to do software tasks
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Glm 4.6**           | **5/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -174,6 +196,7 @@ Testing different LLMs to do software tasks
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.6**           | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -186,6 +209,8 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **8/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -197,7 +222,9 @@ Testing different LLMs to do software tasks
 | **Gemini 3**          | **3/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Sonnet 4.5** | **2/10** |
+| **Claude Opus 4.5**   | **7/10** |
+| **Glm 4.6**           | **4/10** |
+| **Kimi K2 Turbo**     | **3/10** |
 
 ---
 
@@ -209,7 +236,9 @@ Testing different LLMs to do software tasks
 | **Gemini 3**          | **8/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Sonnet 4.5** | **2/10** |
+| **Claude Opus 4.5**   | **4/10** |
+| **Glm 4.6**           | **2/10** |
+| **Kimi K2 Turbo**     | **1/10** |
 
 ---
 
@@ -221,7 +250,9 @@ Testing different LLMs to do software tasks
 | **Gemini 3**          | **7/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **3/10** |
-| **Claude Sonnet 4.5** | **2/10** |
+| **Claude Opus 4.5**   | **10/10** |
+| **Glm 4.6**           | **4/10** |
+| **Kimi K2 Turbo**     | **3/10** |
 
 ---
 
@@ -230,10 +261,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Gemini 3**          | **4/10** |
+| **ChatGPT 5.1**       | **1/10** |
+| **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.5**   | **4/10** |
+| **Glm 4.6**           | **6/10** |
+| **Kimi K2 Turbo**     | **1/10** |
 
 ---
 
@@ -242,10 +275,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Gemini 3**          | **4/10** |
+| **ChatGPT 5.1**       | **5/10** |
+| **Grok 4.1**          | **4/10** |
+| **Claude Opus 4.5**   | **9/10** |
+| **Glm 4.6**           | **2/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -254,10 +289,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Gemini 3**          | **7/10** |
+| **ChatGPT 5.1**       | **4/10** |
+| **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.5**   | **8/10** |
+| **Glm 4.6**           | **4/10** |
+| **Kimi K2 Turbo**     | **0/10** |
 
 ---
 
@@ -266,10 +303,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Gemini 3**          | **7/10** |
+| **ChatGPT 5.1**       | **5/10** |
+| **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.5**   | **9/10** |
+| **Glm 4.6**           | **8/10** |
+| **Kimi K2 Turbo**     | **1/10** |
 
 ---
 
@@ -278,10 +317,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Gemini 3**          | **7/10** |
+| **ChatGPT 5.1**       | **4/10** |
+| **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.5**   | **9/10** |
+| **Glm 4.6**           | **8/10** |
+| **Kimi K2 Turbo**     | **4/10** |
 
 ---
 
@@ -290,10 +331,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Gemini 3**          | **3/10** |
+| **ChatGPT 5.1**       | **2/10** |
+| **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.5**   | **5/10** |
+| **Glm 4.6**           | **2/10** |
+| **Kimi K2 Turbo**     | **2/10** |
 
 ---
 
@@ -302,10 +345,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Gemini 3**          | **6/10** |
+| **ChatGPT 5.1**       | **4/10** |
+| **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.5**   | **8/10** |
+| **Glm 4.6**           | **5/10** |
+| **Kimi K2 Turbo**     | **1/10** |
 
 ---
 
@@ -314,7 +359,9 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
+| **Gemini 3**          | **4/10** |
+| **ChatGPT 5.1**       | **3/10** |
+| **Grok 4.1**          | **4/10** |
+| **Claude Opus 4.5**   | **7/10** |
+| **Glm 4.6**           | **1/10** |
+| **Kimi K2 Turbo**     | **2/10** |

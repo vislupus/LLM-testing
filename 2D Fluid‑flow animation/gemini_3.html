@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Von Kármán Vortex Street - Lattice Boltzmann</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            color: #eee;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            width: 280px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            z-index: 10;
+            pointer-events: auto;
+            user-select: none;
+        }
+        h2 { margin: 0 0 10px 0; font-size: 16px; color: #00d2ff; }
+        .control-group { margin-bottom: 12px; }
+        label { display: flex; justify-content: space-between; font-size: 12px; color: #ccc; }
+        input[type=range] { width: 100%; margin-top: 5px; cursor: pointer; }
+        select { width: 100%; background: #222; color: white; border: 1px solid #444; padding: 4px; margin-top: 5px; }
+        .info { font-size: 11px; color: #888; margin-top: 10px; border-top: 1px solid #444; padding-top: 5px; }
+        span.val { color: #00d2ff; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <h2>Fluid Control (LBM D2Q9)</h2>
+    
+    <div class="control-group">
+        <label>Inlet Velocity <span id="val-speed" class="val">0.1</span></label>
+        <input type="range" id="sl-speed" min="0.01" max="0.2" step="0.01" value="0.1">
+    </div>
+    
+    <div class="control-group">
+        <label>Viscosity <span id="val-visc" class="val">0.02</span></label>
+        <input type="range" id="sl-visc" min="0.005" max="0.1" step="0.001" value="0.020">
+    </div>
+
+    <div class="control-group">
+        <label>Visualization Mode</label>
+        <select id="sel-mode">
+            <option value="curl">Vorticity (Curl)</option>
+            <option value="speed">Speed</option>
+            <option value="pressure">Pressure</option>
+        </select>
+    </div>
+
+    <div class="control-group">
+        <label>Obstacle Shape</label>
+        <select id="sel-shape">
+            <option value="circle">Circle</option>
+            <option value="box">Rectangle</option>
+            <option value="ellipse">Ellipse</option>
+        </select>
+    </div>
+
+    <div class="control-group">
+        <label>Size <span id="val-size" class="val">20</span></label>
+        <input type="range" id="sl-size" min="5" max="40" step="1" value="20">
+    </div>
+
+    <div class="control-group">
+        <label>Rotation <span id="val-rot" class="val">0°</span></label>
+        <input type="range" id="sl-rot" min="0" max="360" step="5" value="0">
+    </div>
+    
+    <div class="info">
+        <strong>Drag Mouse</strong> to move obstacle.<br>
+        Lower viscosity + High speed = More Vortices (Reynolds Number).
+    </div>
+</div>
+
+<div id="canvas-container"></div>
+
+<script>
+/**
+ * LATTICE BOLTZMANN METHOD (D2Q9 Model)
+ * 
+ * This simulation solves fluid dynamics on a microscopic level using distribution functions
+ * on a grid. It is excellent for simulating boundary conditions and vortex shedding.
+ * 
+ * Grid Directions (D2Q9):
+ * 4 3 2
+ * 5 0 1
+ * 6 7 8
+ */
+
+// --- Configuration ---
+// Resolution: Lower is faster. 
+// We render to a small buffer and scale up for performance.
+const SCALE = 4; 
+let nx, ny;
+
+// Physics Constants
+const N_DIRS = 9;
+// D2Q9 Weights
+const w = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36];
+// Direction Vectors [x, y]
+const ex = [0, 1, 0, -1, 0, 1, -1, -1, 1];
+const ey = [0, 0, 1, 0, -1, 1, 1, -1, -1];
+// Opposites for bounce-back
+const opp = [0, 3, 4, 1, 2, 7, 8, 5, 6];
+
+// Simulation Arrays (1D flattened for performance)
+let f = [];      // Distribution functions
+let newF = [];   // Buffer
+let rho = [];    // Density
+let ux = [];     // Velocity X
+let uy = [];     // Velocity Y
+let barrier = []; // Barrier Boolean Mask
+
+// State
+let u0 = 0.1;       // Inlet velocity
+let viscosity = 0.02;
+let omega = 0;      // Relaxation parameter (1 / (3*visc + 0.5))
+
+// Obstacle State
+let obsX, obsY;
+let obsType = 'circle';
+let obsSize = 20;
+let obsAngle = 0;
+let isDragging = false;
+
+// Visualization
+let p5Img;
+let colorMode = 'curl';
+
+// UI
+let ui = {};
+
+function setup() {
+    // Calculate grid size based on window
+    nx = Math.floor(windowWidth / SCALE);
+    ny = Math.floor(windowHeight / SCALE);
+    
+    let cnv = createCanvas(nx * SCALE, ny * SCALE);
+    cnv.parent('canvas-container');
+    cnv.style('display', 'block');
+    noSmooth(); // Pixelated look is faster and cleaner for grid sims
+
+    // Initialize Arrays
+    const size = nx * ny;
+    f = new Float32Array(size * N_DIRS);
+    newF = new Float32Array(size * N_DIRS);
+    rho = new Float32Array(size);
+    ux = new Float32Array(size);
+    uy = new Float32Array(size);
+    barrier = new Uint8Array(size); // 1 = barrier, 0 = fluid
+
+    // Initialize UI Refs
+    ui.speed = select('#sl-speed');
+    ui.visc = select('#sl-visc');
+    ui.mode = select('#sel-mode');
+    ui.shape = select('#sel-shape');
+    ui.size = select('#sl-size');
+    ui.rot = select('#sl-rot');
+
+    // Set Initial Conditions
+    updateOmega();
+    obsX = nx / 4;
+    obsY = ny / 2;
+    initFluid();
+    updateBarrier();
+
+    // Create image buffer
+    p5Img = createImage(nx, ny);
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    nx = Math.floor(windowWidth / SCALE);
+    ny = Math.floor(windowHeight / SCALE);
+    // Re-allocating arrays would be needed for full resize support
+    // For this demo, we'll just reload the page to keep code simple
+    window.location.reload();
+}
+
+function initFluid() {
+    const size = nx * ny;
+    for (let i = 0; i < size; i++) {
+        rho[i] = 1.0;
+        ux[i] = u0;
+        uy[i] = 0.0;
+        
+        // Calculate Equilibrium
+        const eq = equilibrium(1.0, u0, 0.0);
+        for (let k = 0; k < N_DIRS; k++) {
+            f[i * N_DIRS + k] = eq[k];
+        }
+    }
+}
+
+function draw() {
+    // --- Update Parameters from UI ---
+    let newU0 = parseFloat(ui.speed.value());
+    if(Math.abs(newU0 - u0) > 0.001) {
+        u0 = newU0;
+        select('#val-speed').html(u0);
+    }
+
+    let newVisc = parseFloat(ui.visc.value());
+    if(Math.abs(newVisc - viscosity) > 0.0001) {
+        viscosity = newVisc;
+        updateOmega();
+        select('#val-visc').html(viscosity.toFixed(3));
+    }
+
+    obsSize = parseInt(ui.size.value());
+    select('#val-size').html(obsSize);
+    
+    obsAngle = radians(parseInt(ui.rot.value()));
+    select('#val-rot').html(ui.rot.value() + "°");
+
+    obsType = ui.shape.value();
+    colorMode = ui.mode.value();
+
+    // --- Interaction ---
+    handleMouse();
+    
+    // --- Physics Steps ---
+    // LBM is stable but requires multiple steps per frame for smooth fast flow
+    const steps = 8; 
+    for (let s = 0; s < steps; s++) {
+        stream();
+        collide(); 
+    }
+
+    // --- Render ---
+    renderFluid();
+    image(p5Img, 0, 0, width, height);
+
+    // Draw Overlay for Obstacle (Smoother visual than grid representation)
+    drawOverlay();
+}
+
+// --- LBM Core Functions ---
+
+function updateOmega() {
+    // Stability condition: viscosity > 0.
+    omega = 1.0 / (3.0 * viscosity + 0.5);
+}
+
+function equilibrium(density, u_x, u_y) {
+    // Compute equilibrium distribution function feq
+    const u2 = u_x * u_x + u_y * u_y;
+    const feq = new Float32Array(9);
+    
+    for (let k = 0; k < 9; k++) {
+        const eu = ex[k] * u_x + ey[k] * u_y;
+        feq[k] = w[k] * density * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * u2);
+    }
+    return feq;
+}
+
+function stream() {
+    // Move particles to neighboring cells
+    // Periodic Y boundaries, Inlet/Outlet X boundaries handled in Collide or manual fix
+    
+    for (let y = 0; y < ny; y++) {
+        for (let x = 0; x < nx; x++) {
+            const idx = y * nx + x;
+            
+            for (let k = 0; k < 9; k++) {
+                // Determine source coordinates
+                const srcX = x - ex[k];
+                const srcY = y - ey[k];
+
+                // Check Bounds
+                // X: If out of bounds, we'll handle in collision (inlet/outlet)
+                // Y: Periodic wrap
+                if (srcX >= 0 && srcX < nx) {
+                    let wrapY = srcY;
+                    if (wrapY < 0) wrapY = ny - 1;
+                    if (wrapY >= ny) wrapY = 0;
+                    
+                    const srcIdx = wrapY * nx + srcX;
+                    newF[idx * 9 + k] = f[srcIdx * 9 + k];
+                }
+            }
+        }
+    }
+}
+
+function collide() {
+    for (let y = 0; y < ny; y++) {
+        for (let x = 0; x < nx; x++) {
+            const idx = y * nx + x;
+
+            // 1. Boundary Conditions
+            // Inlet (Left) - Force equilibrium with u0
+            if (x === 0) {
+                const eq = equilibrium(1.0, u0, 0.0);
+                for (let k = 0; k < 9; k++) f[idx*9+k] = eq[k];
+                rho[idx] = 1.0; ux[idx] = u0; uy[idx] = 0.0;
+                continue;
+            }
+            // Outlet (Right) - Zero gradient (copy neighbor)
+            if (x === nx - 1) {
+                const src = idx - 1; // Neighbor to left
+                for (let k = 0; k < 9; k++) f[idx*9+k] = f[src*9+k];
+                // We technically don't compute moments here, but for rendering safety:
+                rho[idx] = rho[src]; ux[idx] = ux[src]; uy[idx] = uy[src];
+                continue;
+            }
+
+            // 2. Obstacle Bounce-back
+            if (barrier[idx] === 1) {
+                // Simple Bounce-back: reflect directions
+                // Read from newF (streamed data), write to f (next step state)
+                for (let k = 0; k < 9; k++) {
+                    f[idx * 9 + k] = newF[idx * 9 + opp[k]];
+                }
+                ux[idx] = 0; uy[idx] = 0; // No velocity inside barrier
+                continue;
+            }
+
+            // 3. Macroscopic Moments (Density & Velocity)
+            // Sum distribution functions
+            let density = 0;
+            let m_x = 0;
+            let m_y = 0;
+            
+            for (let k = 0; k < 9; k++) {
+                // Take the streamed value
+                const val = newF[idx * 9 + k];
+                density += val;
+                m_x += val * ex[k];
+                m_y += val * ey[k];
+            }
+
+            // Save state
+            rho[idx] = density;
+            // Prevent division by zero
+            if (density > 0) {
+                ux[idx] = m_x / density;
+                uy[idx] = m_y / density;
+            } else {
+                ux[idx] = 0; uy[idx] = 0;
+            }
+
+            // 4. Relaxation (Collision Step)
+            // f_new = f_old - omega * (f_old - f_eq)
+            const eq = equilibrium(density, ux[idx], uy[idx]);
+            for (let k = 0; k < 9; k++) {
+                f[idx * 9 + k] = newF[idx * 9 + k] + omega * (eq[k] - newF[idx * 9 + k]);
+            }
+        }
+    }
+}
+
+// --- Obstacle Management ---
+
+function updateBarrier() {
+    // Reset barrier array
+    barrier.fill(0);
+    
+    // Pre-calc cos/sin for rotation
+    const ca = Math.cos(-obsAngle); // Invert angle for coordinate rotation
+    const sa = Math.sin(-obsAngle);
+
+    const cx = obsX;
+    const cy = obsY;
+    
+    // We can optimize this by only checking a bounding box, 
+    // but iterating whole grid is fast enough at this resolution.
+    for (let y = 0; y < ny; y++) {
+        for (let x = 0; x < nx; x++) {
+            // Transform point to object local space
+            let dx = x - cx;
+            let dy = y - cy;
+            
+            let rx = dx * ca - dy * sa;
+            let ry = dx * sa + dy * ca;
+
+            let inside = false;
+            
+            if (obsType === 'circle') {
+                // r is radius
+                let r = obsSize / 2;
+                if (rx*rx + ry*ry < r*r) inside = true;
+            } else if (obsType === 'box') {
+                // Size is full width/height
+                let half = obsSize / 2;
+                // Make it rectangular (width = size, height = size/2 for visual interest)
+                if (Math.abs(rx) < half && Math.abs(ry) < half * 0.6) inside = true;
+            } else if (obsType === 'ellipse') {
+                let a = obsSize / 2; // Major axis
+                let b = obsSize / 4; // Minor axis
+                if ((rx*rx)/(a*a) + (ry*ry)/(b*b) < 1) inside = true;
+            }
+
+            if (inside) {
+                barrier[y * nx + x] = 1;
+            }
+        }
+    }
+}
+
+function handleMouse() {
+    // Map mouse to grid coords
+    const mx = mouseX / SCALE;
+    const my = mouseY / SCALE;
+
+    if (mouseIsPressed) {
+        // Check if clicking near object center
+        const d = dist(mx, my, obsX, obsY);
+        if (d < obsSize) {
+            isDragging = true;
+        }
+        
+        if (isDragging) {
+            obsX = mx;
+            obsY = my;
+            // Clamp to screen
+            obsX = constrain(obsX, 5, nx - 5);
+            obsY = constrain(obsY, 5, ny - 5);
+            updateBarrier();
+        }
+    } else {
+        isDragging = false;
+    }
+}
+
+// --- Visualization ---
+
+function renderFluid() {
+    p5Img.loadPixels();
+
+    for (let y = 1; y < ny - 1; y++) {
+        for (let x = 1; x < nx - 1; x++) {
+            const idx = y * nx + x;
+
+            if (barrier[idx] === 1) {
+                // Draw obstacle logic in overlay, keep texture transparent or simple here
+                const i = idx * 4;
+                p5Img.pixels[i] = 0;
+                p5Img.pixels[i+1] = 0;
+                p5Img.pixels[i+2] = 0;
+                p5Img.pixels[i+3] = 255;
+                continue;
+            }
+
+            let r, g, b;
+            
+            if (colorMode === 'curl') {
+                // Compute Vorticity (Curl): (duy/dx - dux/dy)
+                // Finite difference
+                const uy_x1 = uy[idx + 1];
+                const uy_x0 = uy[idx - 1];
+                const ux_y1 = ux[idx + nx];
+                const ux_y0 = ux[idx - nx];
+                
+                const curl = (uy_x1 - uy_x0) - (ux_y1 - ux_y0);
+                
+                // Map Curl to Color (Blue = CW, Red = CCW)
+                // Contrast scaling
+                const val = curl * 400; 
+                r = constrain(128 + val, 0, 255);
+                g = constrain(128 - Math.abs(val), 0, 255);
+                b = constrain(128 - val, 0, 255);
+                
+            } else if (colorMode === 'speed') {
+                const speed = Math.sqrt(ux[idx]*ux[idx] + uy[idx]*uy[idx]);
+                // Map speed. u0 is roughly input speed.
+                const n = speed / (u0 * 2.0);
+                // Heatmap style
+                r = n * 255;
+                g = n * 200;
+                b = (1-n) * 255;
+            } else {
+                // Pressure ~ Density
+                const p = (rho[idx] - 1.0) * 400; // Contrast
+                r = 128 + p;
+                g = 128 + p;
+                b = 128 + p;
+            }
+
+            const i = idx * 4;
+            p5Img.pixels[i] = r;
+            p5Img.pixels[i+1] = g;
+            p5Img.pixels[i+2] = b;
+            p5Img.pixels[i+3] = 255;
+        }
+    }
+    p5Img.updatePixels();
+}
+
+function drawOverlay() {
+    push();
+    // Convert grid coords to screen coords
+    translate(obsX * SCALE, obsY * SCALE);
+    rotate(obsAngle);
+    
+    noStroke();
+    fill(200, 200, 200, 150);
+    stroke(255);
+    strokeWeight(2);
+
+    // Draw shape slightly larger than grid barrier for smoothness
+    const drawSize = obsSize * SCALE;
+    
+    if (obsType === 'circle') {
+        circle(0, 0, drawSize);
+    } else if (obsType === 'box') {
+        rectMode(CENTER);
+        rect(0, 0, drawSize, drawSize * 0.6);
+    } else if (obsType === 'ellipse') {
+        ellipse(0, 0, drawSize, drawSize * 0.5);
+    }
+    
+    // Drag Indicator
+    fill(0, 255, 255);
+    noStroke();
+    circle(0,0, 4);
+    pop();
+}
+</script>
+</body>
+</html>
