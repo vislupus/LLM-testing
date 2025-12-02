@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Evolutionary Ecosystem Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #121212;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 250px;
+            background: rgba(30, 30, 30, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        h2 { margin: 0 0 10px 0; font-size: 16px; color: #4db6ac; }
+        .control-group { margin-bottom: 10px; }
+        label { display: flex; justify-content: space-between; font-size: 12px; color: #aaa; }
+        input[type=range] { width: 100%; margin-top: 5px; cursor: pointer; }
+        button {
+            width: 100%;
+            padding: 8px;
+            background: #4db6ac;
+            border: none;
+            color: #121212;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 4px;
+            margin-top: 5px;
+        }
+        button:hover { background: #80cbc4; }
+        #canvas-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .legend { display: flex; gap: 10px; font-size: 11px; margin-top: 5px; }
+        .dot { width: 10px; height: 10px; display: inline-block; border-radius: 50%; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <h2>Ecosystem Controls</h2>
+    
+    <div class="control-group">
+        <label>Plant Growth Rate <span id="val-growth"></span></label>
+        <input type="range" id="sl-growth" min="0.01" max="0.5" step="0.01" value="0.1">
+    </div>
+
+    <div class="control-group">
+        <label>Mutation Rate <span id="val-mut"></span></label>
+        <input type="range" id="sl-mut" min="0" max="0.5" step="0.01" value="0.1">
+    </div>
+
+    <div class="control-group">
+        <label>Simulation Speed <span id="val-speed"></span></label>
+        <input type="range" id="sl-speed" min="1" max="20" step="1" value="1">
+    </div>
+
+    <div class="legend">
+        <span><span class="dot" style="background:#4caf50"></span> Plant</span>
+        <span><span class="dot" style="background:#2196f3"></span> Prey</span>
+        <span><span class="dot" style="background:#f44336"></span> Pred</span>
+    </div>
+    
+    <button onclick="resetSim()">Reset Simulation</button>
+    <div style="margin-top:10px; font-size:11px; color:#777;">
+        Prey/Predator brightness indicates metabolism (Energy Cost). Darker = Efficient.
+    </div>
+</div>
+
+<div id="canvas-container"></div>
+
+<script>
+/**
+ * EVOLUTIONARY MONTE CARLO ECOSYSTEM
+ * 
+ * Grid-based simulation where entities (Agents) interact.
+ * 
+ * Rules:
+ * 1. Grid: A 2D array. Each cell can hold: Empty (0), Plant (1), Herbivore (Object), Predator (Object).
+ * 2. Plants: Grow randomly on empty spots based on Growth Rate.
+ * 3. Agents: Have DNA for Speed, Metabolism, and Reproductive Drive.
+ *    - Energy decreases every turn based on Metabolism + Movement cost.
+ *    - Herbivores eat Plants to gain energy.
+ *    - Predators eat Herbivores to gain energy.
+ *    - If Energy > Reproduction Threshold, they reproduce (split energy, mutate DNA).
+ *    - If Energy <= 0, they die.
+ */
+
+// --- Configuration ---
+const CELL_SIZE = 8;
+let GRID_W = 80;
+let GRID_H = 60; // Will be calculated based on window
+const PLANT_ENERGY = 20;
+const MEAT_ENERGY = 60;
+
+// --- State ---
+let grid = []; // Stores 0 (empty) or 1 (plant)
+let agents = []; // Stores Agent objects
+let statsHistory = [];
+const MAX_HISTORY = 200;
+
+// UI Refs
+let slGrowth, slMut, slSpeed;
+
+function setup() {
+    // Dynamic canvas size
+    let cnvH = window.innerHeight - 40;
+    let cnvW = window.innerWidth - 40;
+    
+    // Snap to grid size
+    GRID_W = Math.floor(cnvW / CELL_SIZE);
+    GRID_H = Math.floor((cnvH - 100) / CELL_SIZE); // Reserve bottom for graph
+
+    let cnv = createCanvas(GRID_W * CELL_SIZE, GRID_H * CELL_SIZE + 100);
+    cnv.parent('canvas-container');
+    noSmooth();
+
+    // UI
+    slGrowth = select('#sl-growth');
+    slMut = select('#sl-mut');
+    slSpeed = select('#sl-speed');
+    
+    // Update labels
+    slGrowth.input(() => select('#val-growth').html(slGrowth.value()));
+    slMut.input(() => select('#val-mut').html(slMut.value()));
+    slSpeed.input(() => select('#val-speed').html(slSpeed.value()));
+    
+    // Trigger label updates
+    slGrowth.elt.dispatchEvent(new Event('input'));
+    slMut.elt.dispatchEvent(new Event('input'));
+    slSpeed.elt.dispatchEvent(new Event('input'));
+
+    resetSim();
+}
+
+function resetSim() {
+    grid = [];
+    agents = [];
+    statsHistory = [];
+    
+    // Init Grid
+    for(let x = 0; x < GRID_W; x++) {
+        grid[x] = [];
+        for(let y = 0; y < GRID_H; y++) {
+            grid[x][y] = null; // null = empty, 1 = plant
+        }
+    }
+
+    // Spawn Initial Population
+    // Plants
+    for(let i=0; i<GRID_W*GRID_H*0.1; i++) {
+        let x = floor(random(GRID_W));
+        let y = floor(random(GRID_H));
+        grid[x][y] = 1;
+    }
+
+    // Herbivores
+    for(let i=0; i<100; i++) {
+        let x = floor(random(GRID_W));
+        let y = floor(random(GRID_H));
+        agents.push(new Agent(x, y, 'prey'));
+    }
+
+    // Predators
+    for(let i=0; i<20; i++) {
+        let x = floor(random(GRID_W));
+        let y = floor(random(GRID_H));
+        agents.push(new Agent(x, y, 'pred'));
+    }
+}
+
+// --- The Agent Class ---
+class Agent {
+    constructor(x, y, type, dna) {
+        this.x = x;
+        this.y = y;
+        this.type = type; // 'prey' or 'pred'
+        this.dead = false;
+        this.age = 0;
+
+        // DNA / Traits
+        if (dna) {
+            this.dna = this.mutate(dna);
+        } else {
+            // Default DNA
+            this.dna = {
+                speed: 0.8,         // Probability to move per turn (0.0 - 1.0)
+                metabolism: 1.0,    // Energy cost multiplier (0.5 - 2.0)
+                reproThr: 80,       // Energy needed to reproduce
+                vision: 1           // Range (1 = adjacent) - Simplified for this demo
+            };
+        }
+
+        // Energy
+        this.energy = 40;
+    }
+
+    mutate(parentDna) {
+        let rate = parseFloat(slMut.value());
+        let newDna = { ...parentDna };
+        
+        // Slight variation
+        if (random() < rate) newDna.speed = constrain(newDna.speed + random(-0.1, 0.1), 0.1, 1.0);
+        if (random() < rate) newDna.metabolism = constrain(newDna.metabolism + random(-0.2, 0.2), 0.5, 2.5);
+        if (random() < rate) newDna.reproThr = constrain(newDna.reproThr + random(-10, 10), 30, 200);
+        
+        return newDna;
+    }
+
+    update() {
+        if (this.dead) return;
+        this.age++;
+
+        // 1. Basal Metabolic Cost
+        // Higher metabolism = faster actions/more power, but costs more
+        this.energy -= 0.5 * this.dna.metabolism;
+
+        // 2. Action: Move or Eat
+        // Check randomness against speed trait
+        if (random() < this.dna.speed) {
+            this.act();
+        }
+
+        // 3. Death
+        if (this.energy <= 0) {
+            this.dead = true;
+        }
+
+        // 4. Reproduction
+        if (this.energy > this.dna.reproThr) {
+            this.reproduce();
+        }
+    }
+
+    act() {
+        // Look at neighbors (Moore neighborhood: 8 cells)
+        // Simple AI: 
+        // Prey: Look for Plant. If none, move randomly.
+        // Pred: Look for Prey. If none, move randomly.
+
+        let neighbors = this.getNeighbors();
+        let target = null;
+
+        if (this.type === 'prey') {
+            // Look for plant
+            target = neighbors.find(n => n.content === 1); 
+        } else {
+            // Look for prey agent
+            // (Note: finding agents in grid is tricky without spatial map. 
+            // We will look at agent positions. Optimization: build a map per frame or just search)
+            // For O(1) lookup, we need an agentGrid. Let's use 'agentMap' created in draw loop.
+        }
+
+        // Since we don't store agents in the grid array directly (to allow overlapping temporarily or simple logic),
+        // we will simulate "sensing" by checking current global state.
+        // Optimization: We will move first, then check collision.
+        
+        // Movement decision
+        let moveX = floor(random(-1, 2));
+        let moveY = floor(random(-1, 2));
+        
+        // Bias movement towards food if nearby? 
+        // To keep it fast and stochastic: Just move randomly, if land on food, eat it.
+        
+        let newX = (this.x + moveX + GRID_W) % GRID_W;
+        let newY = (this.y + moveY + GRID_H) % GRID_H;
+
+        // Cost of movement
+        this.energy -= 0.2 * this.dna.metabolism;
+
+        // Interaction at new spot
+        if (this.type === 'prey') {
+            // Eat Plant
+            if (grid[newX][newY] === 1) {
+                grid[newX][newY] = null; // Remove plant
+                this.energy += PLANT_ENERGY;
+            }
+            // Move
+            this.x = newX;
+            this.y = newY;
+        } 
+        else if (this.type === 'pred') {
+            // Logic: Check if a prey is at newX, newY
+            // We have to search the agent list or use a lookup.
+            // Linear search is slow. Let's do a quick filter.
+            // Ideally, we'd have a grid of agents.
+            
+            let preyHere = agentGrid[newX][newY]; // Look up in global map constructed in loop
+            
+            if (preyHere && preyHere.type === 'prey' && !preyHere.dead) {
+                preyHere.dead = true; // Eat it
+                this.energy += MEAT_ENERGY;
+            }
+            
+            this.x = newX;
+            this.y = newY;
+        }
+    }
+
+    reproduce() {
+        // Split energy
+        this.energy /= 2;
+        
+        let child = new Agent(this.x, this.y, this.type, this.dna);
+        child.energy = this.energy;
+        
+        // Push to a buffer to avoid iterating over new agents in current frame
+        newAgents.push(child);
+    }
+
+    getNeighbors() {
+        // Helper if we wanted complex vision
+        return []; 
+    }
+}
+
+// Global Spatial Map for O(1) lookups during interaction
+let agentGrid = []; 
+let newAgents = [];
+
+function draw() {
+    let steps = parseInt(slSpeed.value());
+    
+    // --- Simulation Loop (Multiple steps per frame) ---
+    for (let s = 0; s < steps; s++) {
+        updateSimulation();
+    }
+
+    // --- Visualization ---
+    background(20);
+    
+    // Draw Grid Content (Plants)
+    noStroke();
+    fill(76, 175, 80); // Green
+    for(let x=0; x<GRID_W; x++) {
+        for(let y=0; y<GRID_H; y++) {
+            if(grid[x][y] === 1) {
+                rect(x*CELL_SIZE, y*CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            }
+        }
+    }
+
+    // Draw Agents
+    for (let a of agents) {
+        let px = a.x * CELL_SIZE;
+        let py = a.y * CELL_SIZE;
+        
+        // Visualizing Traits
+        // Brightness = Metabolism (Low meta = Dark, High meta = Bright)
+        // Size = Speed? Let's just use brightness for genetic diversity visualization.
+        
+        if (a.type === 'prey') {
+            let b = map(a.dna.metabolism, 0.5, 2.0, 100, 255);
+            fill(33, 150, 243, 200); // Blueish base
+            // Adjust shade based on trait
+            fill(30, 30 + b/2, b); 
+        } else {
+            let b = map(a.dna.metabolism, 0.5, 2.0, 100, 255);
+            fill(b, 50, 50); // Reddish
+        }
+        
+        rect(px, py, CELL_SIZE, CELL_SIZE);
+    }
+
+    // Draw Statistics
+    drawStats();
+}
+
+function updateSimulation() {
+    newAgents = [];
+    
+    // 1. Reset Agent Grid Map (for Predator lookups)
+    agentGrid = new Array(GRID_W).fill(0).map(() => new Array(GRID_H).fill(null));
+    
+    // Populate map with Prey first (so Predators can find them)
+    // If multiple prey on one spot, just pick one.
+    for(let a of agents) {
+        if(!a.dead && a.type === 'prey') {
+            agentGrid[a.x][a.y] = a;
+        }
+    }
+
+    // 2. Update Agents
+    // Shuffle order for Monte Carlo fairness (prevent index bias)
+    // Fisher-Yates shuffle roughly
+    // Optimization: skipping full shuffle for speed, using random index iteration is risky for deletions.
+    // Just iterating is fine if populations are large, but let's do random swap for realism.
+    // For JS performance, simple iteration is often okay, but let's be correct.
+    // Actually, iterating backward is safest for removal, but we flag 'dead'.
+    
+    for (let a of agents) {
+        a.update();
+    }
+
+    // 3. Plant Growth
+    let growthRate = parseFloat(slGrowth.value());
+    // Probabilistic growth: Try N times to grow a plant
+    let growthAttempts = (GRID_W * GRID_H) * growthRate * 0.05;
+    for(let i=0; i<growthAttempts; i++) {
+        let gx = floor(random(GRID_W));
+        let gy = floor(random(GRID_H));
+        if(grid[gx][gy] === null) {
+            grid[gx][gy] = 1;
+        }
+    }
+
+    // 4. Cleanup
+    // Remove dead, add new
+    agents = agents.filter(a => !a.dead);
+    agents = agents.concat(newAgents);
+
+    // 5. Record Stats (every few updates)
+    if (frameCount % 10 === 0 && s === 0) {
+        let preyCount = 0;
+        let predCount = 0;
+        let plantCount = 0; // approximation or scan grid
+        
+        for(let a of agents) {
+            if (a.type === 'prey') preyCount++;
+            else predCount++;
+        }
+        
+        statsHistory.push({prey: preyCount, pred: predCount});
+        if(statsHistory.length > MAX_HISTORY) statsHistory.shift();
+    }
+}
+
+function drawStats() {
+    // Draw Graph at bottom
+    let graphH = 100;
+    let graphY = height - graphH;
+    let w = width;
+    
+    // Background
+    fill(0, 200);
+    rect(0, graphY, w, graphH);
+    
+    if(statsHistory.length < 2) return;
+
+    let maxPop = 1;
+    for(let s of statsHistory) {
+        maxPop = max(maxPop, s.prey, s.pred);
+    }
+
+    noFill();
+    strokeWeight(2);
+    
+    // Prey Curve (Blue)
+    stroke(33, 150, 243);
+    beginShape();
+    for(let i=0; i<statsHistory.length; i++) {
+        let x = map(i, 0, statsHistory.length-1, 0, w);
+        let y = map(statsHistory[i].prey, 0, maxPop, graphY + graphH, graphY + 10);
+        vertex(x, y);
+    }
+    endShape();
+
+    // Predator Curve (Red)
+    stroke(244, 67, 54);
+    beginShape();
+    for(let i=0; i<statsHistory.length; i++) {
+        let x = map(i, 0, statsHistory.length-1, 0, w);
+        let y = map(statsHistory[i].pred, 0, maxPop, graphY + graphH, graphY + 10);
+        vertex(x, y);
+    }
+    endShape();
+
+    // Labels
+    noStroke();
+    fill(255);
+    textAlign(LEFT, TOP);
+    text("Population History", 10, graphY + 5);
+    
+    // Current Counts
+    let current = statsHistory[statsHistory.length-1];
+    textAlign(RIGHT, TOP);
+    fill(33, 150, 243);
+    text("Prey: " + current.prey, width - 80, graphY + 5);
+    fill(244, 67, 54);
+    text("Pred: " + current.pred, width - 10, graphY + 5);
+}
+
+</script>
+</body>
+</html>
