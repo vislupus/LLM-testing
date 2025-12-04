@@ -102,6 +102,34 @@ Testing different LLMs to do software tasks
 
 ---
 
+### Maze game
+**Create a complete interactive maze game for kindergarten children in a single HTML file using svg.js. The maze must be randomly generated at 20×20 size each time and always have a valid solution. The player controls a cute animated hero using the keyboard arrow keys, and the hero must not move through walls. Add friendly-looking monsters that move in the maze and defeat the hero if they reach him, causing the game to restart. The hero should leave a trail of small circles at regular time intervals while moving. The entire drawing and animation must be done with svg.js inside one HTML file. Include a button that shows the correct solution path of the current maze when pressed. The style should be colorful and child-friendly. Add clear comments in the code and keep everything fully contained in a single HTML file.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **6/10** |
+| **ChatGPT 5.1**       | **8/10** |
+| **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.5**   | **3/10** |
+| **Glm 4.6**           | **3/10** |
+| **Kimi K2 Turbo**     | **0/10** |
+
+---
+
+### Nonogram game
+**Create a complete interactive nonogram (picross) puzzle game in a single HTML file using svg.js for all drawing. The puzzle grid must be 20×20 cells, with row and column clues shown at the top and left of the grid. Use svg.js to draw the grid, the clue numbers, and the filled or marked cells. Allow the player to left-click to fill a cell and right-click (or an alternative) to mark a cell with an X. Include logic to check whether the player’s solution matches the predefined 20×20 pattern and display a success message when the puzzle is solved correctly. All code (HTML, CSS, JavaScript) must be contained in one file and use only vanilla JavaScript plus svg.js. The visual style should be clean, readable, and suitable for an educational puzzle game.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3**          | **5/10** |
+| **ChatGPT 5.1**       | **4/10** |
+| **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.5**   | **8/10** |
+| **Glm 4.6**           | **2/10** |
+| **Kimi K2 Turbo**     | **0/10** |
+
+---
+
 ### Space shooter game
 **Create a space shooter game where players pilot a ship through asteroid fields, dodging debris and firing lasers at alien invaders. Make it visually stunning with particle explosions. Use publicly available assets. Put everything in a standalone html file.**
 
