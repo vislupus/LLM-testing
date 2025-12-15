@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Equal Earth World Map (SVG.js) — Forward/Inverse Projection + Pan/Zoom</title>
+  <style>
+    html, body { height: 100%; margin: 0; background:#0b1220; color:#e7eefc; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #stage { position: fixed; inset: 0; }
+    .overlay {
+      position: fixed; left: 12px; top: 12px;
+      width: min(420px, calc(100% - 24px));
+      background: rgba(6, 10, 18, 0.78);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      padding: 10px 12px;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      user-select: none;
+    }
+    .overlay h1 { margin: 0 0 8px; font-size: 14px; letter-spacing: .2px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; margin-top: 8px; }
+    .row input {
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.06);
+      color: #e7eefc;
+      outline: none;
+    }
+    button {
+      padding: 7px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(255,255,255,0.08);
+      color: #e7eefc;
+      cursor: pointer;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    button:hover { background: rgba(255,255,255,0.12); }
+    .readout {
+      margin-top: 10px;
+      border-top: 1px solid rgba(255,255,255,0.12);
+      padding-top: 10px;
+      font-size: 12px;
+      line-height: 1.35;
+      font-variant-numeric: tabular-nums;
+    }
+    .readout b { color: #d7f3ff; }
+    .hint {
+      margin-top: 8px;
+      font-size: 11px;
+      opacity: 0.75;
+      line-height: 1.25;
+    }
+    .pill {
+      display:inline-block; padding:2px 6px; border-radius: 999px;
+      border:1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.06);
+      font-size: 11px;
+      opacity: 0.9;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage"></div>
+
+  <div class="overlay">
+    <h1>Equal Earth projection (SVG.js) — forward + inverse + pan/zoom</h1>
+
+    <div class="row">
+      <input id="latIn" type="number" step="0.0001" placeholder="Latitude (deg)" value="42.6977">
+      <input id="lonIn" type="number" step="0.0001" placeholder="Longitude (deg)" value="23.3219">
+      <button id="plotBtn">Plot marker</button>
+    </div>
+
+    <div class="readout" id="readout">
+      Click anywhere on the map to invert projection.<br/>
+      <span class="pill">Lat</span> <b id="latOut">—</b> &nbsp;
+      <span class="pill">Lon</span> <b id="lonOut">—</b><br/>
+      <span class="pill">x</span> <b id="xOut">—</b> &nbsp;
+      <span class="pill">y</span> <b id="yOut">—</b> &nbsp;
+      <span id="insideOut" class="pill">—</span>
+    </div>
+
+    <div class="hint">
+      Wheel to zoom (around cursor). Drag to pan. Shift+Click adds a marker at clicked coords.
+      Projection stays mathematically correct under any zoom because we zoom/pan in projected (x,y) space via SVG viewBox.
+    </div>
+  </div>
+
+  <!-- SVG.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3.2/dist/svg.min.js"></script>
+
+  <script>
+  (() => {
+    "use strict";
+
+    // =========================
+    // Equal Earth projection (Šavrič et al.)
+    // =========================
+    const TAU = Math.PI * 2;
+    const DEG = Math.PI / 180;
+
+    // Equal Earth constants
+    const A1 = 1.340264;
+    const A2 = -0.081106;
+    const A3 = 0.000893;
+    const A4 = 0.003796;
+    const M  = Math.sqrt(3) / 2;         // = sin(60°)
+    const SQRT3 = Math.sqrt(3);
+
+    const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+    const wrapLon = (lonDeg) => ((lonDeg + 180) % 360 + 360) % 360 - 180;
+
+    function equalEarthForward(latDeg, lonDeg) {
+      const phi = latDeg * DEG;
+      const lam = lonDeg * DEG;
+
+      const theta = Math.asin(M * Math.sin(phi));
+      const t2 = theta * theta;
+      const t6 = t2 * t2 * t2;
+      const t8 = t6 * t2;
+
+      const denom = A1 + 3*A2*t2 + 7*A3*t6 + 9*A4*t8;
+
+      const x = (2 * SQRT3 * lam * Math.cos(theta)) / (3 * denom);
+      const y = (A1*theta) + (A2*theta*theta*theta) + (A3*Math.pow(theta,7)) + (A4*Math.pow(theta,9));
+      return { x, y };
+    }
+
+    // Newton-Raphson to invert y -> theta, then solve x -> lambda.
+    function equalEarthInverse(x, y) {
+      // Initial guess
+      let theta = y / A1;
+
+      for (let i = 0; i < 12; i++) {
+        const t2 = theta * theta;
+        const t6 = t2 * t2 * t2;
+        const t8 = t6 * t2;
+
+        const f  = (A1*theta) + (A2*Math.pow(theta,3)) + (A3*Math.pow(theta,7)) + (A4*Math.pow(theta,9)) - y;
+        const fp = A1 + 3*A2*t2 + 7*A3*t6 + 9*A4*t8;
+
+        theta -= f / fp;
+      }
+
+      const t2 = theta * theta;
+      const t6 = t2 * t2 * t2;
+      const t8 = t6 * t2;
+      const fp = A1 + 3*A2*t2 + 7*A3*t6 + 9*A4*t8;
+
+      const sinPhi = clamp(Math.sin(theta) / M, -1, 1);
+      const phi = Math.asin(sinPhi);
+
+      const c = Math.cos(theta);
+      const lam = (Math.abs(c) < 1e-10) ? 0 : (3 * x * fp) / (2 * SQRT3 * c);
+
+      const latDeg = phi / DEG;
+      const lonDeg = wrapLon(lam / DEG);
+
+      return { lat: latDeg, lon: lonDeg, theta };
+    }
+
+    // Expose helpers for console/debug if you want:
+    window.geoToXY = equalEarthForward;
+    window.xyToGeo = equalEarthInverse;
+
+    // =========================
+    // SVG + Pan/Zoom using viewBox in projected coordinates
+    // =========================
+    const stage = document.getElementById("stage");
+    const draw = SVG().addTo(stage).size("100%", "100%");
+
+    // Projection extents (R=1). Equator gives max x magnitude; poles give max y.
+    const XMAX = (2 * SQRT3 * Math.PI) / (3 * A1);  // lon=±180°, lat=0°
+    const TH_POLE = Math.asin(M * 1);               // phi=±90°
+    const YMAX = (A1*TH_POLE) + (A2*Math.pow(TH_POLE,3)) + (A3*Math.pow(TH_POLE,7)) + (A4*Math.pow(TH_POLE,9));
+
+    // ViewBox state (projected units)
+    const vb = {
+      x: -XMAX * 1.06,
+      y: -YMAX * 1.10,
+      w:  2 * XMAX * 1.12,
+      h:  2 * YMAX * 1.20
+    };
+
+    function applyViewBox() {
+      draw.viewbox(vb.x, vb.y, vb.w, vb.h);
+    }
+    applyViewBox();
+
+    // Layers
+    const rootG = draw.group();
+    const mapG = rootG.group();
+    const markersG = rootG.group();
+
+    // =========================
+    // Boundary (lon=±180 + lat=±90 closure) + clip
+    // =========================
+    function boundaryPathD(samples = 240) {
+      const pts = [];
+
+      // Right edge: lon=+180 from -90..+90
+      for (let i = 0; i <= samples; i++) {
+        const lat = -90 + (180 * i / samples);
+        const p = equalEarthForward(lat, 180);
+        pts.push([p.x, p.y]);
+      }
+      // Left edge: lon=-180 from +90..-90
+      for (let i = samples; i >= 0; i--) {
+        const lat = -90 + (180 * i / samples);
+        const p = equalEarthForward(lat, -180);
+        pts.push([p.x, p.y]);
+      }
+
+      let d = `M ${pts[0][0]} ${pts[0][1]}`;
+      for (let i = 1; i < pts.length; i++) d += ` L ${pts[i][0]} ${pts[i][1]}`;
+      d += " Z";
+      return d;
+    }
+
+    const boundaryD = boundaryPathD();
+    const boundary = draw.path(boundaryD)
+      .fill("#08101e")
+      .stroke({ color: "rgba(255,255,255,0.14)", width: 0.01 });
+
+    // Clip all map content to boundary for a clean edge
+    mapG.clipWith(boundary.clone().fill("#fff").stroke({ width: 0 }));
+    markersG.clipWith(boundary.clone().fill("#fff").stroke({ width: 0 }));
+
+    // =========================
+    // "Clean vector world map" (simple land polygons in lon/lat, projected on the fly)
+    // NOTE: This is a lightweight schematic land set to keep the file single + fast.
+    // =========================
+    const LAND = [
+      // North America (schematic)
+      [[-168,72],[-156,71],[-150,70],[-145,66],[-140,60],[-132,55],[-125,49],[-123,43],[-121,39],[-118,34],[-114,30],[-110,27],[-105,25],[-98,20],[-92,18],[-86,20],[-83,23],[-81,26],[-80,30],[-79,34],[-77,37],[-75,40],[-72,43],[-68,45],[-62,48],[-60,52],[-62,56],[-70,62],[-85,68],[-105,71],[-130,72],[-150,72],[-168,72]],
+      // Greenland
+      [[-52,59],[-44,60],[-36,62],[-28,65],[-20,70],[-24,78],[-35,82],[-45,83],[-55,78],[-60,70],[-58,62],[-52,59]],
+      // South America
+      [[-81,12],[-76,10],[-74,8],[-72,5],[-70,2],[-69,-2],[-68,-6],[-66,-10],[-64,-12],[-62,-15],[-60,-18],[-58,-22],[-56,-25],[-55,-29],[-54,-32],[-53,-40],[-56,-46],[-58,-50],[-62,-54],[-66,-55],[-70,-54],[-74,-52],[-77,-46],[-79,-38],[-80,-30],[-81,-22],[-81,-10],[-81,12]],
+      // Eurasia (Europe + Asia, schematic)
+      [[-10,36],[-8,41],[-6,43],[-2,47],[0,50],[6,53],[10,55],[18,57],[25,58],[35,60],[45,61],[55,62],[70,66],[90,70],[110,68],[125,66],[140,63],[150,58],[165,60],[170,55],[165,50],[160,48],[152,45],[145,42],[138,38],[135,35],[128,32],[120,30],[112,26],[110,23],[105,20],[102,18],[98,16],[95,15],[90,16],[85,18],[80,20],[75,22],[70,24],[65,25],[60,25],[55,23],[50,20],[45,18],[42,14],[40,10],[35,5],[30,8],[25,15],[20,20],[15,28],[10,33],[2,35],[-10,36]],
+      // Africa
+      [[-17,37],[-10,36],[-5,35],[5,35],[10,35],[20,32],[30,31],[35,25],[40,17],[45,12],[50,6],[47,-5],[43,-15],[37,-25],[28,-32],[15,-35],[2,-34],[-5,-30],[-10,-20],[-13,-5],[-15,10],[-17,25],[-17,37]],
+      // Australia
+      [[112,-10],[116,-14],[118,-18],[123,-21],[128,-23],[132,-25],[138,-28],[145,-34],[152,-38],[154,-30],[154,-18],[150,-12],[144,-10],[138,-10],[130,-12],[122,-12],[116,-11],[112,-10]],
+      // Antarctica band (schematic)
+      [[-180,-60],[-150,-66],[-120,-70],[-90,-72],[-60,-75],[-30,-77],[0,-78],[30,-77],[60,-75],[90,-72],[120,-70],[150,-66],[180,-60],[180,-90],[-180,-90],[-180,-60]],
+      // New Zealand (tiny blob)
+      [[166,-35],[174,-40],[178,-46],[170,-46],[166,-35]],
+      // UK/Ireland blob
+      [[-10,50],[-6,50],[-2,52],[-4,56],[-8,58],[-10,55],[-10,50]]
+    ];
+
+    function pathDFromLonLatRing(ring) {
+      const p0 = equalEarthForward(ring[0][1], ring[0][0]);
+      let d = `M ${p0.x} ${p0.y}`;
+      for (let i = 1; i < ring.length; i++) {
+        const p = equalEarthForward(ring[i][1], ring[i][0]);
+        d += ` L ${p.x} ${p.y}`;
+      }
+      d += " Z";
+      return d;
+    }
+
+    // Land styling
+    const landFill = "rgba(230,244,255,0.92)";
+    const landStroke = "rgba(10,20,30,0.35)";
+
+    LAND.forEach((ring, idx) => {
+      mapG.path(pathDFromLonLatRing(ring))
+        .fill(landFill)
+        .stroke({ color: landStroke, width: 0.006, linejoin: "round" })
+        .attr({ "shape-rendering": "geometricPrecision" });
+    });
+
+    // =========================
+    // Graticule (meridians/parallels)
+    // =========================
+    function polylineFromGeoSamples(samples, strokeRGBA, width) {
+      const pl = mapG.polyline(samples.map(p => [p.x, p.y]))
+        .fill("none")
+        .stroke({ color: strokeRGBA, width })
+        .attr({ "shape-rendering": "geometricPrecision" });
+      return pl;
+    }
+
+    function graticule() {
+      const merCol = "rgba(255,255,255,0.10)";
+      const parCol = "rgba(255,255,255,0.10)";
+
+      // Meridians every 30°
+      for (let lon = -150; lon <= 150; lon += 30) {
+        const pts = [];
+        for (let lat = -90; lat <= 90; lat += 1.5) {
+          pts.push(equalEarthForward(lat, lon));
+        }
+        polylineFromGeoSamples(pts, merCol, 0.0045);
+      }
+
+      // Parallels every 30° (skip poles)
+      for (let lat = -60; lat <= 60; lat += 30) {
+        const pts = [];
+        for (let lon = -180; lon <= 180; lon += 2.0) {
+          pts.push(equalEarthForward(lat, lon));
+        }
+        polylineFromGeoSamples(pts, parCol, 0.0045);
+      }
+
+      // Equator + prime meridian slightly stronger
+      {
+        const eq = [];
+        for (let lon = -180; lon <= 180; lon += 1.0) eq.push(equalEarthForward(0, lon));
+        polylineFromGeoSamples(eq, "rgba(255,255,255,0.16)", 0.006);
+      }
+      {
+        const pm = [];
+        for (let lat = -90; lat <= 90; lat += 1.0) pm.push(equalEarthForward(lat, 0));
+        polylineFromGeoSamples(pm, "rgba(255,255,255,0.16)", 0.006);
+      }
+    }
+    graticule();
+
+    // Move boundary to back (ocean fill) but keep stroke visible
+    boundary.back();
+
+    // =========================
+    // Markers + forward projection plotting
+    // =========================
+    const markerStyle = {
+      r: 0.025,
+      fill: "rgba(255,90,90,0.95)",
+      stroke: "rgba(0,0,0,0.35)",
+      strokeWidth: 0.006
+    };
+
+    const clickMarker = markersG.circle(markerStyle.r * 2)
+      .fill("rgba(120,220,255,0.95)")
+      .stroke({ color: "rgba(0,0,0,0.35)", width: markerStyle.strokeWidth })
+      .hide();
+
+    function addMarker(lat, lon, color = markerStyle.fill) {
+      const p = equalEarthForward(lat, lon);
+      markersG.circle(markerStyle.r * 2)
+        .center(p.x, p.y)
+        .fill(color)
+        .stroke({ color: markerStyle.stroke, width: markerStyle.strokeWidth });
+      return p;
+    }
+
+    // Initial marker (Sofia)
+    addMarker(42.6977, 23.3219, "rgba(255,90,90,0.95)");
+
+    // =========================
+    // UI: plot marker by lat/lon
+    // =========================
+    const latIn = document.getElementById("latIn");
+    const lonIn = document.getElementById("lonIn");
+    const plotBtn = document.getElementById("plotBtn");
+
+    plotBtn.addEventListener("click", () => {
+      const lat = parseFloat(latIn.value);
+      const lon = parseFloat(lonIn.value);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      addMarker(clamp(lat, -90, 90), wrapLon(lon));
+    });
+
+    // =========================
+    // Screen <-> projected conversion (accounts for current viewBox)
+    // =========================
+    function eventToProjected(e) {
+      const rect = draw.node.getBoundingClientRect();
+      const sx = (e.clientX - rect.left) / rect.width;
+      const sy = (e.clientY - rect.top) / rect.height;
+      const x = vb.x + sx * vb.w;
+      const y = vb.y + sy * vb.h;
+      return { x, y, sx, sy, rect };
+    }
+
+    // quick "inside map" test:
+    // invert -> reproject -> if close, consider inside (works well with clipped boundary)
+    function isInsideMap(x, y) {
+      const g = equalEarthInverse(x, y);
+      if (!Number.isFinite(g.lat) || !Number.isFinite(g.lon)) return false;
+      const p2 = equalEarthForward(g.lat, g.lon);
+      const dx = p2.x - x, dy = p2.y - y;
+      const err = Math.hypot(dx, dy);
+      return err < 0.02; // tolerance in projected units
+    }
+
+    // =========================
+    // Click inverse projection readout
+    // =========================
+    const latOut = document.getElementById("latOut");
+    const lonOut = document.getElementById("lonOut");
+    const xOut   = document.getElementById("xOut");
+    const yOut   = document.getElementById("yOut");
+    const insideOut = document.getElementById("insideOut");
+
+    function updateReadout(x, y) {
+      const g = equalEarthInverse(x, y);
+      const inside = isInsideMap(x, y);
+
+      xOut.textContent = x.toFixed(6);
+      yOut.textContent = y.toFixed(6);
+
+      if (!inside) {
+        latOut.textContent = "—";
+        lonOut.textContent = "—";
+        insideOut.textContent = "outside boundary";
+        insideOut.style.opacity = 0.85;
+        insideOut.style.borderColor = "rgba(255,160,160,0.35)";
+        insideOut.style.background = "rgba(255,120,120,0.12)";
+        return;
+      }
+
+      latOut.textContent = g.lat.toFixed(5);
+      lonOut.textContent = g.lon.toFixed(5);
+      insideOut.textContent = "inside boundary";
+      insideOut.style.opacity = 0.85;
+      insideOut.style.borderColor = "rgba(160,255,190,0.35)";
+      insideOut.style.background = "rgba(120,255,170,0.10)";
+    }
+
+    // =========================
+    // Pan/Zoom (wheel + drag) by changing the SVG viewBox
+    // =========================
+    const ZOOM_MIN_W = vb.w * 0.08;
+    const ZOOM_MAX_W = vb.w * 4.0;
+
+    function zoomAt(e) {
+      e.preventDefault();
+      const { x: cx, y: cy, sx, sy } = eventToProjected(e);
+
+      // smooth zoom factor
+      const k = Math.pow(1.0018, e.deltaY);
+      const newW = clamp(vb.w * k, ZOOM_MIN_W, ZOOM_MAX_W);
+      const newH = vb.h * (newW / vb.w); // keep aspect
+
+      vb.x = cx - sx * newW;
+      vb.y = cy - sy * newH;
+      vb.w = newW;
+      vb.h = newH;
+
+      applyViewBox();
+    }
+
+    draw.node.addEventListener("wheel", zoomAt, { passive: false });
+
+    // Drag to pan
+    let dragging = false;
+    let dragStart = null;
+    let moved = 0;
+
+    draw.node.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      moved = 0;
+      dragStart = { x: e.clientX, y: e.clientY, vbX: vb.x, vbY: vb.y };
+      draw.node.setPointerCapture(e.pointerId);
+    });
+
+    draw.node.addEventListener("pointermove", (e) => {
+      if (!dragging || !dragStart) return;
+      const rect = draw.node.getBoundingClientRect();
+      const dx = e.clientX - dragStart.x;
+      const dy = e.clientY - dragStart.y;
+      moved += Math.abs(dx) + Math.abs(dy);
+
+      // Convert screen delta to projected delta (viewBox units)
+      const dxP = dx * (vb.w / rect.width);
+      const dyP = dy * (vb.h / rect.height);
+
+      vb.x = dragStart.vbX - dxP;
+      vb.y = dragStart.vbY - dyP;
+      applyViewBox();
+    });
+
+    draw.node.addEventListener("pointerup", (e) => {
+      if (!dragging) return;
+      dragging = false;
+
+      // Treat as click if it barely moved
+      const clicky = moved < 6;
+      if (clicky) {
+        const { x, y } = eventToProjected(e);
+
+        // show a temporary marker at click position (if inside)
+        if (isInsideMap(x, y)) {
+          clickMarker.center(x, y).show();
+        } else {
+          clickMarker.hide();
+        }
+
+        updateReadout(x, y);
+
+        // Shift+click => add permanent marker at the inferred coordinate
+        if (e.shiftKey && isInsideMap(x, y)) {
+          const g = equalEarthInverse(x, y);
+          addMarker(g.lat, g.lon, "rgba(120,220,255,0.95)");
+        }
+      }
+    });
+
+    // Prevent default drag behaviors
+    draw.node.addEventListener("dragstart", (e) => e.preventDefault());
+
+    // Initial readout at map center
+    updateReadout(0, 0);
+
+  })();
+  </script>
+</body>
+</html>
