@@ -24,11 +24,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **4/10** |
+| **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.5**   | **5/10** |
-| **Glm 4.6**           | **0/10** |
-| **Kimi K2 Turbo**     | **0/10** |
+| **Glm 4.6**           | **3/10** |
+| **Kimi K2 Turbo**     | **4/10** |
+| **Deepseek 3.2**      | **5/10** |
 
 ---
 
@@ -38,11 +40,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **3/10** |
+| **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **2/10** |
-| **Glm 4.6**           | **0/10** |
-| **Kimi K2 Turbo**     | **0/10** |
+| **Glm 4.6**           | **2/10** |
+| **Kimi K2 Turbo**     | **2/10** |
+| **Deepseek 3.2**      | **4/10** |
 
 ---
 
@@ -52,11 +56,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **7/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Glm 4.6**           | **0/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -66,11 +72,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **8/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Glm 4.6**           | **0/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -80,11 +88,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **9/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.6**           | **0/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -94,11 +104,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **4/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Glm 4.6**           | **3/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -108,11 +120,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **6/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Glm 4.6**           | **3/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -122,11 +136,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **5/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Glm 4.6**           | **2/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -136,11 +152,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **8/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Glm 4.6**           | **0/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -150,11 +168,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **8/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.5**   | **10/10** |
 | **Glm 4.6**           | **0/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -164,11 +184,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **7/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **7/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Glm 4.6**           | **8/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -178,11 +200,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **3/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Glm 4.6**           | **3/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -192,11 +216,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **5/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **Grok 4.1**          | **6/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.6**           | **0/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -206,11 +232,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **6/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Glm 4.6**           | **5/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -220,11 +248,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **9/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **7/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.6**           | **0/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -234,11 +264,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **5/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Glm 4.6**           | **0/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -248,11 +280,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **3/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.6**           | **4/10** |
 | **Kimi K2 Turbo**     | **3/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -262,11 +296,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **8/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **4/10** |
 | **Glm 4.6**           | **2/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -276,11 +312,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **7/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.5**   | **10/10** |
 | **Glm 4.6**           | **4/10** |
 | **Kimi K2 Turbo**     | **3/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -290,11 +328,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **4/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **1/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **4/10** |
 | **Glm 4.6**           | **6/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -304,11 +344,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **4/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Glm 4.6**           | **2/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -318,11 +360,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **7/10** |
+| **ChatGPT 5.2**       | **0/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Glm 4.6**           | **4/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -332,11 +376,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **7/10** |
+| **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Glm 4.6**           | **8/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -346,11 +392,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **7/10** |
+| **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Glm 4.6**           | **8/10** |
 | **Kimi K2 Turbo**     | **4/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -360,11 +408,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **3/10** |
+| **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **2/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Glm 4.6**           | **2/10** |
 | **Kimi K2 Turbo**     | **2/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -374,11 +424,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **6/10** |
+| **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Glm 4.6**           | **5/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 ---
 
@@ -388,11 +440,13 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **4/10** |
+| **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.6**           | **1/10** |
 | **Kimi K2 Turbo**     | **2/10** |
+| **Deepseek 3.2**      | **0/10** |
 
 
 
