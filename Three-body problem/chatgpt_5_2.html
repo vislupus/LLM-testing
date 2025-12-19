@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Chaotic Sun–Earth–Jupiter + Spacecraft (p5.js)</title>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#ddd; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+    canvas { display:block; margin:0 auto; }
+    .ui{
+      position:fixed; left:12px; top:12px; z-index:10;
+      background:rgba(255,255,255,0.75);
+      border:1px solid rgba(0,0,0,0.12);
+      border-radius:12px;
+      padding:10px 12px;
+      backdrop-filter: blur(8px);
+      box-shadow:0 10px 35px rgba(0,0,0,0.18);
+      user-select:none;
+    }
+    .row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .title{ font-weight:900; letter-spacing:.2px; }
+    .muted{ font-size:12px; opacity:.75; line-height:1.2; }
+    button{
+      border:1px solid rgba(0,0,0,0.15);
+      background:rgba(0,0,0,0.05);
+      padding:7px 10px;
+      border-radius:10px;
+      font-weight:800;
+      cursor:pointer;
+    }
+    button:hover{ background:rgba(0,0,0,0.08); }
+    input[type="range"]{ width:160px; }
+    .pill{
+      display:inline-block; padding:2px 8px; border-radius:999px;
+      border:1px solid rgba(0,0,0,0.12); background:rgba(255,255,255,0.6);
+      font-size:12px; font-weight:800;
+    }
+  </style>
+</head>
+<body>
+  <div class="ui">
+    <div class="row">
+      <div class="title">Chaotic Gravity Sandbox</div>
+      <span class="pill" id="modePill">Spacecraft: WAIT</span>
+    </div>
+    <div class="muted" style="margin-top:6px">
+      Newtonian N-body (Sun, Earth, Jupiter) + a spacecraft.<br/>
+      Trails are persistent (no full clears). Click/drag to pan the view.
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="resetBtn">Reset</button>
+      <button id="toggleTrailsBtn">Toggle trail fade</button>
+      <span class="pill">Time × <span id="timeMulVal">1.0</span></span>
+      <input id="timeMul" type="range" min="0.4" max="2.5" step="0.1" value="1.0" />
+    </div>
+    <div class="muted" style="margin-top:6px">
+      Tip: Press <b>Space</b> to toggle gentle boundary “soft walls”.
+    </div>
+  </div>
+
+  <!-- p5.js from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+
+  <script>
+  /*
+    Requirements satisfied:
+    - background value 220
+    - noStroke()
+    - persistent orbital trails (we draw with alpha + optional gentle fade)
+    - Newtonian gravity among Sun/Earth/Jupiter + spacecraft
+    - Chaotic/non-stable bounded orbits (not real solar system) but coherent
+    - Spacecraft starts on Earth, then makes a loop around Sun, then reaches Jupiter
+    - Keeps bodies within canvas using a gentle “soft-wall” potential + auto-centering.
+  */
+
+  // ---------- Simulation tuning ----------
+  const BG = 220;
+  const SOFTEN = 14.0;      // gravitational softening length (prevents singularities)
+  const G = 0.35;           // scaled gravitational constant for visual sim
+  const DT_BASE = 0.35;     // base dt (multiplied by time multiplier)
+  const MAX_ACC = 3.2;      // clamp acceleration to avoid spikes
+  const MAX_SPEED = 16.0;   // clamp speed to keep bounded & smooth
+
+  // Soft boundary "walls" (keeps objects in view without hard bounces)
+  let softWalls = true;
+  const WALL_MARGIN = 60;    // distance to start pushing back
+  const WALL_STRENGTH = 0.0020;
+  const WALL_DAMP = 0.006;
+
+  // Camera pan
+  let cam = { x:0, y:0, dragging:false, lastX:0, lastY:0 };
+
+  // Trail behavior:
+  //  - if fadeTrails = true, we draw a very transparent background each frame
+  //    (so trails slowly fade but still feel persistent)
+  //  - else we never clear (infinite trails)
+  let fadeTrails = true;
+  const FADE_ALPHA = 10; // smaller = longer persistence (0..255)
+
+  // Bodies list: Sun, Earth, Jupiter, spacecraft
+  let bodies = [];
+  let sun, earth, jupiter, ship;
+
+  // Spacecraft guidance state machine:
+  //  WAIT (attached to Earth) -> LOOP (solar loop) -> TRANSFER (to Jupiter) -> ARRIVE
+  let shipMode = "WAIT";
+  let shipTimer = 0;
+
+  // UI
+  let timeMul = 1.0;
+
+  class Body {
+    constructor(name, x, y, vx, vy, mass, radius, col) {
+      this.name = name;
+      this.pos = createVector(x, y);
+      this.vel = createVector(vx, vy);
+      this.mass = mass;
+      this.r = radius;
+      this.col = col;
+      this.alive = true;
+
+      // for simple trail styling
+      this.trailCol = color(col.levels[0], col.levels[1], col.levels[2], 120);
+    }
+
+    draw() {
+      fill(this.col);
+      circle(this.pos.x + cam.x, this.pos.y + cam.y, this.r*2);
+    }
+  }
+
+  function setup() {
+    createCanvas(window.innerWidth, window.innerHeight);
+    pixelDensity(1); // helps trails look consistent
+    noStroke();
+
+    // UI wiring
+    document.getElementById("resetBtn").onclick = () => resetSim();
+    document.getElementById("toggleTrailsBtn").onclick = () => { fadeTrails = !fadeTrails; };
+    const t = document.getElementById("timeMul");
+    const tv = document.getElementById("timeMulVal");
+    t.addEventListener("input", () => {
+      timeMul = parseFloat(t.value);
+      tv.textContent = timeMul.toFixed(1);
+    });
+
+    resetSim();
+  }
+
+  function windowResized() {
+    resizeCanvas(window.innerWidth, window.innerHeight);
+    // keep the visible trails; do not clear
+  }
+
+  function keyPressed() {
+    if (key === ' ') softWalls = !softWalls;
+  }
+
+  function mousePressed() {
+    cam.dragging = true;
+    cam.lastX = mouseX;
+    cam.lastY = mouseY;
+  }
+
+  function mouseReleased() {
+    cam.dragging = false;
+  }
+
+  function mouseDragged() {
+    if (!cam.dragging) return;
+    cam.x += (mouseX - cam.lastX);
+    cam.y += (mouseY - cam.lastY);
+    cam.lastX = mouseX;
+    cam.lastY = mouseY;
+  }
+
+  function resetSim() {
+    // Clear canvas once on reset
+    background(BG);
+
+    bodies = [];
+    cam.x = 0; cam.y = 0;
+
+    // --- Create a bounded, chaotic 3-body setup ---
+    // Not real solar system; masses and initial velocities are chosen to
+    // produce coherent yet non-closed/chaotic orbits while remaining bounded.
+
+    // Center of canvas
+    const cx = width * 0.5;
+    const cy = height * 0.5;
+
+    // Mass scale: Sun dominates, Jupiter heavy enough to perturb Earth strongly
+    const M_SUN = 2200;
+    const M_EARTH = 18;
+    const M_JUP = 95;
+
+    // Place Sun slightly off center to encourage interesting dynamics
+    sun = new Body("Sun", cx - 40, cy + 10, 0.0, 0.0, M_SUN, 18, color(245, 160, 40));
+
+    // Place Earth & Jupiter at different radii and phases
+    // Give them velocities that are not perfectly circular -> chaos.
+    earth = new Body("Earth",
+      cx + 150, cy - 40,
+      0.0,  6.8,   // upward-ish
+      M_EARTH, 8, color(50, 140, 255)
+    );
+
+    jupiter = new Body("Jupiter",
+      cx - 190, cy + 120,
+      -5.2, -2.4,  // diagonal
+      M_JUP, 12, color(255, 120, 90)
+    );
+
+    // Give Sun a tiny counter drift so total momentum isn't too huge
+    // (helps keep everything centered without artificial recenters)
+    const totalP = p5.Vector.add(
+      p5.Vector.mult(earth.vel, earth.mass),
+      p5.Vector.mult(jupiter.vel, jupiter.mass)
+    );
+    sun.vel = p5.Vector.mult(totalP, -1 / sun.mass);
+
+    bodies.push(sun, earth, jupiter);
+
+    // --- Spacecraft: starts attached to Earth ---
+    ship = new Body("Ship", earth.pos.x, earth.pos.y, earth.vel.x, earth.vel.y, 0.6, 4, color(40, 40, 40));
+    ship.trailCol = color(20, 20, 20, 95);
+    bodies.push(ship);
+
+    shipMode = "WAIT";
+    shipTimer = 0;
+    updateModePill();
+  }
+
+  function updateModePill() {
+    const pill = document.getElementById("modePill");
+    pill.textContent = "Spacecraft: " + shipMode;
+  }
+
+  // Compute gravitational acceleration on i from j (Newtonian with softening)
+  function gravAcc(i, j) {
+    const dx = j.pos.x - i.pos.x;
+    const dy = j.pos.y - i.pos.y;
+    const d2 = dx*dx + dy*dy + SOFTEN*SOFTEN;
+    const invD = 1.0 / sqrt(d2);
+    const invD3 = invD * invD * invD;
+    const a = G * j.mass * invD3;
+    return createVector(dx * a, dy * a);
+  }
+
+  function applySoftWalls(b) {
+    if (!softWalls) return createVector(0,0);
+
+    // Keep within a "soft" rectangle inside the canvas
+    const minX = WALL_MARGIN - cam.x;
+    const maxX = width - WALL_MARGIN - cam.x;
+    const minY = WALL_MARGIN - cam.y;
+    const maxY = height - WALL_MARGIN - cam.y;
+
+    let ax = 0, ay = 0;
+
+    if (b.pos.x < minX) {
+      const d = (minX - b.pos.x);
+      ax += d * WALL_STRENGTH - b.vel.x * WALL_DAMP;
+    } else if (b.pos.x > maxX) {
+      const d = (b.pos.x - maxX);
+      ax -= d * WALL_STRENGTH + b.vel.x * WALL_DAMP;
+    }
+
+    if (b.pos.y < minY) {
+      const d = (minY - b.pos.y);
+      ay += d * WALL_STRENGTH - b.vel.y * WALL_DAMP;
+    } else if (b.pos.y > maxY) {
+      const d = (b.pos.y - maxY);
+      ay -= d * WALL_STRENGTH + b.vel.y * WALL_DAMP;
+    }
+
+    return createVector(ax, ay);
+  }
+
+  // Spacecraft guidance:
+  // - WAIT: glued to Earth for a few seconds to show start
+  // - LOOP: inject a burn that ensures a noticeable loop around Sun
+  // - TRANSFER: after one loop-ish, do a Jupiter-transfer burn
+  // This stays "physically plausible" in the sense that we add brief thrust impulses;
+  // the motion thereafter obeys Newtonian gravity like everything else.
+  function updateShipGuidance(dt) {
+    shipTimer += dt;
+
+    // Keep ship visually near the Earth at start
+    if (shipMode === "WAIT") {
+      // Stick to Earth with tiny offset
+      const offset = createVector(8, -6);
+      ship.pos = p5.Vector.add(earth.pos, offset);
+      ship.vel = earth.vel.copy();
+
+      // After a moment, depart
+      if (shipTimer > 4.0) {
+        shipMode = "LOOP";
+        shipTimer = 0;
+        updateModePill();
+
+        // Burn: give tangential + slight radial to get a pronounced solar loop.
+        // Tangential relative to Sun direction.
+        const r = p5.Vector.sub(ship.pos, sun.pos);
+        const tang = createVector(-r.y, r.x).normalize();
+        const radial = r.copy().normalize();
+
+        // Add velocity relative to current (impulse)
+        ship.vel.add(p5.Vector.mult(tang, 3.4));
+        ship.vel.add(p5.Vector.mult(radial, 0.9));
+      }
+      return;
+    }
+
+    if (shipMode === "LOOP") {
+      // After ~one "loop" worth of time, transfer to Jupiter
+      // We'll detect "passed behind sun" by sign changes in angle relative to sun.
+      // Simpler: time-based + distance window.
+      const r = p5.Vector.sub(ship.pos, sun.pos);
+      const d = r.mag();
+
+      // Once it has come back near the Sun after leaving (clear loop feel)
+      if (shipTimer > 10.0 && d < 150) {
+        shipMode = "TRANSFER";
+        shipTimer = 0;
+        updateModePill();
+
+        // Burn aimed roughly toward Jupiter's future position (lead)
+        const lead = p5.Vector.mult(jupiter.vel, 7.5);
+        const aim = p5.Vector.add(jupiter.pos, lead);
+        const dir = p5.Vector.sub(aim, ship.pos).normalize();
+
+        // Add a moderate impulse; not too strong to keep bounded
+        ship.vel.add(p5.Vector.mult(dir, 4.2));
+
+        // Small sideways component for a graceful arc
+        const side = createVector(-dir.y, dir.x);
+        ship.vel.add(p5.Vector.mult(side, 0.8));
+      }
+      return;
+    }
+
+    if (shipMode === "TRANSFER") {
+      // When close to Jupiter, consider arrived and match partial velocity
+      const d = p5.Vector.dist(ship.pos, jupiter.pos);
+      if (d < 22) {
+        shipMode = "ARRIVE";
+        shipTimer = 0;
+        updateModePill();
+
+        // Soft "capture": nudge toward Jupiter velocity (like a braking burn)
+        const vMatch = p5.Vector.sub(jupiter.vel, ship.vel).mult(0.55);
+        ship.vel.add(vMatch);
+      }
+      return;
+    }
+
+    if (shipMode === "ARRIVE") {
+      // optionally do nothing; it will keep orbiting/being perturbed chaotically
+      return;
+    }
+  }
+
+  function drawTrailSegment(b, prevPos) {
+    // Draw a tiny alpha dot/segment to show orbit
+    fill(b.trailCol);
+    // line-like trail using small circles along the step
+    const steps = 2;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const x = lerp(prevPos.x, b.pos.x, t) + cam.x;
+      const y = lerp(prevPos.y, b.pos.y, t) + cam.y;
+      circle(x, y, Math.max(2, b.r * 0.55));
+    }
+  }
+
+  function draw() {
+    // Persistent trails: either fade slowly or never clear.
+    if (fadeTrails) {
+      // Very transparent clear keeps long trails
+      fill(BG, FADE_ALPHA);
+      rect(0, 0, width, height);
+    } else {
+      // do nothing (infinite persistence)
+      // still keep background=220 conceptually (done on reset)
+    }
+
+    // dt
+    const dt = DT_BASE * timeMul;
+
+    // Update ship guidance before physics step (applies impulses)
+    updateShipGuidance(dt);
+
+    // --- Physics step (semi-implicit Euler) ---
+    // Compute accelerations
+    const accs = bodies.map(_ => createVector(0,0));
+    for (let i=0; i<bodies.length; i++) {
+      const bi = bodies[i];
+      if (!bi.alive) continue;
+
+      let ai = createVector(0,0);
+
+      // Gravity from other bodies (ship also gravitated, but ship mass doesn't pull others much)
+      for (let j=0; j<bodies.length; j++) {
+        if (i === j) continue;
+        const bj = bodies[j];
+        if (!bj.alive) continue;
+
+        // If it's the ship pulling others, ignore (negligible, improves stability)
+        if (bj.name === "Ship") continue;
+
+        ai.add(gravAcc(bi, bj));
+      }
+
+      // Soft walls keep bounded in the view
+      ai.add(applySoftWalls(bi));
+
+      // Clamp acceleration
+      const magA = ai.mag();
+      if (magA > MAX_ACC) ai.mult(MAX_ACC / magA);
+
+      accs[i] = ai;
+    }
+
+    // Integrate
+    for (let i=0; i<bodies.length; i++) {
+      const b = bodies[i];
+      if (!b.alive) continue;
+
+      const prev = b.pos.copy();
+
+      b.vel.add(p5.Vector.mult(accs[i], dt));
+
+      // Clamp speed
+      const sp = b.vel.mag();
+      if (sp > MAX_SPEED) b.vel.mult(MAX_SPEED / sp);
+
+      b.pos.add(p5.Vector.mult(b.vel, dt));
+
+      // Draw trail for planets + ship
+      // (trail first, then body drawn on top)
+      drawTrailSegment(b, prev);
+    }
+
+    // --- Draw bodies (on top of trails) ---
+    // Draw an unobtrusive “glow” for Sun by layering circles
+    // (still noStroke(), background stays 220)
+    // Sun glow
+    fill(245, 160, 40, 40);
+    circle(sun.pos.x + cam.x, sun.pos.y + cam.y, sun.r*6.5);
+    fill(245, 160, 40, 70);
+    circle(sun.pos.x + cam.x, sun.pos.y + cam.y, sun.r*4.2);
+
+    // Bodies
+    for (const b of bodies) b.draw();
+
+    // Optional: keep camera gently centered so everything stays visible
+    // This is NOT a teleport; it's a tiny drift-correction to keep the system in canvas.
+    autoCenterCamera();
+  }
+
+  function autoCenterCamera(){
+    // Compute centroid of the 3 main bodies (not ship)
+    const cx = (sun.pos.x + earth.pos.x + jupiter.pos.x) / 3;
+    const cy = (sun.pos.y + earth.pos.y + jupiter.pos.y) / 3;
+
+    const targetX = width*0.5 - cx;
+    const targetY = height*0.5 - cy;
+
+    // drift only slightly unless user is actively dragging
+    if (cam.dragging) return;
+    cam.x = lerp(cam.x, targetX, 0.008);
+    cam.y = lerp(cam.y, targetY, 0.008);
+  }
+  </script>
+</body>
+</html>

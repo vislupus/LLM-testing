@@ -1,0 +1,1648 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Floating Island Diorama — Babylon.js (Single File)</title>
+  <style>
+    html, body { height:100%; margin:0; overflow:hidden; background:#07101f; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    #c { width:100%; height:100%; display:block; touch-action:none; }
+
+    .hud{
+      position:fixed; left:14px; top:14px; z-index:10;
+      display:flex; gap:10px; flex-wrap:wrap;
+      color:#eef6ff; user-select:none;
+    }
+    .panel{
+      min-width: 280px;
+      background: rgba(255,255,255,.08);
+      border: 1px solid rgba(255,255,255,.16);
+      border-radius: 16px;
+      padding: 10px 12px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 18px 70px rgba(0,0,0,.45);
+    }
+    .row{ display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+    .title{ font-weight:950; letter-spacing:.2px; }
+    .muted{ opacity:.78; font-weight:700; font-size:12px; line-height:1.25; }
+    button{
+      border: 1px solid rgba(255,255,255,.20);
+      background: rgba(255,255,255,.10);
+      color:#eef6ff;
+      font-weight:900;
+      padding: 8px 10px;
+      border-radius: 12px;
+      cursor:pointer;
+    }
+    button:hover{ background: rgba(255,255,255,.14); }
+    .pill{
+      display:inline-block; padding:2px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(0,0,0,.22);
+      font-weight:900; font-size:12px;
+    }
+    .kbd{
+      display:inline-block; padding:2px 8px; border-radius:999px;
+      border:1px solid rgba(255,255,255,.18);
+      background:rgba(255,255,255,.08);
+      font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 900;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <div class="hud">
+    <div class="panel">
+      <div class="row">
+        <div class="title">🏝️ Floating Island Diorama</div>
+        <div class="pill" id="modePill">Day</div>
+      </div>
+      <div class="muted" style="margin-top:6px">
+        Orbit: mouse • Zoom: wheel • Pan: right-drag<br/>
+        Regenerate: <span class="kbd">G</span> • Toggle outlines: <span class="kbd">O</span> • Toggle day/night: <span class="kbd">N</span>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="btnRegen">Regenerate</button>
+        <button id="btnNight">Day/Night</button>
+        <button id="btnOutlines">Outlines</button>
+      </div>
+    </div>
+
+    <div class="panel" style="min-width:320px">
+      <div class="row">
+        <div class="title">Scene notes</div>
+        <div class="pill" id="seedPill">Seed: —</div>
+      </div>
+      <div class="muted" style="margin-top:6px">
+        High-poly terrain + cliffs, stylized river + bridges + waterfalls, medieval castle,
+        cozy village (tavern, market, mill), pine trees, and a ruined watchtower.
+        All geometry + textures are procedural (no external assets).
+      </div>
+    </div>
+  </div>
+
+  <!-- Babylon.js from CDN (allowed). Everything else is self-contained. -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+
+  <script>
+  (() => {
+    // ============================================================
+    // Floating Island Diorama (single-file): high-poly, stylized,
+    // handcrafted tabletop-miniature look.
+    // - Procedural textures (DynamicTexture)
+    // - High-poly terrain + cliffs + floating rock underside
+    // - Castle, village props, river + bridges + waterfalls
+    // - Soft lighting + bloom + subtle outlines toggle
+    // ============================================================
+
+    const canvas = document.getElementById("c");
+    const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer:true, stencil:true });
+
+    // --- Simple seeded RNG (xorshift32) ---
+    function makeRNG(seed){
+      let x = seed >>> 0;
+      return () => {
+        x ^= x << 13; x >>>= 0;
+        x ^= x >> 17; x >>>= 0;
+        x ^= x << 5;  x >>>= 0;
+        return (x >>> 0) / 4294967296;
+      };
+    }
+
+    // --- Value noise helpers ---
+    function lerp(a,b,t){ return a + (b-a)*t; }
+    function smoothstep(t){ return t*t*(3-2*t); }
+
+    function makeValueNoise2D(rng){
+      // hash grid values
+      const table = new Map();
+      function g(ix, iz){
+        const k = ix + "," + iz;
+        if (table.has(k)) return table.get(k);
+        const v = rng();
+        table.set(k, v);
+        return v;
+      }
+      return function noise(x,z){
+        const x0 = Math.floor(x), z0 = Math.floor(z);
+        const x1 = x0 + 1,       z1 = z0 + 1;
+        const sx = smoothstep(x - x0);
+        const sz = smoothstep(z - z0);
+        const n00 = g(x0,z0), n10 = g(x1,z0), n01 = g(x0,z1), n11 = g(x1,z1);
+        const ix0 = lerp(n00, n10, sx);
+        const ix1 = lerp(n01, n11, sx);
+        return lerp(ix0, ix1, sz);
+      }
+    }
+
+    function fbm(noise, x,z, oct=5, lac=2.0, gain=0.5){
+      let amp = 1.0, freq = 1.0, sum=0.0, norm=0.0;
+      for (let i=0;i<oct;i++){
+        sum += amp * noise(x*freq, z*freq);
+        norm += amp;
+        amp *= gain;
+        freq *= lac;
+      }
+      return sum / norm;
+    }
+
+    // --- DynamicTexture helpers (procedural "handcrafted" materials) ---
+    function makeDynamicTexture(scene, name, size, drawFn){
+      const dt = new BABYLON.DynamicTexture(name, { width:size, height:size }, scene, false);
+      const ctx = dt.getContext();
+      drawFn(ctx, size);
+      dt.update();
+      dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+      dt.anisotropicFilteringLevel = 8;
+      return dt;
+    }
+
+    function makeStoneTex(scene, rng){
+      return makeDynamicTexture(scene, "stoneTex", 512, (c,s)=>{
+        // base
+        c.fillStyle = "#a8aab0";
+        c.fillRect(0,0,s,s);
+
+        // subtle mottling
+        for (let i=0;i<50000;i++){
+          const x = (rng()*s)|0, y = (rng()*s)|0;
+          const a = 0.03 + rng()*0.05;
+          const v = 140 + (rng()*60)|0;
+          c.fillStyle = `rgba(${v},${v},${v+5},${a})`;
+          c.fillRect(x,y,1,1);
+        }
+
+        // fake "blocks" + grout
+        const block = 64;
+        c.lineWidth = 2;
+        c.strokeStyle = "rgba(70,70,70,0.22)";
+        for (let y=0;y<=s;y+=block){
+          c.beginPath(); c.moveTo(0,y); c.lineTo(s,y); c.stroke();
+        }
+        for (let x=0;x<=s;x+=block){
+          c.beginPath(); c.moveTo(x,0); c.lineTo(x,s); c.stroke();
+        }
+
+        // cracks
+        c.lineWidth = 1.5;
+        for (let i=0;i<120;i++){
+          let x = rng()*s, y = rng()*s;
+          const len = 40 + rng()*160;
+          const ang = rng()*Math.PI*2;
+          c.strokeStyle = `rgba(50,50,60,${0.08 + rng()*0.10})`;
+          c.beginPath();
+          c.moveTo(x,y);
+          for (let k=0;k<6;k++){
+            x += Math.cos(ang + (rng()-0.5)*0.8) * (len/6);
+            y += Math.sin(ang + (rng()-0.5)*0.8) * (len/6);
+            c.lineTo(x,y);
+          }
+          c.stroke();
+        }
+      });
+    }
+
+    function makeWoodTex(scene, rng){
+      return makeDynamicTexture(scene, "woodTex", 512, (c,s)=>{
+        c.fillStyle = "#6a4a2f";
+        c.fillRect(0,0,s,s);
+
+        // plank lines
+        const plankH = 48;
+        c.lineWidth = 3;
+        for (let y=0;y<=s;y+=plankH){
+          c.strokeStyle = "rgba(20,10,5,0.22)";
+          c.beginPath(); c.moveTo(0,y); c.lineTo(s,y); c.stroke();
+        }
+        // wood grain
+        for (let i=0;i<2000;i++){
+          const y = rng()*s;
+          const x = rng()*s;
+          const w = 60 + rng()*180;
+          c.strokeStyle = `rgba(30,15,8,${0.04 + rng()*0.06})`;
+          c.beginPath();
+          c.moveTo(x,y);
+          c.bezierCurveTo(x+w*0.3, y+(rng()-0.5)*12, x+w*0.6, y+(rng()-0.5)*12, x+w, y+(rng()-0.5)*10);
+          c.stroke();
+        }
+        // knots
+        for (let i=0;i<18;i++){
+          const x = rng()*s, y = rng()*s;
+          const r = 10 + rng()*22;
+          c.strokeStyle = "rgba(20,10,5,0.35)";
+          c.lineWidth = 3;
+          c.beginPath(); c.arc(x,y,r,0,Math.PI*2); c.stroke();
+          c.lineWidth = 2;
+          c.beginPath(); c.arc(x,y,r*0.6,0,Math.PI*2); c.stroke();
+        }
+      });
+    }
+
+    function makeRoofTex(scene, rng){
+      return makeDynamicTexture(scene, "roofTex", 512, (c,s)=>{
+        c.fillStyle = "#8b3d34";
+        c.fillRect(0,0,s,s);
+        // shingles
+        const sh = 28, sw = 44;
+        for (let y=0;y<s;y+=sh){
+          for (let x=0;x<s;x+=sw){
+            const jitter = (rng()-0.5)*6;
+            const shade = 110 + (rng()*40)|0;
+            c.fillStyle = `rgba(${shade+60},${shade},${shade},0.35)`;
+            c.fillRect(x + ((y/sh)%2)*sw*0.5 + jitter, y + jitter*0.4, sw-4, sh-6);
+          }
+        }
+        // ridge line accent
+        c.strokeStyle = "rgba(255,255,255,0.10)";
+        c.lineWidth = 5;
+        c.beginPath(); c.moveTo(0, s*0.15); c.lineTo(s, s*0.15); c.stroke();
+      });
+    }
+
+    function makeClothTex(scene, rng, colorA="#c04cff", colorB="#ffffff"){
+      return makeDynamicTexture(scene, "clothTex", 512, (c,s)=>{
+        c.fillStyle = colorA; c.fillRect(0,0,s,s);
+        c.fillStyle = colorB;
+        for (let i=0;i<10;i++){
+          const x = i*(s/10);
+          c.globalAlpha = 0.22;
+          c.fillRect(x,0,s/18,s);
+        }
+        c.globalAlpha = 1;
+        // wrinkles
+        for (let i=0;i<300;i++){
+          const x = rng()*s, y = rng()*s;
+          c.strokeStyle = `rgba(0,0,0,${0.03 + rng()*0.05})`;
+          c.lineWidth = 2;
+          c.beginPath();
+          c.moveTo(x,y);
+          c.quadraticCurveTo(x+60+(rng()-0.5)*50, y+(rng()-0.5)*70, x+120, y+(rng()-0.5)*40);
+          c.stroke();
+        }
+      });
+    }
+
+    // --- River shader (no textures; animated fresnel + scrolling noise) ---
+    BABYLON.Effect.ShadersStore["riverVertexShader"] = `
+      precision highp float;
+      attribute vec3 position;
+      attribute vec3 normal;
+      attribute vec2 uv;
+      uniform mat4 worldViewProjection;
+      uniform mat4 world;
+      uniform float time;
+      varying vec3 vPosW;
+      varying vec3 vNrmW;
+      varying vec2 vUV;
+      float w(vec2 p){
+        return sin(p.x*2.2 + time*2.4) * 0.06
+             + cos(p.y*2.8 - time*2.0) * 0.05
+             + sin((p.x+p.y)*1.5 + time*1.2) * 0.04;
+      }
+      void main(){
+        vec3 pos = position;
+        // tiny wave in Y (ribbon is already curved, keep subtle)
+        pos.y += w(pos.xz) * 0.35;
+        vec4 wp = world * vec4(pos,1.0);
+        vPosW = wp.xyz;
+        vNrmW = normalize((world * vec4(normal,0.0)).xyz);
+        vUV = uv;
+        gl_Position = worldViewProjection * vec4(pos,1.0);
+      }
+    `;
+    BABYLON.Effect.ShadersStore["riverFragmentShader"] = `
+      precision highp float;
+      varying vec3 vPosW;
+      varying vec3 vNrmW;
+      varying vec2 vUV;
+      uniform vec3 cameraPosition;
+      uniform float time;
+
+      float hash(vec2 p){
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+      float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0,0.0));
+        float c = hash(i + vec2(0.0,1.0));
+        float d = hash(i + vec2(1.0,1.0));
+        vec2 u = f*f*(3.0-2.0*f);
+        return mix(a,b,u.x) + (c-a)*u.y*(1.0-u.x) + (d-b)*u.x*u.y;
+      }
+
+      void main(){
+        vec3 N = normalize(vNrmW);
+        vec3 V = normalize(cameraPosition - vPosW);
+        float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+
+        vec2 uv = vUV;
+        uv.x += time*0.10;
+        uv.y += time*0.06;
+
+        float n = noise(uv*6.0) * 0.65 + noise(uv*12.0) * 0.35;
+
+        vec3 deep = vec3(0.02, 0.52, 0.62);
+        vec3 shallow = vec3(0.22, 0.88, 0.90);
+        vec3 col = mix(deep, shallow, 0.55 + 0.35*n);
+
+        // sparkle bands
+        float sparkle = smoothstep(0.86, 1.0, noise(uv*18.0 + time*0.2)) * 0.22;
+        col += vec3(0.55, 0.95, 1.0) * sparkle;
+
+        col = mix(col, vec3(0.70, 0.95, 1.0), fres*0.45);
+        gl_FragColor = vec4(col, 0.92);
+      }
+    `;
+
+    // --- Waterfall shader (scrolling alpha) ---
+    BABYLON.Effect.ShadersStore["fallVertexShader"] = `
+      precision highp float;
+      attribute vec3 position;
+      attribute vec2 uv;
+      uniform mat4 worldViewProjection;
+      varying vec2 vUV;
+      void main(){
+        vUV = uv;
+        gl_Position = worldViewProjection * vec4(position,1.0);
+      }
+    `;
+    BABYLON.Effect.ShadersStore["fallFragmentShader"] = `
+      precision highp float;
+      varying vec2 vUV;
+      uniform float time;
+
+      float hash(vec2 p){
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+      float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0,0.0));
+        float c = hash(i + vec2(0.0,1.0));
+        float d = hash(i + vec2(1.0,1.0));
+        vec2 u = f*f*(3.0-2.0*f);
+        return mix(a,b,u.x) + (c-a)*u.y*(1.0-u.x) + (d-b)*u.x*u.y;
+      }
+
+      void main(){
+        vec2 uv = vUV;
+        uv.y += time*0.8;
+        float streak = noise(vec2(uv.x*10.0, uv.y*18.0));
+        float foam = noise(vec2(uv.x*4.0, uv.y*8.0 + time*0.2));
+        float a = smoothstep(0.15, 0.85, streak) * 0.65 + foam*0.25;
+
+        // fade edges & bottom
+        a *= smoothstep(0.02, 0.18, uv.x) * (1.0 - smoothstep(0.82, 0.98, uv.x));
+        a *= (1.0 - smoothstep(0.75, 1.0, vUV.y));
+
+        vec3 col = mix(vec3(0.70,0.95,1.0), vec3(0.20,0.75,0.92), foam);
+        gl_FragColor = vec4(col, a);
+      }
+    `;
+
+    // --- Global toggles ---
+    let outlinesOn = true;
+    let nightMode = false;
+
+    const btnRegen = document.getElementById("btnRegen");
+    const btnNight = document.getElementById("btnNight");
+    const btnOut = document.getElementById("btnOutlines");
+    const modePill = document.getElementById("modePill");
+    const seedPill = document.getElementById("seedPill");
+
+    function setPill(){
+      modePill.textContent = nightMode ? "Night" : "Day";
+    }
+
+    // ============================================================
+    // Scene builder
+    // ============================================================
+    let scene = null;
+
+    function buildScene(seed){
+      if (scene) scene.dispose();
+      scene = new BABYLON.Scene(engine);
+      scene.clearColor = new BABYLON.Color4(0.03, 0.06, 0.10, 1);
+
+      const rng = makeRNG(seed);
+      seedPill.textContent = "Seed: " + seed;
+
+      // --- Camera ---
+      const cam = new BABYLON.ArcRotateCamera("cam",
+        -Math.PI*0.55, Math.PI*0.38, 240,
+        new BABYLON.Vector3(0, 28, 0), scene
+      );
+      cam.attachControl(canvas, true);
+      cam.lowerRadiusLimit = 140;
+      cam.upperRadiusLimit = 520;
+      cam.lowerBetaLimit = 0.20;
+      cam.upperBetaLimit = 1.35;
+      cam.wheelDeltaPercentage = 0.01;
+      cam.panningSensibility = 55;
+
+      // --- Lighting (soft) ---
+      const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
+      hemi.intensity = 0.85;
+
+      const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.25, -1, -0.20), scene);
+      sun.position = new BABYLON.Vector3(130, 220, 110);
+      sun.intensity = 1.0;
+
+      // shadows
+      const shadowGen = new BABYLON.ShadowGenerator(2048, sun);
+      shadowGen.useBlurExponentialShadowMap = true;
+      shadowGen.blurKernel = 24;
+      shadowGen.setDarkness(0.35);
+
+      // --- PostFX (bloom + tone mapping for soft miniature look) ---
+      const pipe = new BABYLON.DefaultRenderingPipeline("pipe", true, scene, [cam]);
+      pipe.fxaaEnabled = true;
+      pipe.bloomEnabled = true;
+      pipe.bloomThreshold = 0.82;
+      pipe.bloomWeight = 0.20;
+      pipe.bloomKernel = 64;
+      pipe.imageProcessingEnabled = true;
+      scene.imageProcessingConfiguration.contrast = 1.18;
+      scene.imageProcessingConfiguration.exposure = 1.00;
+      scene.imageProcessingConfiguration.toneMappingEnabled = true;
+      scene.imageProcessingConfiguration.toneMappingType = BABYLON.ImageProcessingConfiguration.TONEMAPPING_ACES;
+
+      // Fog (atmospheric tabletop look)
+      scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
+      scene.fogDensity = 0.0022;
+      scene.fogColor = new BABYLON.Color3(0.08, 0.14, 0.20);
+
+      // --- Sky dome (gradient) ---
+      const sky = BABYLON.MeshBuilder.CreateSphere("sky", { diameter: 2000, segments: 24 }, scene);
+      sky.isPickable = false;
+      sky.infiniteDistance = true;
+      const skyMat = new BABYLON.StandardMaterial("skyMat", scene);
+      skyMat.backFaceCulling = false;
+      skyMat.disableLighting = true;
+      skyMat.emissiveColor = new BABYLON.Color3(0.08, 0.18, 0.30);
+      sky.material = skyMat;
+
+      // --- Procedural textures ---
+      const stoneTex = makeStoneTex(scene, rng);
+      const woodTex  = makeWoodTex(scene, rng);
+      const roofTex  = makeRoofTex(scene, rng);
+      const clothTex = makeClothTex(scene, rng, "#2ac9c9", "#ffffff");
+
+      // --- PBR Materials ---
+      function pbr(name){
+        const m = new BABYLON.PBRMaterial(name, scene);
+        m.metallic = 0.0;
+        m.roughness = 0.95;
+        m.environmentIntensity = 0.25;
+        return m;
+      }
+
+      const matStone = pbr("matStone");
+      matStone.albedoTexture = stoneTex;
+      matStone.roughness = 0.98;
+
+      const matWood = pbr("matWood");
+      matWood.albedoTexture = woodTex;
+      matWood.roughness = 0.92;
+
+      const matRoof = pbr("matRoof");
+      matRoof.albedoTexture = roofTex;
+      matRoof.roughness = 0.92;
+
+      const matCloth = pbr("matCloth");
+      matCloth.albedoTexture = clothTex;
+      matCloth.roughness = 0.86;
+
+      const matGrass = pbr("matGrass");
+      matGrass.albedoColor = new BABYLON.Color3(1,1,1);
+      matGrass.roughness = 0.98;
+
+      const matRock = pbr("matRock");
+      matRock.albedoColor = new BABYLON.Color3(0.62, 0.64, 0.68);
+      matRock.roughness = 0.99;
+
+      const matDirt = pbr("matDirt");
+      matDirt.albedoColor = new BABYLON.Color3(0.52, 0.38, 0.24);
+      matDirt.roughness = 0.99;
+
+      // --- Outlines helper ---
+      function applyOutline(mesh, color = new BABYLON.Color3(0.04,0.05,0.07), w=0.03){
+        mesh.renderOutline = outlinesOn;
+        mesh.outlineWidth = w;
+        mesh.outlineColor = color;
+      }
+
+      // ============================================================
+      // High-poly terrain + cliffs + floating underside
+      // ============================================================
+      const ISLAND_R = 120;
+      const TOP_W = 260;
+      const SUB = 200; // high poly
+      const noise = makeValueNoise2D(rng);
+
+      // River path (in XZ), roughly "S" shape through the island
+      const riverPts2 = [];
+      for (let i=0;i<18;i++){
+        const t = i/17;
+        const x = lerp(-85, 75, t) + Math.sin(t*Math.PI*2.0)*14;
+        const z = lerp( 55, -60, t) + Math.cos(t*Math.PI*2.2)*10;
+        riverPts2.push(new BABYLON.Vector2(x,z));
+      }
+      function distToRiver(x,z){
+        // distance to polyline
+        let best = 1e9;
+        for (let i=0;i<riverPts2.length-1;i++){
+          const a = riverPts2[i], b = riverPts2[i+1];
+          const abx = b.x - a.x, abz = b.y - a.y;
+          const apx = x - a.x, apz = z - a.y;
+          const ab2 = abx*abx + abz*abz + 1e-9;
+          let u = (apx*abx + apz*abz)/ab2;
+          u = Math.max(0, Math.min(1, u));
+          const px = a.x + abx*u, pz = a.y + abz*u;
+          const dx = x - px, dz = z - pz;
+          best = Math.min(best, Math.sqrt(dx*dx + dz*dz));
+        }
+        return best;
+      }
+
+      function islandHeight(x,z){
+        const r = Math.sqrt(x*x + z*z);
+        const edge = BABYLON.Scalar.Clamp((r / ISLAND_R), 0, 1);
+
+        // base plateau
+        let h = 18.0;
+
+        // broad shape falloff near edge (cliff top)
+        h += (1.0 - Math.pow(edge, 1.8)) * 18.0;
+
+        // terrain noise
+        const n1 = fbm(noise, x*0.025 + 50, z*0.025 + 50, 5, 2.0, 0.5);
+        const n2 = fbm(noise, x*0.065 - 10, z*0.065 + 20, 4, 2.1, 0.55);
+        h += (n1-0.5)*12.0 + (n2-0.5)*5.0;
+
+        // carve river valley
+        const d = distToRiver(x,z);
+        const riverWidth = 10.5;
+        const valley = Math.exp(-(d*d) / (2*riverWidth*riverWidth)); // 0..1
+        h -= valley * 7.5;
+
+        // tiny handcrafted bumps
+        const n3 = fbm(noise, x*0.18 + 3, z*0.18 - 7, 3, 2.0, 0.6);
+        h += (n3-0.5)*1.6;
+
+        // sharpen edge slightly (miniature cliff feel)
+        h += (Math.pow(1-edge, 3.0)) * 2.0;
+        h -= Math.pow(edge, 6.0) * 2.0;
+
+        return h;
+      }
+
+      // Top ground
+      const ground = BABYLON.MeshBuilder.CreateGround("ground", { width:TOP_W, height:TOP_W, subdivisions:SUB }, scene);
+      ground.receiveShadows = true;
+
+      // Displace vertices + vertex colors for grass/rock/sand
+      const pos = ground.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+      const uvs = ground.getVerticesData(BABYLON.VertexBuffer.UVKind);
+      const cols = new Float32Array((pos.length/3)*4);
+
+      // We’ll also compute a “slope” approximation to paint rocks on steeper areas.
+      function sampleH(x,z){ return islandHeight(x,z); }
+
+      for (let i=0;i<pos.length;i+=3){
+        const x = pos[i], z = pos[i+2];
+        const h = sampleH(x,z);
+        pos[i+1] = h;
+
+        // slope approx
+        const e = 0.9;
+        const hx = sampleH(x+e,z) - sampleH(x-e,z);
+        const hz = sampleH(x,z+e) - sampleH(x,z-e);
+        const slope = Math.min(1, Math.sqrt(hx*hx + hz*hz) / (2*e) / 2.3);
+
+        const r = Math.sqrt(x*x + z*z) / ISLAND_R;
+        const edge = BABYLON.Scalar.Clamp(r, 0, 1);
+
+        // paint zones
+        // - grass on flatter top
+        // - rock on steep slopes / near edge
+        // - sand-ish near river edges
+        const dRiver = distToRiver(x,z);
+        const nearRiver = BABYLON.Scalar.Clamp(1.0 - (dRiver-8.0)/12.0, 0, 1);
+
+        let gCol = new BABYLON.Color3(0.14, 0.62, 0.22);
+        let rockCol = new BABYLON.Color3(0.50, 0.52, 0.56);
+        let sandCol = new BABYLON.Color3(0.92, 0.84, 0.58);
+
+        // blend
+        const rockAmt = BABYLON.Scalar.Clamp(slope*1.15 + Math.pow(edge, 2.2)*0.65, 0, 1);
+        const sandAmt = BABYLON.Scalar.Clamp(nearRiver*(1-rockAmt)*0.75, 0, 1);
+
+        let col = gCol.scale(1 - rockAmt - sandAmt)
+          .add(rockCol.scale(rockAmt))
+          .add(sandCol.scale(sandAmt));
+
+        // slight variation
+        const v = fbm(noise, x*0.11 + 100, z*0.11 + 100, 3, 2.0, 0.6) - 0.5;
+        col = col.add(new BABYLON.Color3(v*0.06, v*0.05, v*0.04));
+
+        const vi = (i/3)*4;
+        cols[vi+0]=col.r; cols[vi+1]=col.g; cols[vi+2]=col.b; cols[vi+3]=1.0;
+      }
+
+      ground.setVerticesData(BABYLON.VertexBuffer.PositionKind, pos, true);
+      ground.setVerticesData(BABYLON.VertexBuffer.ColorKind, cols, true);
+      ground.material = matGrass;
+      ground.material.useVertexColor = true;
+      ground.refreshBoundingInfo();
+      BABYLON.VertexData.ComputeNormals(pos, ground.getIndices(), ground.getVerticesData(BABYLON.VertexBuffer.NormalKind));
+      ground.updateVerticesData(BABYLON.VertexBuffer.NormalKind, ground.getVerticesData(BABYLON.VertexBuffer.NormalKind));
+      applyOutline(ground, new BABYLON.Color3(0.03,0.04,0.06), 0.015);
+
+      // Cliff ring (steep rocky cylinder with noise)
+      const cliff = BABYLON.MeshBuilder.CreateCylinder("cliff", {
+        diameterTop: ISLAND_R*2.08,
+        diameterBottom: ISLAND_R*1.65,
+        height: 90,
+        tessellation: 80,
+        subdivisions: 8
+      }, scene);
+      cliff.position.y = -26;
+      cliff.receiveShadows = true;
+      cliff.material = matRock;
+
+      // roughen cliff vertices
+      {
+        const p = cliff.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+        for (let i=0;i<p.length;i+=3){
+          const x = p[i], y = p[i+1], z = p[i+2];
+          const r = Math.sqrt(x*x + z*z) + 1e-6;
+          const n = fbm(noise, x*0.06+10, z*0.06-20, 4, 2.1, 0.55) - 0.5;
+          const jag = n * 4.8 * (0.35 + (1 - Math.abs(y)/45)*0.65);
+          p[i]   = x + (x/r)*jag;
+          p[i+2] = z + (z/r)*jag;
+          p[i+1] = y + (fbm(noise, x*0.11, z*0.11, 3, 2.0, 0.6)-0.5)*1.8;
+        }
+        cliff.setVerticesData(BABYLON.VertexBuffer.PositionKind, p, true);
+        cliff.refreshBoundingInfo();
+        BABYLON.VertexData.ComputeNormals(p, cliff.getIndices(), cliff.getVerticesData(BABYLON.VertexBuffer.NormalKind));
+        cliff.updateVerticesData(BABYLON.VertexBuffer.NormalKind, cliff.getVerticesData(BABYLON.VertexBuffer.NormalKind));
+      }
+      applyOutline(cliff, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+      // Floating underside rock (inverted cone-ish)
+      const under = BABYLON.MeshBuilder.CreateCylinder("under", {
+        diameterTop: ISLAND_R*1.65,
+        diameterBottom: 18,
+        height: 130,
+        tessellation: 80,
+        subdivisions: 10
+      }, scene);
+      under.position.y = -110;
+      under.receiveShadows = true;
+      under.material = matRock;
+
+      // roughen underside
+      {
+        const p = under.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+        for (let i=0;i<p.length;i+=3){
+          const x=p[i], y=p[i+1], z=p[i+2];
+          const r = Math.sqrt(x*x+z*z) + 1e-6;
+          const t = BABYLON.Scalar.Clamp((y+65)/130, 0, 1); // 0 top -> 1 bottom
+          const n = fbm(noise, x*0.07-40, z*0.07+30, 5, 2.0, 0.5) - 0.5;
+          const jag = n * (6.5 + t*10.0);
+          p[i]   = x + (x/r)*jag;
+          p[i+2] = z + (z/r)*jag;
+          p[i+1] = y + (fbm(noise, x*0.10+5, z*0.10-5, 3, 2.0, 0.6)-0.5)*2.2;
+        }
+        under.setVerticesData(BABYLON.VertexBuffer.PositionKind, p, true);
+        under.refreshBoundingInfo();
+        BABYLON.VertexData.ComputeNormals(p, under.getIndices(), under.getVerticesData(BABYLON.VertexBuffer.NormalKind));
+        under.updateVerticesData(BABYLON.VertexBuffer.NormalKind, under.getVerticesData(BABYLON.VertexBuffer.NormalKind));
+      }
+      applyOutline(under, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+      // Slight “platform” under to catch shadows (invisible)
+      const shadowPlane = BABYLON.MeshBuilder.CreateDisc("shadowPlane", { radius: 520, tessellation: 96 }, scene);
+      shadowPlane.rotation.x = Math.PI/2;
+      shadowPlane.position.y = -250;
+      shadowPlane.isPickable = false;
+      shadowPlane.material = new BABYLON.StandardMaterial("shadowMat", scene);
+      shadowPlane.material.diffuseColor = new BABYLON.Color3(0,0,0);
+      shadowPlane.material.alpha = 0.18;
+      shadowPlane.material.disableLighting = true;
+
+      // ============================================================
+      // Utility: get ground height by ray-picking
+      // ============================================================
+      const pickRayOrigin = new BABYLON.Vector3(0, 400, 0);
+      function groundY(x,z){
+        const origin = pickRayOrigin.clone();
+        origin.x = x; origin.z = z;
+        const ray = new BABYLON.Ray(origin, new BABYLON.Vector3(0,-1,0), 1000);
+        const hit = scene.pickWithRay(ray, m => m === ground);
+        return hit?.hit ? hit.pickedPoint.y : 18;
+      }
+
+      // ============================================================
+      // River ribbon + bridges + waterfalls
+      // ============================================================
+      const riverMat = new BABYLON.ShaderMaterial("riverMat", scene, { vertex:"river", fragment:"river" }, {
+        attributes: ["position","normal","uv"],
+        uniforms: ["world","worldViewProjection","time","cameraPosition"]
+      });
+      riverMat.alpha = 0.92;
+      riverMat.backFaceCulling = true;
+
+      // build ribbon points on terrain
+      const riverPath = riverPts2.map(p => {
+        const y = groundY(p.x, p.y) + 0.55;
+        return new BABYLON.Vector3(p.x, y, p.y);
+      });
+
+      // ribbon needs two paths (left/right) for width
+      const width = 10.5;
+      const left = [], right = [];
+      for (let i=0;i<riverPath.length;i++){
+        const p = riverPath[i];
+        const pPrev = riverPath[Math.max(0,i-1)];
+        const pNext = riverPath[Math.min(riverPath.length-1,i+1)];
+        const dir = pNext.subtract(pPrev); dir.y = 0;
+        dir.normalize();
+        const side = new BABYLON.Vector3(-dir.z, 0, dir.x);
+        left.push(p.add(side.scale(width)));
+        right.push(p.add(side.scale(-width)));
+      }
+
+      const river = BABYLON.MeshBuilder.CreateRibbon("river", {
+        pathArray: [left, right],
+        closeArray: false,
+        closePath: false,
+        updatable: true
+      }, scene);
+      river.material = riverMat;
+      river.receiveShadows = false;
+      river.isPickable = false;
+
+      // river banks: small raised edges (sand/stone)
+      function bankMesh(path, sideSign){
+        const pts = [];
+        for (let i=0;i<path.length;i++){
+          const p = path[i];
+          // slight lift + small inward
+          const inward = right[i].subtract(left[i]);
+          inward.y = 0;
+          inward.normalize();
+          const q = p.add(inward.scale(sideSign*1.8));
+          q.y = groundY(q.x, q.z) + 0.35;
+          pts.push(q);
+        }
+        const tube = BABYLON.MeshBuilder.CreateTube("bank", {
+          path: pts,
+          radius: 0.85,
+          tessellation: 12,
+          cap: BABYLON.Mesh.CAP_ALL
+        }, scene);
+        tube.material = matDirt;
+        tube.receiveShadows = true;
+        applyOutline(tube, new BABYLON.Color3(0.03,0.04,0.06), 0.015);
+        shadowGen.addShadowCaster(tube);
+        return tube;
+      }
+      bankMesh(left, +1);
+      bankMesh(right, -1);
+
+      // Bridges (2 wooden bridges)
+      function makeBridge(centerIdx){
+        const p = riverPath[centerIdx];
+        const pPrev = riverPath[Math.max(0, centerIdx-1)];
+        const pNext = riverPath[Math.min(riverPath.length-1, centerIdx+1)];
+        const dir = pNext.subtract(pPrev); dir.y = 0; dir.normalize();
+        const side = new BABYLON.Vector3(-dir.z, 0, dir.x);
+        const span = width*2.4;
+
+        const root = new BABYLON.TransformNode("bridge", scene);
+        root.position.set(p.x, p.y + 0.9, p.z);
+
+        // deck planks
+        for (let i=0;i<11;i++){
+          const plank = BABYLON.MeshBuilder.CreateBox("plank", { width: span, height: 0.55, depth: 1.05 }, scene);
+          plank.position.y = 0;
+          plank.position.x = (i-5)*0.95*dir.x;
+          plank.position.z = (i-5)*0.95*dir.z;
+          plank.rotation.y = Math.atan2(dir.x, dir.z);
+          plank.parent = root;
+          plank.material = matWood;
+          plank.receiveShadows = true;
+          shadowGen.addShadowCaster(plank);
+          applyOutline(plank, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+        }
+
+        // posts + rails
+        for (let sgn of [-1, +1]){
+          for (let i=0;i<6;i++){
+            const post = BABYLON.MeshBuilder.CreateCylinder("post", { height: 3.4, diameter: 0.55, tessellation: 10 }, scene);
+            post.position.y = 1.8;
+            post.position.x = sgn*side.x*(span/2 - 0.6) + (i-2.5)*1.7*dir.x;
+            post.position.z = sgn*side.z*(span/2 - 0.6) + (i-2.5)*1.7*dir.z;
+            post.parent = root;
+            post.material = matWood;
+            post.receiveShadows = true;
+            shadowGen.addShadowCaster(post);
+            applyOutline(post, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+          }
+          const rail = BABYLON.MeshBuilder.CreateBox("rail", { width: span, height: 0.35, depth: 0.45 }, scene);
+          rail.position.y = 3.0;
+          rail.position.x = sgn*side.x*(span/2 - 0.6);
+          rail.position.z = sgn*side.z*(span/2 - 0.6);
+          rail.rotation.y = Math.atan2(dir.x, dir.z);
+          rail.parent = root;
+          rail.material = matWood;
+          rail.receiveShadows = true;
+          shadowGen.addShadowCaster(rail);
+          applyOutline(rail, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+        }
+
+        return root;
+      }
+      makeBridge(6);
+      makeBridge(12);
+
+      // Waterfalls (at island edge where river exits)
+      const fallMat = new BABYLON.ShaderMaterial("fallMat", scene, { vertex:"fall", fragment:"fall" }, {
+        attributes: ["position","uv"],
+        uniforms: ["worldViewProjection","time"]
+      });
+      fallMat.backFaceCulling = false;
+      fallMat.alpha = 1.0;
+      fallMat.needAlphaBlending = () => true;
+
+      function makeWaterfall(atIdx, outwardVec){
+        const p = riverPath[atIdx];
+        const fall = BABYLON.MeshBuilder.CreatePlane("fall", { width: 18, height: 44 }, scene);
+        fall.position = p.add(outwardVec.scale(16));
+        fall.position.y = p.y - 18;
+        fall.rotation.y = Math.atan2(outwardVec.x, outwardVec.z);
+        fall.material = fallMat;
+        fall.isPickable = false;
+
+        // foam splash at base
+        const splash = BABYLON.MeshBuilder.CreateDisc("splash", { radius: 9, tessellation: 32 }, scene);
+        splash.rotation.x = Math.PI/2;
+        splash.position = fall.position.add(outwardVec.scale(6));
+        splash.position.y = -10;
+        const sm = new BABYLON.StandardMaterial("splashMat", scene);
+        sm.emissiveColor = new BABYLON.Color3(0.65,0.95,1.0);
+        sm.diffuseColor = new BABYLON.Color3(0,0,0);
+        sm.alpha = 0.35;
+        splash.material = sm;
+
+        // mist particles
+        const ps = new BABYLON.ParticleSystem("mist", 900, scene);
+        const dt = makeDynamicTexture(scene, "pt", 64, (c,s)=>{
+          const g = c.createRadialGradient(s/2,s/2,2,s/2,s/2,s/2);
+          g.addColorStop(0,"rgba(255,255,255,1)");
+          g.addColorStop(0.5,"rgba(255,255,255,0.35)");
+          g.addColorStop(1,"rgba(255,255,255,0)");
+          c.fillStyle = g; c.fillRect(0,0,s,s);
+        });
+        ps.particleTexture = dt;
+        ps.emitter = splash;
+        ps.minEmitBox = new BABYLON.Vector3(-2, 0, -2);
+        ps.maxEmitBox = new BABYLON.Vector3( 2, 0,  2);
+        ps.color1 = new BABYLON.Color4(0.75, 0.96, 1.0, 0.55);
+        ps.color2 = new BABYLON.Color4(0.75, 0.96, 1.0, 0.15);
+        ps.colorDead = new BABYLON.Color4(0.75, 0.96, 1.0, 0.0);
+        ps.minSize = 0.8; ps.maxSize = 2.6;
+        ps.minLifeTime = 0.6; ps.maxLifeTime = 1.7;
+        ps.emitRate = 250;
+        ps.blendMode = BABYLON.ParticleSystem.BLENDMODE_STANDARD;
+        ps.gravity = new BABYLON.Vector3(0, 1.0, 0);
+        ps.direction1 = new BABYLON.Vector3(-0.3, 1.2, -0.3);
+        ps.direction2 = new BABYLON.Vector3( 0.3, 2.2,  0.3);
+        ps.minEmitPower = 1.2; ps.maxEmitPower = 2.6;
+        ps.updateSpeed = 0.02;
+        ps.start();
+      }
+
+      // Determine outward direction near ends
+      const first = riverPath[0];
+      const last = riverPath[riverPath.length-1];
+      makeWaterfall(0,  new BABYLON.Vector3(first.x,0,first.z).normalize());       // outward from center
+      makeWaterfall(riverPath.length-1, new BABYLON.Vector3(last.x,0,last.z).normalize());
+
+      // ============================================================
+      // Castle builder (center, large, medieval stone)
+      // ============================================================
+      function makeCastle(){
+        const root = new BABYLON.TransformNode("castle", scene);
+        root.position.set(0, groundY(0,0) + 2.0, 0);
+
+        // main keep
+        const keep = BABYLON.MeshBuilder.CreateBox("keep", { width: 36, depth: 36, height: 34 }, scene);
+        keep.position.y = 17;
+        keep.parent = root;
+        keep.material = matStone;
+        keep.receiveShadows = true;
+        shadowGen.addShadowCaster(keep);
+        applyOutline(keep);
+
+        // towers at corners
+        const towerPositions = [
+          [-18, -18], [18, -18], [-18, 18], [18, 18]
+        ];
+        for (const [x,z] of towerPositions){
+          const tw = BABYLON.MeshBuilder.CreateCylinder("tower", { diameter: 16, height: 42, tessellation: 36 }, scene);
+          tw.position.set(x, 21, z);
+          tw.parent = root;
+          tw.material = matStone;
+          tw.receiveShadows = true;
+          shadowGen.addShadowCaster(tw);
+          applyOutline(tw);
+
+          // conical roof
+          const roof = BABYLON.MeshBuilder.CreateCylinder("towerRoof", { diameterTop: 0.1, diameterBottom: 18, height: 16, tessellation: 36 }, scene);
+          roof.position.set(x, 42, z);
+          roof.parent = root;
+          roof.material = matRoof;
+          roof.receiveShadows = true;
+          shadowGen.addShadowCaster(roof);
+          applyOutline(roof, new BABYLON.Color3(0.03,0.04,0.06), 0.025);
+        }
+
+        // curtain wall ring
+        const wall = BABYLON.MeshBuilder.CreateBox("wall", { width: 80, depth: 80, height: 16 }, scene);
+        wall.position.y = 8;
+        wall.parent = root;
+        wall.material = matStone;
+        wall.receiveShadows = true;
+        shadowGen.addShadowCaster(wall);
+        applyOutline(wall);
+
+        // hollow courtyard by placing a smaller box (visual trick: darker “inner yard”)
+        const yard = BABYLON.MeshBuilder.CreateBox("yard", { width: 62, depth: 62, height: 14.2 }, scene);
+        yard.position.y = 7.1;
+        yard.parent = root;
+        const yardMat = new BABYLON.StandardMaterial("yardMat", scene);
+        yardMat.diffuseColor = new BABYLON.Color3(0.12,0.12,0.14);
+        yardMat.alpha = 0.92;
+        yardMat.specularColor = new BABYLON.Color3(0.02,0.02,0.02);
+        yard.material = yardMat;
+
+        // gatehouse
+        const gate = BABYLON.MeshBuilder.CreateBox("gate", { width: 22, depth: 14, height: 18 }, scene);
+        gate.position.set(0, 9, 40);
+        gate.parent = root;
+        gate.material = matStone;
+        gate.receiveShadows = true;
+        shadowGen.addShadowCaster(gate);
+        applyOutline(gate);
+
+        // gate door
+        const door = BABYLON.MeshBuilder.CreateBox("door", { width: 10, depth: 1.2, height: 10 }, scene);
+        door.position.set(0, 6, 47.2);
+        door.parent = root;
+        door.material = matWood;
+        door.receiveShadows = true;
+        shadowGen.addShadowCaster(door);
+        applyOutline(door, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        // banners (cloth planes)
+        for (const sx of [-1, 1]){
+          const banner = BABYLON.MeshBuilder.CreatePlane("banner", { width: 4.2, height: 12 }, scene);
+          banner.position.set(sx*14, 24, 18);
+          banner.rotation.y = Math.PI/2;
+          banner.parent = root;
+          banner.material = matCloth;
+          banner.receiveShadows = false;
+          applyOutline(banner, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+          banner._windPhase = rng()*Math.PI*2;
+        }
+
+        // stone steps to gate (simple ramp)
+        const steps = BABYLON.MeshBuilder.CreateBox("steps", { width: 18, depth: 18, height: 3 }, scene);
+        steps.position.set(0, 2.0, 64);
+        steps.parent = root;
+        steps.material = matStone;
+        steps.receiveShadows = true;
+        shadowGen.addShadowCaster(steps);
+        applyOutline(steps, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        return root;
+      }
+      const castle = makeCastle();
+
+      // ============================================================
+      // Village: houses, tavern, market stalls, mill
+      // ============================================================
+      function house(width=12, depth=10, height=8){
+        const root = new BABYLON.TransformNode("house", scene);
+
+        const base = BABYLON.MeshBuilder.CreateBox("hBase", { width, depth, height }, scene);
+        base.position.y = height/2;
+        base.material = matWood;
+        base.parent = root;
+        base.receiveShadows = true;
+        shadowGen.addShadowCaster(base);
+        applyOutline(base);
+
+        // roof as triangular prism (cylinder tessellation 3)
+        const roof = BABYLON.MeshBuilder.CreateCylinder("hRoof", {
+          diameterTop: 0.1,
+          diameterBottom: Math.max(width, depth)*1.15,
+          height: width*1.05,
+          tessellation: 3
+        }, scene);
+        roof.rotation.x = Math.PI/2;
+        roof.rotation.y = Math.PI/2;
+        roof.position.y = height + (width*0.28);
+        roof.scaling.z = depth/(width*1.05) * 0.92;
+        roof.material = matRoof;
+        roof.parent = root;
+        roof.receiveShadows = true;
+        shadowGen.addShadowCaster(roof);
+        applyOutline(roof, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        // chimney
+        const chim = BABYLON.MeshBuilder.CreateBox("chim", { width: 1.6, depth: 1.6, height: 5 }, scene);
+        chim.position.set(width*0.25, height + 3, -depth*0.1);
+        chim.material = matStone;
+        chim.parent = root;
+        chim.receiveShadows = true;
+        shadowGen.addShadowCaster(chim);
+        applyOutline(chim, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        // door
+        const door = BABYLON.MeshBuilder.CreateBox("door", { width: 2.4, depth: 0.4, height: 3.6 }, scene);
+        door.position.set(0, 1.8, depth/2 + 0.2);
+        door.material = matWood;
+        door.parent = root;
+        door.receiveShadows = true;
+        shadowGen.addShadowCaster(door);
+        applyOutline(door, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        return root;
+      }
+
+      function tavern(){
+        const t = house(18, 14, 10);
+        // sign
+        const sign = BABYLON.MeshBuilder.CreatePlane("sign", { width: 4.5, height: 3.0 }, scene);
+        sign.position.set(9.5, 6.8, 7.4);
+        sign.rotation.y = Math.PI/2;
+        // draw a mug icon on dynamic texture
+        const signTex = makeDynamicTexture(scene, "signTex", 256, (c,s)=>{
+          c.fillStyle="#2a1b10"; c.fillRect(0,0,s,s);
+          c.fillStyle="rgba(255,255,255,0.18)";
+          c.fillRect(12,12,s-24,s-24);
+          c.strokeStyle="rgba(255,255,255,0.35)"; c.lineWidth=6;
+          c.strokeRect(16,16,s-32,s-32);
+
+          // mug
+          c.fillStyle="#ffd166";
+          c.beginPath();
+          c.roundRect(s*0.35, s*0.32, s*0.28, s*0.40, 16);
+          c.fill();
+          c.strokeStyle="rgba(0,0,0,0.25)"; c.lineWidth=6;
+          c.stroke();
+
+          // handle
+          c.strokeStyle="#ffd166"; c.lineWidth=18;
+          c.beginPath();
+          c.arc(s*0.64, s*0.52, s*0.10, -Math.PI/2, Math.PI/2);
+          c.stroke();
+
+          // foam
+          c.fillStyle="#ffffff";
+          for (let i=0;i<10;i++){
+            c.beginPath();
+            c.arc(s*(0.38+i*0.025), s*0.30, 10 + (i%2)*4, 0, Math.PI*2);
+            c.fill();
+          }
+        });
+        const sm = new BABYLON.StandardMaterial("signMat", scene);
+        sm.diffuseTexture = signTex;
+        sm.emissiveColor = new BABYLON.Color3(0.05,0.05,0.06);
+        sm.specularColor = new BABYLON.Color3(0.02,0.02,0.02);
+        sm.backFaceCulling = false;
+        sign.material = sm;
+        sign.parent = t;
+        applyOutline(sign, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        return t;
+      }
+
+      function marketStall(){
+        const root = new BABYLON.TransformNode("stall", scene);
+
+        const postMat = matWood;
+        const clothMat = matCloth;
+
+        const w=9, d=6;
+        // posts
+        const posts = [
+          [-w/2, -d/2], [w/2, -d/2], [-w/2, d/2], [w/2, d/2]
+        ];
+        for (const [x,z] of posts){
+          const p = BABYLON.MeshBuilder.CreateCylinder("post", { height: 5, diameter: 0.5, tessellation: 10 }, scene);
+          p.position.set(x, 2.5, z);
+          p.material = postMat;
+          p.parent = root;
+          p.receiveShadows = true;
+          shadowGen.addShadowCaster(p);
+          applyOutline(p, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+        }
+
+        // canopy
+        const canopy = BABYLON.MeshBuilder.CreateBox("canopy", { width:w+0.6, depth:d+0.6, height:0.5 }, scene);
+        canopy.position.y = 5.1;
+        canopy.material = clothMat;
+        canopy.parent = root;
+        canopy.receiveShadows = true;
+        shadowGen.addShadowCaster(canopy);
+        applyOutline(canopy, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        // table + goods
+        const table = BABYLON.MeshBuilder.CreateBox("table", { width:w*0.8, depth:d*0.5, height:0.8 }, scene);
+        table.position.set(0, 1.2, 0);
+        table.material = postMat;
+        table.parent = root;
+        table.receiveShadows = true;
+        shadowGen.addShadowCaster(table);
+        applyOutline(table, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        for (let i=0;i<8;i++){
+          const crate = BABYLON.MeshBuilder.CreateBox("crate", { width:1.0, depth:1.0, height:0.8 }, scene);
+          crate.position.set((rng()-0.5)*5.0, 2.0, (rng()-0.5)*2.0);
+          crate.material = postMat;
+          crate.parent = root;
+          crate.receiveShadows = true;
+          shadowGen.addShadowCaster(crate);
+          applyOutline(crate, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+        }
+
+        return root;
+      }
+
+      function mill(){
+        const root = new BABYLON.TransformNode("mill", scene);
+
+        const base = BABYLON.MeshBuilder.CreateBox("mBase", { width: 16, depth: 12, height: 10 }, scene);
+        base.position.y = 5;
+        base.material = matWood;
+        base.parent = root;
+        base.receiveShadows = true;
+        shadowGen.addShadowCaster(base);
+        applyOutline(base);
+
+        const roof = BABYLON.MeshBuilder.CreateCylinder("mRoof", { diameterTop: 0.1, diameterBottom: 22, height: 18, tessellation: 3 }, scene);
+        roof.rotation.x = Math.PI/2;
+        roof.rotation.y = Math.PI/2;
+        roof.position.y = 12.2;
+        roof.scaling.z = 0.68;
+        roof.material = matRoof;
+        roof.parent = root;
+        roof.receiveShadows = true;
+        shadowGen.addShadowCaster(roof);
+        applyOutline(roof, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        // water wheel
+        const wheel = BABYLON.MeshBuilder.CreateCylinder("wheel", { diameter: 9.5, height: 1.2, tessellation: 28 }, scene);
+        wheel.rotation.z = Math.PI/2;
+        wheel.position.set(9.5, 3.0, 0);
+        wheel.material = matWood;
+        wheel.parent = root;
+        wheel.receiveShadows = true;
+        shadowGen.addShadowCaster(wheel);
+        applyOutline(wheel, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        for (let i=0;i<10;i++){
+          const paddle = BABYLON.MeshBuilder.CreateBox("paddle", { width: 1.0, height: 3.2, depth: 0.4 }, scene);
+          paddle.position.set(9.5, 3.0, 0);
+          paddle.rotation.z = Math.PI/2;
+          paddle.rotation.y = i*(Math.PI*2/10);
+          paddle.position.x += Math.cos(paddle.rotation.y) * 4.6;
+          paddle.position.y += Math.sin(paddle.rotation.y) * 4.6;
+          paddle.material = matWood;
+          paddle.parent = root;
+          paddle.receiveShadows = true;
+          shadowGen.addShadowCaster(paddle);
+          applyOutline(paddle, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+        }
+
+        root._wheel = wheel;
+        return root;
+      }
+
+      // Place village around castle (cozy cluster)
+      const villageRoot = new BABYLON.TransformNode("village", scene);
+      const ringR = 92;
+
+      function placeOnGround(node, x, z){
+        node.position.x = x;
+        node.position.z = z;
+        node.position.y = groundY(x,z);
+      }
+
+      // tavern near one bridge
+      const t1 = tavern();
+      t1.parent = villageRoot;
+      placeOnGround(t1, 62, 20);
+      t1.rotation.y = -0.9;
+
+      // market stalls
+      for (let i=0;i<4;i++){
+        const st = marketStall();
+        st.parent = villageRoot;
+        placeOnGround(st, 45 + (i%2)*10, 38 + (i>1?10:0));
+        st.rotation.y = rng()*Math.PI*2;
+      }
+
+      // houses
+      for (let i=0;i<14;i++){
+        const h = house(10 + rng()*5, 8 + rng()*4, 7 + rng()*3);
+        h.parent = villageRoot;
+        const a = (i/14) * Math.PI*2;
+        const rr = ringR + (rng()-0.5)*18;
+        const x = Math.cos(a)*rr;
+        const z = Math.sin(a)*rr;
+        // avoid castle footprint & river band
+        if (Math.sqrt(x*x+z*z) < 62) continue;
+        if (distToRiver(x,z) < 14) continue;
+        placeOnGround(h, x, z);
+        h.rotation.y = rng()*Math.PI*2;
+      }
+
+      // mill: near river mid segment
+      const m1 = mill();
+      m1.parent = villageRoot;
+      placeOnGround(m1, -52, -18);
+      m1.rotation.y = 0.6;
+
+      // small dirt paths (visual): thin ribbons
+      function pathRibbon(points, w=3.0){
+        const left=[], right=[];
+        for (let i=0;i<points.length;i++){
+          const p=points[i];
+          const pPrev = points[Math.max(0,i-1)];
+          const pNext = points[Math.min(points.length-1,i+1)];
+          const d = pNext.subtract(pPrev); d.y=0; d.normalize();
+          const s = new BABYLON.Vector3(-d.z,0,d.x);
+          left.push(p.add(s.scale(w)));
+          right.push(p.add(s.scale(-w)));
+        }
+        const r = BABYLON.MeshBuilder.CreateRibbon("path", { pathArray:[left,right], updatable:false }, scene);
+        r.material = matDirt;
+        r.material.roughness = 1.0;
+        r.isPickable=false;
+        r.receiveShadows = true;
+        applyOutline(r, new BABYLON.Color3(0.03,0.04,0.06), 0.012);
+        shadowGen.addShadowCaster(r);
+        return r;
+      }
+
+      // path from gate to tavern / market
+      const gatePt = new BABYLON.Vector3(0, groundY(0,64)+0.2, 64);
+      const marketPt = new BABYLON.Vector3(50, groundY(50,40)+0.2, 40);
+      const tavernPt = new BABYLON.Vector3(62, groundY(62,20)+0.2, 20);
+      pathRibbon([gatePt,
+        new BABYLON.Vector3(20, groundY(20,56)+0.2, 56),
+        new BABYLON.Vector3(35, groundY(35,48)+0.2, 48),
+        marketPt,
+        tavernPt
+      ], 2.6);
+
+      // path to mill
+      const millPt = new BABYLON.Vector3(-52, groundY(-52,-18)+0.2, -18);
+      pathRibbon([gatePt,
+        new BABYLON.Vector3(-20, groundY(-20,40)+0.2, 40),
+        new BABYLON.Vector3(-40, groundY(-40,10)+0.2, 10),
+        new BABYLON.Vector3(-55, groundY(-55,-5)+0.2, -5),
+        millPt
+      ], 2.2);
+
+      // ============================================================
+      // Pine trees (instanced, stylized)
+      // ============================================================
+      const treeTrunkMat = pbr("treeTrunk");
+      treeTrunkMat.albedoColor = new BABYLON.Color3(0.36, 0.24, 0.14);
+      treeTrunkMat.roughness = 0.98;
+
+      const treeLeafMat = pbr("treeLeaf");
+      treeLeafMat.albedoColor = new BABYLON.Color3(0.10, 0.52, 0.20);
+      treeLeafMat.roughness = 0.95;
+
+      function makeTreePrototype(){
+        const root = new BABYLON.TransformNode("treeProto", scene);
+        const trunk = BABYLON.MeshBuilder.CreateCylinder("trunk", { height: 10, diameterTop: 0.8, diameterBottom: 1.4, tessellation: 10 }, scene);
+        trunk.position.y = 5;
+        trunk.material = treeTrunkMat;
+        trunk.parent = root;
+
+        const cone1 = BABYLON.MeshBuilder.CreateCylinder("cone1", { height: 10, diameterTop: 0.3, diameterBottom: 7.2, tessellation: 14 }, scene);
+        cone1.position.y = 11;
+        cone1.material = treeLeafMat;
+        cone1.parent = root;
+
+        const cone2 = BABYLON.MeshBuilder.CreateCylinder("cone2", { height: 8, diameterTop: 0.3, diameterBottom: 6.0, tessellation: 14 }, scene);
+        cone2.position.y = 15;
+        cone2.material = treeLeafMat;
+        cone2.parent = root;
+
+        const cone3 = BABYLON.MeshBuilder.CreateCylinder("cone3", { height: 6, diameterTop: 0.2, diameterBottom: 4.8, tessellation: 14 }, scene);
+        cone3.position.y = 18;
+        cone3.material = treeLeafMat;
+        cone3.parent = root;
+
+        // merge for easy instancing
+        const merged = BABYLON.Mesh.MergeMeshes([trunk, cone1, cone2, cone3], true, true, undefined, false, true);
+        merged.name = "tree";
+        merged.parent = null;
+        merged.receiveShadows = true;
+        shadowGen.addShadowCaster(merged);
+        applyOutline(merged, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+        root.dispose();
+        return merged;
+      }
+      const treeProto = makeTreePrototype();
+
+      // scatter trees
+      const treeCount = 220;
+      for (let i=0;i<treeCount;i++){
+        const a = rng()*Math.PI*2;
+        const r = 40 + rng()*82;
+        const x = Math.cos(a)*r + (rng()-0.5)*10;
+        const z = Math.sin(a)*r + (rng()-0.5)*10;
+
+        // avoid river & castle + village core
+        if (distToRiver(x,z) < 15) continue;
+        if (Math.sqrt(x*x+z*z) < 68) continue;
+
+        // only on higher ground (avoid cliffs)
+        const y = groundY(x,z);
+        if (y < 16) continue;
+
+        const inst = treeProto.createInstance("ti");
+        inst.position.set(x, y, z);
+        inst.scaling.scaleInPlace(0.7 + rng()*0.85);
+        inst.rotation.y = rng()*Math.PI*2;
+      }
+
+      // ============================================================
+      // Rocks + ruined watchtower at edge
+      // ============================================================
+      function makeRock(x,z, s=1.0){
+        const rock = BABYLON.MeshBuilder.CreateSphere("rock", { diameter: 6*s, segments: 18 }, scene);
+        rock.position.set(x, groundY(x,z) + 2.0*s, z);
+        rock.scaling.y = 0.6 + rng()*0.7;
+        rock.scaling.x = 0.8 + rng()*0.7;
+        rock.scaling.z = 0.8 + rng()*0.7;
+        rock.rotation.y = rng()*Math.PI;
+        rock.material = matRock;
+        rock.receiveShadows = true;
+        shadowGen.addShadowCaster(rock);
+        applyOutline(rock, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        // roughen rock vertices
+        const p = rock.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+        for (let i=0;i<p.length;i+=3){
+          const n = fbm(noise, (x+p[i])*0.08, (z+p[i+2])*0.08, 4, 2.0, 0.55) - 0.5;
+          p[i]   += n*0.35*s;
+          p[i+1] += n*0.35*s;
+          p[i+2] += n*0.35*s;
+        }
+        rock.setVerticesData(BABYLON.VertexBuffer.PositionKind, p, true);
+        rock.refreshBoundingInfo();
+        return rock;
+      }
+
+      // scatter some rocks
+      for (let i=0;i<40;i++){
+        const a = rng()*Math.PI*2;
+        const r = 30 + rng()*92;
+        const x = Math.cos(a)*r;
+        const z = Math.sin(a)*r;
+        if (distToRiver(x,z) < 14) continue;
+        if (Math.sqrt(x*x+z*z) < 70) continue;
+        makeRock(x,z, 0.9 + rng()*1.4);
+      }
+
+      function makeRuinedWatchtower(){
+        const root = new BABYLON.TransformNode("ruin", scene);
+        // pick an edge location away from river ends
+        const angle = 2.35; // fixed nice composition
+        const x = Math.cos(angle) * (ISLAND_R*0.92);
+        const z = Math.sin(angle) * (ISLAND_R*0.92);
+        root.position.set(x, groundY(x,z), z);
+        root.rotation.y = angle + Math.PI*0.55;
+
+        // build as wall chunks around a ring (missing pieces -> ruin)
+        const radius = 9.5;
+        const height = 20;
+        const chunks = 10;
+        for (let i=0;i<chunks;i++){
+          // randomly skip chunks for "ruined" look
+          if (rng() < 0.22) continue;
+          const theta0 = (i/chunks)*Math.PI*2;
+          const theta1 = ((i+1)/chunks)*Math.PI*2;
+          const mid = (theta0+theta1)/2;
+
+          const wall = BABYLON.MeshBuilder.CreateBox("wallChunk", { width: 5.2, height, depth: 2.2 }, scene);
+          wall.position.set(Math.sin(mid)*radius, height/2, Math.cos(mid)*radius);
+          wall.rotation.y = mid;
+          wall.parent = root;
+          wall.material = matStone;
+          wall.receiveShadows = true;
+          shadowGen.addShadowCaster(wall);
+          applyOutline(wall);
+
+          // top brokenness (smaller blocks)
+          if (rng() < 0.6){
+            const b = BABYLON.MeshBuilder.CreateBox("broken", { width: 4.0, height: 2.2, depth: 2.0 }, scene);
+            b.position = wall.position.clone();
+            b.position.y = height - 2.0 + rng()*1.2;
+            b.rotation.y = wall.rotation.y + (rng()-0.5)*0.35;
+            b.parent = root;
+            b.material = matStone;
+            b.receiveShadows = true;
+            shadowGen.addShadowCaster(b);
+            applyOutline(b, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+          }
+        }
+
+        // inner floor
+        const floor = BABYLON.MeshBuilder.CreateDisc("ruinFloor", { radius: 8.0, tessellation: 28 }, scene);
+        floor.rotation.x = Math.PI/2;
+        floor.position.y = 0.3;
+        floor.parent = root;
+        floor.material = matStone;
+        floor.receiveShadows = true;
+        shadowGen.addShadowCaster(floor);
+        applyOutline(floor, new BABYLON.Color3(0.03,0.04,0.06), 0.015);
+
+        // debris rocks
+        for (let i=0;i<10;i++){
+          const rx = x + (rng()-0.5)*18;
+          const rz = z + (rng()-0.5)*18;
+          if (Math.sqrt(rx*rx+rz*rz) > ISLAND_R*1.05) continue;
+          makeRock(rx, rz, 0.55 + rng()*0.9);
+        }
+
+        return root;
+      }
+      makeRuinedWatchtower();
+
+      // ============================================================
+      // Add shadow casters for big parts
+      // ============================================================
+      shadowGen.addShadowCaster(cliff);
+      shadowGen.addShadowCaster(under);
+      shadowGen.addShadowCaster(castle);
+      shadowGen.addShadowCaster(villageRoot);
+
+      // ============================================================
+      // Night mode toggle (warm lamps + cooler moonlight)
+      // ============================================================
+      const lampColor = new BABYLON.Color3(1.0, 0.78, 0.45);
+      const lamps = [];
+      function addLamp(x,z){
+        const y = groundY(x,z);
+        const pole = BABYLON.MeshBuilder.CreateCylinder("lampPole", { height: 4.5, diameter: 0.25, tessellation: 10 }, scene);
+        pole.position.set(x, y+2.25, z);
+        pole.material = matWood;
+        pole.receiveShadows = true;
+        shadowGen.addShadowCaster(pole);
+        applyOutline(pole, new BABYLON.Color3(0.03,0.04,0.06), 0.02);
+
+        const bulb = BABYLON.MeshBuilder.CreateSphere("bulb", { diameter: 0.9, segments: 12 }, scene);
+        bulb.position.set(x, y+4.4, z);
+        const bm = new BABYLON.StandardMaterial("bulbMat", scene);
+        bm.emissiveColor = lampColor;
+        bm.diffuseColor = new BABYLON.Color3(0,0,0);
+        bulb.material = bm;
+
+        const light = new BABYLON.PointLight("lamp", new BABYLON.Vector3(x, y+4.4, z), scene);
+        light.diffuse = lampColor;
+        light.intensity = 0.0; // off by default
+        light.range = 24;
+
+        lamps.push({ light, bulbMat: bm });
+      }
+
+      addLamp(44, 38);
+      addLamp(60, 20);
+      addLamp(-35, 18);
+      addLamp(-52, -18);
+
+      function applyDayNight(){
+        if (!nightMode){
+          hemi.intensity = 0.85;
+          sun.intensity = 1.0;
+          scene.fogDensity = 0.0022;
+          scene.imageProcessingConfiguration.exposure = 1.00;
+          skyMat.emissiveColor = new BABYLON.Color3(0.08, 0.18, 0.30);
+          scene.fogColor = new BABYLON.Color3(0.08, 0.14, 0.20);
+          lamps.forEach(L => { L.light.intensity = 0.0; L.bulbMat.emissiveColor = lampColor.scale(0.35); });
+        } else {
+          hemi.intensity = 0.40;
+          sun.intensity = 0.55;
+          scene.fogDensity = 0.0032;
+          scene.imageProcessingConfiguration.exposure = 0.88;
+          skyMat.emissiveColor = new BABYLON.Color3(0.03, 0.06, 0.12);
+          scene.fogColor = new BABYLON.Color3(0.03, 0.05, 0.09);
+          lamps.forEach(L => { L.light.intensity = 1.4; L.bulbMat.emissiveColor = lampColor; });
+        }
+        setPill();
+      }
+
+      // ============================================================
+      // Animations
+      // ============================================================
+      const bannerMeshes = scene.meshes.filter(m => m.name === "banner");
+      let time = 0;
+
+      scene.onBeforeRenderObservable.add(() => {
+        const dt = engine.getDeltaTime() / 1000;
+        time += dt;
+
+        riverMat.setFloat("time", time);
+        riverMat.setVector3("cameraPosition", cam.position);
+
+        fallMat.setFloat("time", time);
+
+        // gentle banner flutter (mesh deform via scaling + slight rotation)
+        for (const b of bannerMeshes){
+          const ph = b._windPhase || 0;
+          b.rotation.z = Math.sin(time*2.0 + ph) * 0.08;
+          b.scaling.x = 1.0 + Math.sin(time*1.7 + ph)*0.03;
+        }
+
+        // spin mill wheel slowly
+        if (m1 && m1._wheel){
+          m1._wheel.rotation.x += dt * 1.4;
+        }
+
+        // apply outline state to all meshes (cheap toggle)
+        // (Keep minimal work: only toggle when changed via button.)
+      });
+
+      // Outline toggle helper (applies to all current meshes)
+      function setOutlinesEnabled(enabled){
+        outlinesOn = enabled;
+        for (const m of scene.meshes){
+          if (m.name === "sky" || m.name === "shadowPlane") continue;
+          // keep river/waterfall without outline
+          if (m.name === "river" || m.name === "fall") { m.renderOutline = false; continue; }
+          m.renderOutline = enabled;
+        }
+      }
+      setOutlinesEnabled(outlinesOn);
+      applyDayNight();
+
+      // Expose helpers
+      scene._toggleOutlines = () => setOutlinesEnabled(!outlinesOn);
+      scene._toggleNight = () => { nightMode = !nightMode; applyDayNight(); };
+      scene._setOutlinesEnabled = setOutlinesEnabled;
+
+      return scene;
+    }
+
+    // --- Build first scene ---
+    let currentSeed = (Date.now() ^ (Math.random()*1e9)) >>> 0;
+    buildScene(currentSeed);
+
+    // --- UI wiring ---
+    function regenerate(){
+      currentSeed = (Date.now() ^ (Math.random()*1e9)) >>> 0;
+      buildScene(currentSeed);
+    }
+    btnRegen.addEventListener("click", regenerate);
+    btnNight.addEventListener("click", () => scene?._toggleNight?.());
+    btnOut.addEventListener("click", () => scene?._toggleOutlines?.());
+
+    window.addEventListener("keydown", (e) => {
+      const k = e.key.toLowerCase();
+      if (k === "g") regenerate();
+      if (k === "o") scene?._toggleOutlines?.();
+      if (k === "n") scene?._toggleNight?.();
+    });
+
+    // --- Render loop ---
+    engine.runRenderLoop(() => {
+      if (scene) scene.render();
+    });
+    window.addEventListener("resize", () => engine.resize());
+
+    // Sync pill initially
+    setPill();
+
+  })();
+  </script>
+</body>
+</html>

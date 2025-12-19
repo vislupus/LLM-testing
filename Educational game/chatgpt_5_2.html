@@ -1,0 +1,1092 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Eco-Engineers: Save the City! — Single-File SVG.js Board Game</title>
+  <style>
+    html, body { height:100%; margin:0; background:#070b12; overflow:hidden; }
+    #app { width:100%; height:100%; }
+    /* No UI outside SVG; everything is drawn with SVG.js */
+    noscript { color:#fff; padding:16px; font-family:system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <noscript>This game needs JavaScript enabled.</noscript>
+  <div id="app"></div>
+
+  <!-- SVG.js (CDN). If you need fully offline, download svg.min.js and inline it here. -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3.2/dist/svg.min.js"></script>
+
+  <script>
+  (() => {
+    // ============================================================
+    // Eco-Engineers: Save the City!  (Original educational board game)
+    // Subject: Climate & energy literacy (GHG, renewables, efficiency, transport, adaptation)
+    // Objective: Reduce the city's emissions to 0 before temperature hits 3.0°C, within 20 turns.
+    // Controls: Roll → move → answer → effects → next player
+    // Everything visual is drawn/animated via SVG.js.
+    // ============================================================
+
+    // ---------- Canvas setup ----------
+    const W = 1280, H = 800;
+    const draw = SVG().addTo('#app').size('100%', '100%').viewbox(0, 0, W, H);
+
+    // ---------- Theme ----------
+    const C = {
+      bg0: '#070b12',
+      bg1: '#0b1324',
+      ink: '#eaf1ff',
+      muted: 'rgba(210,225,255,.72)',
+      faint: 'rgba(210,225,255,.14)',
+      faint2: 'rgba(210,225,255,.08)',
+      accent: '#67b3ff',
+      good: '#35d39f',
+      bad:  '#ff6b87',
+      warn: '#ffd166',
+      quiz: '#5aa7ff',
+      project: '#35d39f',
+      event: '#ffd166',
+      rest: '#9aa6c6',
+      start: '#9b7bff',
+      finish: '#ff8bd1'
+    };
+
+    // ---------- Helpers ----------
+    const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+    const rint = (a,b)=> Math.floor(a + Math.random()*(b-a+1));
+    const choice = (arr)=> arr[Math.floor(Math.random()*arr.length)];
+    const lerp = (a,b,t)=> a+(b-a)*t;
+
+    function glow(filterId, color, blur=6, strength=1){
+      const defs = draw.defs();
+      const f = defs.element('filter').id(filterId).attr({x:'-50%',y:'-50%',width:'200%',height:'200%'});
+      f.element('feGaussianBlur').attr({in:'SourceGraphic', stdDeviation: blur, result:'blur'});
+      f.element('feColorMatrix').attr({
+        in:'blur', type:'matrix', result:'colored',
+        values: `
+          0 0 0 0 ${hexTo01(color).r}
+          0 0 0 0 ${hexTo01(color).g}
+          0 0 0 0 ${hexTo01(color).b}
+          0 0 0 ${strength} 0
+        `.trim().replace(/\s+/g,' ')
+      });
+      const merge = f.element('feMerge');
+      merge.element('feMergeNode').attr({in:'colored'});
+      merge.element('feMergeNode').attr({in:'SourceGraphic'});
+      return f;
+    }
+    function hexTo01(hex){
+      const h = hex.replace('#','');
+      const n = parseInt(h,16);
+      return { r: ((n>>16)&255)/255, g: ((n>>8)&255)/255, b: (n&255)/255 };
+    }
+
+    function makeButton(g, x, y, w, h, label, opts={}){
+      const r = opts.r ?? 14;
+      const fill = opts.fill ?? 'rgba(255,255,255,.06)';
+      const stroke = opts.stroke ?? 'rgba(255,255,255,.12)';
+      const txt = opts.txt ?? C.ink;
+      const sub = opts.sub ?? '';
+      const hot = opts.hot ?? C.accent;
+
+      const btn = g.group().translate(x,y);
+      const bg = btn.rect(w,h).radius(r).fill(fill).stroke({color:stroke, width:1});
+      const t = btn.text(label).font({family:'system-ui, Segoe UI, Arial', size: 16, weight: 800}).fill(txt);
+      t.center(w/2, h/2 + (sub? -6: 0));
+      let st = null;
+      if (sub){
+        st = btn.text(sub).font({family:'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', size: 12, weight: 700})
+          .fill('rgba(210,225,255,.70)');
+        st.center(w/2, h/2 + 14);
+      }
+
+      btn.attr({cursor:'pointer'});
+      btn.on('mouseover', () => bg.animate(120).fill('rgba(255,255,255,.09)').stroke({color:'rgba(103,179,255,.35)', width:1}));
+      btn.on('mouseout', () => {
+        if (btn.data('pressed')) return;
+        bg.animate(120).fill(fill).stroke({color:stroke, width:1});
+      });
+
+      btn.setPressed = (on) => {
+        btn.data('pressed', !!on);
+        if (on){
+          bg.fill('rgba(103,179,255,.14)').stroke({color:'rgba(103,179,255,.55)', width:1});
+        } else {
+          bg.fill(fill).stroke({color:stroke, width:1});
+        }
+      };
+
+      btn.flash = () => {
+        bg.animate(90).fill('rgba(103,179,255,.18)').after(()=> bg.animate(130).fill(fill));
+      };
+
+      btn.setEnabled = (on) => {
+        btn.data('enabled', !!on);
+        btn.opacity(on ? 1 : 0.45);
+        btn.attr({cursor: on ? 'pointer' : 'default'});
+      };
+      btn.data('enabled', true);
+
+      btn.bg = bg; btn.label = t;
+      return btn;
+    }
+
+    // Basic text wrap for SVG.js text elements (approximate but works well)
+    function setWrappedText(textEl, str, maxCharsPerLine=44){
+      const words = String(str).split(/\s+/);
+      const lines = [];
+      let line = '';
+      for (const w of words){
+        const tryLine = line ? (line + ' ' + w) : w;
+        if (tryLine.length > maxCharsPerLine){
+          if (line) lines.push(line);
+          line = w;
+        } else line = tryLine;
+      }
+      if (line) lines.push(line);
+
+      textEl.clear();
+      textEl.text(add => {
+        lines.forEach((ln, i) => {
+          const tspan = add.tspan(ln);
+          if (i > 0) tspan.newLine();
+        });
+      });
+      return lines.length;
+    }
+
+    // ---------- Background ----------
+    const bg = draw.group();
+    bg.rect(W,H).fill(C.bg0);
+    const grad = draw.gradient('radial', (add) => {
+      add.stop(0, 'rgba(103,179,255,.14)');
+      add.stop(0.45, 'rgba(11,19,36,.0)');
+      add.stop(1, 'rgba(7,11,18,1)');
+    });
+    bg.rect(W,H).fill(grad).opacity(1);
+
+    // Starfield
+    const stars = draw.group();
+    for (let i=0;i<180;i++){
+      const x = Math.random()*W, y = Math.random()*H;
+      const s = Math.random()<0.85 ? 1 : 2;
+      const o = lerp(0.15, 0.85, Math.random());
+      stars.circle(s).move(x,y).fill(`rgba(235,245,255,${o})`);
+    }
+    // Slow drifting nebula dots
+    const neb = draw.group().opacity(0.55);
+    for (let i=0;i<30;i++){
+      neb.circle(rint(16,40))
+        .center(rint(0,W), rint(0,H))
+        .fill(`rgba(103,179,255,${lerp(0.03,0.09,Math.random())})`);
+    }
+
+    // ---------- Board layout ----------
+    const board = draw.group();
+    const center = {x: 700, y: 430};
+    const N = 28;
+
+    // Spiral track points
+    const points = [];
+    for (let i=0;i<N;i++){
+      const t = i/(N-1);
+      const angle = 0.7 + i*0.62;          // swirl
+      const radius = 320 - t*245;          // spiral inward
+      const x = center.x + Math.cos(angle)*radius;
+      const y = center.y + Math.sin(angle)*radius;
+      points.push({x, y});
+    }
+
+    // Space types
+    const types = [];
+    for (let i=0;i<N;i++){
+      if (i===0) types.push('START');
+      else if (i===N-1) types.push('FINISH');
+      else {
+        const r = Math.random();
+        if (r < 0.43) types.push('QUIZ');
+        else if (r < 0.70) types.push('PROJECT');
+        else if (r < 0.88) types.push('EVENT');
+        else types.push('REST');
+      }
+    }
+
+    const typeColor = (t) => ({
+      START: C.start,
+      FINISH: C.finish,
+      QUIZ: C.quiz,
+      PROJECT: C.project,
+      EVENT: C.event,
+      REST: C.rest
+    })[t] || C.rest;
+
+    // Track lines
+    const track = board.group();
+    for (let i=0;i<N-1;i++){
+      track.line(points[i].x, points[i].y, points[i+1].x, points[i+1].y)
+        .stroke({color:'rgba(210,225,255,.16)', width: 6, linecap:'round'});
+      track.line(points[i].x, points[i].y, points[i+1].x, points[i+1].y)
+        .stroke({color:'rgba(103,179,255,.16)', width: 2, linecap:'round'});
+    }
+
+    // City ring / board frame
+    const frame = board.group();
+    frame.circle(720).center(center.x, center.y)
+      .fill('rgba(255,255,255,.02)')
+      .stroke({color:'rgba(255,255,255,.10)', width:2});
+    frame.circle(520).center(center.x, center.y)
+      .fill('none').stroke({color:'rgba(103,179,255,.09)', width:2, dasharray:'6 8'});
+
+    // Space nodes
+    const spacesG = board.group();
+    const spaceNodes = [];
+    glow('glowAccent', C.accent, 6, 1);
+    glow('glowGood', C.good, 6, 1);
+    glow('glowBad', C.bad, 6, 1);
+    glow('glowWarn', C.warn, 6, 1);
+
+    for (let i=0;i<N;i++){
+      const g = spacesG.group();
+      const t = types[i];
+      const col = typeColor(t);
+      const r = 20;
+
+      const outer = g.circle(r*2+10).center(points[i].x, points[i].y)
+        .fill('rgba(0,0,0,.18)').stroke({color:'rgba(255,255,255,.10)', width:1});
+      const c = g.circle(r*2).center(points[i].x, points[i].y)
+        .fill(`rgba(255,255,255,.06)`)
+        .stroke({color:'rgba(255,255,255,.14)', width:1});
+
+      const cap = g.circle(r*2-8).center(points[i].x, points[i].y)
+        .fill(col).opacity(0.22);
+
+      const label = g.text(i===0 ? 'S' : (i===N-1 ? '🏁' : String(i)))
+        .font({family:'system-ui, Segoe UI, Arial', size: 14, weight: 900})
+        .fill(C.ink);
+
+      label.center(points[i].x, points[i].y + 0.5);
+
+      // Tiny icon hint
+      const hint = g.text(
+        t==='QUIZ' ? '❓' :
+        t==='PROJECT' ? '🛠️' :
+        t==='EVENT' ? '⚡' :
+        t==='REST' ? '⛺' :
+        t==='START' ? '🚦' : '🏁'
+      ).font({family:'system-ui, Segoe UI, Arial', size: 12, weight: 800})
+       .fill('rgba(235,245,255,.85)');
+      hint.center(points[i].x, points[i].y + 28);
+
+      spaceNodes.push({g, outer, c, cap, label, hint, type:t});
+    }
+
+    // Board title plaque
+    const titleG = board.group();
+    const plaque = titleG.rect(420, 70).radius(18).fill('rgba(255,255,255,.05)').stroke({color:'rgba(255,255,255,.12)', width:1});
+    plaque.move(60, 40);
+    const tt = titleG.text('Eco-Engineers: Save the City!')
+      .font({family:'system-ui, Segoe UI, Arial', size: 22, weight: 900})
+      .fill(C.ink).move(80, 58);
+    const st = titleG.text('Learn climate + energy concepts by building solutions.')
+      .font({family:'system-ui, Segoe UI, Arial', size: 13, weight: 650})
+      .fill('rgba(210,225,255,.70)').move(80, 86);
+
+    // ---------- HUD ----------
+    const hud = draw.group();
+    const hudBox = hud.rect(430, 220).radius(18)
+      .fill('rgba(18,28,46,.62)')
+      .stroke({color:'rgba(255,255,255,.12)', width:1});
+    hudBox.move(40, 560);
+
+    const hudTitle = hud.text('Mission Control').font({family:'system-ui', size: 14, weight: 900})
+      .fill('rgba(210,225,255,.75)').move(62, 578);
+
+    const hudTurn = hud.text('Turn: —').font({family:'system-ui', size: 18, weight: 900})
+      .fill(C.ink).move(62, 602);
+
+    const hudPlayer = hud.text('Player: —').font({family:'system-ui', size: 14, weight: 800})
+      .fill('rgba(210,225,255,.80)').move(62, 630);
+
+    // Emissions bar
+    const barG = hud.group().move(62, 660);
+    barG.text('City emissions').font({family:'system-ui', size: 12, weight: 900}).fill('rgba(210,225,255,.72)').move(0,0);
+    const emBg = barG.rect(300, 14).radius(999).fill('rgba(255,255,255,.08)').move(0, 20);
+    const emFg = barG.rect(300, 14).radius(999).fill('rgba(255,107,135,.70)').move(0, 20);
+    const emTxt = barG.text('—').font({family:'ui-monospace', size: 12, weight: 800})
+      .fill('rgba(235,245,255,.90)').move(310, 16);
+
+    // Temperature bar
+    const barT = hud.group().move(62, 700);
+    barT.text('Warming').font({family:'system-ui', size: 12, weight: 900}).fill('rgba(210,225,255,.72)').move(0,0);
+    const tBg = barT.rect(300, 14).radius(999).fill('rgba(255,255,255,.08)').move(0, 20);
+    const tFg = barT.rect(300, 14).radius(999).fill('rgba(255,209,102,.85)').move(0, 20);
+    const tTxt = barT.text('—').font({family:'ui-monospace', size: 12, weight: 800})
+      .fill('rgba(235,245,255,.90)').move(310, 16);
+
+    // ---------- Controls ----------
+    const ui = draw.group();
+    const btnRoll = makeButton(ui, 500, 640, 160, 54, 'Roll', {sub:'Space', fill:'rgba(255,255,255,.06)'});
+    const btnRules = makeButton(ui, 680, 640, 160, 54, 'Rules', {sub:'R', fill:'rgba(255,255,255,.04)'});
+    const btnGloss = makeButton(ui, 860, 640, 200, 54, 'Glossary', {sub:'K', fill:'rgba(255,255,255,.04)'});
+
+    const connectGlow = draw.filterWith((add) => {
+      add.gaussianBlur(6).result('blur');
+      add.colorMatrix('matrix', '1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 12 -4').in('blur').result('glow');
+      add.merge(add.mergeNode('glow'), add.mergeNode('SourceGraphic'));
+    });
+
+    // Dice (SVG)
+    const dice = ui.group().move(500, 570);
+    const diceBg = dice.rect(54,54).radius(14).fill('rgba(255,255,255,.06)').stroke({color:'rgba(255,255,255,.14)', width:1});
+    const diceFace = dice.rect(44,44).radius(12).fill('rgba(103,179,255,.14)').stroke({color:'rgba(103,179,255,.25)', width:1}).move(5,5);
+    const diceNum = dice.text('—').font({family:'system-ui', size: 22, weight: 1000}).fill(C.ink).center(27,27);
+
+    // ---------- Modal / Overlay ----------
+    const overlay = draw.group().hide();
+    const overlayBg = overlay.rect(W,H).fill('rgba(0,0,0,.58)');
+    const card = overlay.group();
+    const cardW = 760, cardH = 420;
+    const cardX = (W-cardW)/2, cardY = (H-cardH)/2 - 20;
+
+    const cardBg = card.rect(cardW, cardH).radius(22)
+      .fill('rgba(18,28,46,.92)')
+      .stroke({color:'rgba(255,255,255,.14)', width:1})
+      .move(cardX, cardY);
+    cardBg.filterWith(connectGlow);
+
+    const cardTitle = card.text('Title').font({family:'system-ui', size: 22, weight: 1000})
+      .fill(C.ink).move(cardX+26, cardY+22);
+
+    const cardBody = card.text('').font({family:'system-ui', size: 16, weight: 700, leading: 1.35})
+      .fill('rgba(235,245,255,.88)').move(cardX+26, cardY+70);
+
+    const choiceG = card.group().move(cardX+26, cardY+210);
+    const btnContinue = makeButton(card, cardX+cardW-190, cardY+cardH-72, 164, 50, 'Continue', {fill:'rgba(103,179,255,.12)'});
+    btnContinue.hide();
+
+    // ---------- Start screen ----------
+    const start = draw.group();
+    start.rect(W,H).fill('rgba(0,0,0,.25)');
+    const startCard = start.group();
+    const sW = 860, sH = 520;
+    const sX = (W-sW)/2, sY = (H-sH)/2 - 10;
+    startCard.rect(sW,sH).radius(26)
+      .fill('rgba(18,28,46,.92)')
+      .stroke({color:'rgba(255,255,255,.14)', width:1})
+      .move(sX,sY).filterWith(connectGlow);
+
+    startCard.text('Eco-Engineers: Save the City!')
+      .font({family:'system-ui', size: 36, weight: 1000})
+      .fill(C.ink).move(sX+34, sY+30);
+
+    const subTxt = startCard.text('')
+      .font({family:'system-ui', size: 16, weight: 700, leading:1.35})
+      .fill('rgba(235,245,255,.86)')
+      .move(sX+34, sY+90);
+
+    setWrappedText(subTxt,
+      "You and a teammate are climate engineers in a futuristic city. Each turn you roll, move along the city spiral, and complete learning challenges. Correct choices reduce emissions; mistakes or storms raise the heat.\n\nWin by reducing city emissions to 0 before warming reaches 3.0°C — and do it within 20 turns!",
+      74
+    );
+
+    const startPick = startCard.group().move(sX+34, sY+260);
+    startPick.text('Players').font({family:'system-ui', size: 14, weight: 900}).fill('rgba(210,225,255,.78)').move(0,0);
+
+    const p1Btn = makeButton(startPick, 0, 30, 160, 56, '1 Player', {fill:'rgba(255,255,255,.04)'});
+    const p2Btn = makeButton(startPick, 180, 30, 160, 56, '2 Players', {fill:'rgba(255,255,255,.04)'});
+    p2Btn.setPressed(true);
+
+    const startBtn = makeButton(startCard, sX+sW-210, sY+sH-86, 176, 56, 'Start', {fill:'rgba(103,179,255,.14)'});
+    const howBtn = makeButton(startCard, sX+sW-400, sY+sH-86, 176, 56, 'Rules', {fill:'rgba(255,255,255,.04)'});
+
+    // ---------- Legend ----------
+    const legend = draw.group();
+    legend.rect(270, 140).radius(18).fill('rgba(18,28,46,.55)').stroke({color:'rgba(255,255,255,.10)', width:1}).move(40, 390);
+    legend.text('Spaces').font({family:'system-ui', size: 13, weight: 900}).fill('rgba(210,225,255,.75)').move(62, 408);
+    const legendItems = [
+      {t:'Quiz ❓', c:C.quiz, d:'Answer a learning question'},
+      {t:'Project 🛠️', c:C.project, d:'Pick the best climate solution'},
+      {t:'Event ⚡', c:C.event, d:'Surprise: storm, policy, innovation'},
+      {t:'Rest ⛺', c:C.rest, d:'Small recovery or calm turn'},
+    ];
+    legendItems.forEach((it, i) => {
+      const y = 438 + i*24;
+      legend.circle(12).fill(it.c).opacity(0.22).stroke({color:'rgba(255,255,255,.14)', width:1}).move(62, y);
+      legend.text(it.t).font({family:'system-ui', size: 12, weight: 900}).fill('rgba(235,245,255,.88)').move(84, y-2);
+      legend.text(it.d).font({family:'system-ui', size: 12, weight: 650}).fill('rgba(210,225,255,.60)').move(150, y-2);
+    });
+
+    // ---------- Question bank (original) ----------
+    // Each has: q, options[4], a (index), exp (short explanation), delta {em, t} applied on correct; wrong uses fallback
+    const QUESTIONS = [
+      {
+        q: "Which gas is the biggest contributor to human-caused warming today?",
+        options: ["Oxygen (O₂)", "Carbon dioxide (CO₂)", "Nitrogen (N₂)", "Argon (Ar)"],
+        a: 1,
+        exp: "CO₂ from burning fossil fuels traps heat by absorbing infrared radiation.",
+        good: { em: -12, t: -0.05 },
+      },
+      {
+        q: "What does 'energy efficiency' mean?",
+        options: ["Using more energy to work faster", "Getting the same service with less energy", "Only using solar panels", "Turning off all electricity"],
+        a: 1,
+        exp: "Efficient devices deliver the same output (light, heat, motion) using fewer watts.",
+        good: { em: -10, t: -0.03 },
+      },
+      {
+        q: "A city replaces coal power with wind. What happens to emissions from electricity?",
+        options: ["They increase a lot", "They decrease", "They stay exactly the same", "They become radioactive"],
+        a: 1,
+        exp: "Wind turbines generate electricity without burning carbon, so operational CO₂ drops strongly.",
+        good: { em: -14, t: -0.04 },
+      },
+      {
+        q: "Which action usually reduces transport emissions the most per person?",
+        options: ["Bigger cars", "More traffic lanes", "Public transit / walking / cycling", "Idling to warm the engine"],
+        a: 2,
+        exp: "Moving people efficiently (bus, tram, bike) cuts fuel use per trip.",
+        good: { em: -11, t: -0.03 },
+      },
+      {
+        q: "What is a 'carbon sink'?",
+        options: ["A place where carbon is stored or absorbed", "A machine that makes carbon", "A kind of lightbulb", "A type of storm"],
+        a: 0,
+        exp: "Forests, soils, and oceans can absorb and store some CO₂ from the atmosphere.",
+        good: { em: -8, t: -0.02 },
+      },
+      {
+        q: "Which building upgrade often saves the most heating energy in winter?",
+        options: ["More neon signs", "Better insulation and sealing", "Hotter radiators", "Open windows all day"],
+        a: 1,
+        exp: "Insulation reduces heat loss, so you need less energy to keep rooms warm.",
+        good: { em: -13, t: -0.03 },
+      },
+      {
+        q: "If you electrify buses AND the grid gets cleaner, emissions will…",
+        options: ["Always rise", "Fall more than either change alone", "Stay the same", "Become invisible"],
+        a: 1,
+        exp: "Clean electricity + electrified transport is a powerful combined solution.",
+        good: { em: -15, t: -0.05 },
+      },
+      {
+        q: "Which is a good example of adaptation (not mitigation)?",
+        options: ["Planting shade trees for heatwaves", "Switching from coal to solar", "Improving LED lighting", "Reducing car trips"],
+        a: 0,
+        exp: "Adaptation reduces harm from impacts (like heat), while mitigation reduces emissions.",
+        good: { em: -6, t: -0.06 },
+      },
+      {
+        q: "Why do dark surfaces in cities increase heat risk?",
+        options: ["They reflect sunlight strongly", "They absorb more sunlight and warm up", "They create wind", "They cool the air instantly"],
+        a: 1,
+        exp: "Dark asphalt absorbs solar energy; cool roofs and shade can reduce urban heat.",
+        good: { em: -7, t: -0.06 },
+      },
+      {
+        q: "Which is typically the cleanest way to make electricity?",
+        options: ["Coal", "Oil", "Wind or solar", "Burning plastic"],
+        a: 2,
+        exp: "Wind and solar have very low operational emissions compared with burning fuels.",
+        good: { em: -12, t: -0.03 },
+      },
+      {
+        q: "Methane (CH₄) is important because it…",
+        options: ["Is harmless", "Is a strong heat-trapping gas", "Turns into gold", "Blocks all sunlight"],
+        a: 1,
+        exp: "Methane traps heat effectively; reducing leaks can slow warming quickly.",
+        good: { em: -10, t: -0.05 },
+      },
+      {
+        q: "Which policy best encourages clean energy adoption at scale?",
+        options: ["Ban all science", "Support clean power + price pollution", "Subsidize coal forever", "Increase traffic jams"],
+        a: 1,
+        exp: "Good policy aligns incentives: clean gets cheaper; pollution costs more.",
+        good: { em: -11, t: -0.03 },
+      },
+      // quick numeracy-style but still climate themed:
+      {
+        q: "A project cuts emissions by 5 units per year for 3 years. Total cut?",
+        options: ["8", "10", "15", "20"],
+        a: 2,
+        exp: "5 × 3 = 15 units. Small steady cuts add up over time.",
+        good: { em: -15, t: -0.02 },
+      },
+      {
+        q: "Which habit reduces food-related emissions most often?",
+        options: ["More food waste", "Eating only imported air", "Reducing food waste", "Freezing sunshine"],
+        a: 2,
+        exp: "Waste means wasted energy, fertilizer, and transport. Less waste = less emissions.",
+        good: { em: -9, t: -0.02 },
+      },
+      {
+        q: "What is 'renewable energy'?",
+        options: ["Energy that runs out quickly", "Energy from sources that replenish naturally", "Energy made from plastic", "Energy only at night"],
+        a: 1,
+        exp: "Sun, wind, and water cycles replenish continuously on human timescales.",
+        good: { em: -10, t: -0.03 },
+      },
+    ];
+
+    const EVENTS = [
+      {
+        title: "Heatwave!",
+        text: "A sudden heatwave strains the grid. Add cooling shelters and shade planning.",
+        effect: { em: +0, t: +0.20 }
+      },
+      {
+        title: "Innovation Grant",
+        text: "A local university funds a pilot for smart heat pumps. Efficiency improves citywide.",
+        effect: { em: -10, t: -0.05 }
+      },
+      {
+        title: "Bike Lane Boom",
+        text: "A new bike network launches. More people ditch short car trips.",
+        effect: { em: -8, t: -0.02 }
+      },
+      {
+        title: "Storm Damage",
+        text: "A severe storm damages infrastructure. Repairs use extra resources.",
+        effect: { em: +6, t: +0.10 }
+      },
+      {
+        title: "Community Retrofit Day",
+        text: "Neighbors seal drafts, install LEDs, and share tips.",
+        effect: { em: -7, t: -0.03 }
+      },
+      {
+        title: "Traffic Snarl",
+        text: "Congestion spikes. Idling emissions rise until the city adjusts signals.",
+        effect: { em: +8, t: +0.04 }
+      }
+    ];
+
+    const GLOSSARY = [
+      ["Mitigation", "Reducing emissions to slow climate change."],
+      ["Adaptation", "Reducing harm from impacts (heat, floods, drought)."],
+      ["Efficiency", "Same service with less energy (LEDs, insulation)."],
+      ["Renewables", "Energy from replenishing sources (wind/solar/hydro)."],
+      ["Carbon sink", "A place that absorbs/stores CO₂ (forests, soils, oceans)."],
+      ["Grid", "The electricity network that delivers power to homes & transit."],
+    ];
+
+    // ---------- Game State ----------
+    const Game = {
+      players: [],
+      current: 0,
+      pos: [],       // per player position index
+      scores: [],    // points (learning badges)
+      turns: 0,
+      maxTurns: 20,
+      emissions: 100,
+      temp: 1.00,
+      rolling: false,
+      ended: false,
+      usedQuestions: [],
+    };
+
+    // Player tokens
+    const tokensG = board.group();
+    const tokenDefs = [
+      {name:'Player 1', color:'#67b3ff'},
+      {name:'Player 2', color:'#35d39f'}
+    ];
+    const tokens = [];
+
+    function createToken(i){
+      const p = points[0];
+      const g = tokensG.group();
+      const ring = g.circle(30).center(p.x, p.y).fill('rgba(0,0,0,.25)').stroke({color:'rgba(255,255,255,.18)', width:1});
+      const core = g.circle(18).center(p.x, p.y).fill(tokenDefs[i].color).opacity(0.30);
+      const dot = g.circle(10).center(p.x, p.y).fill(tokenDefs[i].color);
+      dot.filterWith(draw.filterWith(add => {
+        add.gaussianBlur(4).result('b');
+        add.merge(add.mergeNode('b'), add.mergeNode('SourceGraphic'));
+      }));
+      const label = g.text(i===0 ? '1' : '2').font({family:'system-ui', size: 12, weight: 1000}).fill(C.ink);
+      label.center(p.x, p.y+0.5);
+      return {g, ring, core, dot, label};
+    }
+
+    function setPlayers(n){
+      // reset tokens
+      tokensG.clear();
+      tokens.length = 0;
+
+      Game.players = tokenDefs.slice(0,n);
+      Game.current = 0;
+      Game.pos = Array(n).fill(0);
+      Game.scores = Array(n).fill(0);
+      Game.turns = 0;
+      Game.emissions = 100;
+      Game.temp = 1.00;
+      Game.rolling = false;
+      Game.ended = false;
+      Game.usedQuestions = [];
+
+      for (let i=0;i<n;i++){
+        const tok = createToken(i);
+        // slight offset so tokens don’t overlap
+        const off = (i===0 ? -10 : +10);
+        tok.g.translate(off, -off);
+        tokens.push(tok);
+      }
+
+      highlightSpace(0);
+      updateHUD();
+      btnRoll.setEnabled(true);
+      diceNum.text('—');
+    }
+
+    // ---------- Highlight current space ----------
+    function highlightSpace(idx){
+      spaceNodes.forEach((s, i) => {
+        s.c.stroke({color:'rgba(255,255,255,.14)', width:1});
+        s.outer.stroke({color:'rgba(255,255,255,.10)', width:1});
+        s.cap.opacity(0.22);
+      });
+      const s = spaceNodes[idx];
+      if (!s) return;
+      s.c.stroke({color:'rgba(103,179,255,.55)', width:2});
+      s.outer.stroke({color:'rgba(103,179,255,.35)', width:2});
+      s.cap.opacity(0.32);
+    }
+
+    // ---------- HUD update ----------
+    function updateHUD(){
+      const p = Game.players[Game.current];
+      hudTurn.text(`Turn ${Game.turns+1} / ${Game.maxTurns}`);
+      hudPlayer.text(`${p?.name ?? '—'}  •  Badges: ${Game.scores[Game.current] ?? 0}`);
+
+      // Emissions bar (0..100)
+      const e = clamp(Game.emissions, 0, 100);
+      emFg.width(300 * (e/100));
+      emTxt.text(`${Math.round(Game.emissions)} / 100`);
+
+      // Color shift: cleaner -> greener
+      const emCol = e > 66 ? 'rgba(255,107,135,.78)' : (e > 33 ? 'rgba(255,209,102,.85)' : 'rgba(53,211,159,.75)');
+      emFg.fill(emCol);
+
+      // Temperature bar (1.0..3.0)
+      const t = clamp(Game.temp, 1.0, 3.0);
+      const frac = (t - 1.0) / 2.0;
+      tFg.width(300 * frac);
+      tTxt.text(`${t.toFixed(2)}°C / 3.00°C`);
+
+      setPlayersVisualTurn();
+    }
+
+    function setPlayersVisualTurn(){
+      tokens.forEach((tok, i) => {
+        const is = (i === Game.current);
+        tok.dot.opacity(is ? 1 : 0.65);
+        tok.core.opacity(is ? 0.35 : 0.18);
+        tok.ring.stroke({color: is ? 'rgba(103,179,255,.45)' : 'rgba(255,255,255,.12)', width: is ? 2 : 1});
+      });
+    }
+
+    // ---------- Movement animation ----------
+    async function movePlayer(steps){
+      const i = Game.current;
+      let pos = Game.pos[i];
+
+      for (let s=0; s<steps; s++){
+        pos = Math.min(N-1, pos+1);
+        Game.pos[i] = pos;
+        highlightSpace(pos);
+        await animateTokenTo(i, pos);
+        if (pos === N-1) break;
+      }
+    }
+
+    function animateTokenTo(playerIndex, spaceIndex){
+      return new Promise(resolve => {
+        const tok = tokens[playerIndex];
+        const pt = points[spaceIndex];
+        // add tiny per-player offset
+        const dx = (playerIndex===0 ? -10 : +10);
+        const dy = (playerIndex===0 ? +10 : -10);
+
+        tok.g.animate(260, 0, 'easeOutCubic').move(pt.x - 15 + dx, pt.y - 15 + dy).after(resolve);
+      });
+    }
+
+    // ---------- Modal system ----------
+    function showModal(title, body, options){
+      overlay.show();
+      btnContinue.hide();
+      choiceG.clear();
+
+      cardTitle.text(title);
+      setWrappedText(cardBody, body, 78);
+
+      if (options && options.length){
+        options.forEach((opt, idx) => {
+          const b = makeButton(choiceG, 0, idx*58, 708, 50, opt.label, {fill:'rgba(255,255,255,.04)'});
+          b.on('click', () => {
+            if (b.data('enabled') === false) return;
+            opt.onClick?.();
+          });
+        });
+      }
+    }
+    function hideModal(){
+      overlay.hide();
+      btnContinue.hide();
+      choiceG.clear();
+    }
+
+    function showInfo(title, body, onClose){
+      overlay.show();
+      choiceG.clear();
+      cardTitle.text(title);
+      setWrappedText(cardBody, body, 78);
+      btnContinue.show();
+      btnContinue.setEnabled(true);
+      btnContinue.setPressed(false);
+      btnContinue.off('click');
+      btnContinue.on('click', () => {
+        hideModal();
+        onClose?.();
+      });
+    }
+
+    // ---------- Game logic: resolve space ----------
+    function pickQuestion(){
+      // Avoid immediate repeats by tracking indices
+      const tries = 20;
+      for (let i=0;i<tries;i++){
+        const idx = rint(0, QUESTIONS.length-1);
+        if (!Game.usedQuestions.includes(idx)){
+          Game.usedQuestions.push(idx);
+          if (Game.usedQuestions.length > 12) Game.usedQuestions.shift();
+          return QUESTIONS[idx];
+        }
+      }
+      return choice(QUESTIONS);
+    }
+
+    function resolveSpace(spaceIndex){
+      const type = types[spaceIndex];
+      if (type === 'FINISH'){
+        checkEnd(true);
+        return;
+      }
+      if (type === 'QUIZ') return quizChallenge();
+      if (type === 'PROJECT') return projectChoice();
+      if (type === 'EVENT') return eventCard();
+      if (type === 'REST') return restSpace();
+      if (type === 'START') return restSpace();
+    }
+
+    function quizChallenge(){
+      const q = pickQuestion();
+      const correctDelta = q.good || {em:-10, t:-0.03};
+      const wrongDelta = {em:+6, t:+0.05};
+
+      showModal("Quiz: Think like a climate engineer", q.q, q.options.map((opt, i) => ({
+        label: opt,
+        onClick: () => {
+          const ok = (i === q.a);
+          const delta = ok ? correctDelta : wrongDelta;
+          applyDelta(delta);
+          if (ok) Game.scores[Game.current] += 1;
+
+          const verdict = ok ? "Correct ✅" : "Not quite ❌";
+          const effectLine = ok
+            ? `Emissions ${fmtDelta(delta.em)} • Heat ${fmtDelta(delta.t, true)}`
+            : `Emissions ${fmtDelta(delta.em)} • Heat ${fmtDelta(delta.t, true)} (learn and try again next time)`;
+
+          showInfo(verdict, `${q.exp}\n\nImpact: ${effectLine}`, () => nextTurn());
+        }
+      })));
+    }
+
+    function projectChoice(){
+      // A “project” is an applied decision. One option is best; both have tradeoffs.
+      const projects = [
+        {
+          title: "Retrofit a School",
+          prompt: "You can either (A) add insulation + air sealing or (B) install brighter hallway lights. Which cuts heating/cooling energy more?",
+          options: ["A) Insulation + sealing", "B) Brighter lights"],
+          a: 0,
+          exp: "Insulation and sealing reduce heat loss/gain directly, often saving far more energy than lighting changes in conditioned buildings.",
+          good: {em:-14, t:-0.04},
+          bad: {em:-4, t:-0.01}
+        },
+        {
+          title: "Transport Upgrade",
+          prompt: "Budget for one: (A) electric buses on busy routes, or (B) paint a 'go faster' slogan on roads. Choose the real climate solution.",
+          options: ["A) Electric buses", "B) Road slogan"],
+          a: 0,
+          exp: "Electrifying high-use transit cuts fuel and improves air quality (especially with cleaner power).",
+          good: {em:-15, t:-0.04},
+          bad: {em:+2, t:+0.02}
+        },
+        {
+          title: "Cooling the City",
+          prompt: "Heat is rising. Choose: (A) shade trees + cool roofs, or (B) more dark asphalt. Which lowers heat risk?",
+          options: ["A) Shade trees + cool roofs", "B) More dark asphalt"],
+          a: 0,
+          exp: "Shade and reflective surfaces reduce absorbed heat, making neighborhoods safer during heatwaves.",
+          good: {em:-6, t:-0.12},
+          bad: {em:+3, t:+0.12}
+        },
+        {
+          title: "Power Mix Decision",
+          prompt: "To cut emissions fast, should the city (A) add wind/solar or (B) extend coal plants?",
+          options: ["A) Add wind/solar", "B) Extend coal plants"],
+          a: 0,
+          exp: "Renewables reduce operational emissions dramatically compared with coal combustion.",
+          good: {em:-16, t:-0.05},
+          bad: {em:+10, t:+0.05}
+        }
+      ];
+
+      const p = choice(projects);
+      showModal(`Project: ${p.title}`, p.prompt, p.options.map((opt, i) => ({
+        label: opt,
+        onClick: () => {
+          const ok = (i === p.a);
+          const delta = ok ? p.good : p.bad;
+          applyDelta(delta);
+          if (ok) Game.scores[Game.current] += 1;
+
+          showInfo(ok ? "Project succeeded ✅" : "Project underperformed ⚠️",
+            `${p.exp}\n\nImpact: Emissions ${fmtDelta(delta.em)} • Heat ${fmtDelta(delta.t, true)}`,
+            () => nextTurn()
+          );
+        }
+      })));
+    }
+
+    function eventCard(){
+      const e = choice(EVENTS);
+      applyDelta(e.effect);
+      const impact = `Impact: Emissions ${fmtDelta(e.effect.em)} • Heat ${fmtDelta(e.effect.t, true)}`;
+      showInfo(`Event: ${e.title}`, `${e.text}\n\n${impact}`, () => nextTurn());
+    }
+
+    function restSpace(){
+      // Gentle recovery: small chance to reduce heat or emissions
+      const roll = Math.random();
+      let delta;
+      let msg;
+      if (roll < 0.5){
+        delta = {em:-4, t:-0.02};
+        msg = "A calm day. Teams coordinate, fix small inefficiencies, and share tips.";
+      } else {
+        delta = {em:-2, t:-0.05};
+        msg = "A cool breeze helps. The city improves heat preparedness and reduces risk.";
+      }
+      applyDelta(delta);
+      showInfo("Rest stop ⛺", `${msg}\n\nImpact: Emissions ${fmtDelta(delta.em)} • Heat ${fmtDelta(delta.t, true)}`, () => nextTurn());
+    }
+
+    function fmtDelta(v, isTemp=false){
+      const sign = v >= 0 ? '+' : '−';
+      const abs = Math.abs(v);
+      return isTemp ? `${sign}${abs.toFixed(2)}°C` : `${sign}${Math.round(abs)}`;
+    }
+
+    function applyDelta(delta){
+      Game.emissions = clamp(Game.emissions + (delta.em || 0), 0, 140);
+      Game.temp = clamp(Game.temp + (delta.t || 0), 1.0, 3.5);
+      updateHUD();
+    }
+
+    function nextTurn(){
+      if (checkEnd(false)) return;
+      Game.current = (Game.current + 1) % Game.players.length;
+      if (Game.current === 0) Game.turns += 1;
+      updateHUD();
+      btnRoll.setEnabled(true);
+      btnRoll.flash();
+      diceNum.text('—');
+      highlightSpace(Game.pos[Game.current]);
+    }
+
+    function checkEnd(fromFinish){
+      // Win if emissions <= 0
+      if (Game.emissions <= 0){
+        Game.ended = true;
+        btnRoll.setEnabled(false);
+        showInfo("You Win! 🌿", "City emissions reached 0. Your team built a cleaner, cooler future.\n\nLearning bonus: Efficiency + clean power + smart transport is a powerful combo.", () => {});
+        return true;
+      }
+      // Lose if temp >= 3.0
+      if (Game.temp >= 3.0){
+        Game.ended = true;
+        btnRoll.setEnabled(false);
+        showInfo("Too Hot… 🔥", "Warming reached 3.0°C. The mission failed — but every attempt teaches better choices.\n\nTry again and prioritize quick, high-impact reductions.", () => {});
+        return true;
+      }
+      // Turn limit
+      if (Game.turns >= Game.maxTurns){
+        Game.ended = true;
+        btnRoll.setEnabled(false);
+        const ok = Game.emissions <= 30;
+        showInfo(ok ? "Deadline Success ✅" : "Deadline Missed ⏳",
+          ok
+            ? `Time's up — but you reduced emissions to ${Math.round(Game.emissions)}. The city stays on track.`
+            : `Time's up — emissions are still ${Math.round(Game.emissions)}. The city needs a stronger plan.`,
+          () => {}
+        );
+        return true;
+      }
+      // If reached finish, give special check
+      if (fromFinish){
+        Game.ended = true;
+        btnRoll.setEnabled(false);
+        const ok = Game.emissions <= 30 && Game.temp < 3.0;
+        showInfo(ok ? "Finish Line Victory 🏁" : "Finish Line… but not enough",
+          ok
+            ? `You reached the City Hall Summit with emissions at ${Math.round(Game.emissions)} and heat at ${Game.temp.toFixed(2)}°C.\n\nThat's a stable plan — you win!`
+            : `You reached the summit, but emissions (${Math.round(Game.emissions)}) are still too high.\n\nTry again: stack efficiency + clean power early.`,
+          () => {}
+        );
+        return true;
+      }
+      return false;
+    }
+
+    // ---------- Rolling ----------
+    async function rollDice(){
+      if (Game.rolling || Game.ended) return;
+      if (btnRoll.data('enabled') === false) return;
+
+      Game.rolling = true;
+      btnRoll.setEnabled(false);
+
+      // Dice animation (fake roll)
+      const spins = 10;
+      for (let i=0;i<spins;i++){
+        const n = rint(1,6);
+        diceNum.text(String(n));
+        diceFace.animate(60).rotate(rint(-25,25), 27, 27).after(()=>{});
+        await sleep(55);
+      }
+      const result = rint(1,6);
+      diceNum.text(String(result));
+      diceFace.animate(180, 0, 'easeOutCubic').rotate(0,27,27);
+
+      // Move and resolve
+      await movePlayer(result);
+
+      // If reached finish exactly or by cap
+      const pos = Game.pos[Game.current];
+      if (pos === N-1){
+        resolveSpace(pos);
+      } else {
+        resolveSpace(pos);
+      }
+
+      Game.rolling = false;
+    }
+
+    function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+    // ---------- Rules / Glossary overlays ----------
+    function showRules(){
+      showInfo("Rules",
+        "Goal: Reduce City Emissions to 0 before Warming reaches 3.0°C — within 20 turns.\n\nTurn:\n1) Roll\n2) Move along the spiral\n3) Resolve the space:\n• Quiz ❓: Answer a climate/energy question\n• Project 🛠️: Choose the best solution\n• Event ⚡: Surprise effect\n• Rest ⛺: Small recovery\n\nCorrect answers earn a badge and reduce emissions (and sometimes heat).",
+        () => {}
+      );
+    }
+
+    function showGlossary(){
+      overlay.show();
+      btnContinue.hide();
+      choiceG.clear();
+      cardTitle.text("Glossary (quick learning cheat-sheet)");
+      cardBody.clear();
+      cardBody.text(add => {
+        GLOSSARY.forEach((g, i) => {
+          add.tspan(`${g[0]}:`).font({weight: 1000});
+          add.tspan(` ${g[1]}`).newLine();
+          add.tspan(' ').newLine();
+        });
+      });
+      cardBody.font({family:'system-ui', size: 16, weight: 650, leading: 1.35}).fill('rgba(235,245,255,.88)');
+      cardBody.move(cardX+26, cardY+78);
+
+      btnContinue.show();
+      btnContinue.label.text('Close');
+      btnContinue.off('click');
+      btnContinue.on('click', () => hideModal());
+    }
+
+    // ---------- Space / keyboard bindings ----------
+    btnRoll.on('click', rollDice);
+    btnRules.on('click', showRules);
+    btnGloss.on('click', showGlossary);
+
+    overlayBg.on('click', () => { /* keep modal click-through off */ });
+
+    window.addEventListener('keydown', (e) => {
+      if (start.visible()) {
+        if (e.key.toLowerCase() === 'r') showRules();
+        return;
+      }
+      if (overlay.visible()){
+        if (e.key === 'Escape') hideModal();
+        return;
+      }
+      if (e.key === ' '){ e.preventDefault(); rollDice(); }
+      if (e.key.toLowerCase() === 'r') showRules();
+      if (e.key.toLowerCase() === 'k') showGlossary();
+    });
+
+    // ---------- Start screen interactions ----------
+    let playerCount = 2;
+    p1Btn.on('click', () => {
+      playerCount = 1;
+      p1Btn.setPressed(true); p2Btn.setPressed(false);
+    });
+    p2Btn.on('click', () => {
+      playerCount = 2;
+      p1Btn.setPressed(false); p2Btn.setPressed(true);
+    });
+
+    startBtn.on('click', () => {
+      start.hide();
+      setPlayers(playerCount);
+      showInfo("Mission Briefing",
+        "Roll and move. Solve quizzes and projects to cut emissions.\n\nTip: Early efficiency + clean power builds momentum.\n\nPress Space to roll.",
+        () => { btnRoll.flash(); }
+      );
+    });
+    howBtn.on('click', showRules);
+
+    // ---------- Layout polish ----------
+    // Slight parallax drift for nebula
+    let t0 = performance.now();
+    function animateBg(){
+      const t = (performance.now()-t0)/1000;
+      neb.x(Math.sin(t*0.08)*8).y(Math.cos(t*0.06)*6);
+      requestAnimationFrame(animateBg);
+    }
+    animateBg();
+
+    // Center board
+    board.translate(0, 0);
+
+    // Ensure overlay always covers viewBox
+    overlayBg.size(W,H);
+
+    // ---------- Initialize (default 2 players selected) ----------
+    setPlayers(2); // pre-seed behind start screen
+    start.show();
+    btnRoll.setEnabled(false);
+    updateHUD();
+    setPlayersVisualTurn();
+    highlightSpace(0);
+
+    // A tiny “pulse” on start space
+    const s0 = spaceNodes[0];
+    s0.cap.animate(900).opacity(0.40).after(() => s0.cap.animate(900).opacity(0.22));
+
+  })();
+  </script>
+</body>
+</html>

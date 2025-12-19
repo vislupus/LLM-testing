@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Osogovo 3D Terrain Diorama — Babylon.js (Single File)</title>
+  <style>
+    html,body{height:100%;margin:0;overflow:hidden;background:#0b1220;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    #renderCanvas{width:100%;height:100%;display:block;touch-action:none}
+    .hud{
+      position:fixed;left:14px;top:14px;z-index:10;color:#eef6ff;
+      display:flex;flex-wrap:wrap;gap:10px;user-select:none;pointer-events:none
+    }
+    .panel{
+      pointer-events:auto;
+      min-width:320px;max-width:min(520px,92vw);
+      padding:10px 12px;border-radius:16px;
+      background:rgba(255,255,255,.08);
+      border:1px solid rgba(255,255,255,.16);
+      backdrop-filter:blur(8px);
+      box-shadow:0 18px 70px rgba(0,0,0,.45)
+    }
+    .row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+    .title{font-weight:950;letter-spacing:.2px}
+    .muted{opacity:.78;font-weight:700;font-size:12px;line-height:1.25}
+    .pill{
+      display:inline-block;padding:2px 10px;border-radius:999px;
+      border:1px solid rgba(255,255,255,.16);background:rgba(0,0,0,.22);
+      font-weight:900;font-size:12px
+    }
+    .kbd{
+      display:inline-block;padding:2px 8px;border-radius:999px;
+      border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:900
+    }
+  </style>
+</head>
+<body>
+  <canvas id="renderCanvas"></canvas>
+
+  <div class="hud">
+    <div class="panel">
+      <div class="row">
+        <div class="title">⛰️ Osogovo 3D Terrain Diorama</div>
+        <div class="pill" id="statusPill">Loading…</div>
+      </div>
+      <div class="muted" style="margin-top:6px">
+        Orbit: mouse • Zoom: wheel • Pan: right-drag<br/>
+        Labels always face the camera (billboard).<br/>
+        Files expected next to this HTML:<br/>
+        <span class="kbd">Osogovo Height Map (Merged).png</span> and <span class="kbd">Osogovo_map.jpg</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Babylon.js from CDN (allowed). Everything else is embedded in this file. -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+
+  <script>
+  (() => {
+    const canvas = document.getElementById("renderCanvas");
+    const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer:true, stencil:true });
+    const statusPill = document.getElementById("statusPill");
+
+    // Local images (same folder as this HTML). encodeURI handles spaces/parentheses.
+    const HEIGHTMAP_URL = encodeURI("Osogovo Height Map (Merged).png");
+    const DIFFUSE_URL   = encodeURI("Osogovo_map.jpg");
+
+    // Diorama sizing
+    const TERRAIN_W = 600;          // world units (X)
+    const TERRAIN_H = 600;          // world units (Z)
+    const SUBDIV    = 256;          // terrain resolution (higher = smoother, heavier)
+    const MIN_H     = 0;            // heightmap black -> min height
+    const MAX_H     = 140;          // heightmap white -> max height
+    const LID_Y     = 0.25;         // lift slightly to avoid z-fighting with pedestal top
+    const PEDESTAL_HEIGHT = 120;    // how far the walls go down
+
+    // Peak search sampling
+    const SAMPLE_N = 4200;
+    const MIN_PEAK_SEP = 120;       // keep peaks separated
+
+    function makeLabelTexture(scene, text){
+      const w = 512, h = 128;
+      const dt = new BABYLON.DynamicTexture("labelTex", { width:w, height:h }, scene, false);
+      dt.hasAlpha = true;
+      const ctx = dt.getContext();
+
+      // Background rounded box
+      ctx.clearRect(0,0,w,h);
+      ctx.fillStyle = "rgba(10,16,28,0.78)";
+      roundRect(ctx, 10, 18, w-20, h-36, 18);
+      ctx.fill();
+
+      // Border
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "rgba(255,255,255,0.22)";
+      ctx.stroke();
+
+      // Accent stripe
+      ctx.fillStyle = "rgba(103,179,255,0.35)";
+      roundRect(ctx, 18, 26, 12, h-52, 8);
+      ctx.fill();
+
+      // Text
+      ctx.font = "900 44px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+      ctx.fillStyle = "rgba(238,246,255,0.96)";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, 44, h/2);
+
+      // Subtle shadow/glow
+      ctx.globalAlpha = 0.35;
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.lineWidth = 6;
+      ctx.strokeText(text, 44, h/2);
+      ctx.globalAlpha = 1;
+
+      dt.update();
+      return dt;
+
+      function roundRect(c, x,y,w,h,r){
+        const rr = Math.min(r, w/2, h/2);
+        c.beginPath();
+        c.moveTo(x+rr,y);
+        c.arcTo(x+w,y,x+w,y+h,rr);
+        c.arcTo(x+w,y+h,x,y+h,rr);
+        c.arcTo(x,y+h,x,y,rr);
+        c.arcTo(x,y,x+w,y,rr);
+        c.closePath();
+      }
+    }
+
+    function createScene(){
+      const scene = new BABYLON.Scene(engine);
+      scene.clearColor = new BABYLON.Color4(0.05, 0.08, 0.12, 1);
+
+      // Camera
+      const camera = new BABYLON.ArcRotateCamera(
+        "camera",
+        -Math.PI/2.2,
+        Math.PI/2.6,
+        900,
+        new BABYLON.Vector3(0, 30, 0),
+        scene
+      );
+      camera.attachControl(canvas, true);
+      camera.wheelDeltaPercentage = 0.01;
+      camera.panningSensibility = 55;
+      camera.lowerRadiusLimit = 120;
+      camera.upperRadiusLimit = 2200;
+      camera.lowerBetaLimit = 0.20;
+      camera.upperBetaLimit = 1.45;
+
+      // Lights
+      const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
+      hemi.intensity = 0.7;
+
+      const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.35, -1, -0.20), scene);
+      sun.position = new BABYLON.Vector3(250, 420, 250);
+      sun.intensity = 1.0;
+
+      // Shadows
+      const shadowGen = new BABYLON.ShadowGenerator(2048, sun);
+      shadowGen.useBlurExponentialShadowMap = true;
+      shadowGen.blurKernel = 28;
+      shadowGen.setDarkness(0.35);
+
+      // Soft fog for depth
+      scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
+      scene.fogDensity = 0.0015;
+      scene.fogColor = new BABYLON.Color3(0.07, 0.10, 0.14);
+
+      // Simple sky dome
+      const sky = BABYLON.MeshBuilder.CreateSphere("sky", { diameter: 5000, segments: 24 }, scene);
+      sky.isPickable = false;
+      sky.infiniteDistance = true;
+      const skyMat = new BABYLON.StandardMaterial("skyMat", scene);
+      skyMat.backFaceCulling = false;
+      skyMat.disableLighting = true;
+      skyMat.emissiveColor = new BABYLON.Color3(0.08, 0.14, 0.22);
+      sky.material = skyMat;
+
+      // Pedestal (box) — terrain sits as the "lid" on top
+      const pedestal = BABYLON.MeshBuilder.CreateBox("pedestal", {
+        width: TERRAIN_W,
+        depth: TERRAIN_H,
+        height: PEDESTAL_HEIGHT
+      }, scene);
+      pedestal.position.y = -PEDESTAL_HEIGHT/2;
+      pedestal.receiveShadows = true;
+
+      const pedMat = new BABYLON.PBRMaterial("pedMat", scene);
+      pedMat.albedoColor = new BABYLON.Color3(0.20, 0.22, 0.26);
+      pedMat.roughness = 0.95;
+      pedMat.metallic = 0.0;
+      pedestal.material = pedMat;
+      pedestal.renderOutline = true;
+      pedestal.outlineWidth = 0.02;
+      pedestal.outlineColor = new BABYLON.Color3(0.03,0.04,0.06);
+      shadowGen.addShadowCaster(pedestal);
+
+      // Terrain from heightmap
+      statusPill.textContent = "Loading heightmap…";
+
+      const terrain = BABYLON.MeshBuilder.CreateGroundFromHeightMap(
+        "terrain",
+        HEIGHTMAP_URL,
+        {
+          width: TERRAIN_W,
+          height: TERRAIN_H,
+          subdivisions: SUBDIV,
+          minHeight: MIN_H,
+          maxHeight: MAX_H,
+          onReady: (mesh) => {
+            try {
+              // Lift slightly to avoid z-fighting with pedestal top face
+              mesh.position.y = LID_Y;
+              mesh.receiveShadows = true;
+
+              // Terrain material (diffuse texture)
+              const tMat = new BABYLON.StandardMaterial("terrainMat", scene);
+              tMat.diffuseTexture = new BABYLON.Texture(DIFFUSE_URL, scene, true, false, BABYLON.Texture.TRILINEAR_SAMPLINGMODE);
+              tMat.diffuseTexture.anisotropicFilteringLevel = 8;
+              tMat.specularColor = new BABYLON.Color3(0.06, 0.06, 0.06);
+              tMat.specularPower = 32;
+              tMat.backFaceCulling = true;
+              mesh.material = tMat;
+
+              // Subtle outline for a tabletop feel
+              mesh.renderOutline = true;
+              mesh.outlineWidth = 0.02;
+              mesh.outlineColor = new BABYLON.Color3(0.03,0.04,0.06);
+
+              shadowGen.addShadowCaster(mesh);
+
+              // Auto-frame camera to terrain bounds
+              const bi = mesh.getBoundingInfo();
+              const ext = bi.boundingBox.extendSizeWorld;
+              const radius = Math.max(ext.x, ext.z) * 2.2;
+              camera.target = new BABYLON.Vector3(0, MAX_H*0.20, 0);
+              camera.radius = Math.max(450, radius);
+              camera.alpha = -Math.PI/2.1;
+              camera.beta = Math.PI/2.8;
+
+              // Place 3 markers on high peaks
+              statusPill.textContent = "Finding peaks…";
+              placePeakMarkers(scene, mesh, camera, shadowGen);
+
+              statusPill.textContent = "Ready";
+            } catch (e) {
+              console.error(e);
+              statusPill.textContent = "Error";
+            }
+          }
+        },
+        scene
+      );
+
+      // Fallback if terrain fails to load (helpful debug)
+      terrain.onErrorObservable?.add((msg) => {
+        console.error("Terrain load error:", msg);
+        statusPill.textContent = "Failed to load images";
+      });
+
+      return scene;
+    }
+
+    function placePeakMarkers(scene, terrain, camera, shadowGen){
+      // Sample the terrain to find high points.
+      // GroundMesh provides getHeightAtCoordinates(x, z) in world coords.
+      const halfW = TERRAIN_W/2;
+      const halfH = TERRAIN_H/2;
+
+      // Collect candidates
+      const candidates = [];
+      for (let i=0;i<SAMPLE_N;i++){
+        const x = (Math.random()*2 - 1) * halfW;
+        const z = (Math.random()*2 - 1) * halfH;
+
+        // Skip very near edges (optional; comment out if you want true edge peaks)
+        // if (Math.abs(x) > halfW*0.96 || Math.abs(z) > halfH*0.96) continue;
+
+        const y = terrain.getHeightAtCoordinates(x, z) + terrain.position.y;
+        candidates.push({ x, y, z });
+      }
+
+      // Sort by height desc
+      candidates.sort((a,b)=>b.y - a.y);
+
+      // Pick top 3 separated points
+      const peaks = [];
+      for (const c of candidates){
+        if (peaks.length >= 3) break;
+        let ok = true;
+        for (const p of peaks){
+          const dx = c.x - p.x, dz = c.z - p.z;
+          if (Math.sqrt(dx*dx + dz*dz) < MIN_PEAK_SEP) { ok = false; break; }
+        }
+        if (ok) peaks.push(c);
+      }
+
+      // If not enough due to separation, just take top 3
+      while (peaks.length < 3 && candidates.length) peaks.push(candidates[peaks.length]);
+
+      const colors = [
+        new BABYLON.Color3(1.00, 0.35, 0.45),
+        new BABYLON.Color3(0.35, 0.85, 0.55),
+        new BABYLON.Color3(0.35, 0.65, 1.00),
+      ];
+
+      peaks.forEach((p, idx) => {
+        const label = `Peak ${idx+1}`;
+        const heightTxt = ` (h≈${p.y.toFixed(1)})`;
+
+        // Pole
+        const pole = BABYLON.MeshBuilder.CreateCylinder("pole"+idx, { height: 18, diameter: 1.2, tessellation: 14 }, scene);
+        pole.position.set(p.x, p.y + 9.0, p.z);
+        const poleMat = new BABYLON.StandardMaterial("poleMat"+idx, scene);
+        poleMat.diffuseColor = new BABYLON.Color3(0.10, 0.10, 0.12);
+        poleMat.specularColor = new BABYLON.Color3(0.05,0.05,0.05);
+        pole.material = poleMat;
+        pole.renderOutline = true;
+        pole.outlineWidth = 0.025;
+        pole.outlineColor = new BABYLON.Color3(0.03,0.04,0.06);
+        shadowGen.addShadowCaster(pole);
+
+        // Marker sphere
+        const sphere = BABYLON.MeshBuilder.CreateSphere("marker"+idx, { diameter: 5.5, segments: 18 }, scene);
+        sphere.position.set(p.x, p.y + 18.0, p.z);
+        const sMat = new BABYLON.StandardMaterial("markerMat"+idx, scene);
+        sMat.diffuseColor = colors[idx];
+        sMat.emissiveColor = colors[idx].scale(0.35);
+        sMat.specularColor = new BABYLON.Color3(0.12,0.12,0.12);
+        sphere.material = sMat;
+        sphere.renderOutline = true;
+        sphere.outlineWidth = 0.03;
+        sphere.outlineColor = new BABYLON.Color3(0.03,0.04,0.06);
+        shadowGen.addShadowCaster(sphere);
+
+        // Label plane (billboard)
+        const plane = BABYLON.MeshBuilder.CreatePlane("label"+idx, { width: 34, height: 8.5 }, scene);
+        plane.position.set(p.x, p.y + 28.0, p.z);
+        plane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+        plane.isPickable = false;
+
+        const tex = makeLabelTexture(scene, label + heightTxt);
+        const mat = new BABYLON.StandardMaterial("labelMat"+idx, scene);
+        mat.diffuseTexture = tex;
+        mat.opacityTexture = tex;
+        mat.emissiveColor = new BABYLON.Color3(1,1,1);
+        mat.specularColor = new BABYLON.Color3(0,0,0);
+        mat.backFaceCulling = false;
+        plane.material = mat;
+
+        // Small line from label down
+        const line = BABYLON.MeshBuilder.CreateLines("line"+idx, {
+          points: [
+            new BABYLON.Vector3(p.x, p.y + 22.0, p.z),
+            new BABYLON.Vector3(p.x, p.y + 26.0, p.z),
+          ]
+        }, scene);
+        line.color = new BABYLON.Color3(0.95,0.95,1.0);
+      });
+    }
+
+    const scene = createScene();
+
+    engine.runRenderLoop(() => scene.render());
+    window.addEventListener("resize", () => engine.resize());
+  })();
+  </script>
+</body>
+</html>

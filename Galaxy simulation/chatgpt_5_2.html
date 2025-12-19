@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Galaxy Formation (10,000 particles) — p5.js + Quadtree</title>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#ddd; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+    canvas { display:block; }
+    .ui{
+      position:fixed; left:12px; top:12px; z-index:10;
+      background:rgba(255,255,255,0.72);
+      border:1px solid rgba(0,0,0,0.12);
+      border-radius:12px;
+      padding:10px 12px;
+      backdrop-filter: blur(8px);
+      box-shadow:0 10px 35px rgba(0,0,0,0.18);
+      user-select:none;
+      width:min(460px, calc(100vw - 24px));
+    }
+    .row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:space-between; }
+    .title{ font-weight:900; letter-spacing:.2px; }
+    .muted{ font-size:12px; opacity:.75; line-height:1.25; margin-top:6px; }
+    .pill{
+      display:inline-block; padding:2px 8px; border-radius:999px;
+      border:1px solid rgba(0,0,0,0.12); background:rgba(255,255,255,0.65);
+      font-size:12px; font-weight:800;
+    }
+    button{
+      border:1px solid rgba(0,0,0,0.15);
+      background:rgba(0,0,0,0.05);
+      padding:7px 10px;
+      border-radius:10px;
+      font-weight:800;
+      cursor:pointer;
+    }
+    button:hover{ background:rgba(0,0,0,0.08); }
+    input[type="range"]{ width:160px; }
+    .controls{ display:flex; gap:10px; flex-wrap:wrap; margin-top:8px; align-items:center; }
+    .kv{ font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="ui">
+    <div class="row">
+      <div class="title">Galaxy Formation — 10,000 particles</div>
+      <span class="pill">Quadtree + mass merging</span>
+    </div>
+    <div class="muted">
+      A collapsing protogalactic cloud self-organizes into a rotating disk with spiral-like structure.
+      Forces: local gravity + central core + invisible dark matter halo. Trails are persistent and subtle.
+    </div>
+
+    <div class="controls">
+      <button id="resetBtn">Reset</button>
+      <button id="toggleFadeBtn">Toggle trail fade</button>
+
+      <span class="pill">Time × <span class="kv" id="tmVal">1.0</span></span>
+      <input id="tm" type="range" min="0.5" max="2.5" step="0.1" value="1.0" />
+
+      <span class="pill">Merging <span class="kv" id="mergeVal">ON</span></span>
+      <button id="toggleMergeBtn">Toggle merge</button>
+    </div>
+
+    <div class="muted" id="stats">Initializing…</div>
+  </div>
+
+  <!-- p5.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+
+  <script>
+  /*
+    Requirements:
+    - 10,000 particles, rendered as circles w/ varying size & brightness
+    - background base color 220, subtle
+    - p5.Vector for motion/forces
+    - gravity between particles + merging with mass conservation
+    - Quadtree for performance (neighbor queries)
+    - protogalactic collapse -> roughly spiral-like galaxy
+    - Keplerian-like: inner orbits faster than outer, influenced by:
+        * central massive core (black hole)
+        * dark matter halo potential (invisible)
+    - smooth animation + trails
+    - Standalone HTML
+  */
+
+  // ---------- Visual ----------
+  const BG = 220;
+  let fadeTrails = true;
+  const FADE_ALPHA = 10; // smaller = longer trails
+
+  // ---------- Simulation ----------
+  const N = 10000;
+
+  // Softening prevents singularities
+  const EPS = 12.0;
+
+  // Time step scaling
+  let timeMul = 1.0;
+  const DT_BASE = 0.65;
+
+  // Local gravity (particle-particle) strength
+  const G_LOCAL = 0.20;
+
+  // Central core (black hole / bulge)
+  let coreMass = 90000;
+  const CORE_SOFT = 40.0;
+
+  // Dark matter halo: produces roughly flat-ish rotation curve
+  // Accel ~ v0^2 / (r + r0)
+  const HALO_V0 = 8.5;
+  const HALO_R0 = 90;
+
+  // Initial cloud
+  const CLOUD_R = 360;
+
+  // Disk formation “cooling”: gently damps radial velocity to help disk settle
+  const RADIAL_DAMP = 0.010;
+
+  // Speed clamp
+  const MAX_SPEED = 28;
+
+  // Local neighbor interaction radius
+  const NEIGHBOR_R = 22;         // how far we query for local gravity + merging
+  const MERGE_DIST = 2.2;        // merge threshold (in pixels; scaled by radii below)
+  let mergingEnabled = true;
+
+  // Optional small viscosity to keep things from heating forever
+  const VISC = 0.0015;
+
+  // Quadtree capacity
+  const QT_CAP = 8;
+  const QT_MAX_DEPTH = 10;
+
+  // For stats
+  let liveCount = N;
+  let mergedCount = 0;
+  let totalMass = 0;
+
+  // Camera center
+  let center;
+
+  // Particles
+  let stars = [];
+
+  // ---------- Quadtree Implementation ----------
+  class AABB {
+    constructor(x, y, w, h){
+      this.x = x; this.y = y; this.w = w; this.h = h;
+    }
+    contains(pt){
+      return (pt.x >= this.x - this.w && pt.x < this.x + this.w &&
+              pt.y >= this.y - this.h && pt.y < this.y + this.h);
+    }
+    intersects(range){
+      return !(range.x - range.w > this.x + this.w ||
+               range.x + range.w < this.x - this.w ||
+               range.y - range.h > this.y + this.h ||
+               range.y + range.h < this.y - this.h);
+    }
+  }
+
+  class Quadtree {
+    constructor(boundary, capacity, depth=0){
+      this.boundary = boundary;
+      this.capacity = capacity;
+      this.depth = depth;
+      this.points = [];
+      this.divided = false;
+    }
+
+    subdivide(){
+      const {x,y,w,h} = this.boundary;
+      const hw = w/2, hh = h/2;
+      this.ne = new Quadtree(new AABB(x+hw, y-hh, hw, hh), this.capacity, this.depth+1);
+      this.nw = new Quadtree(new AABB(x-hw, y-hh, hw, hh), this.capacity, this.depth+1);
+      this.se = new Quadtree(new AABB(x+hw, y+hh, hw, hh), this.capacity, this.depth+1);
+      this.sw = new Quadtree(new AABB(x-hw, y+hh, hw, hh), this.capacity, this.depth+1);
+      this.divided = true;
+    }
+
+    insert(pt){
+      if (!this.boundary.contains(pt)) return false;
+
+      if (this.points.length < this.capacity || this.depth >= QT_MAX_DEPTH){
+        this.points.push(pt);
+        return true;
+      }
+
+      if (!this.divided) this.subdivide();
+
+      return (this.ne.insert(pt) || this.nw.insert(pt) || this.se.insert(pt) || this.sw.insert(pt));
+    }
+
+    query(range, found){
+      if (!found) found = [];
+      if (!this.boundary.intersects(range)) return found;
+
+      for (const p of this.points){
+        if (range.contains(p)) found.push(p);
+      }
+
+      if (this.divided){
+        this.ne.query(range, found);
+        this.nw.query(range, found);
+        this.se.query(range, found);
+        this.sw.query(range, found);
+      }
+      return found;
+    }
+  }
+
+  // ---------- Star ----------
+  class Star {
+    constructor(x, y, mass, baseBright){
+      this.pos = createVector(x, y);
+      this.vel = createVector(0, 0);
+      this.acc = createVector(0, 0);
+      this.mass = mass;
+      this.baseBright = baseBright; // 0..1
+      this.alive = true;
+
+      // size relates to mass (but compress range)
+      this.radius = 0.8 + pow(this.mass, 0.45) * 0.22;
+
+      // color is grayscale brightness
+      this.b = 90 + this.baseBright * 165; // brightness 90..255
+    }
+
+    updateRadius(){
+      this.radius = 0.8 + pow(this.mass, 0.45) * 0.22;
+      this.b = 90 + this.baseBright * 165;
+    }
+
+    applyForce(f){
+      // a = F / m
+      this.acc.add(p5.Vector.div(f, this.mass));
+    }
+
+    step(dt){
+      // semi-implicit Euler
+      this.vel.add(p5.Vector.mult(this.acc, dt));
+
+      // mild viscosity
+      this.vel.mult(1.0 - VISC);
+
+      // clamp speed
+      const sp = this.vel.mag();
+      if (sp > MAX_SPEED) this.vel.mult(MAX_SPEED / sp);
+
+      this.pos.add(p5.Vector.mult(this.vel, dt));
+      this.acc.set(0, 0);
+    }
+
+    draw(){
+      // Brightness depends slightly on speed (for life)
+      const sp = this.vel.mag();
+      const alpha = 140;
+      fill(this.b, this.b, this.b, alpha);
+      circle(this.pos.x, this.pos.y, this.radius * 2);
+    }
+  }
+
+  // ---------- Setup / Reset ----------
+  function setup(){
+    createCanvas(window.innerWidth, window.innerHeight);
+    pixelDensity(1);
+    noStroke();
+
+    document.getElementById("resetBtn").onclick = resetSim;
+    document.getElementById("toggleFadeBtn").onclick = () => { fadeTrails = !fadeTrails; };
+    document.getElementById("toggleMergeBtn").onclick = () => {
+      mergingEnabled = !mergingEnabled;
+      document.getElementById("mergeVal").textContent = mergingEnabled ? "ON" : "OFF";
+    };
+
+    const tm = document.getElementById("tm");
+    const tmVal = document.getElementById("tmVal");
+    tm.addEventListener("input", () => {
+      timeMul = parseFloat(tm.value);
+      tmVal.textContent = timeMul.toFixed(1);
+    });
+
+    resetSim();
+  }
+
+  function windowResized(){
+    resizeCanvas(window.innerWidth, window.innerHeight);
+    // keep existing trails
+  }
+
+  function resetSim(){
+    background(BG);
+    center = createVector(width*0.5, height*0.5);
+
+    stars = [];
+    mergedCount = 0;
+
+    // Keep total mass moderate so local gravity is interesting but not catastrophic.
+    // Distribute masses with a long tail (lots of small stars, few big).
+    totalMass = 0;
+
+    // Initial protogalactic cloud: random inside a disk, with net rotation + slight collapse
+    for (let i=0;i<N;i++){
+      const r = CLOUD_R * sqrt(random());         // uniform disk distribution
+      const a = random(TWO_PI);
+      const x = center.x + r * cos(a);
+      const y = center.y + r * sin(a);
+
+      // mass: mostly small, occasional larger clumps
+      const m = 0.6 + pow(random(), 3.0) * 10.0;  // 0.6..~10.6
+      const bright = pow(random(), 0.35);         // skew brighter a bit
+
+      const s = new Star(x, y, m, bright);
+
+      // Rotational velocity: Kepler-like-ish initial spin with mild randomness
+      // v ~ k / sqrt(r + soft)
+      const k = 42;
+      const v = k / sqrt(r + 35);
+
+      // Tangential direction around center
+      const tang = createVector(-(y-center.y), (x-center.x)).normalize();
+
+      // Add tangential speed plus a small inward radial component to induce collapse
+      const inward = createVector(center.x - x, center.y - y).normalize();
+      s.vel = p5.Vector.mult(tang, v * (0.75 + random()*0.55));
+      s.vel.add(p5.Vector.mult(inward, 0.35 + random()*0.55));
+
+      // Add small turbulence
+      s.vel.add(createVector(randomGaussian()*0.25, randomGaussian()*0.25));
+
+      totalMass += s.mass;
+      stars.push(s);
+    }
+
+    // Core mass can scale slightly with total star mass for stability
+    coreMass = 80000 + totalMass * 0.35;
+
+    updateStatsText();
+  }
+
+  // ---------- Forces ----------
+  function addCoreAndHaloForces(s){
+    // Vector from star to center
+    const dx = center.x - s.pos.x;
+    const dy = center.y - s.pos.y;
+    const r2 = dx*dx + dy*dy;
+    const r = sqrt(r2) + 1e-6;
+
+    // Central core gravity (softened)
+    const denom = pow(r2 + CORE_SOFT*CORE_SOFT, 1.5);
+    const aCore = coreMass / denom; // multiplied later by a constant scale
+    const coreF = createVector(dx, dy).mult(aCore * 5200); // scaled for visuals
+    s.applyForce(coreF);
+
+    // Dark matter halo: produces roughly flat rotation
+    // a = v0^2 / (r + r0) toward center
+    const aHalo = (HALO_V0*HALO_V0) / (r + HALO_R0);
+    const haloF = createVector(dx, dy).mult(aHalo * s.mass / r);
+    s.applyForce(haloF);
+
+    // Radial damping (cooling): remove a tiny fraction of radial velocity
+    const radialHat = createVector(-dx, -dy).mult(1/r); // from center to star
+    const vr = s.vel.dot(radialHat);
+    const damp = radialHat.mult(-vr * RADIAL_DAMP * s.mass);
+    s.applyForce(damp);
+  }
+
+  // Local gravity between nearby stars (via Quadtree neighbor queries)
+  function addLocalGravityAndMerging(qt){
+    // We'll compute local gravity for each star from neighbors within NEIGHBOR_R.
+    // To avoid double-counting, we can do i<j pair updates, but that’s heavier to implement
+    // with quadtree queries; instead, apply symmetric updates approximately by applying
+    // force on each star from neighbors (still stable because it's local and softened).
+
+    // Merging: inelastic merge with momentum conservation and mass conservation.
+    // We mark merged stars as dead and accumulate into the survivor.
+    for (let i=0;i<stars.length;i++){
+      const a = stars[i];
+      if (!a.alive) continue;
+
+      const range = new AABB(a.pos.x, a.pos.y, NEIGHBOR_R, NEIGHBOR_R);
+      const candidates = qt.query(range);
+
+      for (const p of candidates){
+        const b = p.star;
+        if (!b.alive) continue;
+        if (b === a) continue;
+
+        const dx = b.pos.x - a.pos.x;
+        const dy = b.pos.y - a.pos.y;
+        const d2 = dx*dx + dy*dy;
+        if (d2 < 0.0001) continue;
+
+        const d = sqrt(d2);
+
+        // Local gravity (softened)
+        const soft2 = EPS*EPS;
+        const denom = pow(d2 + soft2, 1.5);
+        const fmag = G_LOCAL * a.mass * b.mass / denom * 1200; // scaled
+        const fx = dx * fmag;
+        const fy = dy * fmag;
+        a.applyForce(createVector(fx, fy));
+
+        // Merging if close enough: threshold scales with radii
+        if (mergingEnabled){
+          const thresh = (a.radius + b.radius) * MERGE_DIST;
+          if (d < thresh){
+            // Merge smaller into larger to reduce oscillations
+            let big = a, small = b;
+            if (b.mass > a.mass) { big = b; small = a; }
+
+            if (!big.alive || !small.alive) continue;
+
+            // Momentum conservation: (m1 v1 + m2 v2) / (m1 + m2)
+            const newMass = big.mass + small.mass;
+            const newVel = p5.Vector.add(
+              p5.Vector.mult(big.vel, big.mass),
+              p5.Vector.mult(small.vel, small.mass)
+            ).div(newMass);
+
+            // Position: center of mass
+            const newPos = p5.Vector.add(
+              p5.Vector.mult(big.pos, big.mass),
+              p5.Vector.mult(small.pos, small.mass)
+            ).div(newMass);
+
+            // Brightness: weighted blend
+            big.baseBright = (big.baseBright*big.mass + small.baseBright*small.mass) / newMass;
+
+            big.mass = newMass;
+            big.vel = newVel;
+            big.pos = newPos;
+            big.updateRadius();
+
+            small.alive = false;
+            mergedCount++;
+          }
+        }
+      }
+    }
+  }
+
+  // ---------- Rendering & main loop ----------
+  function draw(){
+    // Subtle background
+    if (fadeTrails) {
+      fill(BG, FADE_ALPHA);
+      rect(0, 0, width, height);
+    } else {
+      // do nothing -> infinite trails
+    }
+
+    const dt = DT_BASE * timeMul;
+
+    // Build quadtree for alive stars
+    const qt = new Quadtree(new AABB(width/2, height/2, width/2, height/2), QT_CAP);
+    liveCount = 0;
+
+    for (const s of stars){
+      if (!s.alive) continue;
+      liveCount++;
+      // Insert point
+      qt.insert({ x: s.pos.x, y: s.pos.y, star: s });
+    }
+
+    // Forces: central core + halo for all alive stars
+    for (const s of stars){
+      if (!s.alive) continue;
+      addCoreAndHaloForces(s);
+    }
+
+    // Local gravity + merging using quadtree
+    addLocalGravityAndMerging(qt);
+
+    // Step + draw
+    // Draw core glow (invisible mass shown subtly)
+    drawCoreGlow();
+
+    let drawCount = 0;
+    for (const s of stars){
+      if (!s.alive) continue;
+
+      // Keep bounded: soft containment around screen edges
+      applySoftContainment(s);
+
+      s.step(dt);
+
+      // Draw: circles only, varying size + brightness
+      s.draw();
+      drawCount++;
+    }
+
+    // Occasionally clean up dead stars to keep arrays from bloating over time
+    if (frameCount % 120 === 0 && mergedCount > 0){
+      stars = stars.filter(s => s.alive);
+    }
+
+    if (frameCount % 20 === 0){
+      updateStatsText(drawCount);
+    }
+  }
+
+  function drawCoreGlow(){
+    // subtle glow at center for cinematic cue
+    const layers = 5;
+    for (let i=layers; i>=1; i--){
+      const r = 18 + i*18;
+      const a = 10 + i*10;
+      fill(160, 160, 160, a);
+      circle(center.x, center.y, r*2);
+    }
+  }
+
+  function applySoftContainment(s){
+    // Keep within canvas gently (prevents loss due to numerical drift)
+    const margin = 40;
+    const k = 0.0009;
+
+    let fx = 0, fy = 0;
+    if (s.pos.x < margin) fx += (margin - s.pos.x) * k * s.mass;
+    else if (s.pos.x > width - margin) fx -= (s.pos.x - (width - margin)) * k * s.mass;
+
+    if (s.pos.y < margin) fy += (margin - s.pos.y) * k * s.mass;
+    else if (s.pos.y > height - margin) fy -= (s.pos.y - (height - margin)) * k * s.mass;
+
+    if (fx !== 0 || fy !== 0){
+      s.applyForce(createVector(fx, fy));
+    }
+  }
+
+  function updateStatsText(drawCount){
+    const el = document.getElementById("stats");
+    const pct = (liveCount / N) * 100;
+    el.innerHTML =
+      `Alive: <b>${liveCount.toLocaleString()}</b> / ${N.toLocaleString()} (${pct.toFixed(1)}%) · ` +
+      `Merged: <b>${mergedCount.toLocaleString()}</b> · ` +
+      `Core mass: <b>${Math.round(coreMass).toLocaleString()}</b> · ` +
+      `Time × <b>${timeMul.toFixed(1)}</b>`;
+  }
+  </script>
+</body>
+</html>

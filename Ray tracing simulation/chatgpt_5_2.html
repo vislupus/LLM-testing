@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Babylon.js “Ray-Traced” Reflections — Metallic Spheres over Street</title>
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #0b0f18; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #renderCanvas { width: 100%; height: 100%; touch-action: none; display: block; }
+
+    /* UI overlay */
+    #ui {
+      position: fixed; left: 12px; top: 12px;
+      width: min(420px, calc(100vw - 24px));
+      background: rgba(10, 14, 24, 0.76);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      padding: 12px 12px 10px;
+      color: #e8eefc;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+      user-select: none;
+    }
+    #ui h1 { font-size: 14px; margin: 0 0 6px; letter-spacing: 0.2px; }
+    #ui .sub { font-size: 12px; opacity: 0.85; margin-bottom: 10px; line-height: 1.25; }
+    #ui .row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; margin: 8px 0; }
+    #ui label { font-size: 12px; opacity: 0.9; }
+    #ui input[type="range"] { width: 100%; }
+    #ui .value { font-variant-numeric: tabular-nums; font-size: 12px; opacity: 0.9; min-width: 56px; text-align: right; }
+    #ui .toggles { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+    #ui .toggles label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+    #ui button {
+      appearance: none; border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(255,255,255,0.06); color: #e8eefc;
+      padding: 8px 10px; border-radius: 10px; cursor: pointer;
+      font-size: 12px;
+    }
+    #ui button:hover { background: rgba(255,255,255,0.10); }
+    #status {
+      margin-top: 8px; font-size: 12px; opacity: 0.85; line-height: 1.25;
+      border-top: 1px solid rgba(255,255,255,0.10); padding-top: 8px;
+    }
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      background: rgba(120,170,255,0.12); border: 1px solid rgba(120,170,255,0.18);
+      font-size: 11px; margin-left: 6px;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="renderCanvas"></canvas>
+
+  <div id="ui">
+    <h1>Metallic Spheres over Street <span class="pill">Babylon.js</span></h1>
+    <div class="sub">
+      Uses a public street HDRI for lighting/reflections + SSR (screen-space ray-marched reflections).
+      Adjust material + SSR live.
+    </div>
+
+    <div class="row">
+      <label for="metallic">Sphere Metallic</label>
+      <div class="value" id="metallicVal">1.00</div>
+    </div>
+    <input id="metallic" type="range" min="0" max="1" step="0.01" value="1" />
+
+    <div class="row">
+      <label for="roughness">Sphere Roughness</label>
+      <div class="value" id="roughnessVal">0.05</div>
+    </div>
+    <input id="roughness" type="range" min="0" max="1" step="0.01" value="0.05" />
+
+    <div class="row">
+      <label for="envIntensity">Environment Reflection Intensity</label>
+      <div class="value" id="envIntensityVal">1.20</div>
+    </div>
+    <input id="envIntensity" type="range" min="0" max="3" step="0.01" value="1.2" />
+
+    <div class="row">
+      <label for="clearcoat">Clearcoat Intensity</label>
+      <div class="value" id="clearcoatVal">0.70</div>
+    </div>
+    <input id="clearcoat" type="range" min="0" max="1" step="0.01" value="0.7" />
+
+    <div class="row">
+      <label for="clearcoatRough">Clearcoat Roughness</label>
+      <div class="value" id="clearcoatRoughVal">0.03</div>
+    </div>
+    <input id="clearcoatRough" type="range" min="0" max="1" step="0.01" value="0.03" />
+
+    <div class="row">
+      <label for="ssrStrength">SSR Strength</label>
+      <div class="value" id="ssrStrengthVal">1.00</div>
+    </div>
+    <input id="ssrStrength" type="range" min="0" max="2" step="0.01" value="1.0" />
+
+    <div class="row">
+      <label for="ssrQuality">SSR Quality (samples-ish)</label>
+      <div class="value" id="ssrQualityVal">0.60</div>
+    </div>
+    <input id="ssrQuality" type="range" min="0.1" max="1" step="0.01" value="0.6" />
+
+    <div class="toggles">
+      <label><input id="enableSSR" type="checkbox" checked /> Enable SSR</label>
+      <label><input id="enableBloom" type="checkbox" checked /> Bloom</label>
+      <button id="resetCam" type="button">Reset camera</button>
+    </div>
+
+    <div id="status">Loading…</div>
+  </div>
+
+  <!-- Babylon.js (CDN) -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script>
+  (async function () {
+    const canvas = document.getElementById("renderCanvas");
+    const statusEl = document.getElementById("status");
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+
+    // --- Engine (WebGPU if available, fallback to WebGL) ---
+    let engine;
+    let usingWebGPU = false;
+    try {
+      if (BABYLON.WebGPUEngine && (await BABYLON.WebGPUEngine.IsSupportedAsync)) {
+        engine = new BABYLON.WebGPUEngine(canvas, { antialias: true, adaptToDeviceRatio: true });
+        await engine.initAsync();
+        usingWebGPU = true;
+      } else {
+        engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: false, stencil: true, disableWebGL2Support: false });
+      }
+    } catch (e) {
+      engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: false, stencil: true, disableWebGL2Support: false });
+    }
+
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0.03, 0.05, 0.09, 1);
+
+    // Tone mapping for nicer HDR look
+    scene.imageProcessingConfiguration.toneMappingEnabled = true;
+    scene.imageProcessingConfiguration.toneMappingType = BABYLON.ImageProcessingConfiguration.TONEMAPPING_ACES;
+    scene.imageProcessingConfiguration.exposure = 1.0;
+
+    // --- Camera ---
+    const camera = new BABYLON.ArcRotateCamera("cam",
+      -Math.PI / 2, Math.PI / 3, 26,
+      new BABYLON.Vector3(0, 2.2, 0),
+      scene
+    );
+    camera.attachControl(canvas, true);
+    camera.lowerRadiusLimit = 10;
+    camera.upperRadiusLimit = 80;
+    camera.wheelPrecision = 40;
+
+    // --- Lights ---
+    const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
+    hemi.intensity = 0.35;
+
+    const dir = new BABYLON.DirectionalLight("dir", new BABYLON.Vector3(-0.3, -1, 0.4), scene);
+    dir.position = new BABYLON.Vector3(20, 30, -20);
+    dir.intensity = 0.85;
+
+    // --- Environment (Public CC0 street HDRI from Poly Haven) ---
+    // Cobblestone Street Night HDRI (2K HDR) pattern:
+    // https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/cobblestone_street_night_2k.hdr
+    const STREET_HDRI = "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/cobblestone_street_night_2k.hdr";
+    // Fallback environment if needed
+    const FALLBACK_ENV = "https://assets.babylonjs.com/environments/environmentSpecular.env";
+
+    let envTex = null;
+    try {
+      setStatus("Loading street HDRI environment (Poly Haven CC0)…");
+      envTex = new BABYLON.HDRCubeTexture(STREET_HDRI, scene, 256);
+      scene.environmentTexture = envTex;
+    } catch (e) {
+      setStatus("HDRI failed; loading fallback environment…");
+      try {
+        envTex = BABYLON.CubeTexture.CreateFromPrefilteredData(FALLBACK_ENV, scene);
+        scene.environmentTexture = envTex;
+      } catch (e2) {
+        setStatus("Environment load failed; continuing without HDRI.");
+      }
+    }
+
+    if (scene.environmentTexture) {
+      scene.createDefaultSkybox(scene.environmentTexture, true, 900, 0.25);
+    }
+
+    // --- Helpers: dynamic textures for road + windows (no external textures) ---
+    function makeRoadTexture(size = 1024) {
+      const dt = new BABYLON.DynamicTexture("roadDT", { width: size, height: size }, scene, false);
+      const ctx = dt.getContext();
+      ctx.fillStyle = "#0f1117";
+      ctx.fillRect(0, 0, size, size);
+
+      // subtle noise
+      const img = ctx.getImageData(0,0,size,size);
+      for (let i = 0; i < img.data.length; i += 4) {
+        const n = (Math.random()*18)|0;
+        img.data[i] = img.data[i+1] = img.data[i+2] = img.data[i] + n;
+        img.data[i+3] = 255;
+      }
+      ctx.putImageData(img, 0, 0);
+
+      // lane markings
+      ctx.strokeStyle = "rgba(255, 220, 120, 0.85)";
+      ctx.lineWidth = size * 0.008;
+      ctx.setLineDash([size * 0.05, size * 0.03]);
+      ctx.beginPath();
+      ctx.moveTo(size*0.5, size*0.05);
+      ctx.lineTo(size*0.5, size*0.95);
+      ctx.stroke();
+
+      // edges
+      ctx.setLineDash([]);
+      ctx.strokeStyle = "rgba(235, 245, 255, 0.45)";
+      ctx.lineWidth = size * 0.006;
+      ctx.beginPath();
+      ctx.moveTo(size*0.22, size*0.03);
+      ctx.lineTo(size*0.22, size*0.97);
+      ctx.moveTo(size*0.78, size*0.03);
+      ctx.lineTo(size*0.78, size*0.97);
+      ctx.stroke();
+
+      dt.update(false);
+      dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+      dt.uScale = 2.0;
+      dt.vScale = 10.0;
+      return dt;
+    }
+
+    function makeWindowTexture(size = 512) {
+      const dt = new BABYLON.DynamicTexture("winDT"+Math.random().toString(16).slice(2), { width: size, height: size }, scene, false);
+      const ctx = dt.getContext();
+      ctx.fillStyle = "#1a1c22";
+      ctx.fillRect(0, 0, size, size);
+
+      // windows grid
+      const cols = 10, rows = 16;
+      const pad = size * 0.06;
+      const w = (size - pad*2) / cols;
+      const h = (size - pad*2) / rows;
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const lit = Math.random() < 0.22;
+          ctx.fillStyle = lit ? "rgba(255, 210, 130, 0.85)" : "rgba(30, 32, 40, 0.85)";
+          const x = pad + c*w + w*0.15;
+          const y = pad + r*h + h*0.18;
+          ctx.fillRect(x, y, w*0.7, h*0.68);
+        }
+      }
+
+      dt.update(false);
+      dt.wrapU = dt.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
+      return dt;
+    }
+
+    // --- Street scene geometry (simple but convincing) ---
+    const road = BABYLON.MeshBuilder.CreateGround("road", { width: 18, height: 80, subdivisions: 1 }, scene);
+    road.position.y = 0;
+
+    const roadMat = new BABYLON.PBRMaterial("roadMat", scene);
+    roadMat.metallic = 0.0;
+    roadMat.roughness = 0.95;
+    roadMat.albedoTexture = makeRoadTexture(1024);
+    road.material = roadMat;
+
+    // sidewalks
+    const sidewalkMat = new BABYLON.PBRMaterial("sidewalkMat", scene);
+    sidewalkMat.metallic = 0.0;
+    sidewalkMat.roughness = 0.9;
+    sidewalkMat.albedoColor = new BABYLON.Color3(0.14, 0.16, 0.19);
+
+    function makeSidewalk(x) {
+      const sw = BABYLON.MeshBuilder.CreateBox("sw", { width: 3.2, height: 0.25, depth: 80 }, scene);
+      sw.position.set(x, 0.125, 0);
+      sw.material = sidewalkMat;
+      return sw;
+    }
+    makeSidewalk(-10.2);
+    makeSidewalk(10.2);
+
+    // buildings (instanced boxes w/ emissive windows)
+    const baseBld = BABYLON.MeshBuilder.CreateBox("bldBase", { width: 3.8, height: 6.5, depth: 5.5 }, scene);
+    baseBld.isVisible = false;
+
+    function makeBuildingMaterial() {
+      const m = new BABYLON.PBRMaterial("bldMat"+Math.random().toString(16).slice(2), scene);
+      m.metallic = 0.0;
+      m.roughness = 0.85;
+      m.albedoColor = new BABYLON.Color3(0.15 + Math.random()*0.15, 0.16 + Math.random()*0.12, 0.18 + Math.random()*0.12);
+      const win = makeWindowTexture(512);
+      m.emissiveTexture = win;
+      m.emissiveColor = new BABYLON.Color3(1,1,1);
+      m.emissiveIntensity = 0.8;
+      return m;
+    }
+
+    const buildingMats = Array.from({length: 4}, () => makeBuildingMaterial());
+
+    for (let i = 0; i < 26; i++) {
+      const inst = baseBld.createInstance("bld"+i);
+      const side = (i % 2 === 0) ? -1 : 1;
+      const z = -36 + i * 3.0;
+      const x = side * (12.5 + Math.random()*2.0);
+      const h = 4.5 + Math.random() * 10;
+      inst.position.set(x, h/2, z);
+      inst.scaling.y = h / 6.5;
+      inst.scaling.x = 0.9 + Math.random()*0.6;
+      inst.scaling.z = 0.8 + Math.random()*0.8;
+      inst.rotation.y = (Math.random() * 0.12) * side;
+      inst.material = buildingMats[i % buildingMats.length];
+    }
+
+    // street lamps with emissive bulbs + point lights
+    const lampPoleMat = new BABYLON.PBRMaterial("lampPoleMat", scene);
+    lampPoleMat.metallic = 0.7;
+    lampPoleMat.roughness = 0.4;
+    lampPoleMat.albedoColor = new BABYLON.Color3(0.12,0.12,0.13);
+
+    const bulbMat = new BABYLON.PBRMaterial("bulbMat", scene);
+    bulbMat.metallic = 0.0;
+    bulbMat.roughness = 0.2;
+    bulbMat.albedoColor = new BABYLON.Color3(0.9, 0.75, 0.45);
+    bulbMat.emissiveColor = new BABYLON.Color3(1.0, 0.78, 0.45);
+    bulbMat.emissiveIntensity = 2.2;
+
+    function makeLamp(x, z) {
+      const pole = BABYLON.MeshBuilder.CreateCylinder("pole", { height: 4.2, diameter: 0.12, tessellation: 20 }, scene);
+      pole.position.set(x, 2.1, z);
+      pole.material = lampPoleMat;
+
+      const arm = BABYLON.MeshBuilder.CreateBox("arm", { width: 0.12, height: 0.12, depth: 1.1 }, scene);
+      arm.position.set(x, 4.0, z - 0.55);
+      arm.material = lampPoleMat;
+
+      const bulb = BABYLON.MeshBuilder.CreateSphere("bulb", { diameter: 0.22, segments: 18 }, scene);
+      bulb.position.set(x, 3.95, z - 1.05);
+      bulb.material = bulbMat;
+
+      const light = new BABYLON.PointLight("lampLight", new BABYLON.Vector3(x, 3.95, z - 1.05), scene);
+      light.intensity = 1.15;
+      light.range = 14;
+      light.diffuse = new BABYLON.Color3(1.0, 0.82, 0.55);
+      light.specular = new BABYLON.Color3(1.0, 0.9, 0.7);
+
+      return { pole, bulb, light };
+    }
+
+    for (let i = 0; i < 10; i++) {
+      const z = -34 + i * 7.5;
+      makeLamp(-7.2, z);
+      makeLamp( 7.2, z + 3.0);
+    }
+
+    // --- The two metallic spheres (the “hero” objects) ---
+    function makeSphere(name, x, y, z) {
+      const s = BABYLON.MeshBuilder.CreateSphere(name, { diameter: 2.6, segments: 64 }, scene);
+      s.position.set(x, y, z);
+      return s;
+    }
+
+    const sphereA = makeSphere("sphereA", -3.2, 3.0, -2.0);
+    const sphereB = makeSphere("sphereB",  3.2, 3.4,  2.2);
+
+    // Shared PBR material (adjusted by UI)
+    const sphereMat = new BABYLON.PBRMaterial("sphereMat", scene);
+    sphereMat.albedoColor = new BABYLON.Color3(0.92, 0.92, 0.95);
+    sphereMat.metallic = 1.0;
+    sphereMat.roughness = 0.05;
+    sphereMat.environmentIntensity = 1.2;
+    sphereMat.enableSpecularAntiAliasing = true;
+
+    // Clearcoat layer for extra “metallic” pop
+    sphereMat.clearCoat.isEnabled = true;
+    sphereMat.clearCoat.intensity = 0.70;
+    sphereMat.clearCoat.roughness = 0.03;
+
+    sphereA.material = sphereMat;
+    sphereB.material = sphereMat;
+
+    // subtle animation (keeps it feeling “live”)
+    scene.onBeforeRenderObservable.add(() => {
+      const t = performance.now() * 0.001;
+      sphereA.position.y = 3.0 + Math.sin(t * 0.9) * 0.10;
+      sphereB.position.y = 3.4 + Math.sin(t * 1.1 + 1.2) * 0.12;
+      sphereA.rotation.y += 0.002;
+      sphereB.rotation.y -= 0.0017;
+    });
+
+    // --- Post processes: Bloom + FXAA (helps SSR + glossy look) ---
+    let defaultPipeline = null;
+    function setBloomEnabled(enabled) {
+      if (!BABYLON.DefaultRenderingPipeline) return;
+      if (enabled) {
+        if (!defaultPipeline) {
+          defaultPipeline = new BABYLON.DefaultRenderingPipeline("drp", true, scene, [camera]);
+          defaultPipeline.fxaaEnabled = true;
+          defaultPipeline.bloomEnabled = true;
+          defaultPipeline.bloomKernel = 64;
+          defaultPipeline.bloomWeight = 0.25;
+          defaultPipeline.bloomThreshold = 0.65;
+          defaultPipeline.bloomScale = 0.5;
+        } else {
+          defaultPipeline.bloomEnabled = true;
+          defaultPipeline.fxaaEnabled = true;
+        }
+      } else {
+        if (defaultPipeline) defaultPipeline.bloomEnabled = false;
+      }
+    }
+
+    // --- SSR (screen-space ray-marched reflections) ---
+    let ssr = null;
+    let ssrAttached = false;
+
+    function tryCreateSSR() {
+      // Prefer SSRRenderingPipeline when present
+      if (BABYLON.SSRRenderingPipeline) {
+        try {
+          ssr = new BABYLON.SSRRenderingPipeline(
+            "ssr",
+            scene,
+            [camera],
+            false, // use pre-pass renderer (recommended)
+            BABYLON.Constants.TEXTURETYPE_UNSIGNED_BYTE
+          );
+
+          // Some versions auto-register; some need explicit registration. Do both safely.
+          if (scene.postProcessRenderPipelineManager && scene.postProcessRenderPipelineManager.addPipeline) {
+            try { scene.postProcessRenderPipelineManager.addPipeline(ssr); } catch(_) {}
+            try { scene.postProcessRenderPipelineManager.attachCamerasToRenderPipeline("ssr", camera); ssrAttached = true; } catch(_) {}
+          } else {
+            ssrAttached = true;
+          }
+          return true;
+        } catch (e) {
+          ssr = null;
+          ssrAttached = false;
+        }
+      }
+
+      // Fallback: legacy ScreenSpaceReflectionPostProcess (deprecated but works)
+      if (BABYLON.ScreenSpaceReflectionPostProcess) {
+        try {
+          ssr = new BABYLON.ScreenSpaceReflectionPostProcess("ssrPP", scene, 1.0, camera);
+          ssrAttached = true;
+          return true;
+        } catch (e) {
+          ssr = null;
+          ssrAttached = false;
+        }
+      }
+
+      return false;
+    }
+
+    function setSSR(enabled) {
+      if (!enabled) {
+        // Detach / disable
+        if (ssr && scene.postProcessRenderPipelineManager && scene.postProcessRenderPipelineManager.detachCamerasFromRenderPipeline) {
+          try { scene.postProcessRenderPipelineManager.detachCamerasFromRenderPipeline("ssr", camera); } catch(_) {}
+        }
+        if (ssr && ssr.setEnabled) { try { ssr.setEnabled(false); } catch(_) {} }
+        if (ssr && ("enabled" in ssr)) { try { ssr.enabled = false; } catch(_) {} }
+        ssrAttached = false;
+        return;
+      }
+
+      if (!ssr) {
+        const ok = tryCreateSSR();
+        if (!ok) {
+          setStatus("SSR not available in this Babylon build/browser. Material controls still work.");
+          return;
+        }
+      }
+
+      // Re-attach if needed
+      if (ssr && scene.postProcessRenderPipelineManager && scene.postProcessRenderPipelineManager.attachCamerasToRenderPipeline) {
+        try { scene.postProcessRenderPipelineManager.attachCamerasToRenderPipeline("ssr", camera); ssrAttached = true; } catch(_) { ssrAttached = true; }
+      } else {
+        ssrAttached = true;
+      }
+
+      if (ssr && ssr.setEnabled) { try { ssr.setEnabled(true); } catch(_) {} }
+      if (ssr && ("enabled" in ssr)) { try { ssr.enabled = true; } catch(_) {} }
+    }
+
+    // UI wiring helpers
+    function bindRange(id, valId, onValue) {
+      const el = document.getElementById(id);
+      const out = document.getElementById(valId);
+      function update() {
+        const v = parseFloat(el.value);
+        out.textContent = v.toFixed(2);
+        onValue(v);
+      }
+      el.addEventListener("input", update);
+      update();
+      return el;
+    }
+
+    // Apply UI
+    bindRange("metallic", "metallicVal", v => { sphereMat.metallic = v; });
+    bindRange("roughness", "roughnessVal", v => { sphereMat.roughness = v; });
+    bindRange("envIntensity", "envIntensityVal", v => { sphereMat.environmentIntensity = v; });
+    bindRange("clearcoat", "clearcoatVal", v => { sphereMat.clearCoat.intensity = v; });
+    bindRange("clearcoatRough", "clearcoatRoughVal", v => { sphereMat.clearCoat.roughness = v; });
+
+    const ssrStrengthEl = bindRange("ssrStrength", "ssrStrengthVal", v => {
+      if (!ssr) return;
+      // Different versions expose different props. Set whatever exists.
+      if ("strength" in ssr) try { ssr.strength = v; } catch(_) {}
+      if ("reflectionStrength" in ssr) try { ssr.reflectionStrength = v; } catch(_) {}
+    });
+
+    const ssrQualityEl = bindRange("ssrQuality", "ssrQualityVal", v => {
+      if (!ssr) return;
+      // Use "quality-ish" factor to drive a few knobs if they exist.
+      const samples = Math.round(16 + v * 96); // 16..112
+      const step = 0.8 - v * 0.65;            // 0.15..0.8
+      const roughnessFactor = 0.35 - v * 0.25; // 0.10..0.35
+
+      if ("reflectionSamples" in ssr) try { ssr.reflectionSamples = samples; } catch(_) {}
+      if ("samples" in ssr) try { ssr.samples = samples; } catch(_) {}
+      if ("step" in ssr) try { ssr.step = step; } catch(_) {}
+      if ("roughnessFactor" in ssr) try { ssr.roughnessFactor = roughnessFactor; } catch(_) {}
+    });
+
+    document.getElementById("enableSSR").addEventListener("change", (e) => {
+      setSSR(e.target.checked);
+      setStatus(makeStatusLine());
+    });
+
+    document.getElementById("enableBloom").addEventListener("change", (e) => {
+      setBloomEnabled(e.target.checked);
+      setStatus(makeStatusLine());
+    });
+
+    document.getElementById("resetCam").addEventListener("click", () => {
+      camera.alpha = -Math.PI / 2;
+      camera.beta = Math.PI / 3;
+      camera.radius = 26;
+      camera.target.set(0, 2.2, 0);
+    });
+
+    // Initialize effects
+    setBloomEnabled(true);
+    setSSR(true);
+
+    // Make sure SSR UI is applied after SSR exists
+    // (safe: they no-op if ssr is null)
+    ssrStrengthEl.dispatchEvent(new Event("input"));
+    ssrQualityEl.dispatchEvent(new Event("input"));
+
+    function makeStatusLine() {
+      const caps = engine.getCaps ? engine.getCaps() : {};
+      const webgl2 = engine.webGLVersion ? engine.webGLVersion >= 2 : !!caps.supportsUniformBuffers;
+      const env = scene.environmentTexture ? "HDRI: on" : "HDRI: off";
+      const ssrState = (document.getElementById("enableSSR").checked && (ssr || ssrAttached)) ? "SSR: on" : "SSR: off";
+      const bloomState = document.getElementById("enableBloom").checked ? "Bloom: on" : "Bloom: off";
+      return `Engine: ${usingWebGPU ? "WebGPU" : (webgl2 ? "WebGL2" : "WebGL")} • ${env} • ${ssrState} • ${bloomState}`;
+    }
+
+    setStatus(makeStatusLine());
+
+    // Resize + render loop
+    window.addEventListener("resize", () => engine.resize());
+    engine.runRenderLoop(() => {
+      scene.render();
+    });
+  })();
+  </script>
+</body>
+</html>
