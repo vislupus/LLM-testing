@@ -451,6 +451,8 @@ Testing different LLMs to do software tasks
 
 
 - [ ] Notion-like app в един HTML файл с drag-and-drop блокове.
+Create a single-file, offline, Notion-like app entirely in one HTML file with all CSS and JavaScript embedded. The app should use modern, clean design with a centered content column and light/dark mode. It must support editable content blocks similar to Notion, with headings, text, checklists, lists, quotes, dividers, and code blocks. Users should be able to type "/" to open a small command menu for choosing block types and press Enter to create new blocks. Implement smooth drag-and-drop for reordering blocks with a visible drop indicator. Add keyboard shortcuts like Ctrl+B/I/U for formatting and simple markdown triggers like "# " or "- ". All data should automatically save and load from localStorage. Include a top bar with a title and a "clear workspace" button. The entire interface should feel polished, fluid, and “cool,” with subtle animations for editing and dragging.
+
 - [ ] Kanban board с drag-and-drop, цветове, тагове, търсене и offline съхранение.
 - [ ] Vector graphics editor с bezier curves, слоеве и експортиране в SVG.
 - [ ] 3D UI dashboard на Babylon.js с стил “glassmorphism”.
