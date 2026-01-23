@@ -473,6 +473,9 @@ Create a single-file, offline, Notion-like app entirely in one HTML file with al
 - [ ] 3D solar system с орбити, наклони и оси на въртене.
 - [ ] Traffic simulation (lights, queues, collisions).
 - [ ] Boids + predator-prey model с параметри.
+Create a single self-contained HTML file (no external JS/CSS) that shows a Boids + Predator–Prey simulation on an HTML5 canvas using only vanilla JavaScript. Include classic boid rules (separation, alignment, cohesion) plus fleeing from predators. Add predators that chase and eat boids using a catch radius. Include optional reproduction and starvation rules for both boids and predators. Make the simulation run with requestAnimationFrame and use simple shapes (triangles or circles). Add a small UI panel with sliders/inputs for boid parameters, predator parameters, and global controls like pause, speed, and reset. Keep the code clean, commented, and efficient enough for ~200 boids. Implement edge wrapping or bouncing. Ensure everything (HTML, CSS, JS) is inside one file and ready to save.
+
+
 - [ ] Genetic algorithm for car hill-climbing (NEAT-style).
 - [ ] Weather simulation (cloud convection, rain particles).
 - [ ] Wave simulation using 2D PDE solver.
