@@ -550,37 +550,21 @@ Build a robust CSV/JSON data wrangling web app: users can define a pipeline of t
 - [ ] Mini-Assembler VM върху WebAssembly
 Create a single-file HTML/JS application that implements a tiny assembly-like language and executes it on top of WebAssembly.
 The app should:
-
 Define a simple stack-based assembly language with instructions such as: PUSH <number>, ADD, SUB, MUL, DIV, DUP, SWAP, JMP <label>, JZ <label>, PRINT, HALT.
-
 Include a text editor area where the user can type assembly programs, with labels and comments.
-
 Implement a parser that converts the text into an internal instruction representation, resolving labels.
-
 Generate WebAssembly Text (WAT) code from this instruction list, compile it in the browser using WebAssembly.instantiate (no server), and execute it.
-
 Provide a “Run”, “Step”, and “Reset” button, and show the current instruction pointer, the stack contents, and printed output in real time.
-
 All code (HTML, CSS, JavaScript, WAT generation) must be contained in a single standalone HTML file that runs directly in the browser.
 Ensure the assembly language, code generation, and execution pipeline are clearly structured and well commented.
 - [ ] Fortran → WebAssembly demo (концептуално + код)
 Explain and implement a minimal toolchain to compile a simple Fortran numerical kernel to WebAssembly and run it in the browser.
 The answer must:
-
 Choose a concrete Fortran compiler that can target WebAssembly (for example, via LLVM) and describe exactly which commands to run to compile a sample Fortran file (e.g. a function that multiplies two matrices or solves a small system of linear equations) to a .wasm module.
-
 Provide a complete Fortran example program with at least one function that can be called from the host (e.g. subroutine matmul(n, A, B, C) with explicit interfaces).
-
 Show a complete HTML + JavaScript example that loads the compiled .wasm module in the browser and calls the Fortran function, passing arrays from JavaScript to WebAssembly memory and reading back the results.
-
 Explain how memory is laid out and how to handle Fortran’s column-major arrays vs JavaScript’s typed arrays.
-
 Include all HTML and JavaScript in a single HTML file (the .wasm can be loaded as an external binary), and make sure the JS code is sufficient to run the example in a modern browser.
-
-
-
-
-
 Create a single-file HTML/JavaScript application that implements a tiny assembly-like programming language and executes it using a custom virtual machine written in JavaScript (no real WebAssembly code generation required).
 The entire app must be contained in one standalone HTML file.
 - [ ] JLPT N5 Full Mock Test (Real Exam Format)
@@ -637,84 +621,57 @@ The goal is to simulate a real study-website navigation structure.
 - [ ] Habit Tracker with Jetpack Compose and Room
 Create a complete Android habit-tracking app in Kotlin using Jetpack Compose and Room.
 The app should allow users to:
-
 Add, edit, and delete habits (name, description, target days per week, icon/color).
-
 Mark habits as done for each day on a calendar-like view.
-
 See statistics for each habit (completion rate, streaks, best streak, last 7/30 days).
 Use MVVM architecture, a single-activity approach with Compose navigation, and Room as the local database. Implement dark mode, state handling for configuration changes, and simple unit tests for the ViewModel layer. Provide all necessary Kotlin code, including data models, DAOs, database setup, ViewModels, and Composables.
 - [ ] Offline Japanese Vocabulary Trainer (N5 Level)
 Build an Android app in Kotlin that works completely offline and helps users practice JLPT N5 vocabulary.
 Use Jetpack Compose for the UI and store vocabulary in a local Room database (or pre-populated database).
 The app should support:
-
 Browsing vocabulary by category (e.g., numbers, family, verbs, adjectives).
-
 Flashcard mode (word → meaning, meaning → word).
-
 Quiz mode with 4 multiple-choice answers and score tracking.
-
 A “favorite” list for difficult words.
 Use MVVM, handle screen rotation correctly, and include a simple settings screen (e.g., toggle furigana, show/hide romaji).
 - [ ] Personal Finance Tracker with Charts
 Create an Android personal finance tracker app in Kotlin using Jetpack Compose and the MPAndroidChart (or similar) library for charts.
 Features:
-
 Add/ edit/ delete expenses and incomes (amount, category, date, note).
-
 Filter by date range and category.
-
 Show monthly summary with pie chart (spending by category) and line chart (balance over time).
-
 Export all transactions to a CSV file and share it.
 Use Room for persistent storage, MVVM for architecture, and Kotlin coroutines/Flow for reactive updates. Provide full example code, including repository, ViewModels, and Composables.
 - [ ] Fitness Workout Planner with Notifications
 Build an Android fitness workout planner in Kotlin.
 Requirements:
-
 Users can create workouts (name, list of exercises, reps/sets/time).
-
 Schedule workouts on specific days and times.
-
 Use Android’s AlarmManager or WorkManager to trigger local notifications reminding the user of their next workout.
-
 A “Today” screen showing today’s planned workouts and completion toggles.
 Use XML or Jetpack Compose for UI (you may choose), MVVM architecture, and Room for storage. Include code for setting and cancelling notifications when workouts are added/edited/deleted.
 - [ ] Notes App with Markdown Support and Search
 Build a note-taking Android app in Kotlin with support for Markdown formatting.
 Specifications:
-
 Users can create, edit, and delete notes with title and body.
-
 Notes support basic Markdown (bold, italics, headings, bullet lists).
-
 Live preview of the rendered Markdown.
-
 Search notes by title and content.
 Use Room for storing notes, MVVM for architecture, and Jetpack Compose for UI. You may use an existing Kotlin Markdown library, but show full integration code. Implement a simple color theme switcher (light/dark).
 - [ ] Task Manager with Drag-and-Drop Kanban Board
 Create an Android task manager app in Kotlin that displays tasks in a Kanban-style board (e.g., “To Do”, “In Progress”, “Done”).
 Requirements:
-
 Use Jetpack Compose for UI.
-
 Users can create, edit, and delete tasks (title, description, due date, priority).
-
 Implement drag-and-drop to move tasks between columns.
-
 Persist data with Room, and load it on startup.
 Use MVVM architecture with proper state management for the Kanban board. Provide clear code for drag-and-drop logic in Compose.
 - [ ] Language Learning App with Spaced Repetition (SRS)
 Design an Android language-learning app in Kotlin that uses a simple spaced repetition algorithm for vocabulary.
 Features:
-
 Users can add custom words and translations.
-
 Each word has a review schedule and review history.
-
 Daily review screen: show due words, and let the user rate each review (e.g., “easy”, “good”, “hard”).
-
 Adjust next review date based on rating using a basic SRS algorithm (you can implement a simplified SM-2).
 Use Room for storage, MVVM + repository pattern, and Jetpack Compose for UI.
 - [ ] Camera-based QR Code Scanner with History
