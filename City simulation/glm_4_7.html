@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Procedural City Simulation</title>
+    <!-- Load Babylon.js from CDN -->
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <style>
+        html, body { overflow: hidden; width: 100%; height: 100%; margin: 0; padding: 0; }
+        
+        #renderCanvas { width: 100%; height: 100%; touch-action: none; outline: none; }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px; left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            width: 300px;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        h2 { margin: 0 0 15px 0; font-size: 18px; color: #4db8ff; text-transform: uppercase; letter-spacing: 1px; }
+
+        .control-group { margin-bottom: 15px; }
+        .control-label { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; }
+        .val-display { color: #ffcc00; font-weight: bold; }
+        
+        input[type="range"] {
+            width: 100%;
+            accent-color: #4db8ff;
+            cursor: pointer;
+        }
+
+        .stats {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255,255,255,0.2);
+            font-size: 12px;
+            color: #aaa;
+        }
+        .stat-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
+        .stat-val { color: white; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h2>City Controls</h2>
+        
+        <div class="control-group">
+            <div class="control-label">
+                <span>City Size (Grid)</span>
+                <span id="val-size" class="val-display">20</span>
+            </div>
+            <input type="range" id="input-size" min="10" max="40" step="2" value="20">
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">
+                <span>Development Speed</span>
+                <span id="val-speed" class="val-display">1x</span>
+            </div>
+            <input type="range" id="input-speed" min="1" max="10" step="1" value="2">
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">
+                <span>Traffic Intensity</span>
+                <span id="val-traffic" class="val-display">50%</span>
+            </div>
+            <input type="range" id="input-traffic" min="0" max="100" step="5" value="50">
+        </div>
+
+        <button id="btn-reset" style="width:100%; padding: 10px; background:#e74c3c; border:none; color:white; cursor:pointer; border-radius:4px;">Reset Simulation</button>
+
+        <div class="stats">
+            <div class="stat-row"><span>Buildings:</span><span id="stat-buildings" class="stat-val">0</span></div>
+            <div class="stat-row"><span>Vehicles:</span><span id="stat-vehicles" class="stat-val">0</span></div>
+            <div class="stat-row"><span>Population:</span><span id="stat-pop" class="stat-val">0</span></div>
+        </div>
+    </div>
+
+    <canvas id="renderCanvas"></canvas>
+
+<script>
+    // --- CONFIGURATION & STATE ---
+    const CONFIG = {
+        CELL_SIZE: 10,     // Size of one grid block in 3D units
+        BUILD_SIZE: 10,    // Base size of a building mesh
+        ROAD_WIDTH: 8,     // Visual width of road
+    };
+
+    const STATE = {
+        gridSize: 20,
+        devSpeed: 2,       // Multiplier for growth timer
+        trafficIntensity: 50, // 0-100
+        grid: [],          // 0=Empty, 1=Road, 2=Building
+        buildings: [],      // Array of meshes
+        roads: [],          // Array of meshes
+        vehicles: [],       // Array of vehicle objects
+        pedestrians: [],     // Array of pedestrian objects
+        lastGrowthTime: 0,
+        lastSpawnTime: 0,
+        growthInterval: 500 // ms
+    };
+
+    // --- BABYLON SETUP ---
+    const canvas = document.getElementById("renderCanvas");
+    const engine = new BABYLON.Engine(canvas, true);
+    
+    const createScene = function () {
+        const scene = new BABYLON.Scene(engine);
+        scene.clearColor = new BABYLON.Color3(0.8, 0.9, 1.0); // Sky Blue
+
+        // Camera
+        const camera = new BABYLON.ArcRotateCamera("Camera", -Math.PI / 2, Math.PI / 3, 150, BABYLON.Vector3.Zero(), scene);
+        camera.attachControl(canvas, true);
+        camera.upperBetaLimit = Math.PI / 2.2;
+        camera.lowerRadiusLimit = 50;
+        camera.upperRadiusLimit = 400;
+
+        // Lighting
+        const light = new BABYLON.HemisphericLight("hemiLight", new BABYLON.Vector3(0, 1, 0), scene);
+        light.intensity = 0.8;
+        light.groundColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+
+        const dirLight = new BABYLON.DirectionalLight("dirLight", new BABYLON.Vector3(-1, -2, -1), scene);
+        dirLight.position = new BABYLON.Vector3(100, 100, 100);
+        dirLight.intensity = 0.6;
+        
+        // Shadows
+        const shadowGenerator = new BABYLON.ShadowGenerator(1024, dirLight);
+        shadowGenerator.useBlurExponentialShadowMap = true;
+        shadowGenerator.blurKernel = 16;
+
+        // --- MATERIALS (Procedural) ---
+        const materials = {
+            ground: new BABYLON.StandardMaterial("ground", scene),
+            road: new BABYLON.StandardMaterial("road", scene),
+            building: [], // Array of varied building colors
+            car: new BABYLON.StandardMaterial("car", scene),
+            person: new BABYLON.StandardMaterial("person", scene)
+        };
+
+        materials.ground.diffuseColor = new BABYLON.Color3(0.5, 0.8, 0.4); // Grass
+        materials.ground.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+        materials.ground.receiveShadows = true;
+
+        materials.road.diffuseColor = new BABYLON.Color3(0.2, 0.2, 0.25); // Asphalt
+        materials.road.receiveShadows = true;
+
+        // Generate random building colors
+        const buildColors = [
+            new BABYLON.Color3(0.7, 0.7, 0.7), // Concrete
+            new BABYLON.Color3(0.5, 0.6, 0.8), // Blue Glass
+            new BABYLON.Color3(0.9, 0.8, 0.6), // Sandstone
+            new BABYLON.Color3(0.9, 0.9, 0.9), // White
+            new BABYLON.Color3(0.4, 0.3, 0.3)  // Brick
+        ];
+        
+        buildColors.forEach((c, i) => {
+            const m = new BABYLON.StandardMaterial("b" + i, scene);
+            m.diffuseColor = c;
+            m.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+            buildingMatCache.push(m);
+        });
+        const buildingMatCache = [];
+
+        materials.car.diffuseColor = new BABYLON.Color3(0.9, 0.2, 0.2); // Red Car
+        materials.car.emissiveColor = new BABYLON.Color3(0.1, 0, 0); // Taillights
+        
+        materials.person.diffuseColor = new BABYLON.Color3(1, 0.8, 0.2); // Yellow Pedestrian
+
+        // --- INITIALIZATION ---
+
+        function initGrid() {
+            // Clear old meshes
+            STATE.buildings.forEach(b => b.dispose());
+            STATE.roads.forEach(r => r.dispose());
+            STATE.buildings = [];
+            STATE.roads = [];
+            STATE.vehicles = [];
+            STATE.pedestrians = [];
+            
+            // Reset Grid Data
+            STATE.grid = [];
+            const offset = (STATE.gridSize * CONFIG.CELL_SIZE) / 2;
+            
+            // Create Ground
+            const ground = BABYLON.MeshBuilder.CreateGround("ground", {
+                width: STATE.gridSize * CONFIG.CELL_SIZE, 
+                height: STATE.gridSize * CONFIG.CELL_SIZE, 
+                subdivisions: 1
+            }, scene);
+            ground.material = materials.ground;
+            ground.position.y = -0.1;
+            ground.receiveShadows = true;
+
+            // Initialize Grid Array
+            for(let x=0; x<STATE.gridSize; x++) {
+                STATE.grid[x] = [];
+                for(let z=0; z<STATE.gridSize; z++) {
+                    STATE.grid[x][z] = 0;
+                }
+            }
+
+            // Generate Road Grid (Manhattan Style - every 4th cell)
+            for(let i=0; i<STATE.gridSize; i+=4) {
+                for(let j=0; j<STATE.gridSize; j++) {
+                    createRoad(i, j);
+                    createRoad(j, i);
+                }
+            }
+        }
+
+        function createRoad(x, z) {
+            if (x >= STATE.gridSize || z >= STATE.gridSize) return;
+            STATE.grid[x][z] = 1; // 1 = Road
+
+            const road = BABYLON.MeshBuilder.CreateBox("road", {
+                width: CONFIG.CELL_SIZE,
+                height: 0.2,
+                depth: CONFIG.CELL_SIZE
+            }, scene);
+            
+            const worldX = (x * CONFIG.CELL_SIZE) - ((STATE.gridSize * CONFIG.CELL_SIZE)/2) + (CONFIG.CELL_SIZE/2);
+            const worldZ = (z * CONFIG.CELL_SIZE) - ((STATE.gridSize * CONFIG.CELL_SIZE)/2) + (CONFIG.CELL_SIZE/2);
+            
+            road.position.set(worldX, 0, worldZ);
+            road.material = materials.road;
+            STATE.roads.push(road);
+        }
+
+        function createBuilding(x, z) {
+            // Validate spot (empty)
+            if (STATE.grid[x][z] !== 0) return false;
+            
+            STATE.grid[x][z] = 2; // 2 = Building
+
+            // Random Height
+            const height = 2 + Math.random() * 15;
+            
+            const mesh = BABYLON.MeshBuilder.CreateBox("bldg", {
+                width: CONFIG.BUILD_SIZE * 0.9,
+                height: height,
+                depth: CONFIG.BUILD_SIZE * 0.9
+            }, scene);
+
+            const worldX = (x * CONFIG.CELL_SIZE) - ((STATE.gridSize * CONFIG.CELL_SIZE)/2) + (CONFIG.CELL_SIZE/2);
+            const worldZ = (z * CONFIG.CELL_SIZE) - ((STATE.gridSize * CONFIG.CELL_SIZE)/2) + (CONFIG.CELL_SIZE/2);
+            
+            mesh.position.set(worldX, height/2, worldZ);
+            mesh.material = buildingMatCache[Math.floor(Math.random() * buildingMatCache.length)];
+            mesh.receiveShadows = true;
+            
+            STATE.buildings.push(mesh);
+            return true;
+        }
+
+        function spawnVehicle() {
+            // Find random road cell
+            let attempts = 0;
+            let spawnX, spawnZ, dir;
+
+            while(attempts < 10) {
+                const rx = Math.floor(Math.random() * STATE.gridSize);
+                const rz = Math.floor(Math.random() * STATE.gridSize);
+                
+                if (STATE.grid[rx][rz] === 1) {
+                    spawnX = rx;
+                    spawnZ = rz;
+                    // Determine random axis direction: 0=x+, 1=x-, 2=z+, 3=z-
+                    dir = Math.floor(Math.random() * 4);
+                    break;
+                }
+                attempts++;
+            }
+
+            if(attempts < 10) {
+                const carMesh = BABYLON.MeshBuilder.CreateBox("car", {
+                    width: 4, height: 2, depth: 7
+                }, scene);
+                
+                carMesh.material = materials.car;
+                
+                // Add headlights
+                const light = new BABYLON.SpotLight("headlight", new BABYLON.Vector3(0,0,3), new BABYLON.Vector3(0,-1,1), Math.PI/4, 2, scene);
+                light.diffuse = new BABYLON.Color3(1,1,0.8);
+                light.intensity = 2;
+                light.parent = carMesh;
+                light.range = 20;
+
+                STATE.vehicles.push({
+                    mesh: carMesh,
+                    gx: spawnX, // Grid X
+                    gz: spawnZ, // Grid Z
+                    px: 0,     // Progress within cell (0 to 10)
+                    dir: dir,    // 0=+X, 1=-X, 2=+Z, 3=-Z
+                    speed: 0.3 + Math.random() * 0.2
+                });
+            }
+        }
+
+        function spawnPedestrian() {
+             // Find random non-road cell
+            let attempts = 0;
+            let spawnX, spawnZ;
+
+            while(attempts < 10) {
+                const rx = Math.floor(Math.random() * STATE.gridSize);
+                const rz = Math.floor(Math.random() * STATE.gridSize);
+                
+                if (STATE.grid[rx][rz] === 0) {
+                    spawnX = rx;
+                    spawnZ = rz;
+                    break;
+                }
+                attempts++;
+            }
+
+            if(attempts < 10) {
+                const pMesh = BABYLON.MeshBuilder.CreateSphere("person", {diameter: 1.5, segments: 8}, scene);
+                pMesh.position.y = 1;
+                pMesh.material = materials.person;
+
+                STATE.pedestrians.push({
+                    mesh: pMesh,
+                    gx: spawnX,
+                    gz: spawnZ,
+                    px: 0,
+                    pz: 0,
+                    targetX: spawnX,
+                    targetZ: spawnZ,
+                    speed: 0.05
+                });
+            }
+        }
+
+        // --- LOOP ---
+        
+        scene.registerBeforeRender(() => {
+            const now = performance.now();
+            
+            // 1. City Growth Logic
+            if (now - STATE.lastGrowthTime > (STATE.growthInterval / STATE.devSpeed)) {
+                // Try to fill grid with buildings
+                let attempts = 0;
+                let built = false;
+                
+                // Try to place multiple buildings based on speed
+                const count = Math.ceil(STATE.devSpeed * 0.5); 
+
+                for(let k=0; k<count; k++) {
+                    const rx = Math.floor(Math.random() * STATE.gridSize);
+                    const rz = Math.floor(Math.random() * STATE.gridSize);
+                    if (createBuilding(rx, rz)) built = true;
+                }
+
+                STATE.lastGrowthTime = now;
+            }
+
+            // 2. Vehicle Spawning Logic
+            if (STATE.trafficIntensity > 0 && Math.random() < (STATE.trafficIntensity / 2000)) {
+                spawnVehicle();
+            }
+
+            // 3. Pedestrian Spawning Logic
+            if (Math.random() < 0.02) { // Constant slow trickle
+                spawnPedestrian();
+            }
+
+            // 4. Update Vehicles
+            for(let i = STATE.vehicles.length - 1; i >= 0; i--) {
+                const v = STATE.vehicles[i];
+                
+                // Move progress
+                v.px += v.speed;
+                
+                // Grid Advance
+                if (v.px >= CONFIG.CELL_SIZE) {
+                    v.px = 0;
+                    
+                    // Move to next cell
+                    if (v.dir === 0) v.gx++;
+                    else if (v.dir === 1) v.gx--;
+                    else if (v.dir === 2) v.gz++;
+                    else if (v.dir === 3) v.gz--;
+
+                    // Intersection Logic: Check if new cell is road
+                    // If out of bounds or building, despawn
+                    if (v.gx < 0 || v.gx >= STATE.gridSize || v.gz < 0 || v.gz >= STATE.gridSize || STATE.grid[v.gx][v.gz] !== 1) {
+                        v.mesh.dispose();
+                        STATE.vehicles.splice(i, 1);
+                        continue;
+                    }
+
+                    // Random turn at intersection? (Simplified: 10% chance to change dir)
+                    if (Math.random() < 0.2) {
+                        // Find valid directions at new cell
+                        const valid = [];
+                        // Right
+                        if (v.gx+1 < STATE.gridSize && STATE.grid[v.gx+1][v.gz] === 1) valid.push(0);
+                        // Left
+                        if (v.gx-1 >= 0 && STATE.grid[v.gx-1][v.gz] === 1) valid.push(1);
+                        // Down
+                        if (v.gz+1 < STATE.gridSize && STATE.grid[v.gx][v.gz+1] === 1) valid.push(2);
+                        // Up
+                        if (v.gz-1 >= 0 && STATE.grid[v.gx][v.gz-1] === 1) valid.push(3);
+                        
+                        if (valid.length > 0) v.dir = valid[Math.floor(Math.random() * valid.length)];
+                    }
+                }
+
+                // Update Mesh Position
+                const worldX = (v.gx * CONFIG.CELL_SIZE) - ((STATE.gridSize * CONFIG.CELL_SIZE)/2) + (CONFIG.CELL_SIZE/2);
+                const worldZ = (v.gz * CONFIG.CELL_SIZE) - ((STATE.gridSize * CONFIG.CELL_SIZE)/2) + (CONFIG.CELL_SIZE/2);
+                
+                // Offset based on direction
+                let ox = 0, oz = 0;
+                if (v.dir === 0) ox = v.px;
+                else if (v.dir === 1) oz = v.px;
+                else if (v.dir === 2) oz = v.px;
+                else if (v.dir === 3) oz = -v.px; // Moving Up Z
+
+                // Fix rotation
+                if (v.dir === 0) v.mesh.rotation.y = Math.PI/2;
+                if (v.dir === 1) v.mesh.rotation.y = -Math.PI/2;
+                if (v.dir === 2) v.mesh.rotation.y = 0;
+                if (v.dir === 3) v.mesh.rotation.y = Math.PI;
+
+                v.mesh.position.set(worldX + ox, 1, worldZ + oz);
+            }
+
+            // 5. Update Pedestrians
+            for(let i = STATE.pedestrians.length - 1; i >= 0; i--) {
+                const p = STATE.pedestrians[i];
+                
+                // Move towards target
+                const dx = (p.targetX - p.gx);
+                const dz = (p.targetZ - p.gz);
+                const dist = Math.sqrt(dx*dx + dz*dz);
+                
+                if (dist < 0.1) {
+                    // Pick new target nearby
+                    p.targetX = Math.floor(Math.max(0, Math.min(STATE.gridSize-1, p.gx + (Math.random()-0.5)*4)));
+                    p.targetZ = Math.floor(Math.max(0, Math.min(STATE.gridSize-1, p.gz + (Math.random()-0.5)*4)));
+                }
+
+                // Move
+                const dirX = (p.targetX - p.gx) * p.speed;
+                const dirZ = (p.targetZ - p.gz) * p.speed;
+                
+                p.gx += dirX;
+                p.gz += dirZ;
+
+                const worldX = (p.gx * CONFIG.CELL_SIZE) - ((STATE.gridSize * CONFIG.CELL_SIZE)/2) + (CONFIG.CELL_SIZE/2);
+                const worldZ = (p.gz * CONFIG.CELL_SIZE) - ((STATE.gridSize * CONFIG.CELL_SIZE)/2) + (CONFIG.CELL_SIZE/2);
+                
+                p.mesh.position.set(worldX, 0.75, worldZ);
+            }
+
+            // Update UI Stats
+            document.getElementById("stat-buildings").innerText = STATE.buildings.length;
+            document.getElementById("stat-vehicles").innerText = STATE.vehicles.length;
+            document.getElementById("stat-pop").innerText = STATE.pedestrians.length;
+        });
+
+        // Initial Build
+        initGrid();
+        
+        return scene;
+    };
+
+    const scene = createScene();
+    
+    engine.runRenderLoop(function () {
+        scene.render();
+    });
+
+    window.addEventListener("resize", function () {
+        engine.resize();
+    });
+
+    // --- UI BINDINGS ---
+    const inputSize = document.getElementById("input-size");
+    const valSize = document.getElementById("val-size");
+    
+    inputSize.addEventListener("input", (e) => {
+        valSize.innerText = e.target.value;
+    });
+    // Debounce resize to prevent lag
+    inputSize.addEventListener("change", (e) => {
+        STATE.gridSize = parseInt(e.target.value);
+        initGrid();
+    });
+
+    const inputSpeed = document.getElementById("input-speed");
+    const valSpeed = document.getElementById("val-speed");
+    inputSpeed.addEventListener("input", (e) => {
+        valSpeed.innerText = e.target.value + "x";
+        STATE.devSpeed = parseInt(e.target.value);
+    });
+
+    const inputTraffic = document.getElementById("input-traffic");
+    const valTraffic = document.getElementById("val-traffic");
+    inputTraffic.addEventListener("input", (e) => {
+        valTraffic.innerText = e.target.value + "%";
+        STATE.trafficIntensity = parseInt(e.target.value);
+    });
+
+    document.getElementById("btn-reset").addEventListener("click", () => {
+        initGrid();
+    });
+
+</script>
+</body>
+</html>

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Osogovo Terrain Display</title>
+    <!-- Load Babylon.js and Loaders from CDN -->
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    <style>
+        html, body { overflow: hidden; width: 100%; height: 100%; margin: 0; padding: 0; }
+        #renderCanvas { width: 100%; height: 100%; touch-action: none; outline: none; }
+        
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-family: 'Segoe UI', sans-serif; color: white; font-size: 20px; pointer-events: none;
+            background: rgba(0,0,0,0.7); padding: 20px; border-radius: 8px;
+        }
+
+        #error-msg {
+            display: none; position: absolute; top: 20px; left: 20px; color: #ff5555; 
+            background: white; padding: 15px; border-radius: 5px; font-family: sans-serif;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loading">Loading Terrain & Assets...</div>
+    <div id="error-msg">Images not found. Please ensure 'Osogovo Height Map (Merged).png' and 'Osogovo_map.jpg' are in this folder.</div>
+    <canvas id="renderCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById("renderCanvas");
+        const engine = new BABYLON.Engine(canvas, true);
+        
+        // Asset paths (Assumed to be in the same directory as this HTML file)
+        const HEIGHTMAP_URL = "Osogovo Height Map (Merged).png";
+        const TEXTURE_URL = "Osogovo_map.jpg";
+
+        const createScene = function () {
+            const scene = new BABYLON.Scene(engine);
+            scene.clearColor = new BABYLON.Color3(0.5, 0.7, 0.9); // Atmospheric blue sky
+
+            // --- 1. Camera ---
+            const camera = new BABYLON.ArcRotateCamera("Camera", -Math.PI / 2, Math.PI / 3, 200, BABYLON.Vector3.Zero(), scene);
+            camera.attachControl(canvas, true);
+            camera.lowerRadiusLimit = 50;
+            camera.upperRadiusLimit = 400;
+            camera.wheelPrecision = 50;
+
+            // --- 2. Lighting ---
+            const hemiLight = new BABYLON.HemisphericLight("hemiLight", new BABYLON.Vector3(0, 1, 0), scene);
+            hemiLight.intensity = 0.7;
+            hemiLight.groundColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+
+            const dirLight = new BABYLON.DirectionalLight("dirLight", new BABYLON.Vector3(-1, -2, -1), scene);
+            dirLight.position = new BABYLON.Vector3(100, 100, -100);
+            dirLight.intensity = 0.8;
+            
+            // Enable shadows for realism
+            const shadowGenerator = new BABYLON.ShadowGenerator(1024, dirLight);
+            shadowGenerator.useBlurExponentialShadowMap = true;
+            shadowGenerator.blurKernel = 32;
+
+            // --- 3. Terrain Material ---
+            const terrainMat = new BABYLON.StandardMaterial("terrainMat", scene);
+            const diffuseTexture = new BABYLON.Texture(TEXTURE_URL, scene);
+            
+            // Add an error handler for textures to alert user if images are missing
+            diffuseTexture.onLoadObservable.add(() => {
+                document.getElementById("loading").style.display = "none";
+            });
+            diffuseTexture.onErrorObservable.add((err) => {
+                document.getElementById("loading").style.display = "none";
+                document.getElementById("error-msg").style.display = "block";
+            });
+
+            terrainMat.diffuseTexture = diffuseTexture;
+            terrainMat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1); // Low gloss
+            terrainMat.roughness = 0.8;
+
+            // --- 4. Terrain Mesh (Lid) ---
+            // Create the ground from heightmap
+            const terrain = BABYLON.MeshBuilder.CreateGroundFromHeightMap("ground", {
+                width: 200, 
+                height: 200, 
+                subdivisions: 100, 
+                minHeight: 0, 
+                maxHeight: 100, 
+                updatable: true // Allows us to read vertex data later
+            }, scene);
+            
+            terrain.material = terrainMat;
+            terrain.receiveShadows = true;
+            terrain.position.y = 10; // Raise it up so the box sits below Y=0
+
+            // --- 5. The "Box" / Pedestal (Walls extending downward) ---
+            // We want the terrain to look like a chunk of earth extracted from the ground.
+            // We calculate the bounding box of the terrain to size the box perfectly.
+            terrain.computeWorldMatrix(true);
+            const bbox = terrain.getBoundingInfo().boundingBox;
+            
+            const boxHeight = 40; // Depth of the sample box
+            const boxY = bbox.minimumWorld.y - boxHeight; // Position below terrain
+            
+            // Create the box underneath
+            const baseBox = BABYLON.MeshBuilder.CreateBox("base", {
+                width: 200,
+                depth: 200,
+                height: boxHeight
+            }, scene);
+            
+            baseBox.position = new BABYLON.Vector3(0, bbox.minimumWorld.y - (boxHeight/2), 0);
+            baseBox.material = terrainMat; // Match material for seamless look
+            baseBox.receiveShadows = true;
+            baseBox.isPickable = false;
+
+            // --- 6. Find Highest Peaks ---
+            // We scan the vertex data of the terrain to find local maxima
+            const findPeaks = () => {
+                const positions = terrain.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+                const peakCandidates = [];
+                
+                // Iterate through vertices (x, y, z)
+                for (let i = 1; i < positions.length; i += 3) {
+                    const y = positions[i]; // The height (Y) component
+                    peakCandidates.push({
+                        y: y,
+                        x: positions[i-1],
+                        z: positions[i+1]
+                    });
+                }
+
+                // Sort by height descending
+                peakCandidates.sort((a, b) => b.y - a.y);
+
+                // Filter for uniqueness (don't put markers on every single vertex of a flat peak)
+                const uniquePeaks = [];
+                const minDistance = 15; // Minimum distance between markers
+                
+                for (let p of peakCandidates) {
+                    let isUnique = true;
+                    for (let u of uniquePeaks) {
+                        const dx = p.x - u.x;
+                        const dz = p.z - u.z;
+                        if (Math.sqrt(dx*dx + dz*dz) < minDistance) {
+                            isUnique = false;
+                            break;
+                        }
+                    }
+                    if (isUnique && p.y > 5) { // Only mark actual mountains, not bumps
+                        uniquePeaks.push(p);
+                        if (uniquePeaks.length >= 3) break; // We only need top 3
+                    }
+                }
+                return uniquePeaks;
+            };
+
+            const peaks = findPeaks();
+
+            // --- 7. Markers & Billboard Labels ---
+            const markerMat = new BABYLON.StandardMaterial("markerMat", scene);
+            markerMat.diffuseColor = new BABYLON.Color3(1, 0.2, 0.2); // Red
+            
+            peaks.forEach((peak, index) => {
+                // Create Marker Pin (Cylinder)
+                const marker = BABYLON.MeshBuilder.CreateCylinder("marker"+index, {
+                    diameterTop: 0,
+                    diameterBottom: 1.5,
+                    height: 4,
+                    tessellation: 12
+                }, scene);
+                
+                marker.position.set(peak.x, peak.y, peak.z);
+                marker.material = markerMat;
+                
+                // --- Billboard Logic ---
+                // BILLBOARDMODE_ALL makes the mesh always face the camera regardless of angle
+                marker.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+                
+                // --- Text Label (AdvancedDynamicTexture) ---
+                // This creates a texture that wraps around the mesh marker
+                const advancedTexture = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(marker, "label", scene, {createFaceOnUv2: true});
+                
+                const rect1 = new BABYLON.GUI.Rectangle();
+                rect1.width = "100px";
+                rect1.height = "40px";
+                rect1.cornerRadius = 20;
+                rect1.color = "black";
+                rect1.thickness = 2;
+                rect1.background = "white";
+                advancedTexture.addControl(rect1);
+
+                const label = new BABYLON.GUI.TextBlock();
+                label.text = `Peak ${index + 1}\n${Math.round(peak.y)}m`;
+                label.color = "black";
+                label.fontSize = 14;
+                label.fontWeight = "bold";
+                // Position label below the pin
+                rect1.addControl(label);
+                
+                // Adjust GUI position on mesh (UV2 coordinates)
+                // We want it floating above the pin
+                rect1.top = "-60px"; 
+                rect1.left = "-50px";
+            });
+
+            // --- 8. Visual Polish (Skybox/Fog) ---
+            scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
+            scene.fogDensity = 0.005;
+            scene.fogColor = scene.clearColor;
+
+            return scene;
+        };
+
+        const scene = createScene();
+
+        engine.runRenderLoop(function () {
+            scene.render();
+        });
+
+        window.addEventListener("resize", function () {
+            engine.resize();
+        });
+    </script>
+</body>
+</html>
