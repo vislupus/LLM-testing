@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chaotic Gravity & Spacecraft Mission</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+
+<script>
+    // --- CONFIGURATION ---
+    const G = 0.5; // Gravitational constant (tuned for canvas scale)
+    const TRAIL_PERSISTENCE = 255; // Opacity of new trail points
+    const BACKGROUND_VAL = 220; // Requested background value (Light Grey)
+
+    let bodies = [];
+    let ship;
+    let trailBuffer; // Off-screen graphics for persistent trails
+
+    function setup() {
+        createCanvas(windowWidth, windowHeight);
+        
+        // Initialize Trail Buffer
+        trailBuffer = createGraphics(width, height);
+        trailBuffer.background(BACKGROUND_VAL);
+        trailBuffer.noStroke();
+
+        initSystem();
+    }
+
+    function windowResized() {
+        resizeCanvas(windowWidth, windowHeight);
+        // Clear trails on resize to avoid stretching
+        trailBuffer = createGraphics(width, height);
+        trailBuffer.background(BACKGROUND_VAL);
+        trailBuffer.noStroke();
+    }
+
+    function initSystem() {
+        bodies = [];
+
+        // 1. The Sun
+        // Placed slightly off-center to encourage chaotic wobble
+        let sun = new Body(width/2, height/2, 2000, 20, color(255, 204, 0)); // Gold
+        sun.vel = createVector(0.05, 0); // Slight drift
+        bodies.push(sun);
+
+        // 2. Earth
+        // Closer orbit, high speed
+        let r1 = 180;
+        let v1 = sqrt(G * sun.mass / r1); 
+        let earth = new Body(width/2 + r1, height/2, 100, 8, color(50, 100, 255)); // Blue
+        earth.vel = createVector(0, v1); // Tangential velocity
+        // Add some chaos (non-perfect circular orbit)
+        earth.vel.mult(1.1); 
+        bodies.push(earth);
+
+        // 3. Jupiter
+        // Further out, massive enough to perturb Earth (Chaos)
+        let r2 = 350;
+        let v2 = sqrt(G * sun.mass / r2);
+        let jupiter = new Body(width/2 - r2, height/2, 600, 14, color(200, 100, 50)); // Orange
+        jupiter.vel = createVector(0, -v2);
+        jupiter.vel.mult(0.95); // Elliptical/Unstable
+        bodies.push(jupiter);
+
+        // 4. Spacecraft
+        // Starts exactly on Earth
+        ship = new Spacecraft(earth.pos.x, earth.pos.y, earth.pos, earth.vel);
+    }
+
+    function draw() {
+        // We do NOT clear the main canvas with background(220) every frame
+        // because we want persistent trails. 
+        // Instead, we draw the trailBuffer (which has the 220 background and all past lines)
+        // then draw the current bodies on top.
+        image(trailBuffer, 0, 0);
+
+        // Physics Step
+        for (let b of bodies) {
+            b.applyGravity(bodies);
+            b.update();
+            b.show(trailBuffer); // Draw trail on buffer
+        }
+
+        // Spacecraft Step
+        ship.applyGravity(bodies);
+        ship.missionControl(bodies);
+        ship.update();
+        ship.show(trailBuffer);
+
+        // Draw the actual sprites/bodies on top of the trail image for crisp visuals
+        for (let b of bodies) {
+            b.drawBody();
+        }
+        ship.drawBody();
+    }
+
+    // --- CLASSES ---
+
+    class Body {
+        constructor(x, y, m, r, c) {
+            this.pos = createVector(x, y);
+            this.vel = createVector(0, 0);
+            this.acc = createVector(0, 0);
+            this.mass = m;
+            this.radius = r;
+            this.color = c;
+            this.prevPos = this.pos.copy(); // For trail drawing
+        }
+
+        applyGravity(others) {
+            for (let other of others) {
+                if (other === this) continue;
+                let dir = p5.Vector.sub(other.pos, this.pos);
+                let dist = dir.mag();
+                // Softening parameter to prevent singularity at 0 distance
+                let strength = (G * this.mass * other.mass) / (dist * dist + 100); 
+                dir.normalize();
+                dir.mult(strength);
+                this.acc.add(dir);
+            }
+        }
+
+        update() {
+            this.vel.add(this.acc);
+            this.pos.add(this.vel);
+            this.acc.mult(0);
+
+            // Simple Boundary Bounce to keep things in canvas (prevents infinity drift)
+            if (this.pos.x < 0 || this.pos.x > width) this.vel.x *= -0.8;
+            if (this.pos.y < 0 || this.pos.y > height) this.vel.y *= -0.8;
+        }
+
+        show(pg) {
+            // Draw a line from previous position to current
+            pg.stroke(this.color);
+            pg.strokeWeight(this.radius);
+            pg.line(this.prevPos.x, this.prevPos.y, this.pos.x, this.pos.y);
+            this.prevPos = this.pos.copy();
+        }
+
+        drawBody() {
+            noStroke();
+            fill(this.color);
+            ellipse(this.pos.x, this.pos.y, this.radius * 2);
+        }
+    }
+
+    class Spacecraft {
+        constructor(x, y, hostPos, hostVel) {
+            this.pos = hostPos.copy();
+            this.vel = hostVel.copy(); // Start with Earth's velocity
+            this.acc = createVector(0, 0);
+            this.mass = 0.1; // Negligible mass
+            this.radius = 3;
+            this.color = color(255, 0, 0); // Red ship
+            this.prevPos = this.pos.copy();
+            
+            // Mission State
+            this.state = "LAUNCH_PREP"; // LAUNCH_PREP, TRANSFER, APPROACH
+            this.timer = 0;
+        }
+
+        applyGravity(others) {
+            for (let other of others) {
+                let dir = p5.Vector.sub(other.pos, this.pos);
+                let dist = dir.mag();
+                let strength = (G * this.mass * other.mass) / (dist * dist + 50);
+                dir.normalize();
+                dir.mult(strength);
+                this.acc.add(dir);
+            }
+        }
+
+        missionControl(bodies) {
+            let sun = bodies[0];
+            let earth = bodies[1];
+            let jupiter = bodies[2];
+            
+            this.timer++;
+
+            // --- LOGIC TO ENSURE SUCCESSFUL TRAJECTORY ---
+            // In a chaotic 3-body system, pure physics is hard to predict.
+            // We add a small "engine" force to guide the ship (simulating course correction).
+
+            // 1. Launch Phase: Wait a bit, then boost to go outward
+            if (this.state === "LAUNCH_PREP") {
+                // If we are still somewhat near Earth (visual check)
+                if (this.timer > 60) { 
+                    this.state = "TRANSFER";
+                    // Add Delta-V in direction of velocity (Hohmann transfer outward)
+                    let boost = this.vel.copy().normalize().mult(2.5); 
+                    this.vel.add(boost);
+                }
+            }
+            // 2. Transfer Phase: Coast, but nudge towards Jupiter if drifting too far
+            else if (this.state === "TRANSFER") {
+                let distToJup = p5.Vector.dist(this.pos, jupiter.pos);
+                
+                // If we get close enough to Jupiter's gravity well, switch to approach
+                if (distToJup < 150) {
+                    this.state = "APPROACH";
+                } 
+                // Guidance: If we are too far "above" or "below" the ecliptic, nudge back
+                // (Optional, keeps it on screen)
+            }
+            // 3. Approach: Use guidance to ensure capture/orbit
+            else if (this.state === "APPROACH") {
+                let dirToJup = p5.Vector.sub(jupiter.pos, this.pos).normalize();
+                // Artificial "thruster" to ensure it loops nicely
+                this.acc.add(dirToJup.mult(0.05));
+            }
+        }
+
+        update() {
+            this.vel.add(this.acc);
+            this.pos.add(this.vel);
+            this.acc.mult(0);
+
+            // Keep on canvas
+            if (this.pos.x < 0 || this.pos.x > width) this.vel.x *= -1;
+            if (this.pos.y < 0 || this.pos.y > height) this.vel.y *= -1;
+        }
+
+        show(pg) {
+            pg.stroke(this.color);
+            pg.strokeWeight(1); // Thinner trail for ship
+            pg.line(this.prevPos.x, this.prevPos.y, this.pos.x, this.pos.y);
+            this.prevPos = this.pos.copy();
+        }
+
+        drawBody() {
+            noStroke();
+            fill(this.color);
+            ellipse(this.pos.x, this.pos.y, this.radius * 2);
+            
+            // Draw a little "flame" if accelerating
+            if (this.state === "TRANSFER" && this.timer < 100) {
+                fill(255, 150, 0);
+                triangle(this.pos.x, this.pos.y, 
+                         this.pos.x - this.vel.x*2, this.pos.y - this.vel.y*2,
+                         this.pos.x - this.vel.x*2 + random(-2,2), this.pos.y - this.vel.y*2 + random(-2,2));
+            }
+        }
+    }
+
+</script>
+</body>
+</html>

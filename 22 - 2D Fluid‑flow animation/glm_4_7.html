@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Von Kármán Vortex Street (LBM)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            overflow: hidden;
+            font-family: 'Segoe UI', sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(20, 20, 20, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            color: #fff;
+            border: 1px solid #444;
+            pointer-events: auto;
+            max-width: 300px;
+        }
+        h2 { margin: 0 0 10px 0; font-size: 1.2rem; color: #4fc3f7; }
+        .control-group { margin-bottom: 10px; }
+        label { display: block; font-size: 0.9rem; margin-bottom: 5px; }
+        input[type=range] { width: 100%; cursor: pointer; }
+        button {
+            background: #4fc3f7;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            color: #000;
+            width: 100%;
+            margin-top: 5px;
+        }
+        button:hover { background: #29b6f6; }
+        .info { font-size: 0.8rem; color: #aaa; margin-top: 10px; line-height: 1.4; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <h2>Fluid Simulation</h2>
+    
+    <div class="control-group">
+        <label>Obstacle Shape</label>
+        <button onclick="toggleShape()">Switch Circle/Rectangle</button>
+    </div>
+
+    <div class="control-group">
+        <label>Rotation: <span id="valRot">0°</span></label>
+        <input type="range" id="sliderRot" min="0" max="360" value="0" step="1">
+    </div>
+
+    <div class="control-group">
+        <label>Size: <span id="valSize">20</span></label>
+        <input type="range" id="sliderSize" min="5" max="40" value="20">
+    </div>
+    
+    <div class="control-group">
+        <label>Viscosity: <span id="valVisc">Low</span></label>
+        <input type="range" id="sliderVisc" min="0" max="10" value="2">
+    </div>
+
+    <div class="info">
+        <strong>Red/Blue:</strong> Vorticity (Spin)<br>
+        <strong>Black:</strong> Laminar flow<br>
+        Drag the obstacle with your mouse!
+    </div>
+</div>
+
+<script>
+    // --- SIMULATION PARAMETERS ---
+    // Grid resolution (lower = faster, higher = detailed)
+    const NX = 300; 
+    const NY = 100;
+    
+    // LBM Constants (D2Q9 Model)
+    // Directions: C, E, N, W, S, NE, NW, SW, SE
+    const NDIRS = 9;
+    const cxs = [0, 1, 0, -1, 0, 1, -1, -1, 1];
+    const cys = [0, 0, 1, 0, -1, 1, 1, -1, -1];
+    const weights = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36];
+    
+    // Opposites for bounce-back: 0->0, 1->3, 2->4, etc.
+    const opposites = [0, 3, 4, 1, 2, 7, 8, 5, 6];
+
+    // Fluid Variables
+    let n0, nN, nS, nE, nW, nNE, nNW, nSW, nSE; // Distribution functions (current)
+    let rho, ux, uy; // Macroscopic variables
+    
+    // Visualization buffer
+    let img;
+
+    // Obstacle State
+    let obstacle = {
+        x: NX / 4,
+        y: NY / 2,
+        r: 15, // radius or half-width
+        type: 'circle', // 'circle' or 'rect'
+        angle: 0
+    };
+
+    // Simulation Constants
+    let tau = 0.6; // Relaxation time. Viscosity = (tau - 0.5)/3
+    let inletVelocity = 0.1; // Speed of incoming fluid
+
+    // --- P5.JS SETUP ---
+
+    function setup() {
+        createCanvas(windowWidth, windowHeight);
+        pixelDensity(1);
+        
+        // Create graphics buffer for simulation
+        img = createImage(NX, NY);
+        
+        // Initialize Arrays
+        initLBM();
+
+        // UI Listeners
+        document.getElementById('sliderRot').addEventListener('input', (e) => {
+            obstacle.angle = parseFloat(e.target.value) * PI / 180;
+            document.getElementById('valRot').innerText = e.target.value + "°";
+        });
+        document.getElementById('sliderSize').addEventListener('input', (e) => {
+            obstacle.r = parseFloat(e.target.value);
+            document.getElementById('valSize').innerText = obstacle.r;
+        });
+        document.getElementById('sliderVisc').addEventListener('input', (e) => {
+            let val = parseFloat(e.target.value);
+            // Map 0-10 slider to tau 0.51 (low viscosity) to 1.0 (high viscosity)
+            tau = 0.51 + (val / 10) * 0.5;
+            let label = val < 3 ? "Low (Turbulent)" : (val < 7 ? "Medium" : "High (Laminar)");
+            document.getElementById('valVisc').innerText = label;
+        });
+    }
+
+    function initLBM() {
+        // Initialize distributions with density=1, velocity=0
+        // We use 1D arrays for performance
+        n0 = new Float32Array(NX * NY);
+        nN = new Float32Array(NX * NY);
+        nS = new Float32Array(NX * NY);
+        nE = new Float32Array(NX * NY);
+        nW = new Float32Array(NX * NY);
+        nNE = new Float32Array(NX * NY);
+        nNW = new Float32Array(NX * NY);
+        nSW = new Float32Array(NX * NY);
+        nSE = new Float32Array(NX * NY);
+
+        rho = new Float32Array(NX * NY);
+        ux = new Float32Array(NX * NY);
+        uy = new Float32Array(NX * NY);
+
+        // Set initial equilibrium with slight flow to right
+        for (let i = 0; i < NX * NY; i++) {
+            ux[i] = inletVelocity;
+            uy[i] = 0;
+            rho[i] = 1.0;
+            let eq = equilibrium(rho[i], ux[i], uy[i]);
+            n0[i] = eq[0]; nE[i] = eq[1]; nN[i] = eq[2]; nW[i] = eq[3];
+            nS[i] = eq[4]; nNE[i] = eq[5]; nNW[i] = eq[6];
+            nSW[i] = eq[7]; nSE[i] = eq[8];
+        }
+    }
+
+    function toggleShape() {
+        obstacle.type = (obstacle.type === 'circle') ? 'rect' : 'circle';
+    }
+
+    function mouseDragged() {
+        // Map mouse to grid coordinates
+        let scaleX = NX / width;
+        let scaleY = NY / height;
+        
+        // Update obstacle position (constrained to grid)
+        let gx = mouseX * scaleX;
+        let gy = mouseY * scaleY;
+        
+        // Keep inside bounds (with padding)
+        gx = constrain(gx, obstacle.r + 5, NX - obstacle.r - 5);
+        gy = constrain(gy, obstacle.r + 5, NY - obstacle.r - 5);
+        
+        obstacle.x = gx;
+        obstacle.y = gy;
+        
+        // Prevent default browser drag behavior
+        return false;
+    }
+
+    // --- MAIN LOOP ---
+
+    function draw() {
+        // Run multiple physics steps per frame for stability/speed
+        for (let s = 0; s < 4; s++) {
+            stepLBM();
+        }
+        
+        drawVorticity();
+    }
+
+    function stepLBM() {
+        // 1. Macroscopic Variables (rho, ux, uy)
+        for (let i = 0; i < NX * NY; i++) {
+            rho[i] = n0[i] + nN[i] + nS[i] + nE[i] + nW[i] + nNE[i] + nNW[i] + nSW[i] + nSE[i];
+            ux[i] = (nE[i] + nNE[i] + nSE[i] - nW[i] - nNW[i] - nSW[i]) / rho[i];
+            uy[i] = (nN[i] + nNE[i] + nNW[i] - nS[i] - nSE[i] - nSW[i]) / rho[i];
+        }
+
+        // 2. Collision (BGK approximation) & Force Equilibrium at Inlet
+        for (let i = 0; i < NX * NY; i++) {
+            let x = i % NX;
+            let y = floor(i / NX);
+
+            // Force Inlet (Left wall) - Zou/He boundary condition simplified
+            if (x === 0) {
+                rho[i] = 1.0; // Fix density
+                ux[i] = inletVelocity; // Fix velocity
+                uy[i] = 0;
+            }
+
+            // Calculate Equilibrium
+            let eq = equilibrium(rho[i], ux[i], uy[i]);
+
+            // Collision
+            n0[i] += -(n0[i] - eq[0]) / tau;
+            nE[i] += -(nE[i] - eq[1]) / tau;
+            nN[i] += -(nN[i] - eq[2]) / tau;
+            nW[i] += -(nW[i] - eq[3]) / tau;
+            nS[i] += -(nS[i] - eq[4]) / tau;
+            nNE[i] += -(nNE[i] - eq[5]) / tau;
+            nNW[i] += -(nNW[i] - eq[6]) / tau;
+            nSW[i] += -(nSW[i] - eq[7]) / tau;
+            nSE[i] += -(nSE[i] - eq[8]) / tau;
+        }
+
+        // 3. Streaming (Move populations to neighbors)
+        // We use temporary copies to avoid overwriting data needed for neighbors
+        // However, for simplicity in JS without swapping arrays, we can stream carefully 
+        // or just use pre-calculated indices. 
+        // Better approach for JS: Create new arrays for the next step or stream in reverse order?
+        // Standard LBM stream: swap directions? No.
+        // Let's use the "Opposite Streaming" trick or just copy to temp arrays.
+        // To save memory/allocation, we will use a temporary index mapping or just simple loops 
+        // handling the order (e.g. iterate West to East for East-going particles).
+        
+        // For this single-file implementation, creating temp Float32Arrays is cleanest and fast enough.
+        let t0 = new Float32Array(n0);
+        let tN = new Float32Array(nN);
+        let tS = new Float32Array(nS);
+        let tE = new Float32Array(nE);
+        let tW = new Float32Array(nW);
+        let tNE = new Float32Array(nNE);
+        let tNW = new Float32Array(nNW);
+        let tSW = new Float32Array(nSW);
+        let tSE = new Float32Array(nSE);
+
+        for (let y = 0; y < NY; y++) {
+            for (let x = 0; x < NX; x++) {
+                let i = y * NX + x;
+                
+                // Move particles INTO this cell from neighbors
+                // Example: nE[i] comes from nW[i-1]
+                
+                if (x < NX-1) tE[i] = nE[i]; else tE[i] = nE[i]; // Boundary handled later
+                if (y < NY-1) tN[i] = nN[i]; else tN[i] = nN[i];
+                if (x > 0)     tW[i] = nW[i]; else tW[i] = nW[i];
+                if (y > 0)     tS[i] = nS[i]; else tS[i] = nS[i];
+                
+                // Diagonals
+                if (x < NX-1 && y < NY-1) tNE[i] = nNE[i];
+                if (x > 0 && y < NY-1)     tNW[i] = nNW[i];
+                if (x > 0 && y > 0)       tSW[i] = nSW[i];
+                if (x < NX-1 && y > 0)    tSE[i] = nSE[i];
+            }
+        }
+
+        // Actually, let's do it the standard way: Stream OUT to neighbors
+        // This is easier to implement without temp arrays if we just copy carefully.
+        // But to be safe and fast, I will use the temp arrays method:
+        // n_next(x, y, dir) = n_curr(x - cx, y - cy, dir)
+        
+        for (let y = 0; y < NY; y++) {
+            for (let x = 0; x < NX; x++) {
+                let i = y * NX + x;
+                
+                // Incoming from Left (West) -> goes East
+                tE[i] = (x > 0) ? nE[i-1] : nE[i]; // Inlet boundary condition fixed earlier, keep equilibrium? or wrap?
+                
+                // Incoming from Right (East) -> goes West
+                tW[i] = (x < NX-1) ? nW[i+1] : nW[i]; // Outlet: simple zero gradient (keep own)
+                
+                // Incoming from Bottom (South) -> goes North
+                tN[i] = (y > 0) ? nN[i-NX] : nN[i]; // Top wall bounce back? handled later
+                
+                // Incoming from Top (North) -> goes South
+                tS[i] = (y < NY-1) ? nS[i+NX] : nS[i]; // Bottom wall bounce back?
+                
+                // Diagonals
+                tNE[i] = (x > 0 && y > 0) ? nNE[i-NX-1] : nNE[i];
+                tNW[i] = (x < NX-1 && y > 0) ? nNW[i-NX+1] : nNW[i];
+                tSW[i] = (x > 0 && y < NY-1) ? nSW[i+NX-1] : nSW[i];
+                tSE[i] = (x < NX-1 && y < NY-1) ? nSE[i+NX+1] : nSE[i];
+                
+                // Center stays
+                t0[i] = n0[i];
+            }
+        }
+        
+        // Copy back
+        n0.set(t0); nE.set(tE); nN.set(tN); nW.set(tW); nS.set(tS);
+        nNE.set(tNE); nNW.set(tNW); nSW.set(tSW); nSE.set(tSE);
+
+        // 4. Boundary Conditions (Walls & Obstacle)
+        for (let y = 0; y < NY; y++) {
+            for (let x = 0; x < NX; x++) {
+                let i = y * NX + x;
+                let isObstacle = false;
+
+                // Check Obstacle Collision
+                if (obstacle.type === 'circle') {
+                    let d = dist(x, y, obstacle.x, obstacle.y);
+                    if (d < obstacle.r) isObstacle = true;
+                } else {
+                    // Rotated Rectangle
+                    let dx = x - obstacle.x;
+                    let dy = y - obstacle.y;
+                    // Rotate point back by -angle
+                    let c = cos(-obstacle.angle);
+                    let s = sin(-obstacle.angle);
+                    let lx = dx * c - dy * s;
+                    let ly = dx * s + dy * c;
+                    if (abs(lx) < obstacle.r && abs(ly) < obstacle.r) isObstacle = true;
+                }
+
+                // Check Domain Walls (Top/Bottom) - Bounce Back
+                let isWall = (y === 0 || y === NY - 1);
+                // Inlet (Left) is handled by forcing equilibrium, but for reflection of particles hitting it from inside:
+                if (x === 0) isWall = true; 
+                // Outlet (Right) is zero gradient, but let's make it open or wall. Wall is more stable for vortex street.
+                if (x === NX - 1) isWall = true;
+
+                if (isObstacle || isWall) {
+                    // Rigid Bounce-back: Reflect incoming particles
+                    // n_i = n_opposite
+                    let temp = nE[i]; nE[i] = nW[i]; nW[i] = temp;
+                    temp = nN[i]; nN[i] = nS[i]; nS[i] = temp;
+                    temp = nNE[i]; nNE[i] = nSW[i]; nSW[i] = temp;
+                    temp = nNW[i]; nNW[i] = nSE[i]; nSE[i] = temp;
+                    
+                    // If it's the obstacle, we force velocity to 0 inside for next step stability
+                    if (isObstacle) {
+                        ux[i] = 0; uy[i] = 0; rho[i] = 1.0;
+                    }
+                }
+            }
+        }
+    }
+
+    function equilibrium(rho, u, v) {
+        let usq = u*u + v*v;
+        let res = new Array(NDIRS);
+        for (let i = 0; i < NDIRS; i++) {
+            let eu = cxs[i]*u + cys[i]*v;
+            res[i] = rho * weights[i] * (1 + 3*eu + 4.5*eu*eu - 1.5*usq);
+        }
+        return res;
+    }
+
+    function drawVorticity() {
+        img.loadPixels();
+        let d = img.pixels;
+
+        for (let x = 1; x < NX - 1; x++) {
+            for (let y = 1; y < NY - 1; y++) {
+                let i = y * NX + x;
+                let idx = i * 4;
+
+                // Calculate Curl: d(uy)/dx - d(ux)/dy
+                let dy_dx = (uy[i+1] - uy[i-1]) * 0.5;
+                let dx_dy = (ux[i+NX] - ux[i-NX]) * 0.5;
+                let curl = dy_dx - dx_dy;
+
+                // Visualize Obstacle
+                let isObstacle = false;
+                if (obstacle.type === 'circle') {
+                    if (dist(x, y, obstacle.x, obstacle.y) < obstacle.r) isObstacle = true;
+                } else {
+                    let dx = x - obstacle.x;
+                    let dy = y - obstacle.y;
+                    let c = cos(-obstacle.angle);
+                    let s = sin(-obstacle.angle);
+                    let lx = dx * c - dy * s;
+                    let ly = dx * s + dy * c;
+                    if (abs(lx) < obstacle.r && abs(ly) < obstacle.r) isObstacle = true;
+                }
+
+                if (isObstacle) {
+                    d[idx] = 255;   // R
+                    d[idx+1] = 255; // G
+                    d[idx+2] = 255; // B
+                    d[idx+3] = 255; // Alpha
+                    continue;
+                }
+
+                // Map Curl to Color
+                // Red = Positive (Clockwise), Blue = Negative (Counter-Clockwise)
+                let val = map(curl, -0.15, 0.15, 0, 255);
+                val = constrain(val, 0, 255);
+
+                if (curl > 0) {
+                    // Reddish
+                    d[idx] = val;       // R
+                    d[idx+1] = 0;       // G
+                    d[idx+2] = 0;       // B
+                } else {
+                    // Blueish
+                    d[idx] = 0;         // R
+                    d[idx+1] = 0;       // G
+                    d[idx+2] = val;     // B
+                }
+                
+                // Darken areas with low velocity speed for contrast
+                let speed = sqrt(ux[i]*ux[i] + uy[i]*uy[i]);
+                let brightness = map(speed, 0, 0.2, 50, 255);
+                
+                if (val < 50) {
+                     d[idx] *= 0.5;
+                     d[idx+1] *= 0.5;
+                     d[idx+2] *= 0.5;
+                }
+
+                d[idx+3] = 255; // Alpha
+            }
+        }
+        img.updatePixels();
+        
+        // Draw image scaled to canvas
+        imageMode(CORNER);
+        image(img, 0, 0, width, height);
+    }
+    
+    function windowResized() {
+        resizeCanvas(windowWidth, windowHeight);
+    }
+
+</script>
+</body>
+</html>

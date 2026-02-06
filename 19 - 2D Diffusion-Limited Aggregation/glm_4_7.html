@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diffusion-Limited Aggregation (DLA)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        :root {
+            --bg: #121212;
+            --panel: rgba(30, 30, 30, 0.85);
+            --text: #e0e0e0;
+            --accent: #00e676;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            height: 100vh;
+        }
+
+        #canvas-container {
+            flex-grow: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #000;
+        }
+
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: var(--panel);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            width: 280px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            z-index: 10;
+        }
+
+        h2 { margin: 0 0 15px 0; font-size: 1.2rem; color: var(--accent); border-bottom: 1px solid #444; padding-bottom: 10px;}
+
+        .control-group {
+            margin-bottom: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        label { font-size: 0.9rem; display: flex; justify-content: space-between; }
+        
+        input[type=range] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: var(--accent);
+        }
+
+        .stats {
+            background: #222;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-family: monospace;
+            margin-bottom: 15px;
+            border-left: 3px solid var(--accent);
+        }
+
+        button {
+            background: var(--accent);
+            color: #000;
+            border: none;
+            padding: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: 0.2s;
+        }
+
+        button:hover { filter: brightness(0.9); }
+        button.stop { background: #ff5252; color: white; }
+        
+        .status-msg {
+            margin-top: 10px;
+            font-size: 0.9rem;
+            text-align: center;
+            color: #ff9800;
+            min-height: 1.2em;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h2>DLA Simulation</h2>
+        
+        <div class="stats">
+            <div>Particles: <span id="countDisplay" style="color:white">0</span></div>
+            <div>Radius: <span id="radiusDisplay" style="color:white">0</span> px</div>
+        </div>
+
+        <div class="control-group">
+            <label>Simulation Speed <span id="valSpeed">1x</span></label>
+            <input type="range" id="sliderSpeed" min="1" max="100" value="20">
+        </div>
+
+        <div class="control-group">
+            <label>Inward Bias <span id="valBias">Low</span></label>
+            <input type="range" id="sliderBias" min="0" max="0.5" step="0.01" value="0.05">
+        </div>
+        
+        <div class="control-group">
+            <label>Particle Size <span id="valSize">2px</span></label>
+            <input type="range" id="sliderSize" min="1" max="5" step="1" value="2">
+        </div>
+
+        <button onclick="resetSimulation()">Reset Simulation</button>
+        <div id="statusMsg" class="status-msg"></div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+<script>
+    // --- CONFIGURATION ---
+    let config = {
+        particleSize: 2,
+        speed: 20, // Steps per frame
+        bias: 0.05,
+        seedCount: 100, // Initial particles in center
+        stopMargin: 50 // Pixels from edge to stop
+    };
+
+    // --- STATE ---
+    let particles = []; // Array of objects {x, y, hue}
+    let grid = []; // 1D spatial array for fast collision lookup
+    let walker = null; // The currently moving particle
+    let maxRadius = 0; // Current approximate radius of cluster
+    let isRunning = true;
+    let canvasWidth, canvasHeight;
+    let cols, rows;
+    let gridCellSize;
+
+    // UI Elements
+    let sliderSpeed, sliderBias, sliderSize;
+    let countDisplay, radiusDisplay, statusMsg;
+
+    function setup() {
+        const container = document.getElementById('canvas-container');
+        // Create canvas
+        let c = createCanvas(container.clientWidth, container.clientHeight);
+        c.parent('canvas-container');
+        
+        canvasWidth = width;
+        canvasHeight = height;
+        
+        // Initialize Grid
+        gridCellSize = config.particleSize * 2; // Grid cell equals diameter
+        cols = ceil(width / gridCellSize);
+        rows = ceil(height / gridCellSize);
+        grid = new Array(cols * rows).fill(false);
+
+        // Bind UI
+        sliderSpeed = document.getElementById('sliderSpeed');
+        sliderBias = document.getElementById('sliderBias');
+        sliderSize = document.getElementById('sliderSize');
+        countDisplay = document.getElementById('countDisplay');
+        radiusDisplay = document.getElementById('radiusDisplay');
+        statusMsg = document.getElementById('statusMsg');
+
+        // Event Listeners
+        sliderSpeed.oninput = () => {
+            config.speed = parseInt(sliderSpeed.value);
+            document.getElementById('valSpeed').innerText = config.speed + "x";
+        };
+        sliderBias.oninput = () => {
+            config.bias = parseFloat(sliderBias.value);
+            document.getElementById('valBias').innerText = config.bias.toFixed(2);
+        };
+        sliderSize.oninput = () => {
+            config.particleSize = parseInt(sliderSize.value);
+            document.getElementById('valSize').innerText = config.particleSize + "px";
+            // Changing size resets simulation because grid size changes
+            resetSimulation();
+        };
+
+        window.addEventListener('resize', () => {
+            canvasWidth = container.clientWidth;
+            canvasHeight = container.clientHeight;
+            resizeCanvas(canvasWidth, canvasHeight);
+            resetSimulation();
+        });
+
+        resetSimulation();
+    }
+
+    function resetSimulation() {
+        particles = [];
+        grid.fill(false);
+        walker = null;
+        maxRadius = 0;
+        isRunning = true;
+        statusMsg.innerText = "";
+
+        // Initialize Seed Cluster (100 particles in center)
+        // We place them randomly within a small radius to create a seed
+        let seedRadius = 20;
+        for (let i = 0; i < config.seedCount; i++) {
+            let angle = random(TWO_PI);
+            let r = sqrt(random(1)) * seedRadius;
+            let x = width / 2 + cos(angle) * r;
+            let y = height / 2 + sin(angle) * r;
+            
+            addParticle(x, y);
+        }
+        
+        // Calculate initial max radius
+        updateMaxRadius();
+    }
+
+    // --- CORE LOGIC ---
+
+    function draw() {
+        background(0); // Clear screen
+
+        if (isRunning) {
+            // Run multiple steps per frame for speed
+            for (let s = 0; s < config.speed; s++) {
+                if (!isRunning) break;
+                stepSimulation();
+            }
+        }
+
+        // Draw all fixed particles
+        noStroke();
+        // Drawing thousands of individual circle() calls can be slow in p5.js.
+        // For very high counts, beginShape(POINTS) is faster, but circles look better.
+        // With < 10,000 particles, circles are usually fine.
+        for (let p of particles) {
+            fill(p.hue, 200, 200); // HSB Color
+            ellipse(p.x, p.y, config.particleSize);
+        }
+
+        // Draw active walker
+        if (walker) {
+            fill(255);
+            ellipse(walker.x, walker.y, config.particleSize);
+        }
+
+        // Update UI
+        countDisplay.innerText = particles.length;
+        radiusDisplay.innerText = Math.floor(maxRadius);
+    }
+
+    function stepSimulation() {
+        // 1. Spawn Walker if none exists
+        if (!walker) {
+            spawnWalker();
+            // If spawn fails (cluster hit edge), stop
+            if (!walker) {
+                isRunning = false;
+                statusMsg.innerText = "Cluster reached boundary!";
+                return;
+            }
+        }
+
+        // 2. Move Walker
+        moveWalker(walker);
+
+        // 3. Check Collision
+        // Optimization: Check distance to center first. If far from maxRadius, don't check collision.
+        let dCenter = dist(walker.x, walker.y, width/2, height/2);
+        
+        // Only check collision if walker is near the cluster boundary or inside it
+        // We give it a buffer (maxRadius + 10)
+        if (dCenter < maxRadius + 10) {
+            if (checkCollision(walker.x, walker.y)) {
+                // It stuck!
+                addParticle(walker.x, walker.y);
+                walker = null; // Kill walker, spawn new one next frame
+                
+                updateMaxRadius();
+                
+                // Check boundary condition
+                let limit = min(width, height) / 2 - config.stopMargin;
+                if (maxRadius > limit) {
+                    isRunning = false;
+                    statusMsg.innerText = "Cluster reached boundary!";
+                }
+            }
+        }
+    }
+
+    function spawnWalker() {
+        // Spawn at a random angle just outside the current max radius
+        let angle = random(TWO_PI);
+        let spawnR = maxRadius + 5; // Spawn slightly outside
+        if (spawnR < 10) spawnR = 10; // Minimum spawn radius
+
+        walker = {
+            x: width/2 + cos(angle) * spawnR,
+            y: height/2 + sin(angle) * spawnR
+        };
+
+        // Safety: if spawn point is off-screen, stop
+        if (walker.x < 0 || walker.x > width || walker.y < 0 || walker.y > height) {
+            walker = null;
+        }
+    }
+
+    function moveWalker(w) {
+        // Random Walk
+        let stepSize = 1; // 1 pixel step
+        
+        let dx = random(-stepSize, stepSize);
+        let dy = random(-stepSize, stepSize);
+
+        // Add Inward Bias
+        // Vector to center
+        let vx = (width/2 - w.x);
+        let vy = (height/2 - w.y);
+        
+        // Normalize and apply bias strength
+        let mag = sqrt(vx*vx + vy*vy);
+        if (mag > 0) {
+            vx = (vx / mag) * config.bias;
+            vy = (vy / mag) * config.bias;
+        }
+
+        w.x += dx + vx;
+        w.y += dy + vy;
+
+        // Keep walker inside canvas bounds (bounce)
+        w.x = constrain(w.x, 0, width);
+        w.y = constrain(w.y, 0, height);
+    }
+
+    function checkCollision(x, y) {
+        // Map position to grid coordinates
+        let gx = floor(x / gridCellSize);
+        let gy = floor(y / gridCellSize);
+
+        // Check 3x3 grid area around the point
+        for (let i = -1; i <= 1; i++) {
+            for (let j = -1; j <= 1; j++) {
+                let checkX = gx + i;
+                let checkY = gy + j;
+
+                // Bounds check
+                if (checkX >= 0 && checkX < cols && checkY >= 0 && checkY < rows) {
+                    if (grid[checkX + checkY * cols]) {
+                        // There is a particle in this cell.
+                        // Verify actual pixel distance (to be precise)
+                        // Since we only store "occupied" in grid, we need to check neighbors?
+                        // Actually, for pure DLA speed, checking the grid cell is usually enough 
+                        // if particle size = grid cell size. 
+                        // Let's verify against the specific particles in that cell for precision?
+                        // For simplicity and speed: If grid cell is occupied, we assume collision.
+                        // To avoid sticking to things diagonally without touching, we check distance to center of cell.
+                        
+                        // A more robust check for the exact neighbor:
+                        // We iterate through particles is O(N), too slow.
+                        // We will assume if grid is occupied, we are close enough.
+                        return true; 
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    function addParticle(x, y) {
+        particles.push({
+            x: x,
+            y: y,
+            // Color based on distance from center (Hue)
+            hue: map(dist(x, y, width/2, height/2), 0, min(width, height)/2, 200, 0)
+        });
+
+        // Update Grid
+        let gx = floor(x / gridCellSize);
+        let gy = floor(y / gridCellSize);
+        if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
+            grid[gx + gy * cols] = true;
+        }
+    }
+
+    function updateMaxRadius() {
+        // Just track the farthest particle
+        // This is approximate, we can just increase it as we stick particles outside it.
+        // A full scan every frame is O(N).
+        // Optimization: Max radius only grows. Check the last added particle.
+        if (particles.length > 0) {
+            let last = particles[particles.length - 1];
+            let d = dist(last.x, last.y, width/2, height/2);
+            if (d > maxRadius) maxRadius = d;
+        } else {
+            maxRadius = 0;
+        }
+    }
+
+</script>
+</body>
+</html>

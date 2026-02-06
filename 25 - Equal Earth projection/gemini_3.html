@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Equal Earth Projection</title>
+    <!-- Load SVG.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/3.2.0/svg.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #eef;
+        }
+
+        #map-container {
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+        }
+
+        #map-container:active {
+            cursor: grabbing;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            pointer-events: none; /* Let clicks pass through to map */
+            max-width: 300px;
+        }
+
+        h1 { margin: 0 0 10px 0; font-size: 18px; color: #333; }
+        .info { font-size: 14px; color: #555; margin-bottom: 5px; }
+        .coords { font-family: monospace; font-weight: bold; color: #007bff; }
+        .marker-label { font-size: 10px; fill: #333; font-family: sans-serif; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h1>Equal Earth Projection</h1>
+        <div class="info">Scroll to Zoom, Drag to Pan.</div>
+        <div class="info">Click anywhere to get coords.</div>
+        <div class="info" id="hover-coords">Lat: --, Lon: --</div>
+    </div>
+
+    <div id="map-container"></div>
+
+<script>
+    /**
+     * EQUAL EARTH PROJECTION MATH
+     * Reference: Šavrič, B., Patterson, T., & Jenny, B. (2018)
+     */
+    const A1 = 1.340264;
+    const A2 = -0.081106;
+    const A3 = 0.000893;
+    const A4 = 0.003796;
+    const SQRT3 = Math.sqrt(3);
+    const DEG2RAD = Math.PI / 180;
+    const RAD2DEG = 180 / Math.PI;
+    
+    // Base scale for the projection (arbitrary visual units)
+    const MAP_SCALE = 150; 
+
+    // Forward Projection: (Lat, Lon) -> (x, y)
+    // Lat/Lon in degrees. Returns x/y in simulation units.
+    function project(lat, lon) {
+        const phi = lat * DEG2RAD;
+        const lambda = lon * DEG2RAD;
+
+        const theta = Math.asin((SQRT3 / 2) * Math.sin(phi));
+        const theta2 = theta * theta;
+        const theta6 = theta2 * theta2 * theta2;
+
+        const num = 2 * SQRT3 * lambda * Math.cos(theta);
+        const den = 3 * (A1 + 3 * A2 * theta2 + theta6 * (7 * A3 + 9 * A4 * theta2));
+        
+        const x = num / den;
+        const y = A4 * Math.pow(theta, 9) + A3 * Math.pow(theta, 7) + A2 * Math.pow(theta, 3) + A1 * theta;
+
+        return { x: x * MAP_SCALE, y: -y * MAP_SCALE }; // Flip Y for SVG coords
+    }
+
+    // Inverse Projection: (x, y) -> (Lat, Lon)
+    // x/y in simulation units. Returns Lat/Lon in degrees.
+    function inverse(x, y) {
+        x = x / MAP_SCALE;
+        y = -y / MAP_SCALE; // Flip Y back
+
+        // Newton-Raphson iteration to find theta from y
+        let theta = y / A1; // Initial guess
+        const epsilon = 1e-9;
+        let delta = 1;
+        let iter = 0;
+
+        while (Math.abs(delta) > epsilon && iter < 20) {
+            const theta2 = theta * theta;
+            const theta6 = theta2 * theta2 * theta2;
+            
+            const f_theta = A4 * Math.pow(theta, 9) + A3 * Math.pow(theta, 7) + A2 * Math.pow(theta, 3) + A1 * theta - y;
+            const f_prime = 9 * A4 * Math.pow(theta, 8) + 7 * A3 * theta6 + 3 * A2 * theta2 + A1;
+            
+            delta = f_theta / f_prime;
+            theta = theta - delta;
+            iter++;
+        }
+
+        const theta2 = theta * theta;
+        const theta6 = theta2 * theta2 * theta2;
+
+        // Calculate Lambda (Lon)
+        const den = 3 * (A1 + 3 * A2 * theta2 + theta6 * (7 * A3 + 9 * A4 * theta2));
+        const num = x * den;
+        const lambda = num / (2 * SQRT3 * Math.cos(theta));
+
+        // Calculate Phi (Lat)
+        const sinPhi = (2 / SQRT3) * Math.sin(theta);
+        // Clamp for numerical stability
+        const phi = Math.asin(Math.max(-1, Math.min(1, sinPhi)));
+
+        return {
+            lat: phi * RAD2DEG,
+            lon: lambda * RAD2DEG
+        };
+    }
+
+    // Simplified Continental Geometry (Low Poly for single-file portability)
+    // Format: [lon, lat]
+    const continents = [
+        // North America (Simplified)
+        [[-168,65],[-123,49],[-118,34],[-98,20],[-82,9],[-78,25],[-55,51],[-38,60],[-59,68],[-95,73],[-168,65]],
+        // South America
+        [[-78,9],[-80,-5],[-73,-40],[-68,-55],[-55,-35],[-35,-6],[-50,10],[-78,9]],
+        // Africa
+        [[-15,15],[-16,5],[8,-34],[28,-33],[50,12],[33,31],[-5,35],[-15,15]],
+        // Eurasia (Very Simplified)
+        [[-9,36],[25,35],[45,12],[78,8],[102,15],[120,30],[130,65],[180,68],[170,40],[145,35],[125,25],[105,10],[80,22],[60,60],[20,70],[-5,60],[-9,36]],
+        // Australia
+        [[114,-22],[120,-35],[145,-38],[153,-25],[143,-11],[130,-13],[114,-22]],
+        // Antarctica
+        [[-180,-70],[0,-70],[180,-70],[180,-85],[-180,-85]]
+    ];
+
+    // Cities to verify forward projection
+    const cities = [
+        { name: "New York", lat: 40.7128, lon: -74.0060 },
+        { name: "London", lat: 51.5074, lon: -0.1278 },
+        { name: "Tokyo", lat: 35.6762, lon: 139.6503 },
+        { name: "Sydney", lat: -33.8688, lon: 151.2093 },
+        { name: "Rio", lat: -22.9068, lon: -43.1729 }
+    ];
+
+    // SETUP SVG
+    const container = document.getElementById('map-container');
+    const draw = SVG().addTo(container).size('100%', '100%');
+
+    // Create a group that will hold the map and handle zoom/pan transforms
+    const mapGroup = draw.group();
+
+    // 1. Draw Graticules (Grid Lines)
+    const graticuleGroup = mapGroup.group().attr({ stroke: '#d0d0e0', 'stroke-width': 0.5, fill: 'none' });
+    
+    // Longitude lines every 30 deg
+    for(let l = -180; l <= 180; l += 30) {
+        let pathStr = "M";
+        for(let p = -90; p <= 90; p+=2) {
+            let pt = project(p, l);
+            pathStr += `${pt.x},${pt.y} `;
+        }
+        graticuleGroup.path(pathStr);
+    }
+    // Latitude lines every 15 deg
+    for(let p = -90; p <= 90; p += 15) {
+        let pathStr = "M";
+        for(let l = -180; l <= 180; l+=5) {
+            let pt = project(p, l);
+            pathStr += `${pt.x},${pt.y} `;
+        }
+        graticuleGroup.path(pathStr);
+    }
+
+    // 2. Draw Continents
+    const landGroup = mapGroup.group().attr({ fill: '#c5e8c5', stroke: '#88aa88', 'stroke-width': 1 });
+    
+    continents.forEach(shape => {
+        let pathData = "";
+        let first = true;
+        shape.forEach(coord => {
+            // GeoJSON is [lon, lat], function takes (lat, lon)
+            let pt = project(coord[1], coord[0]);
+            pathData += (first ? "M" : "L") + `${pt.x},${pt.y} `;
+            first = false;
+        });
+        pathData += "Z"; // Close path
+        landGroup.path(pathData);
+    });
+
+    // 3. Draw Cities
+    const cityGroup = mapGroup.group();
+    cities.forEach(city => {
+        let pt = project(city.lat, city.lon);
+        
+        // Marker
+        cityGroup.circle(4)
+            .fill('#d63031')
+            .stroke({ width: 1, color: '#fff' })
+            .center(pt.x, pt.y);
+            
+        // Label
+        cityGroup.text(city.name)
+            .font({ size: 8, family: 'sans-serif', anchor: 'middle' })
+            .move(pt.x, pt.y - 12)
+            .fill('#333');
+    });
+
+    // 4. Draw Click Marker (Dynamic)
+    const clickMarker = mapGroup.circle(8).fill('none').stroke({ width: 2, color: '#007bff' }).hide();
+
+
+    // INTERACTION LOGIC (Zoom & Pan)
+    let scale = 1;
+    let viewBoxX = -400; // Center roughly
+    let viewBoxY = -200;
+    let isDragging = false;
+    let startX, startY;
+    
+    // Center the initial view
+    const centerX = window.innerWidth / 2;
+    const centerY = window.innerHeight / 2;
+    mapGroup.transform({ translateX: centerX, translateY: centerY, scale: scale });
+
+    let tx = centerX;
+    let ty = centerY;
+
+    // Panning
+    container.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        startX = e.clientX - tx;
+        startY = e.clientY - ty;
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            e.preventDefault();
+            tx = e.clientX - startX;
+            ty = e.clientY - startY;
+            updateTransform();
+        }
+    });
+
+    window.addEventListener('mouseup', () => {
+        isDragging = false;
+    });
+
+    // Zooming
+    container.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const scaleSensitivity = 0.001;
+        const delta = -e.deltaY * scaleSensitivity;
+        const oldScale = scale;
+        
+        scale += scale * delta;
+        scale = Math.max(0.1, Math.min(scale, 20)); // Limits
+
+        // Zoom towards mouse pointer
+        const mouseX = e.clientX;
+        const mouseY = e.clientY;
+        
+        // Math: New translate = Mouse - (Mouse - OldTranslate) * (NewScale/OldScale)
+        tx = mouseX - (mouseX - tx) * (scale / oldScale);
+        ty = mouseY - (mouseY - ty) * (scale / oldScale);
+
+        updateTransform();
+    });
+
+    function updateTransform() {
+        mapGroup.transform({ translateX: tx, translateY: ty, scale: scale });
+    }
+
+    // Inverse Projection Interaction
+    container.addEventListener('click', (e) => {
+        // Do not trigger if dragging happened
+        if(isDragging) return; 
+
+        // Calculate coordinate in Map Space (untransformed)
+        // Screen -> subtract translate -> divide by scale
+        const mapX = (e.clientX - tx) / scale;
+        const mapY = (e.clientY - ty) / scale;
+
+        const geo = inverse(mapX, mapY);
+
+        // Display
+        const ui = document.getElementById('hover-coords');
+        
+        // Check if click is roughly within world bounds to avoid NaNs or weird values
+        if(!isNaN(geo.lat) && !isNaN(geo.lon) && Math.abs(geo.lon) <= 180.1 && Math.abs(geo.lat) <= 90.1) {
+            ui.innerHTML = `Lat: <span class="coords">${geo.lat.toFixed(4)}</span> <br> Lon: <span class="coords">${geo.lon.toFixed(4)}</span>`;
+            
+            // Move marker to clicked spot (Visual feedback of inverse -> forward cycle)
+            clickMarker.show().center(mapX, mapY);
+            
+            // Console log verification
+            console.log(`Click (Map Units): ${mapX.toFixed(2)}, ${mapY.toFixed(2)} -> Geo: ${geo.lat}, ${geo.lon}`);
+        } else {
+            ui.innerHTML = "Clicked outside valid projection bounds";
+            clickMarker.hide();
+        }
+    });
+
+</script>
+</body>
+</html>

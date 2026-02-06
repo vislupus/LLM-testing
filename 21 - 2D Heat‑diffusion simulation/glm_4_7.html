@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Heat Diffusion & Convection (GPU)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        :root {
+            --bg: #121212;
+            --panel: #1e1e1e;
+            --text: #e0e0e0;
+            --accent: #ff5252;
+            --sec: #448aff;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            height: 100vh;
+        }
+
+        #canvas-container {
+            flex-grow: 1;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+        }
+
+        canvas {
+            box-shadow: 0 0 30px rgba(0,0,0,0.5);
+        }
+
+        #controls {
+            width: 300px;
+            background-color: var(--panel);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow-y: auto;
+            border-right: 1px solid #333;
+            z-index: 10;
+        }
+
+        h2 { margin: 0 0 5px 0; font-size: 1.2rem; color: var(--accent); }
+        h3 { margin: 10px 0 5px 0; font-size: 0.9rem; color: #888; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #333; padding-bottom: 3px;}
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        label { font-size: 0.85rem; display: flex; justify-content: space-between; }
+        
+        input[type=range] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: var(--accent);
+        }
+
+        select {
+            width: 100%;
+            padding: 8px;
+            background: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 4px;
+        }
+
+        button {
+            background: #333;
+            color: white;
+            border: 1px solid #555;
+            padding: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: 0.2s;
+        }
+        button:hover { background: #444; }
+        button.active { background: var(--accent); color: white; border-color: var(--accent); }
+        
+        .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+
+        .info {
+            font-size: 0.75rem;
+            color: #888;
+            margin-top: 10px;
+            line-height: 1.4;
+            background: #111;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        
+        kbd {
+            background: #333;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: monospace;
+            border: 1px solid #555;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <h2>Heat Simulation</h2>
+        
+        <h3>Tools</h3>
+        <div class="btn-grid">
+            <button id="btnHeat" class="active" onclick="setMode('heat')">Heat Source</button>
+            <button id="btnWall" onclick="setMode('wall')">Insulator (Wall)</button>
+            <button id="btnCool" onclick="setMode('cool')">Cooler</button>
+            <button onclick="clearWalls()">Clear Walls</button>
+        </div>
+
+        <h3>Physics Parameters</h3>
+        <div class="control-group">
+            <label>Diffusivity (Material) <span id="valDiff">Air</span></label>
+            <select id="matSelect" onchange="updateMaterial()">
+                <option value="0.20">Air (Slow)</option>
+                <option value="0.22" selected>Water</option>
+                <option value="0.24">Metal (Fast)</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label>Convection (Wind X) <span id="valWind">0</span></label>
+            <input type="range" id="slWindX" min="-0.5" max="0.5" step="0.01" value="0">
+        </div>
+        <div class="control-group">
+            <label>Convection (Wind Y) <span id="valWindY">0</span></label>
+            <input type="range" id="slWindY" min="-0.5" max="0.5" step="0.01" value="0">
+        </div>
+        
+        <div class="control-group">
+            <label>Boundary Condition</label>
+            <select id="boundSelect">
+                <option value="0">Insulated (Reflecting)</option>
+                <option value="1">Cold Edges (Heat Sink)</option>
+            </select>
+        </div>
+
+        <h3>Interaction</h3>
+        <div class="control-group">
+            <label>Brush Size <span id="valBrush">20</span></label>
+            <input type="range" id="slBrush" min="5" max="100" value="20">
+        </div>
+        <div class="control-group">
+            <label>Intensity <span id="valInt">1.0</span></label>
+            <input type="range" id="slInt" min="0.1" max="2.0" step="0.1" value="1.0">
+        </div>
+
+        <h3>Actions</h3>
+        <button onclick="resetSim()" style="background:var(--accent); border:none;">Reset Simulation</button>
+
+        <div class="info">
+            <strong>Instructions:</strong><br>
+            • Left Click: Apply Tool<br>
+            • Scroll: Adjust Brush Size<br>
+            • <kbd>C</kbd>: Toggle Cooler Mode<br>
+            • <kbd>H</kbd>: Toggle Heat Mode<br>
+            • <kbd>W</kbd>: Toggle Wall Mode
+        </div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+<script>
+    // --- SHADERS ---
+
+    // 1. Simulation Shader: Solves Heat Equation + Convection
+    const simVert = `
+        attribute vec3 aPosition;
+        varying vec2 vUv;
+        void main() {
+            vUv = (aPosition.xy + 1.0) * 0.5;
+            gl_Position = vec4(aPosition, 1.0);
+        }
+    `;
+
+    const simFrag = `
+        precision mediump float;
+        varying vec2 vUv;
+
+        uniform sampler2D u_texture; // Current Temperature State
+        uniform sampler2D u_walls;   // Wall Mask (0=air, 1=wall)
+        uniform vec2 u_resolution;  // Grid dimensions
+        uniform vec2 u_wind;        // Convection velocity
+        uniform float u_diffRate;   // Alpha * dt / dx^2
+        uniform float u_decay;      // Natural cooling rate
+        uniform float u_boundary;   // 0=insulated, 1=cold
+        
+        // Mouse interaction uniforms
+        uniform vec2 u_mouse;
+        uniform float u_radius;
+        uniform float u_intensity;
+        uniform int u_mode; // 0=None, 1=Heat, 2=Cool
+
+        void main() {
+            vec2 onePixel = vec2(1.0, 1.0) / u_resolution;
+            
+            // 1. Advection (Convection): Backtrace where the particle came from
+            // We sample the texture at (uv - wind * dt). 
+            // Since dt is absorbed into u_wind for simplicity here, we just offset.
+            vec2 pos = vUv - u_wind * onePixel;
+
+            // Fetch Neighbors for Laplacian
+            // If we are at the edge and using "Cold Edges", we treat outside as 0.0
+            float center = texture2D(u_texture, pos).r;
+            float right, left, up, down;
+
+            // Boundary Conditions logic
+            if (u_boundary > 0.5) {
+                // Dirichlet (Fixed Temp 0 at edges)
+                if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0) center = 0.0;
+                right  = (pos.x < 1.0 - onePixel.x) ? texture2D(u_texture, pos + vec2(onePixel.x, 0.0)).r : 0.0;
+                left   = (pos.x > onePixel.x)       ? texture2D(u_texture, pos - vec2(onePixel.x, 0.0)).r : 0.0;
+                up     = (pos.y < 1.0 - onePixel.y) ? texture2D(u_texture, pos + vec2(0.0, onePixel.y)).r : 0.0;
+                down   = (pos.y > onePixel.y)       ? texture2D(u_texture, pos - vec2(0.0, onePixel.y)).r : 0.0;
+            } else {
+                // Neumann (Insulated/Reflecting). GL_CLAMP_TO_EDGE handles this naturally by repeating edge pixels
+                // which results in 0 derivative at the boundary.
+                right  = texture2D(u_texture, pos + vec2(onePixel.x, 0.0)).r;
+                left   = texture2D(u_texture, pos - vec2(onePixel.x, 0.0)).r;
+                up     = texture2D(u_texture, pos + vec2(0.0, onePixel.y)).r;
+                down   = texture2D(u_texture, pos - vec2(0.0, onePixel.y)).r;
+            }
+
+            // 2. Diffusion (Laplacian)
+            float laplacian = right + left + up + down - 4.0 * center;
+            
+            // Calculate new temperature
+            float newTemp = center + u_diffRate * laplacian;
+            
+            // Apply Decay (Newton's Law of Cooling)
+            newTemp *= (1.0 - u_decay);
+
+            // 3. Apply Wall Mask
+            // If wall, temp is static (or zero) and doesn't diffuse.
+            float wall = texture2D(u_walls, vUv).r;
+            newTemp = mix(newTemp, 0.0, wall); // Walls are cold/neutral
+
+            // 4. User Interaction (Mouse)
+            float d = distance(vUv, u_mouse);
+            if (d < u_radius) {
+                float falloff = smoothstep(u_radius, 0.0, d);
+                if (u_mode == 1) {
+                    newTemp = mix(newTemp, 1.0, u_intensity * falloff);
+                } else if (u_mode == 2) {
+                    newTemp = mix(newTemp, 0.0, u_intensity * falloff);
+                }
+            }
+
+            gl_FragColor = vec4(newTemp, 0.0, 0.0, 1.0);
+        }
+    `;
+
+    // 2. Display Shader: Maps Temperature to Color Heatmap
+    const displayVert = simVert; // Same vertex shader
+
+    const displayFrag = `
+        precision mediump float;
+        varying vec2 vUv;
+        uniform sampler2D u_texture;
+        uniform sampler2D u_walls;
+
+        // Simple heatmap gradient function (Blue -> Cyan -> Green -> Yellow -> Red)
+        vec3 heatMap(float t) {
+            vec3 a = vec3(0.0, 0.0, 1.0); // Blue
+            vec3 b = vec3(0.0, 1.0, 1.0); // Cyan
+            vec3 c = vec3(0.0, 1.0, 0.0); // Green
+            vec3 d = vec3(1.0, 1.0, 0.0); // Yellow
+            vec3 e = vec3(1.0, 0.0, 0.0); // Red
+            
+            vec3 col;
+            if (t < 0.25) col = mix(a, b, t * 4.0);
+            else if (t < 0.5) col = mix(b, c, (t - 0.25) * 4.0);
+            else if (t < 0.75) col = mix(c, d, (t - 0.5) * 4.0);
+            else col = mix(d, e, (t - 0.75) * 4.0);
+            
+            // Darken low heat areas for contrast
+            return mix(vec3(0.0), col, smoothstep(0.0, 0.1, t));
+        }
+
+        void main() {
+            float temp = texture2D(u_texture, vUv).r;
+            float wall = texture2D(u_walls, vUv).r;
+            
+            vec3 color = heatMap(temp);
+            
+            // Draw walls as grey
+            color = mix(color, vec3(0.3, 0.3, 0.35), wall);
+
+            gl_FragColor = vec4(color, 1.0);
+        }
+    `;
+
+    // --- P5.JS LOGIC ---
+
+    let simBuffer1, simBuffer2; // Ping-pong buffers for heat
+    let wallBuffer;             // Buffer for obstacles
+    let simShader, displayShader;
+    
+    // Resolution of the simulation grid (internal resolution)
+    // Lower = faster, Higher = sharper
+    const SIM_W = 512; 
+    const SIM_H = 512; 
+
+    // State
+    let mode = 1; // 1=Heat, 2=Cool, 0=None
+    let mouseActive = false;
+
+    function setup() {
+        const container = document.getElementById('canvas-container');
+        let c = createCanvas(container.clientWidth, container.clientHeight, WEBGL);
+        c.parent('canvas-container');
+        
+        // Initialize Shaders
+        simShader = new p5.Shader(this._renderer, simVert, simFrag);
+        displayShader = new p5.Shader(this._renderer, displayVert, displayFrag);
+
+        // Initialize Buffers (WEBGL)
+        // Buffer 1: Temperature State A
+        simBuffer1 = createGraphics(SIM_W, SIM_H, WEBGL);
+        simBuffer1.pixelDensity(1);
+        simBuffer1.noStroke();
+        
+        // Buffer 2: Temperature State B
+        simBuffer2 = createGraphics(SIM_W, SIM_H, WEBGL);
+        simBuffer2.pixelDensity(1);
+        simBuffer2.noStroke();
+
+        // Wall Buffer (Initially empty/transparent)
+        wallBuffer = createGraphics(SIM_W, SIM_H, WEBGL);
+        wallBuffer.pixelDensity(1);
+        wallBuffer.background(0, 0, 0, 0); // Transparent
+        wallBuffer.noStroke();
+
+        // Initial reset
+        resetSim();
+
+        // Set default blend modes for drawing on buffers
+        // Note: In WebGL, standard blending can be tricky, but additive for heat is good.
+    }
+
+    function draw() {
+        // --- PHYSICS STEP ---
+        // Use simBuffer1 as input, render to simBuffer2
+        
+        simBuffer2.shader(simShader);
+        simBuffer2.reset();
+        simBuffer2.rectMode(CENTER);
+        
+        // Map screen mouse to UV coordinates (0..1)
+        let mx = constrain(mouseX, 0, width) / width;
+        let my = constrain(mouseY, 0, height) / height;
+        // WebGL UV origin is bottom-left, p5 is top-left. Flip Y.
+        my = 1.0 - my;
+
+        // Set Uniforms
+        simShader.setUniform('u_texture', simBuffer1);
+        simShader.setUniform('u_walls', wallBuffer);
+        simShader.setUniform('u_resolution', [SIM_W, SIM_H]);
+        
+        // Physics Params
+        let diff = parseFloat(document.getElementById('matSelect').value);
+        simShader.setUniform('u_diffRate', diff);
+        
+        let windX = parseFloat(document.getElementById('slWindX').value);
+        let windY = parseFloat(document.getElementById('slWindY').value);
+        // Flip Y wind because of coordinate system
+        simShader.setUniform('u_wind', [windX, -windY]);
+        
+        simShader.setUniform('u_decay', 0.001); // Slight cooling to air
+        
+        let bound = parseInt(document.getElementById('boundSelect').value);
+        simShader.setUniform('u_boundary', bound);
+
+        // Interaction Params
+        simShader.setUniform('u_mouse', [mx, my]);
+        let brush = parseFloat(document.getElementById('slBrush').value);
+        // Scale brush radius relative to simulation resolution
+        simShader.setUniform('u_radius', (brush / width) * (SIM_W / width)); 
+        
+        let intensity = parseFloat(document.getElementById('slInt').value);
+        simShader.setUniform('u_intensity', intensity);
+        
+        simShader.setUniform('u_mode', mouseActive ? mode : 0);
+
+        // Draw full screen quad on the buffer to run shader
+        simBuffer2.rect(0, 0, SIM_W, SIM_H);
+
+        // --- WALL DRAWING (CPU -> GPU) ---
+        // If user is drawing walls, we draw directly onto the wallBuffer using p5 shapes
+        if (mode === 3 && mouseActive) {
+            wallBuffer.push();
+            wallBuffer.reset();
+            wallBuffer.fill(255); // White = Wall
+            // Map mouse to buffer coords
+            let bmx = (mouseX / width) * SIM_W;
+            let bmy = (mouseY / height) * SIM_H;
+            wallBuffer.circle(bmx, bmy, brush * (SIM_W/width));
+            wallBuffer.pop();
+        }
+
+        // --- RENDER TO SCREEN ---
+        shader(displayShader);
+        displayShader.setUniform('u_texture', simBuffer2);
+        displayShader.setUniform('u_walls', wallBuffer);
+        
+        reset();
+        rectMode(CENTER);
+        rect(0, 0, width, height);
+
+        // --- SWAP BUFFERS ---
+        let temp = simBuffer1;
+        simBuffer1 = simBuffer2;
+        simBuffer2 = temp;
+    }
+
+    function resetSim() {
+        simBuffer1.background(0, 0, 0); // Cold
+        simBuffer2.background(0, 0, 0);
+        // Don't clear walls unless explicitly requested
+    }
+
+    function clearWalls() {
+        wallBuffer.background(0,0,0,0);
+    }
+
+    // --- INTERACTION ---
+
+    function mousePressed() {
+        mouseActive = true;
+        // If right click, force wall mode temporarily
+        if (mouseButton === RIGHT) {
+            prevMode = mode;
+            setMode('wall');
+        }
+        return false; // prevent default
+    }
+
+    function mouseReleased() {
+        mouseActive = false;
+        if (mouseButton === RIGHT && prevMode) {
+            setModeFromVal(prevMode);
+            prevMode = null;
+        }
+    }
+
+    function mouseDragged() {
+        // Just ensures mouseActive stays true
+        return false;
+    }
+
+    function keyPressed() {
+        if (key === 'c' || key === 'C') setMode('cool');
+        if (key === 'h' || key === 'H') setMode('heat');
+        if (key === 'w' || key === 'W') setMode('wall');
+    }
+
+    let prevMode = null;
+
+    // UI Functions
+    window.setMode = function(m) {
+        if (m === 'heat') mode = 1;
+        if (m === 'cool') mode = 2;
+        if (m === 'wall') mode = 3;
+        updateButtons();
+    };
+
+    function setModeFromVal(v) {
+        mode = v;
+        updateButtons();
+    }
+
+    function updateButtons() {
+        document.getElementById('btnHeat').className = (mode === 1) ? 'active' : '';
+        document.getElementById('btnCool').className = (mode === 2) ? 'active' : '';
+        document.getElementById('btnWall').className = (mode === 3) ? 'active' : '';
+    }
+
+    window.updateMaterial = function() {
+        let val = document.getElementById('matSelect').value;
+        let txt = document.getElementById('matSelect').options[document.getElementById('matSelect').selectedIndex].text;
+        document.getElementById('valDiff').innerText = txt;
+    }
+
+    // Context menu disable for right click
+    document.oncontextmenu = function() { return false; }
+
+    // Sliders UI updates
+    document.getElementById('slWindX').oninput = function() {
+        document.getElementById('valWind').innerText = this.value;
+    }
+    document.getElementById('slWindY').oninput = function() {
+        document.getElementById('valWindY').innerText = this.value;
+    }
+    document.getElementById('slBrush').oninput = function() {
+        document.getElementById('valBrush').innerText = this.value;
+    }
+    document.getElementById('slInt').oninput = function() {
+        document.getElementById('valInt').innerText = this.value;
+    }
+
+    function windowResized() {
+        const container = document.getElementById('canvas-container');
+        resizeCanvas(container.clientWidth, container.clientHeight);
+    }
+
+</script>
+</body>
+</html>

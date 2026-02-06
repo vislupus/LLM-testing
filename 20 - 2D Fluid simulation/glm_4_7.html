@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realistic 2D Fluid Simulation (Navier-Stokes)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        :root {
+            --bg: #000;
+            --panel: rgba(20, 20, 25, 0.85);
+            --text: #eee;
+            --accent: #00e5ff;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg);
+            overflow: hidden;
+            font-family: 'Segoe UI', sans-serif;
+            color: var(--text);
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: var(--panel);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            width: 280px;
+            pointer-events: auto;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+
+        h1 { margin: 0 0 10px 0; font-size: 1.2rem; color: var(--accent); }
+        
+        .control-group { margin-bottom: 12px; }
+        label { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px; }
+        
+        input[type=range] { width: 100%; cursor: pointer; accent-color: var(--accent); }
+        
+        .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+        
+        button {
+            background: #333;
+            color: #fff;
+            border: 1px solid #555;
+            padding: 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: 0.2s;
+        }
+        button:hover { background: #444; }
+        button.active { background: var(--accent); color: #000; border-color: var(--accent); }
+        button.reset { background: #d32f2f; border-color: #d32f2f; margin-top: 10px; width: 100%; }
+        button.reset:hover { background: #b71c1c; }
+
+        .info { font-size: 0.75rem; color: #aaa; margin-top: 15px; line-height: 1.4; border-top: 1px solid #444; padding-top: 10px; }
+        kbd { background: #333; padding: 2px 4px; border-radius: 3px; border: 1px solid #555; font-family: monospace; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <h1>Fluid Dynamics</h1>
+    
+    <div class="control-group">
+        <label>Vorticity Confinement <span id="valVort">ON</span></label>
+        <button id="btnVort" class="active" onclick="toggleVort()">Toggle (V)</button>
+    </div>
+
+    <div class="control-group">
+        <label>Viscosity (Diffusion) <span id="valVisc">Low</span></label>
+        <input type="range" id="slVisc" min="0" max="0.5" step="0.01" value="0.0">
+    </div>
+
+    <div class="control-group">
+        <label>Fluid Density (Dissipation) <span id="valDiss">Medium</span></label>
+        <input type="range" id="slDiss" min="0.9" max="1.0" step="0.001" value="0.99">
+    </div>
+
+    <div class="control-group">
+        <label>Tool</label>
+        <div class="btn-grid">
+            <button id="btnInk" class="active" onclick="setTool('ink')">Ink (I)</button>
+            <button id="btnWall" onclick="setTool('wall')">Wall (W)</button>
+        </div>
+        <button onclick="clearWalls()" style="width:100%; margin-top:5px; font-size: 0.75rem;">Clear Walls</button>
+    </div>
+
+    <div class="info">
+        <strong>Controls:</strong><br>
+        • <strong>Left Click + Drag:</strong> Stir fluid / Add Ink<br>
+        • <strong>R (Red), G (Green), B (Blue), C (Clear):</strong> Change Color<br>
+        • <strong>V:</strong> Toggle Vorticity<br>
+        • <strong>W / I:</strong> Toggle Wall/Ink tool<br>
+    </div>
+    
+    <button class="reset" onclick="resetSim()">Reset Simulation</button>
+</div>
+
+<script>
+// --- SHADER DEFINITIONS ---
+
+const commonVert = `
+    attribute vec3 aPosition;
+    varying vec2 vUv;
+    void main() {
+        vUv = (aPosition.xy + 1.0) * 0.5;
+        gl_Position = vec4(aPosition, 1.0);
+    }
+`;
+
+// 1. ADVECTION SHADER
+// Moves quantities (velocity or density) along the velocity field.
+const advectionFrag = `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform sampler2D u_source; // What we are moving (density or velocity)
+    uniform sampler2D u_velocity; // Where things move to
+    uniform vec2 u_resolution;
+    uniform float u_dt;
+    uniform float u_dissipation;
+
+    void main() {
+        // Reverse trace: Where was the particle at t-dt?
+        // Invert Y because WebGL texture coords are flipped relative to screen
+        vec2 vel = texture2D(u_velocity, vUv).xy;
+        vec2 coord = vUv - vel * u_dt * vec2(1.0, -1.0); 
+        
+        // Sample source at previous location
+        vec4 result = texture2D(u_source, coord);
+        
+        // Apply dissipation (fading over time)
+        gl_FragColor = result * u_dissipation;
+    }
+`;
+
+// 2. DIVERGENCE SHADER
+// Calculates divergence of velocity field (how much flow is entering/leaving a cell).
+const divergenceFrag = `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform sampler2D u_velocity;
+    uniform vec2 u_resolution;
+
+    void main() {
+        float L = texture2D(u_velocity, vUv - vec2(1.0/u_resolution.x, 0.0)).x;
+        float R = texture2D(u_velocity, vUv + vec2(1.0/u_resolution.x, 0.0)).x;
+        float T = texture2D(u_velocity, vUv + vec2(0.0, 1.0/u_resolution.y)).y;
+        float B = texture2D(u_velocity, vUv - vec2(0.0, 1.0/u_resolution.y)).y;
+        
+        // Divergence = dVx/dx + dVy/dy
+        vec2 C = texture2D(u_velocity, vUv).xy;
+        float div = 0.5 * (R - L + T - B);
+        
+        gl_FragColor = vec4(div, 0.0, 0.0, 1.0);
+    }
+`;
+
+// 3. JACOBI ITERATION SHADER
+// Solves the Poisson equation for pressure.
+const jacobiFrag = `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform sampler2D u_pressure;
+    uniform sampler2D u_divergence;
+    uniform vec2 u_resolution;
+    uniform float u_alpha; // -h^2
+    uniform float u_beta;  // 4
+
+    void main() {
+        float L = texture2D(u_pressure, vUv - vec2(1.0/u_resolution.x, 0.0)).r;
+        float R = texture2D(u_pressure, vUv + vec2(1.0/u_resolution.x, 0.0)).r;
+        float T = texture2D(u_pressure, vUv + vec2(0.0, 1.0/u_resolution.y)).r;
+        float B = texture2D(u_pressure, vUv - vec2(0.0, 1.0/u_resolution.y)).r;
+        
+        float divC = texture2D(u_divergence, vUv).r;
+        
+        // P_new = (div + (L+R+T+B)/4) / 4 (simplified)
+        // General form: x_i = (b_i - sum(x_neighbors)) / a_ii
+        float pressure = (L + R + T + B + u_alpha * divC) * u_beta;
+        
+        gl_FragColor = vec4(pressure, 0.0, 0.0, 1.0);
+    }
+`;
+
+// 4. GRADIENT SUBTRACT SHADER
+// Subtracts pressure gradient from velocity to enforce incompressibility.
+const gradientSubFrag = `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform sampler2D u_pressure;
+    uniform sampler2D u_velocity;
+    uniform vec2 u_resolution;
+
+    void main() {
+        vec2 vel = texture2D(u_velocity, vUv).xy;
+        
+        float L = texture2D(u_pressure, vUv - vec2(1.0/u_resolution.x, 0.0)).r;
+        float R = texture2D(u_pressure, vUv + vec2(1.0/u_resolution.x, 0.0)).r;
+        float T = texture2D(u_pressure, vUv + vec2(0.0, 1.0/u_resolution.y)).r;
+        float B = texture2D(u_pressure, vUv - vec2(0.0, 1.0/u_resolution.y)).r;
+        
+        vec2 grad = vec2(R - L, T - B) * 0.5;
+        
+        gl_FragColor = vec4(vel - grad, 0.0, 1.0);
+    }
+`;
+
+// 5. VORTICITY CONFINEMENT
+// Adds back small swirling details lost in advection.
+const vorticityFrag = `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform sampler2D u_velocity;
+    uniform vec2 u_resolution;
+    uniform float u_curl; // Strength
+    uniform float u_dt;
+
+    void main() {
+        float L = texture2D(u_velocity, vUv - vec2(1.0/u_resolution.x, 0.0)).y;
+        float R = texture2D(u_velocity, vUv + vec2(1.0/u_resolution.x, 0.0)).y;
+        float T = texture2D(u_velocity, vUv + vec2(0.0, 1.0/u_resolution.y)).x;
+        float B = texture2D(u_velocity, vUv - vec2(0.0, 1.0/u_resolution.y)).x;
+        
+        // Curl = dVy/dx - dVx/dy
+        float vort = (R - L - T + B) * 0.5;
+        
+        // Normalize gradient of vorticity length
+        // (Simplified: just use the curl value to drive force)
+        vec2 force = vec2(0.0, 0.0);
+        if(abs(vort) > 0.001) {
+            // A bit of a hack for single-file: We just add rotational force
+            // Real implementation calculates gradient of vorticity magnitude
+            force = vec2(abs(vort)) * u_curl * u_dt; 
+        }
+
+        vec2 vel = texture2D(u_velocity, vUv).xy;
+        gl_FragColor = vec4(vel + force, 0.0, 1.0);
+    }
+`;
+
+// 6. SPHERICAL FORCE SHADER
+// Applies mouse input (splat) to velocity or density.
+const splatFrag = `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform vec3 u_point; // x, y, radius
+    uniform vec3 u_color; // r, g, b
+    uniform sampler2D u_target;
+
+    void main() {
+        vec4 data = texture2D(u_target, vUv);
+        float aspect = u_resolution.x / u_resolution.y;
+        
+        vec2 p = vUv - u_point.xy;
+        p.x *= aspect;
+        
+        float dist = length(p);
+        
+        // Add value if within radius (Gaussian falloff)
+        if (dist < u_point.z) {
+            float amount = exp(-dist * dist * 5.0) * 0.5;
+            data.rgb += u_color * amount;
+        }
+        
+        gl_FragColor = data;
+    }
+`;
+
+// 7. DISPLAY SHADER
+const displayFrag = `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform sampler2D u_texture;
+    uniform sampler2D u_obstacles;
+    
+    void main() {
+        vec4 color = texture2D(u_texture, vUv);
+        
+        // Contrast boost
+        color.rgb = pow(color.rgb, vec3(0.8));
+        
+        // Draw obstacles
+        float obs = texture2D(u_obstacles, vUv).r;
+        color.rgb = mix(color.rgb, vec3(0.3), obs);
+        
+        gl_FragColor = color;
+    }
+`;
+
+// --- SIMULATION VARIABLES ---
+let velocity, density, pressure, divergence, obstacles;
+let advectionShader, divergenceShader, jacobiShader, gradientShader, vorticityShader, splatShader, displayShader;
+
+// Config
+const SIM_RES = 512; // Resolution of the physics grid
+let dt = 0.1;
+let iterations = 20; // Jacobi iterations for pressure
+let curlStrength = 20.0;
+let viscosity = 0.0;
+let dissipation = 0.99;
+
+// State
+let toolMode = 'ink'; // 'ink' or 'wall'
+let drawColor = [1, 1, 1]; // RGB
+let vorticityEnabled = true;
+let mouseForce = [0,0];
+let isMouseDown = false;
+
+function setup() {
+    let c = createCanvas(windowWidth, windowHeight, WEBGL);
+    c.drawingContext.disable(c.drawingContext.DEPTH_TEST); // Important for 2D shaders
+
+    // Initialize Shaders
+    advectionShader = createShader(commonVert, advectionFrag);
+    divergenceShader = createShader(commonVert, divergenceFrag);
+    jacobiShader = createShader(commonVert, jacobiFrag);
+    gradientShader = createShader(commonVert, gradientSubFrag);
+    vorticityShader = createShader(commonVert, vorticityFrag);
+    splatShader = createShader(commonVert, splatFrag);
+    displayShader = createShader(commonVert, displayFrag);
+
+    // Initialize Buffers
+    velocity = createDoubleFBO(SIM_RES, SIM_RES);
+    density = createDoubleFBO(SIM_RES, SIM_RES);
+    pressure = createDoubleFBO(SIM_RES, SIM_RES);
+    divergence = createFBO(SIM_RES, SIM_RES);
+    obstacles = createFBO(SIM_RES, SIM_RES);
+    
+    resetSim();
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+}
+
+function createFBO(w, h) {
+    let fbo = createGraphics(w, h, WEBGL);
+    fbo.pixelDensity(1);
+    fbo.noStroke();
+    fbo.textureWrap(CLAMP);
+    fbo.textureWrap(CLAMP);
+    return fbo;
+}
+
+function createDoubleFBO(w, h) {
+    let fbo1 = createFBO(w, h);
+    let fbo2 = createFBO(w, h);
+    return { read: fbo1, write: fbo2, swap: function() {
+        let temp = this.read;
+        this.read = this.write;
+        this.write = temp;
+    }};
+}
+
+function resetSim() {
+    velocity.read.background(0);
+    velocity.write.background(0);
+    density.read.background(0);
+    density.write.background(0);
+    pressure.read.background(0);
+    pressure.write.background(0);
+    divergence.background(0);
+    obstacles.background(0); // Transparent = no obstacle
+}
+
+function clearWalls() {
+    obstacles.background(0);
+}
+
+// --- MAIN LOOP ---
+
+function draw() {
+    background(0);
+
+    // 1. Handle Input (Mouse Splats)
+    if (isMouseDown) {
+        let mx = mouseX / width;
+        let my = 1.0 - mouseY / height; // Flip Y
+        let radius = 0.05; // Relative radius
+        
+        // Calculate velocity based on mouse movement
+        let forceX = (mouseX - pmouseX) * 0.005;
+        let forceY = -(mouseY - pmouseY) * 0.005; // Flip Y
+        
+        // Apply to Density
+        if (toolMode === 'ink') {
+            applySplat(density.write, density.read, [mx, my, radius], drawColor);
+            applySplat(velocity.write, velocity.read, [mx, my, radius], [forceX, forceY, 0]);
+            density.swap();
+            velocity.swap();
+        } 
+        // Apply to Obstacles
+        else if (toolMode === 'wall') {
+            obstacles.push();
+            obstacles.reset();
+            obstacles.fill(255); // White = Obstacle
+            obstacles.circle(mx * SIM_RES, my * SIM_RES, radius * SIM_RES);
+            obstacles.pop();
+        }
+    }
+
+    // 2. Advect Velocity (Self-Advection)
+    applyAdvection(velocity, velocity, dt);
+    // 3. Advect Density
+    applyAdvection(density, velocity, dt * 0.8, dissipation);
+
+    // 4. Vorticity Confinement (Optional)
+    if (vorticityEnabled) {
+        applyVorticity(velocity);
+    }
+
+    // 5. Diffusion (Viscosity) - Simulated by slight blur via multiple advection passes or just low-pass
+    // For simplicity/performance, we skip explicit viscosity solver and rely on natural dissipation.
+    // If viscosity > 0, we could run a gaussian blur shader here.
+
+    // 6. Projection (Mass Conservation)
+    // A. Calculate Divergence
+    applyDivergence(velocity.read, divergence);
+    // B. Solve Pressure (Jacobi Iteration)
+    // Reset pressure
+    pressure.read.background(0);
+    pressure.write.background(0);
+    for (let i = 0; i < iterations; i++) {
+        applyJacobi(pressure.read, pressure.write, divergence, -1.0, 0.25); // -h^2, 1/4
+        pressure.swap();
+    }
+    // C. Subtract Gradient
+    applyGradient(velocity.read, pressure.read, velocity.write);
+
+    // 7. Render to Screen
+    shader(displayShader);
+    displayShader.setUniform('u_texture', density.read);
+    displayShader.setUniform('u_obstacles', obstacles);
+    rectMode(CENTER);
+    rect(0, 0, width, height);
+}
+
+// --- SHADER HELPER FUNCTIONS ---
+
+function applyAdvection(target, source, step, diss = 1.0) {
+    target.write.shader(advectionShader);
+    target.write.reset();
+    target.write.rectMode(CENTER);
+    advectionShader.setUniform('u_source', source.read);
+    advectionShader.setUniform('u_velocity', velocity.read); // Always advect by velocity field
+    advectionShader.setUniform('u_resolution', [SIM_RES, SIM_RES]);
+    advectionShader.setUniform('u_dt', step);
+    advectionShader.setUniform('u_dissipation', diss);
+    target.write.rect(0, 0, SIM_RES, SIM_RES);
+    target.swap();
+}
+
+function applyDivergence(vel, div) {
+    div.shader(divergenceShader);
+    div.reset();
+    divergenceShader.setUniform('u_velocity', vel);
+    divergenceShader.setUniform('u_resolution', [SIM_RES, SIM_RES]);
+    div.rect(0, 0, SIM_RES, SIM_RES);
+}
+
+function applyJacobi(pressRead, pressWrite, div, alpha, beta) {
+    pressWrite.shader(jacobiShader);
+    pressWrite.reset();
+    jacobiShader.setUniform('u_pressure', pressRead);
+    jacobiShader.setUniform('u_divergence', div);
+    jacobiShader.setUniform('u_resolution', [SIM_RES, SIM_RES]);
+    jacobiShader.setUniform('u_alpha', alpha);
+    jacobiShader.setUniform('u_beta', beta);
+    pressWrite.rect(0, 0, SIM_RES, SIM_RES);
+}
+
+function applyGradient(vel, press, target) {
+    target.shader(gradientShader);
+    target.reset();
+    gradientShader.setUniform('u_velocity', vel);
+    gradientShader.setUniform('u_pressure', press);
+    gradientShader.setUniform('u_resolution', [SIM_RES, SIM_RES]);
+    target.rect(0, 0, SIM_RES, SIM_RES);
+}
+
+function applyVorticity(target) {
+    target.write.shader(vorticityShader);
+    target.write.reset();
+    vorticityShader.setUniform('u_velocity', target.read);
+    vorticityShader.setUniform('u_resolution', [SIM_RES, SIM_RES]);
+    vorticityShader.setUniform('u_curl', curlStrength);
+    vorticityShader.setUniform('u_dt', dt);
+    target.write.rect(0, 0, SIM_RES, SIM_RES);
+    target.swap();
+}
+
+function applySplat(target, source, point, color) {
+    target.shader(splatShader);
+    target.reset();
+    splatShader.setUniform('u_target', source);
+    splatShader.setUniform('u_point', point);
+    splatShader.setUniform('u_color', color);
+    splatShader.setUniform('u_resolution', [SIM_RES, SIM_RES]);
+    target.rect(0, 0, SIM_RES, SIM_RES);
+}
+
+// --- INTERACTION ---
+
+function mousePressed() {
+    isMouseDown = true;
+}
+function mouseReleased() {
+    isMouseDown = false;
+}
+
+function keyPressed() {
+    if (key === 'v' || key === 'V') toggleVort();
+    if (key === 'r' || key === 'R') drawColor = [1, 0, 0];
+    if (key === 'g' || key === 'G') drawColor = [0, 1, 0];
+    if (key === 'b' || key === 'B') drawColor = [0, 0, 1];
+    if (key === 'c' || key === 'C') drawColor = [1, 1, 1]; // Clear color (White ink)
+    if (key === 'w' || key === 'W') setTool('wall');
+    if (key === 'i' || key === 'I') setTool('ink');
+}
+
+// --- UI CONTROLS ---
+
+window.setTool = function(t) {
+    toolMode = t;
+    document.getElementById('btnInk').className = (t === 'ink') ? 'active' : '';
+    document.getElementById('btnWall').className = (t === 'wall') ? 'active' : '';
+};
+
+window.toggleVort = function() {
+    vorticityEnabled = !vorticityEnabled;
+    let btn = document.getElementById('btnVort');
+    btn.className = vorticityEnabled ? 'active' : '';
+    document.getElementById('valVort').innerText = vorticityEnabled ? 'ON' : 'OFF';
+};
+
+document.getElementById('slVisc').addEventListener('input', (e) => {
+    viscosity = parseFloat(e.target.value);
+    let label = viscosity < 0.1 ? "Low" : (viscosity < 0.3 ? "Medium" : "High");
+    document.getElementById('valVisc').innerText = label;
+    // Apply visc effect by scaling curl? Or actually, we'd need a blur shader.
+    // For this demo, we map viscosity to Curl Strength (High viscosity = Less curl/swirl)
+    curlStrength = map(viscosity, 0, 0.5, 20.0, 0.0);
+});
+
+document.getElementById('slDiss').addEventListener('input', (e) => {
+    dissipation = parseFloat(e.target.value);
+    let label = dissipation < 0.98 ? "High" : (dissipation < 0.995 ? "Medium" : "Low");
+    document.getElementById('valDiss').innerText = label;
+});
+
+</script>
+</body>
+</html>

@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galaxy Formation Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: rgb(220, 220, 220); }
+        canvas { display: block; }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(0, 0, 0, 0.1);
+        }
+        .slider {
+            -webkit-appearance: none; width: 100%; background: transparent;
+        }
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 14px; width: 14px; border-radius: 50%; background: #1e293b; cursor: pointer; margin-top: -5px;
+        }
+        .slider::-webkit-slider-runnable-track {
+            width: 100%; height: 4px; cursor: pointer; background: #cbd5e1; border-radius: 2px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- UI Overlay -->
+    <div class="absolute top-4 left-4 w-80 glass-panel rounded-xl p-5 text-slate-800 z-10 select-none">
+        <h1 class="text-xl font-bold text-slate-900 mb-1">Galaxy Formation</h1>
+        <p class="text-xs text-slate-500 mb-4">10,000 Particle N-Body Simulation</p>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-2 gap-2 mb-4 text-xs">
+            <div class="bg-white/50 p-2 rounded border border-slate-200">
+                <div class="text-slate-500">Particles</div>
+                <div id="stat-count" class="font-mono text-slate-900 text-lg">10000</div>
+            </div>
+            <div class="bg-white/50 p-2 rounded border border-slate-200">
+                <div class="text-slate-500">FPS</div>
+                <div id="stat-fps" class="font-mono text-slate-900 text-lg">60</div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="space-y-3">
+            <div>
+                <div class="flex justify-between text-xs mb-1">
+                    <span>G (Gravity)</span>
+                    <span id="val-G" class="text-slate-600">0.4</span>
+                </div>
+                <input type="range" id="slider-G" min="0.1" max="1.0" step="0.05" value="0.4" class="slider">
+            </div>
+
+            <div>
+                <div class="flex justify-between text-xs mb-1">
+                    <span>Dark Matter Halo</span>
+                    <span id="val-dark" class="text-slate-600">0.3</span>
+                </div>
+                <input type="range" id="slider-dark" min="0" max="1.0" step="0.05" value="0.3" class="slider">
+            </div>
+
+            <div>
+                <div class="flex justify-between text-xs mb-1">
+                    <span>Initial Spin</span>
+                    <span id="val-spin" class="text-slate-600">0.5</span>
+                </div>
+                <input type="range" id="slider-spin" min="0" max="2.0" step="0.1" value="0.5" class="slider">
+            </div>
+
+            <div class="flex gap-2 mt-4">
+                <button id="btn-reset" class="flex-1 bg-slate-800 hover:bg-slate-700 text-white py-2 rounded text-xs font-bold transition">Reform Galaxy</button>
+                <button id="btn-pause" class="flex-1 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 py-2 rounded text-xs font-bold transition">Pause</button>
+            </div>
+        </div>
+        
+        <div class="mt-4 text-[10px] text-slate-500">
+            Particles merge on collision conserving mass and momentum
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        const CONFIG = {
+            particleCount: 10000,
+            G: 0.4,
+            darkMatterFactor: 0.3,
+            initialSpin: 0.5,
+            softening: 2, // Prevent singularity
+            mergeDistance: 3,
+            theta: 0.5, // Barnes-Hut threshold
+            centerMass: 5000
+        };
+
+        // --- Quadtree Implementation ---
+        class Quadtree {
+            constructor(boundary, capacity) {
+                this.boundary = boundary;
+                this.capacity = capacity;
+                this.particles = [];
+                this.divided = false;
+                this.centerOfMass = createVector(0, 0);
+                this.totalMass = 0;
+            }
+
+            subdivide() {
+                let x = this.boundary.x;
+                let y = this.boundary.y;
+                let w = this.boundary.w / 2;
+                let h = this.boundary.h / 2;
+
+                this.northeast = new Quadtree({ x: x + w, y: y - h, w: w, h: h }, this.capacity);
+                this.northwest = new Quadtree({ x: x - w, y: y - h, w: w, h: h }, this.capacity);
+                this.southeast = new Quadtree({ x: x + w, y: y + h, w: w, h: h }, this.capacity);
+                this.southwest = new Quadtree({ x: x - w, y: y + h, w: w, h: h }, this.capacity);
+                this.divided = true;
+            }
+
+            insert(particle) {
+                if (!this.contains(particle)) return false;
+
+                if (this.particles.length < this.capacity && !this.divided) {
+                    this.particles.push(particle);
+                    return true;
+                }
+
+                if (!this.divided) this.subdivide();
+
+                if (this.northeast.insert(particle)) return true;
+                if (this.northwest.insert(particle)) return true;
+                if (this.southeast.insert(particle)) return true;
+                if (this.southwest.insert(particle)) return true;
+
+                return false;
+            }
+
+            contains(particle) {
+                return (
+                    particle.pos.x >= this.boundary.x - this.boundary.w &&
+                    particle.pos.x < this.boundary.x + this.boundary.w &&
+                    particle.pos.y >= this.boundary.y - this.boundary.h &&
+                    particle.pos.y < this.boundary.y + this.boundary.h
+                );
+            }
+
+            calculateMassDistribution() {
+                this.centerOfMass.set(0, 0);
+                this.totalMass = 0;
+
+                for (let p of this.particles) {
+                    this.centerOfMass.add(p5.Vector.mult(p.pos, p.mass));
+                    this.totalMass += p.mass;
+                }
+
+                if (this.totalMass > 0) {
+                    this.centerOfMass.div(this.totalMass);
+                }
+
+                if (this.divided) {
+                    this.northeast.calculateMassDistribution();
+                    this.northwest.calculateMassDistribution();
+                    this.southeast.calculateMassDistribution();
+                    this.southwest.calculateMassDistribution();
+                    
+                    this.totalMass += this.northeast.totalMass + this.northwest.totalMass + 
+                                     this.southeast.totalMass + this.southwest.totalMass;
+                    
+                    let com = createVector(0, 0);
+                    com.add(p5.Vector.mult(this.northeast.centerOfMass, this.northeast.totalMass));
+                    com.add(p5.Vector.mult(this.northwest.centerOfMass, this.northwest.totalMass));
+                    com.add(p5.Vector.mult(this.southeast.centerOfMass, this.southeast.totalMass));
+                    com.add(p5.Vector.mult(this.southwest.centerOfMass, this.southwest.totalMass));
+                    
+                    if (this.totalMass > 0) {
+                        com.div(this.totalMass);
+                        this.centerOfMass = com;
+                    }
+                }
+            }
+
+            applyForce(particle, G, theta) {
+                if (this.totalMass === 0) return;
+
+                let d = p5.Vector.dist(this.centerOfMass, particle.pos);
+                if (d === 0) return;
+
+                let s = this.boundary.w * 2;
+                
+                if (s / d < theta || !this.divided) {
+                    // Treat as single body
+                    if (d > CONFIG.softening) {
+                        let force = p5.Vector.sub(this.centerOfMass, particle.pos);
+                        force.normalize();
+                        force.mult(G * this.totalMass * particle.mass / (d * d));
+                        particle.applyForce(force);
+                    }
+                } else if (this.divided) {
+                    this.northeast.applyForce(particle, G, theta);
+                    this.northwest.applyForce(particle, G, theta);
+                    this.southeast.applyForce(particle, G, theta);
+                    this.southwest.applyForce(particle, G, theta);
+                }
+            }
+        }
+
+        // --- Particle Class ---
+        class Particle {
+            constructor(x, y, mass) {
+                this.pos = createVector(x, y);
+                this.vel = createVector(0, 0);
+                this.acc = createVector(0, 0);
+                this.mass = mass;
+                this.radius = Math.sqrt(mass) * 0.5;
+                this.merged = false;
+                this.trail = [];
+                this.maxTrail = 20;
+            }
+
+            applyForce(force) {
+                let f = p5.Vector.div(force, this.mass);
+                this.acc.add(f);
+            }
+
+            update() {
+                if (this.merged) return;
+
+                this.vel.add(this.acc);
+                this.pos.add(this.vel);
+                this.acc.mult(0);
+
+                // Trail
+                this.trail.push(this.pos.copy());
+                if (this.trail.length > this.maxTrail) {
+                    this.trail.shift();
+                }
+
+                // Dark matter halo drag (simulates halo friction)
+                this.vel.mult(1 - CONFIG.darkMatterFactor * 0.001);
+            }
+
+            show() {
+                if (this.merged) return;
+
+                // Trail
+                noFill();
+                stroke(100, 100, 120, 30);
+                strokeWeight(1);
+                beginShape();
+                for (let pos of this.trail) {
+                    vertex(pos.x, pos.y);
+                }
+                endShape();
+
+                // Particle
+                let brightness = Math.min(255, 100 + this.mass * 2);
+                let alpha = Math.min(200, 50 + this.mass);
+                fill(brightness, brightness, brightness + 20, alpha);
+                noStroke();
+                ellipse(this.pos.x, this.pos.y, this.radius * 2);
+            }
+
+            merge(other) {
+                // Conservation of momentum
+                let newMass = this.mass + other.mass;
+                let newVel = p5.Vector.add(
+                    p5.Vector.mult(this.vel, this.mass),
+                    p5.Vector.mult(other.vel, other.mass)
+                ).div(newMass);
+                
+                this.mass = newMass;
+                this.vel = newVel;
+                this.radius = Math.sqrt(this.mass) * 0.5;
+                this.maxTrail = Math.min(50, 20 + this.mass / 10);
+                
+                other.merged = true;
+            }
+        }
+
+        // --- Main Simulation ---
+        let particles = [];
+        let centerOfGalaxy;
+        let isRunning = true;
+        let fps = 60;
+
+        function setup() {
+            createCanvas(windowWidth, windowHeight);
+            centerOfGalaxy = createVector(width / 2, height / 2);
+            initGalaxy();
+            setupUI();
+        }
+
+        function initGalaxy() {
+            particles = [];
+            
+            // Central black hole / massive core
+            let center = new Particle(centerOfGalaxy.x, centerOfGalaxy.y, CONFIG.centerMass);
+            center.vel = createVector(0, 0);
+            particles.push(center);
+
+            // Protogalactic cloud
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                // Random position in sphere
+                let angle = random(TWO_PI);
+                let r = randomGaussian(0, Math.min(width, height) / 6);
+                
+                let x = centerOfGalaxy.x + r * cos(angle);
+                let y = centerOfGalaxy.y + r * sin(angle) * 0.3; // Flattened initially
+                
+                let mass = random(1, 3);
+                let p = new Particle(x, y, mass);
+                
+                // Initial rotation (Keplerian-ish)
+                let dist = p5.Vector.dist(p.pos, centerOfGalaxy);
+                let orbitalSpeed = Math.sqrt(CONFIG.G * CONFIG.centerMass / (dist + 10));
+                
+                // Perpendicular velocity for rotation
+                let dir = p5.Vector.sub(p.pos, centerOfGalaxy);
+                dir.rotate(HALF_PI);
+                dir.setMag(orbitalSpeed * CONFIG.initialSpin * random(0.8, 1.2));
+                
+                p.vel = dir;
+                
+                // Add some inward collapse velocity
+                let collapse = p5.Vector.sub(centerOfGalaxy, p.pos);
+                collapse.setMag(random(0.5, 1.5));
+                p.vel.add(collapse);
+                
+                particles.push(p);
+            }
+        }
+
+        function draw() {
+            if (!isRunning) return;
+
+            // Semi-transparent background for trails
+            background(220, 220, 220, 80);
+
+            // Build Quadtree
+            let boundary = {
+                x: width / 2,
+                y: height / 2,
+                w: width,
+                h: height
+            };
+            let qt = new Quadtree(boundary, 4);
+
+            // Insert all particles
+            for (let p of particles) {
+                if (!p.merged) qt.insert(p);
+            }
+
+            // Calculate mass distribution
+            qt.calculateMassDistribution();
+
+            // Apply forces
+            for (let p of particles) {
+                if (!p.merged) {
+                    qt.applyForce(p, CONFIG.G, CONFIG.theta);
+                }
+            }
+
+            // Update and draw
+            let activeCount = 0;
+            for (let i = 0; i < particles.length; i++) {
+                let p = particles[i];
+                if (p.merged) continue;
+                
+                p.update();
+                p.show();
+                activeCount++;
+
+                // Check merges (only check nearby particles - optimization)
+                if (p.mass < 100) { // Don't merge massive center too easily
+                    for (let j = i + 1; j < particles.length; j++) {
+                        let other = particles[j];
+                        if (other.merged) continue;
+                        
+                        let d = p5.Vector.dist(p.pos, other.pos);
+                        if (d < (p.radius + other.radius) * 0.8) {
+                            if (p.mass >= other.mass) {
+                                p.merge(other);
+                            } else {
+                                other.merge(p);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update stats
+            if (frameCount % 10 === 0) {
+                document.getElementById('stat-count').textContent = activeCount;
+                fps = Math.round(frameRate());
+                document.getElementById('stat-fps').textContent = fps;
+            }
+        }
+
+        function setupUI() {
+            document.getElementById('slider-G').addEventListener('input', (e) => {
+                CONFIG.G = parseFloat(e.target.value);
+                document.getElementById('val-G').textContent = CONFIG.G.toFixed(2);
+            });
+
+            document.getElementById('slider-dark').addEventListener('input', (e) => {
+                CONFIG.darkMatterFactor = parseFloat(e.target.value);
+                document.getElementById('val-dark').textContent = CONFIG.darkMatterFactor.toFixed(2);
+            });
+
+            document.getElementById('slider-spin').addEventListener('input', (e) => {
+                CONFIG.initialSpin = parseFloat(e.target.value);
+                document.getElementById('val-spin').textContent = CONFIG.initialSpin.toFixed(1);
+            });
+
+            document.getElementById('btn-reset').addEventListener('click', () => {
+                initGalaxy();
+            });
+
+            document.getElementById('btn-pause').addEventListener('click', (e) => {
+                isRunning = !isRunning;
+                e.target.textContent = isRunning ? 'Pause' : 'Resume';
+            });
+        }
+
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+            centerOfGalaxy = createVector(width / 2, height / 2);
+        }
+
+    </script>
+</body>
+</html>

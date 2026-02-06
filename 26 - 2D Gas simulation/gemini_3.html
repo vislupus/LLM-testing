@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive 2D Gas Simulation - Statistical Mechanics</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --panel-color: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent-color: #4facfe;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #canvas-container {
+            flex-grow: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+            position: relative;
+        }
+        #controls {
+            width: 320px;
+            background-color: var(--panel-color);
+            padding: 20px;
+            overflow-y: auto;
+            box-shadow: -2px 0 10px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        h2, h3 { margin: 0 0 5px 0; color: var(--accent-color); }
+        .stat-box {
+            background: rgba(255,255,255,0.05);
+            padding: 10px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        .control-group {
+            border-bottom: 1px solid #333;
+            padding-bottom: 15px;
+        }
+        label { display: block; margin-bottom: 5px; font-size: 13px; }
+        input[type=range] { width: 100%; }
+        .val-display { float: right; color: #aaa; font-size: 12px; }
+        button {
+            width: 100%;
+            padding: 10px;
+            background: var(--accent-color);
+            border: none;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 4px;
+            margin-top: 5px;
+        }
+        button:hover { filter: brightness(1.1); }
+        button.secondary { background: #444; }
+        
+        /* Overlay for pressure visualization */
+        #walls-overlay {
+            position: absolute;
+            pointer-events: none;
+            border: 1px solid #333;
+        }
+    </style>
+</head>
+<body>
+
+<div id="canvas-container">
+    <!-- P5 Canvas will be injected here -->
+</div>
+
+<div id="controls">
+    <div>
+        <h2>Gas Simulation</h2>
+        <p style="font-size:12px; color:#888">Elastic collisions & Statistical Mechanics</p>
+    </div>
+
+    <div class="stat-box">
+        <div>Temperature (KE): <span id="disp-temp">0</span></div>
+        <div>Pressure: <span id="disp-pressure">0</span></div>
+        <div>Particles: <span id="disp-count">0</span></div>
+    </div>
+
+    <div class="control-group">
+        <h3>System Controls</h3>
+        
+        <label>Particle Count <span id="val-count" class="val-display">400</span></label>
+        <input type="range" id="inp-count" min="50" max="1200" step="50" value="400">
+
+        <label>Initial Temperature (Speed) <span id="val-speed" class="val-display">3.0</span></label>
+        <input type="range" id="inp-speed" min="0.5" max="10" step="0.5" value="3.0">
+        
+        <button id="btn-restart">Restart Simulation</button>
+        <button id="btn-pause" class="secondary">Pause</button>
+    </div>
+
+    <div class="control-group">
+        <h3>Physics Properties</h3>
+        
+        <label>Particle Size <span id="val-rad" class="val-display">3</span></label>
+        <input type="range" id="inp-rad" min="2" max="8" step="0.5" value="3">
+
+        <label>Mixture Ratio (Heavy/Light) <span id="val-mix" class="val-display">0% Heavy</span></label>
+        <input type="range" id="inp-mix" min="0" max="100" step="10" value="0">
+        
+        <label>
+            <input type="checkbox" id="chk-collisions" checked> Enable Particle Collisions
+        </label>
+    </div>
+
+    <div class="control-group">
+        <h3>Speed Distribution</h3>
+        <div id="hist-container" style="height: 100px; width: 100%;"></div>
+        <p style="font-size:11px; color:#666; margin-top:5px;">
+            Bar: Actual, Line: Theoretical Maxwell-Boltzmann (2D)
+        </p>
+    </div>
+</div>
+
+<script>
+// --- CONFIGURATION & STATE ---
+let particles = [];
+let grid = []; // Spatial Hash Grid
+let cellSize = 0;
+let cols = 0, rows = 0;
+
+// Physics Constants
+const MASS_LIGHT = 1;
+const MASS_HEAVY = 10;
+
+// Simulation State
+let simWidth, simHeight;
+let isPaused = false;
+let wallImpulseAccumulator = 0; // For pressure calculation
+let pressureHistory = [];
+let pressureWindow = 60; // Frames to average pressure over
+
+// UI Elements
+let ui = {};
+
+function setup() {
+    let container = document.getElementById('canvas-container');
+    simWidth = container.clientWidth - 20;
+    simHeight = container.clientHeight - 20;
+    
+    let cnv = createCanvas(simWidth, simHeight);
+    cnv.parent('canvas-container');
+    
+    // Bind UI
+    ui.count = select('#inp-count');
+    ui.speed = select('#inp-speed');
+    ui.rad = select('#inp-rad');
+    ui.mix = select('#inp-mix');
+    ui.chkCol = select('#chk-collisions');
+    ui.btnRestart = select('#btn-restart');
+    ui.btnPause = select('#btn-pause');
+    
+    ui.dispTemp = select('#disp-temp');
+    ui.dispPress = select('#disp-pressure');
+    ui.dispCount = select('#disp-count');
+    
+    // Event Listeners
+    ui.btnRestart.mousePressed(initSystem);
+    ui.btnPause.mousePressed(() => {
+        isPaused = !isPaused;
+        ui.btnPause.html(isPaused ? "Resume" : "Pause");
+    });
+    
+    // Update labels on slide
+    ui.count.input(() => select('#val-count').html(ui.count.value()));
+    ui.speed.input(() => select('#val-speed').html(ui.speed.value()));
+    ui.rad.input(() => select('#val-rad').html(ui.rad.value()));
+    ui.mix.input(() => select('#val-mix').html(ui.mix.value() + "% Heavy"));
+
+    initSystem();
+}
+
+function windowResized() {
+    let container = document.getElementById('canvas-container');
+    simWidth = container.clientWidth - 20;
+    simHeight = container.clientHeight - 20;
+    resizeCanvas(simWidth, simHeight);
+    initSystem(); // Re-init to prevent particles being out of bounds
+}
+
+function initSystem() {
+    particles = [];
+    pressureHistory = [];
+    wallImpulseAccumulator = 0;
+    
+    let count = int(ui.count.value());
+    let speedBase = float(ui.speed.value());
+    let radius = float(ui.rad.value());
+    let heavyPercent = int(ui.mix.value());
+    
+    // Setup Spatial Grid
+    // Cell size must be at least the diameter of the largest particle
+    cellSize = radius * 2.1; 
+    cols = ceil(width / cellSize);
+    rows = ceil(height / cellSize);
+    
+    for (let i = 0; i < count; i++) {
+        let isHeavy = (i < count * (heavyPercent / 100));
+        let mass = isHeavy ? MASS_HEAVY : MASS_LIGHT;
+        
+        // Try to place without overlapping existing
+        let x, y, ok = false;
+        let attempts = 0;
+        while(!ok && attempts < 100) {
+            x = random(radius, width - radius);
+            y = random(radius, height - radius);
+            ok = true;
+            // Simple check against a few recent particles to avoid massive clump at start
+            for(let j = Math.max(0, i-50); j < i; j++) {
+                let d = dist(x, y, particles[j].pos.x, particles[j].pos.y);
+                if(d < radius * 2) { ok = false; break; }
+            }
+            attempts++;
+        }
+
+        // Initial Velocity (Random Direction)
+        // KE = 0.5 * m * v^2. If we want uniform Temp, heavy particles move slower.
+        // v = sqrt(2*KE/m).
+        let vMag = speedBase / Math.sqrt(mass); 
+        let angle = random(TWO_PI);
+        let vx = cos(angle) * vMag;
+        let vy = sin(angle) * vMag;
+
+        particles.push(new Particle(x, y, vx, vy, radius, mass, isHeavy));
+    }
+}
+
+function draw() {
+    background(18); // Dark background
+
+    if (!isPaused) {
+        updatePhysics();
+    }
+    
+    drawParticles();
+    calculateAndDrawStats();
+}
+
+// --- PHYSICS ENGINE ---
+
+function updatePhysics() {
+    // 1. Clear Grid
+    grid = new Array(cols * rows).fill(null).map(() => []);
+
+    // 2. Move & Wall Collisions & Add to Grid
+    for (let p of particles) {
+        p.update();
+        p.checkWalls();
+        
+        // Add to spatial grid
+        if(ui.chkCol.checked()) {
+            let col = int(p.pos.x / cellSize);
+            let row = int(p.pos.y / cellSize);
+            // Clamp to valid grid indices
+            col = constrain(col, 0, cols - 1);
+            row = constrain(row, 0, rows - 1);
+            grid[col + row * cols].push(p);
+        }
+    }
+
+    // 3. Particle Collisions (Grid Optimized)
+    if(ui.chkCol.checked()) {
+        for (let i = 0; i < grid.length; i++) {
+            let cell = grid[i];
+            if (cell.length === 0) continue;
+
+            // Check neighbors (including self)
+            // x x x
+            // x c x
+            // x x x
+            let cx = i % cols;
+            let cy = int(i / cols);
+
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    let nx = cx + dx;
+                    let ny = cy + dy;
+                    
+                    if (nx >= 0 && nx < cols && ny >= 0 && ny < rows) {
+                        let neighborCell = grid[nx + ny * cols];
+                        checkCellCollisions(cell, neighborCell);
+                    }
+                }
+            }
+        }
+    }
+}
+
+function checkCellCollisions(cellA, cellB) {
+    for (let p1 of cellA) {
+        for (let p2 of cellB) {
+            if (p1 === p2) continue; // Skip self
+            
+            // Optimization: to avoid double checking (A vs B and B vs A),
+            // we can enforce an ID order or just let it run (since resolving twice is bad).
+            // Here we use a simple distance check logic that handles resolution.
+            // A simple trick is only check if p1.id < p2.id, but we don't have IDs.
+            // Instead, we'll rely on the fact that we iterate over cells.
+            // To prevent double processing, we only process if p1 index in main array < p2 index
+            // NOTE: This requires finding index or adding ID. Let's add ID to particle.
+            
+            if (p1.id < p2.id) {
+                let distSq = (p1.pos.x - p2.pos.x)**2 + (p1.pos.y - p2.pos.y)**2;
+                let minDist = p1.r + p2.r;
+                
+                if (distSq < minDist * minDist) {
+                    resolveCollision(p1, p2, distSq);
+                }
+            }
+        }
+    }
+}
+
+function resolveCollision(p1, p2, distSq) {
+    let d = Math.sqrt(distSq);
+    
+    // Normal vector
+    let nx = (p2.pos.x - p1.pos.x) / d;
+    let ny = (p2.pos.y - p1.pos.y) / d;
+
+    // Relative velocity
+    let dvx = p1.vel.x - p2.vel.x;
+    let dvy = p1.vel.y - p2.vel.y;
+    
+    // Velocity along normal
+    let velAlongNormal = dvx * nx + dvy * ny;
+
+    // Do not resolve if velocities are separating
+    if (velAlongNormal < 0) return;
+
+    // Elastic Collision Impulse
+    // j = -(1 + e) * velAlongNormal / (1/m1 + 1/m2)
+    // e = 1 for elastic
+    let j = -(2 * velAlongNormal) / (1/p1.m + 1/p2.m);
+
+    let impulseX = j * nx;
+    let impulseY = j * ny;
+
+    p1.vel.x += impulseX / p1.m;
+    p1.vel.y += impulseY / p1.m;
+    p2.vel.x -= impulseX / p2.m;
+    p2.vel.y -= impulseY / p2.m;
+
+    // Position Correction (prevent sinking)
+    // Move particles apart along normal so they just touch
+    let overlap = (p1.r + p2.r) - d;
+    // Weighted by inverse mass (heavier moves less)
+    let totalMassInv = (1/p1.m + 1/p2.m);
+    let m1Ratio = (1/p1.m) / totalMassInv;
+    let m2Ratio = (1/p2.m) / totalMassInv;
+
+    let correctionX = nx * overlap * 1.01; // 1.01 to nudge slightly apart
+    let correctionY = ny * overlap * 1.01;
+
+    p1.pos.x -= correctionX * m1Ratio;
+    p1.pos.y -= correctionY * m1Ratio;
+    p2.pos.x += correctionX * m2Ratio;
+    p2.pos.y += correctionY * m2Ratio;
+}
+
+// --- PARTICLE CLASS ---
+let pIdCounter = 0;
+class Particle {
+    constructor(x, y, vx, vy, r, m, isHeavy) {
+        this.id = pIdCounter++;
+        this.pos = createVector(x, y);
+        this.vel = createVector(vx, vy);
+        this.r = r;
+        this.m = m;
+        this.isHeavy = isHeavy;
+        // Color: Cyan for light, Red/Orange for heavy
+        this.color = isHeavy ? color(255, 80, 80) : color(100, 200, 255);
+    }
+
+    update() {
+        this.pos.add(this.vel);
+    }
+
+    checkWalls() {
+        let hit = false;
+        let impulse = 0;
+
+        if (this.pos.x < this.r) {
+            this.pos.x = this.r;
+            this.vel.x *= -1;
+            impulse += 2 * this.m * Math.abs(this.vel.x);
+            hit = true;
+        } else if (this.pos.x > width - this.r) {
+            this.pos.x = width - this.r;
+            this.vel.x *= -1;
+            impulse += 2 * this.m * Math.abs(this.vel.x);
+            hit = true;
+        }
+
+        if (this.pos.y < this.r) {
+            this.pos.y = this.r;
+            this.vel.y *= -1;
+            impulse += 2 * this.m * Math.abs(this.vel.y);
+            hit = true;
+        } else if (this.pos.y > height - this.r) {
+            this.pos.y = height - this.r;
+            this.vel.y *= -1;
+            impulse += 2 * this.m * Math.abs(this.vel.y);
+            hit = true;
+        }
+
+        if (hit) {
+            wallImpulseAccumulator += impulse;
+        }
+    }
+}
+
+function drawParticles() {
+    noStroke();
+    for (let p of particles) {
+        fill(p.color);
+        circle(p.pos.x, p.pos.y, p.r * 2);
+    }
+}
+
+// --- STATISTICAL MECHANICS & VISUALIZATION ---
+
+function calculateAndDrawStats() {
+    let totalKE = 0;
+    let speeds = [];
+    
+    for (let p of particles) {
+        let vSq = p.vel.magSq();
+        let v = Math.sqrt(vSq);
+        totalKE += 0.5 * p.m * vSq;
+        speeds.push(v);
+    }
+
+    // 1. Temperature (Proportional to Avg KE)
+    // In 2D, <KE> = k_B * T (Degrees of freedom = 2)
+    // We'll just define T = Avg KE for simplicity of display
+    let avgKE = particles.length > 0 ? totalKE / particles.length : 0;
+    let temperature = avgKE; // Arbitrary units
+
+    // 2. Pressure
+    // P = Force / Area (Perimeter in 2D). Force = Impulse / Time.
+    // Rolling average to smooth out the jitter
+    pressureHistory.push(wallImpulseAccumulator);
+    if (pressureHistory.length > pressureWindow) pressureHistory.shift();
+    
+    // Sum impulses over history, divide by (Frames * Perimeter)
+    let totalImpulse = pressureHistory.reduce((a, b) => a + b, 0);
+    let perimeter = 2 * (width + height);
+    // Normalize pressure for display (arbitrary scaling factor for readability)
+    let pressure = (totalImpulse / pressureWindow) / perimeter * 100;
+    
+    wallImpulseAccumulator = 0; // Reset for next frame
+
+    // Update UI text
+    if (frameCount % 5 === 0) { // Update text less frequently
+        ui.dispTemp.html(temperature.toFixed(2));
+        ui.dispPress.html(pressure.toFixed(2));
+        ui.dispCount.html(particles.length);
+    }
+
+    // 3. Histogram & Maxwell-Boltzmann (2D)
+    drawHistogram(speeds, avgKE);
+}
+
+function drawHistogram(speeds, avgKE) {
+    // Position histogram at bottom left of screen or draw in UI? 
+    // The prompt asks to display it. Let's draw it on the main canvas 
+    // in a corner to ensure high framerate, or overlay.
+    // Actually, drawing it transparently on the canvas is cleanest for a single file.
+    
+    let histW = 200;
+    let histH = 100;
+    let histX = 20;
+    let histY = height - histH - 20;
+
+    // Background for graph
+    fill(0, 0, 0, 150);
+    stroke(100);
+    rect(histX, histY, histW, histH);
+
+    if (speeds.length === 0) return;
+
+    let maxSpeed = 15; // Clamp for binning
+    let bins = 20;
+    let counts = new Array(bins).fill(0);
+    
+    for(let v of speeds) {
+        let idx = int((v / maxSpeed) * bins);
+        if(idx >= 0 && idx < bins) counts[idx]++;
+    }
+
+    // Find max count for scaling
+    let maxCount = 0;
+    for(let c of counts) if(c > maxCount) maxCount = c;
+    if (maxCount === 0) maxCount = 1;
+
+    // Draw Bars
+    noStroke();
+    fill(255, 200);
+    let binW = histW / bins;
+    for(let i=0; i<bins; i++) {
+        let h = (counts[i] / maxCount) * (histH * 0.9);
+        rect(histX + i*binW, histY + histH - h, binW - 1, h);
+    }
+
+    // Draw Theoretical Curve (2D Maxwell-Boltzmann / Rayleigh Distribution)
+    // f(v) = (m*v / (kT)) * exp(-m*v^2 / 2kT)
+    // Here we use mass=1 (average conceptual mass) for the curve shape visual reference
+    // kT is proportional to AvgKE.
+    // If Mass varies, the distribution is a sum of distributions, but we'll plot the "Ideal" shape for mean mass.
+    
+    stroke(255, 100, 100);
+    strokeWeight(2);
+    noFill();
+    beginShape();
+    
+    // We need to scale the theoretical curve to match the histogram height roughly
+    // Peak of Rayleigh is at v = sqrt(kT/m).
+    // AvgKE = kT => Peak at v = sqrt(AvgKE) if m=1.
+    
+    let k_param = avgKE; // treating m=1 roughly
+    
+    for(let x = 0; x < histW; x+=5) {
+        let v = (x / histW) * maxSpeed;
+        
+        // 2D PDF shape: v * exp( -v^2 / (2*T) )
+        // Note: This is simplified to match the visual shape
+        let yRaw = v * Math.exp( -(v*v) / (2*k_param) );
+        
+        // Normalize peak to fit box
+        // The peak of x*exp(-x^2/2k) is at x = sqrt(k), val = sqrt(k)*exp(-0.5)
+        let peakVal = Math.sqrt(k_param) * Math.exp(-0.5);
+        if (peakVal === 0) peakVal = 1;
+        
+        let yNorm = yRaw / peakVal;
+        
+        let plotY = histY + histH - (yNorm * (histH * 0.9));
+        vertex(histX + x, plotY);
+    }
+    endShape();
+    
+    // Label
+    noStroke();
+    fill(200);
+    textSize(10);
+    text("Speed Distribution", histX + 5, histY + 12);
+}
+
+</script>
+</body>
+</html>

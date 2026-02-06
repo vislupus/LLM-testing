@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galaxy Formation Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        canvas {
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #333;
+            font-family: monospace;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 4px;
+            pointer-events: none;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <b>Galaxy Formation</b><br>
+        Particles: 10,000<br>
+        Using Quadtree (Barnes-Hut)<br>
+        <span style="font-size:10px; color:#666">Merging & Dark Matter active</span>
+    </div>
+
+<script>
+    // --- CONFIGURATION ---
+    const PARTICLE_COUNT = 10000;
+    const G = 0.5; // Gravitational constant
+    const SOFTENING = 5.0; // Prevents singularity at r=0
+    const BH_MASS = 2000; // Mass of central supermassive black hole
+    const HALO_STRENGTH = 0.05; // Dark matter halo pull
+    
+    // --- GLOBALS ---
+    let particles = [];
+    let qtree;
+    let w, h;
+
+    // --- CLASSES ---
+
+    class Particle {
+        constructor(x, y, m) {
+            this.pos = createVector(x, y);
+            this.vel = createVector(0, 0);
+            this.acc = createVector(0, 0);
+            this.mass = m;
+            this.radius = sqrt(this.mass) * 1.5; // Visual size
+            this.merged = false;
+            
+            // Color varies slightly by mass
+            this.color = color(20, 20, 50 + (m * 20), 200); // Dark blueish
+        }
+
+        applyForce(force) {
+            let f = p5.Vector.div(force, this.mass);
+            this.acc.add(f);
+        }
+
+        update() {
+            this.vel.add(this.acc);
+            this.pos.add(this.vel);
+            this.acc.mult(0); // Reset acceleration
+        }
+
+        show() {
+            noStroke();
+            fill(this.color);
+            // Using rect is faster than ellipse for 10k particles
+            // But circle looks better. We'll use circle but optimize.
+            // For 10k, circle is heavy. Let's use point with size.
+            // Actually, the prompt asks for "simple circles".
+            // We will use a small rect to simulate a circle for performance if needed, 
+            // but let's try circle first.
+            ellipse(this.pos.x, this.pos.y, this.radius);
+        }
+    }
+
+    // --- QUADTREE (Barnes-Hut) ---
+
+    class Rectangle {
+        constructor(x, y, w, h) {
+            this.x = x; this.y = y;
+            this.w = w; this.h = h;
+        }
+        contains(point) {
+            return (point.pos.x >= this.x - this.w &&
+                    point.pos.x < this.x + this.w &&
+                    point.pos.y >= this.y - this.h &&
+                    point.pos.y < this.y + this.h);
+        }
+    }
+
+    class QuadTree {
+        constructor(boundary, capacity) {
+            this.boundary = boundary;
+            this.capacity = capacity;
+            this.particles = [];
+            this.divided = false;
+            // For Barnes-Hut calculation
+            this.mass = 0;
+            this.centerOfMass = createVector(0, 0);
+        }
+
+        insert(particle) {
+            if (!this.boundary.contains(particle)) {
+                return false;
+            }
+
+            // Update node mass and CoM
+            if (this.particles.length > 0 || this.divided) {
+                this.mass += particle.mass;
+                this.centerOfMass.x = (this.centerOfMass.x * (this.mass - particle.mass) + particle.pos.x * particle.mass) / this.mass;
+                this.centerOfMass.y = (this.centerOfMass.y * (this.mass - particle.mass) + particle.pos.y * particle.mass) / this.mass;
+            } else {
+                this.mass = particle.mass;
+                this.centerOfMass = particle.pos.copy();
+            }
+
+            if (this.particles.length < this.capacity && !this.divided) {
+                this.particles.push(particle);
+                return true;
+            }
+
+            if (!this.divided) {
+                this.subdivide();
+            }
+
+            if (this.northeast.insert(particle)) return true;
+            if (this.northwest.insert(particle)) return true;
+            if (this.southeast.insert(particle)) return true;
+            if (this.southwest.insert(particle)) return true;
+
+            return false;
+        }
+
+        subdivide() {
+            let x = this.boundary.x;
+            let y = this.boundary.y;
+            let w = this.boundary.w / 2;
+            let h = this.boundary.h / 2;
+
+            let ne = new Rectangle(x + w, y - h, w, h);
+            this.northeast = new QuadTree(ne, this.capacity);
+            let nw = new Rectangle(x - w, y - h, w, h);
+            this.northwest = new QuadTree(nw, this.capacity);
+            let se = new Rectangle(x + w, y + h, w, h);
+            this.southeast = new QuadTree(se, this.capacity);
+            let sw = new Rectangle(x - w, y + h, w, h);
+            this.southwest = new QuadTree(sw, this.capacity);
+
+            this.divided = true;
+
+            // Re-insert existing particles into children
+            for (let p of this.particles) {
+                this.northeast.insert(p);
+                this.northwest.insert(p);
+                this.southeast.insert(p);
+                this.southwest.insert(p);
+            }
+            this.particles = [];
+        }
+
+        // Barnes-Hut Force Calculation
+        calculateGravity(particle, theta = 0.5) {
+            // If this node has no particles, no gravity
+            if (this.mass === 0) return;
+
+            let d = p5.Vector.dist(particle.pos, this.centerOfMass);
+
+            // If it's a leaf node and contains the particle itself, skip (self-gravity handled elsewhere or ignored)
+            // Or if it's a leaf node with other particles
+            if (!this.divided) {
+                if (this.particles.length > 0) {
+                    for (let other of this.particles) {
+                        if (other !== particle) {
+                            let force = this.getForce(particle, other);
+                            particle.applyForce(force);
+                            // Check Merging
+                            if (d < (particle.radius + other.radius)) {
+                                this.merge(particle, other);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+
+            // Barnes-Hut Criterion: 
+            // If the node is far enough away (d / size > theta), treat it as a single mass.
+            // Here we approximate "size" as boundary width.
+            if (this.boundary.w / d < theta) {
+                // Treat as one body
+                let fakeParticle = { pos: this.centerOfMass, mass: this.mass, radius: 0 };
+                let force = this.getForce(particle, fakeParticle);
+                particle.applyForce(force);
+            } else {
+                // Otherwise, recurse
+                this.northeast.calculateGravity(particle, theta);
+                this.northwest.calculateGravity(particle, theta);
+                this.southeast.calculateGravity(particle, theta);
+                this.southwest.calculateGravity(particle, theta);
+            }
+        }
+
+        getForce(p1, p2) {
+            let dir = p5.Vector.sub(p2.pos, p1.pos);
+            let dist = dir.mag();
+            let distSq = dist * dist;
+            dir.normalize();
+
+            // Gravity F = G * m1 * m2 / (r^2 + softening)
+            let strength = (G * p1.mass * p2.mass) / (distSq + SOFTENING);
+            return dir.mult(strength);
+        }
+
+        merge(p1, p2) {
+            // Only merge if p2 hasn't been merged already this frame
+            if (p2.merged) return;
+
+            // Conservation of momentum
+            let totalMass = p1.mass + p2.mass;
+            let newVel = p5.Vector.add(p5.Vector.mult(p1.vel, p1.mass), p5.Vector.mult(p2.vel, p2.mass));
+            newVel.div(totalMass);
+            
+            // New position (weighted average)
+            let newPos = p5.Vector.add(p5.Vector.mult(p1.pos, p1.mass), p5.Vector.mult(p2.pos, p2.mass));
+            newPos.div(totalMass);
+
+            // Update p1 to be the merged body
+            p1.mass = totalMass;
+            p1.vel = newVel;
+            p1.pos = newPos;
+            p1.radius = sqrt(p1.mass) * 1.5;
+            // Make it brighter/bigger
+            let b = map(p1.mass, 1, 20, 50, 255);
+            p1.color = color(20, 20, b, 200);
+
+            // Mark p2 for removal
+            p2.merged = true;
+        }
+    }
+
+    // --- SETUP & LOOP ---
+
+    function setup() {
+        createCanvas(windowWidth, windowHeight);
+        w = width / 2;
+        h = height / 2;
+        
+        initGalaxy();
+    }
+
+    function initGalaxy() {
+        particles = [];
+        
+        // Create a rotating cloud
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            // Random position in a large circle
+            let angle = random(TWO_PI);
+            let dist = random(10, min(width, height) * 0.4); // Initial spread
+            
+            let x = w + cos(angle) * dist;
+            let y = h + sin(angle) * dist;
+            
+            let m = random(0.5, 2.0); // Mass variation
+            
+            let p = new Particle(x, y, m);
+            
+            // Initial Velocity for Spiral (Keplerian-ish)
+            // Velocity perpendicular to radius
+            let vMag = sqrt(G * BH_MASS / dist) * 0.8; // 0.8 factor for stability/spreading
+            p.vel = createVector(-sin(angle), cos(angle)).mult(vMag);
+            
+            // Add random noise
+            p.vel.add(p5.Vector.random2D().mult(0.5));
+            
+            particles.push(p);
+        }
+    }
+
+    function draw() {
+        // Background color 220 as requested (Light Grey)
+        // Use low alpha (50) to create motion trails
+        background(220, 50);
+
+        // 1. Build Quadtree
+        let boundary = new Rectangle(w, h, max(width, height)/2, max(width, height)/2);
+        qtree = new QuadTree(boundary, 4);
+        
+        // Add all active particles to tree
+        // We filter merged ones out of the tree building or just ignore them
+        for (let p of particles) {
+            if (!p.merged) {
+                qtree.insert(p);
+            }
+        }
+
+        // 2. Physics Loop
+        // We iterate backwards to safely remove merged particles
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            
+            if (p.merged) {
+                particles.splice(i, 1);
+                continue;
+            }
+
+            // A. Central Black Hole Gravity
+            let center = createVector(w, h);
+            let dirBH = p5.Vector.sub(center, p.pos);
+            let distBH = dirBH.mag();
+            dirBH.normalize();
+            let forceBH = dirBH.mult((G * BH_MASS * p.mass) / (distBH * distBH + 10));
+            p.applyForce(forceBH);
+
+            // B. Dark Matter Halo (Global Inward Pull / Viscosity)
+            // Simulates the extra mass holding the galaxy together at edges
+            // Force scales roughly with distance (solid body rotation core) or constant
+            let dirHalo = p5.Vector.sub(center, p.pos).normalize();
+            let forceHalo = dirHalo.mult(p.mass * HALO_STRENGTH);
+            p.applyForce(forceHalo);
+
+            // C. Particle-Particle Gravity (Quadtree)
+            qtree.calculateGravity(p);
+
+            // Update
+            p.update();
+            p.show();
+        }
+    }
+
+    function windowResized() {
+        resizeCanvas(windowWidth, windowHeight);
+        w = width / 2;
+        h = height / 2;
+    }
+
+</script>
+</body>
+</html>

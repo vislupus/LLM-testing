@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Equal Earth Projection Map</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- SVG.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/3.2.0/svg.min.js"></script>
+    
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #0f172a; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        
+        /* Custom Scrollbar for panels */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        #map-container {
+            width: 100vw;
+            height: 100vh;
+            cursor: crosshair;
+            touch-action: none; /* Prevent default touch actions for custom zoom/pan */
+        }
+
+        /* SVG Specific Styles */
+        .land-path {
+            fill: #334155;
+            stroke: #475569;
+            stroke-width: 0.5px;
+            transition: fill 0.2s;
+        }
+        .land-path:hover {
+            fill: #475569;
+        }
+        .graticule {
+            fill: none;
+            stroke: #1e293b;
+            stroke-width: 0.5px;
+            pointer-events: none;
+        }
+        .marker {
+            fill: #ef4444;
+            stroke: white;
+            stroke-width: 2px;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { r: 4; stroke-opacity: 1; }
+            50% { r: 8; stroke-opacity: 0; }
+            100% { r: 4; stroke-opacity: 0; }
+        }
+        
+        /* UI Overlay */
+        #coordinate-readout {
+            pointer-events: none;
+            transition: opacity 0.2s;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Main Map Container -->
+    <div id="map-container"></div>
+
+    <!-- Header / Controls -->
+    <div class="absolute top-4 left-4 w-80 glass-panel rounded-xl p-5 text-white z-10 flex flex-col gap-4">
+        <div>
+            <h1 class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500">Equal Earth Map</h1>
+            <p class="text-xs text-gray-400 mt-1">Equal-area pseudocylindrical projection</p>
+        </div>
+
+        <hr class="border-white/10">
+
+        <!-- Plotting Controls -->
+        <div class="space-y-3">
+            <h2 class="text-sm font-semibold text-gray-300">Plot Coordinates</h2>
+            <div class="flex gap-2">
+                <div class="flex-1">
+                    <label class="text-[10px] uppercase text-gray-500 font-bold">Lat</label>
+                    <input type="number" id="input-lat" placeholder="0.0" step="0.1" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm focus:border-cyan-500 outline-none">
+                </div>
+                <div class="flex-1">
+                    <label class="text-[10px] uppercase text-gray-500 font-bold">Lon</label>
+                    <input type="number" id="input-lon" placeholder="0.0" step="0.1" class="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm focus:border-cyan-500 outline-none">
+                </div>
+            </div>
+            <button id="btn-plot" class="w-full bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-bold py-2 rounded transition shadow-lg shadow-cyan-500/20">
+                Plot Marker
+            </button>
+        </div>
+
+        <hr class="border-white/10">
+
+        <!-- Click Info -->
+        <div class="bg-slate-800/50 p-3 rounded border border-slate-700">
+            <div class="text-[10px] uppercase text-gray-500 font-bold mb-1">Map Click Result</div>
+            <div id="click-output" class="font-mono text-cyan-300 text-sm">Click on map...</div>
+        </div>
+        
+        <div class="text-[10px] text-gray-500 mt-2 flex justify-between">
+            <span>Scroll to Zoom</span>
+            <span>Drag to Pan</span>
+        </div>
+    </div>
+
+    <!-- Floating Coordinate Tooltip (follows mouse) -->
+    <div id="coordinate-readout" class="absolute hidden bg-slate-900 text-white text-xs px-2 py-1 rounded border border-slate-600 shadow-xl z-20 font-mono pointer-events-none transform -translate-x-1/2 -translate-y-full mt-[-10px]">
+        Lat: 00.00, Lon: 00.00
+    </div>
+
+    <script>
+        /**
+         * EQUAL EARTH PROJECTION MATH
+         * Reference: Bojan Šavrič, Tom Patterson, Bernhard Jenny (2018)
+         * 
+         * Formulas:
+         * psi = asin(sqrt(3)/2 * sin(theta))
+         * x = (2 * sqrt(3) * lon * cos(psi)) / (3 * (9 * A4 * psi^8 + 7 * A3 * psi^6 + 3 * A2 * psi^2 + A1))
+         * y = A4 * psi^9 + A3 * psi^7 + A2 * psi^3 + A1 * psi
+         * 
+         * Inverse requires Newton-Raphson iteration to solve for psi from y.
+         */
+        const EqualEarth = {
+            // Constants
+            A1: 1.340264,
+            A2: -0.081106,
+            A3: 0.000893,
+            A4: 0.003796,
+            M: Math.sqrt(3) / 2,
+            
+            // Degrees to Radians
+            toRad: (deg) => deg * (Math.PI / 180),
+            toDeg: (rad) => rad * (180 / Math.PI),
+
+            /**
+             * Forward Projection: (lat, lon) -> (x, y)
+             * Returns {x, y} in map units.
+             */
+            forward: function(lat, lon) {
+                const latRad = this.toRad(lat);
+                const lonRad = this.toRad(lon);
+                
+                const sinTheta = Math.sin(latRad);
+                const theta = latRad; // Initial approximation for psi
+                
+                // Calculate psi
+                const psi = Math.asin(this.M * sinTheta);
+                const psi2 = psi * psi;
+                const psi6 = psi2 * psi2 * psi2;
+                
+                // Denominator for x
+                const denom = 3 * (9 * this.A4 * psi2 * psi6 + 7 * this.A3 * psi6 + 3 * this.A2 * psi2 + this.A1);
+                
+                const x = (2 * lonRad * Math.cos(psi)) / denom;
+                const y = psi * (this.A1 + psi2 * (this.A2 + psi6 * (this.A3 + psi2 * this.A4)));
+                
+                return { x: x, y: y };
+            },
+
+            /**
+             * Inverse Projection: (x, y) -> (lat, lon)
+             * Uses Newton-Raphson method.
+             * Returns {lat, lon}
+             */
+            inverse: function(x, y) {
+                // Initial guess for psi
+                let psi = y;
+                const epsilon = 1e-9;
+                let maxIter = 50;
+                
+                // Newton-Raphson: Find psi such that f(psi) = y - Y(psi) = 0
+                for (let i = 0; i < maxIter; i++) {
+                    const psi2 = psi * psi;
+                    const psi3 = psi2 * psi;
+                    const psi6 = psi3 * psi3;
+                    const psi7 = psi6 * psi;
+                    const psi8 = psi7 * psi;
+                    
+                    // f(psi) = A1*psi + A2*psi^3 + A3*psi^7 + A4*psi^9 - y
+                    const f = this.A1 * psi + this.A2 * psi3 + this.A3 * psi7 + this.A4 * psi9(psi) - y;
+                    
+                    // f'(psi) derivative
+                    const df = this.A1 + 3 * this.A2 * psi2 + 7 * this.A3 * psi6 + 9 * this.A4 * psi8;
+                    
+                    const delta = f / df;
+                    psi = psi - delta;
+                    
+                    if (Math.abs(delta) < epsilon) break;
+                }
+                
+                // Calculate Latitude from psi
+                // sin(theta) = sin(psi) / M
+                const sinTheta = Math.sin(psi) / this.M;
+                // Clamp for safety
+                const clampedSinTheta = Math.max(-1, Math.min(1, sinTheta));
+                const lat = Math.asin(clampedSinTheta);
+                
+                // Calculate Longitude
+                const psi2 = psi * psi;
+                const psi6 = psi2 * psi2 * psi2;
+                const denom = 3 * (9 * this.A4 * psi2 * psi6 + 7 * this.A3 * psi6 + 3 * this.A2 * psi2 + this.A1);
+                
+                // Handle division by zero at poles (lon is undefined, but we can return 0 or input x)
+                let lon = 0;
+                const cosPsi = Math.cos(psi);
+                if (Math.abs(cosPsi) > 1e-10) {
+                     lon = (x * denom) / (2 * cosPsi);
+                }
+
+                return { 
+                    lat: this.toDeg(lat), 
+                    lon: this.toDeg(lon) 
+                };
+            }
+        };
+
+        function psi9(psi) { return psi * psi * psi * psi * psi * psi * psi * psi * psi; }
+
+        /**
+         * MAP DATA
+         * A simplified low-res world map (coordinates in Lat/Lon).
+         * In a production app, this would be loaded from a TopoJSON file.
+         * This ensures the demo is self-contained.
+         */
+        const worldPaths = [
+            // North America
+            "M-170,70 L-160,70 L-150,65 L-140,60 L-130,55 L-120,50 L-110,50 L-100,50 L-95,48 L-90,45 L-85,45 L-80,42 L-75,40 L-70,45 L-65,50 L-60,55 L-55,55 L-50,50 L-60,70 L-80,75 L-100,75 L-120,75 L-140,75 L-160,75 Z",
+            // South America
+            "M-80,10 L-70,0 L-60,-10 L-55,-20 L-50,-30 L-55,-40 L-60,-50 L-55,-55 L-45,-50 L-40,-40 L-35,-30 L-35,-20 L-40,-10 L-50,0 L-60,10 L-70,10 Z",
+            // Europe
+            "M-10,70 L0,72 L10,70 L20,65 L30,60 L25,55 L15,55 L5,55 L-5,60 Z",
+            // Africa
+            "M-10,35 L0,35 L10,35 L20,30 L30,25 L35,15 L40,5 L35,-5 L25,-15 L15,-25 L5,-30 L-5,-25 L-10,-15 L-15,0 L-15,15 L-10,25 Z",
+            // Asia
+            "M35,75 L45,75 L55,75 L65,75 L75,70 L85,65 L95,60 L105,55 L115,50 L125,45 L135,40 L140,50 L135,60 L125,65 L115,70 L105,72 L95,70 L85,70 L75,72 L65,72 L55,72 L45,72 L35,72 Z",
+            // Australia
+            "M110,-10 L120,-10 L130,-10 L140,-15 L145,-25 L140,-35 L130,-35 L120,-30 L115,-20 Z",
+            // UK
+            "M-5,58 L-2,59 L0,58 L-2,56 Z",
+            // Greenland
+            "M-40,80 L-30,82 L-20,80 L-30,75 Z",
+            // Madagascar
+            "M45,-20 L48,-25 L45,-30 L42,-25 Z",
+            // Japan
+            "M140,40 L145,38 L142,35 Z"
+        ];
+
+        /**
+         * APP LOGIC
+         */
+        document.addEventListener('DOMContentLoaded', () => {
+            const container = document.getElementById('map-container');
+            
+            // 1. Setup SVG
+            const draw = SVG().addTo(container).size('100%', '100%');
+            
+            // Group to hold the map for zoom/pan
+            const mapGroup = draw.group().id('map-layer');
+            const uiGroup = draw.group().id('ui-layer'); // For markers on top
+
+            // 2. Draw Map Features
+            const scale = 400; // Base scale for projection units
+            const centerX = container.clientWidth / 2;
+            const centerY = container.clientHeight / 2;
+
+            // Draw Graticule (Grid)
+            const graticuleGroup = mapGroup.group().addClass('graticule');
+            for (let lat = -90; lat <= 90; lat += 30) {
+                let pathStr = "";
+                for (let lon = -180; lon <= 180; lon += 5) {
+                    const p = EqualEarth.forward(lat, lon);
+                    const x = centerX + p.x * scale;
+                    const y = centerY - p.y * scale; // SVG Y is down
+                    pathStr += (lon === -180 ? "M" : "L") + x + "," + y;
+                }
+                graticuleGroup.path(pathStr);
+            }
+            for (let lon = -180; lon <= 180; lon += 30) {
+                let pathStr = "";
+                for (let lat = -90; lat <= 90; lat += 5) {
+                    const p = EqualEarth.forward(lat, lon);
+                    const x = centerX + p.x * scale;
+                    const y = centerY - p.y * scale;
+                    pathStr += (lat === -90 ? "M" : "L") + x + "," + y;
+                }
+                graticuleGroup.path(pathStr);
+            }
+
+            // Draw Landmasses (Simplified paths)
+            // Note: In the path data above, I used Lat/Lon coordinates.
+            // We need to project them.
+            const landGroup = mapGroup.group().id('landmasses');
+            
+            worldPaths.forEach(d => {
+                // Parse simple path string "Mx,y Lx,y..."
+                const parts = d.split(' ');
+                let projectedPath = "";
+                
+                parts.forEach(part => {
+                    const cmd = part[0];
+                    const coords = part.substring(1).split(',');
+                    const lon = parseFloat(coords[0]);
+                    const lat = parseFloat(coords[1]);
+                    
+                    const p = EqualEarth.forward(lat, lon);
+                    const x = centerX + p.x * scale;
+                    const y = centerY - p.y * scale;
+                    
+                    projectedPath += `${cmd}${x},${y} `;
+                });
+
+                landGroup.path(projectedPath).addClass('land-path');
+            });
+
+            // State for Zoom/Pan
+            let state = {
+                scale: 1,
+                panning: false,
+                pointX: 0,
+                pointY: 0,
+                startX: 0,
+                startY: 0,
+                viewBox: { x: 0, y: 0, w: container.clientWidth, h: container.clientHeight }
+            };
+
+            // Update ViewBox helper
+            const updateViewBox = () => {
+                // Calculate new viewbox based on scale and pan
+                // We are essentially zooming into the center, but we need to adjust x/y for panning
+                const w = container.clientWidth / state.scale;
+                const h = container.clientHeight / state.scale;
+                
+                // Center offset
+                const cx = container.clientWidth / 2;
+                const cy = container.clientHeight / 2;
+                
+                // Adjust pan to be relative to scale (SVG coordinate space)
+                // viewBox.x = center_world_x - w/2 - pan_x / scale ??
+                // Simpler: Viewbox x/y define the top-left corner of the visible window in SVG coordinates
+                
+                // We store state.viewBox.x/y as the top-left corner in the current zoomed coordinate system
+                draw.viewbox(state.viewBox.x, state.viewBox.y, w, h);
+            };
+
+            // Initialize ViewBox
+            updateViewBox();
+
+            // 3. Interaction Handlers
+
+            // Mouse Down (Start Pan)
+            container.addEventListener('mousedown', (e) => {
+                state.panning = true;
+                state.startX = e.clientX;
+                state.startY = e.clientY;
+                container.style.cursor = 'grabbing';
+            });
+
+            // Mouse Move (Panning + Tooltip)
+            container.addEventListener('mousemove', (e) => {
+                const rect = container.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                // Handle Panning
+                if (state.panning) {
+                    const dx = (e.clientX - state.startX) / state.scale;
+                    const dy = (e.clientY - state.startY) / state.scale;
+                    
+                    state.viewBox.x -= dx;
+                    state.viewBox.y -= dy;
+                    
+                    state.startX = e.clientX;
+                    state.startY = e.clientY;
+                    
+                    updateViewBox();
+                }
+
+                // Inverse Projection for Tooltip
+                // 1. Convert Screen (mouse) to SVG World coordinates
+                // viewBox x/y is the top-left of the window in world coords
+                const worldX = state.viewBox.x + mouseX / state.scale;
+                const worldY = state.viewBox.y + mouseY / state.scale;
+
+                // 2. Convert World to Projection Units (relative to center)
+                // Original Center: centerX, centerY
+                const projX = (worldX - centerX) / scale;
+                const projY = -(worldY - centerY) / scale; // Flip Y
+
+                // 3. Inverse Project
+                try {
+                    const coords = EqualEarth.inverse(projX, projY);
+                    
+                    // Update Tooltip
+                    const tooltip = document.getElementById('coordinate-readout');
+                    tooltip.style.left = e.clientX + 'px';
+                    tooltip.style.top = e.clientY + 'px';
+                    tooltip.classList.remove('hidden');
+                    tooltip.innerText = `Lat: ${coords.lat.toFixed(2)}, Lon: ${coords.lon.toFixed(2)}`;
+                } catch (err) {
+                    // Outside valid range
+                }
+            });
+
+            // Mouse Up (End Pan)
+            window.addEventListener('mouseup', () => {
+                state.panning = false;
+                container.style.cursor = 'crosshair';
+            });
+
+            // Mouse Leave
+            container.addEventListener('mouseleave', () => {
+                document.getElementById('coordinate-readout').classList.add('hidden');
+            });
+
+            // Zoom (Wheel)
+            container.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const zoomSensitivity = 0.001;
+                const delta = -e.deltaY * zoomSensitivity;
+                const newScale = Math.min(Math.max(0.5, state.scale + delta), 10); // Clamp zoom 0.5x to 10x
+
+                // Zoom towards mouse pointer logic
+                // Calculate world point under mouse before zoom
+                const rect = container.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+                
+                const worldX = state.viewBox.x + mouseX / state.scale;
+                const worldY = state.viewBox.y + mouseY / state.scale;
+
+                // Apply zoom
+                state.scale = newScale;
+
+                // Adjust viewbox x/y to keep world point under mouse
+                state.viewBox.x = worldX - mouseX / state.scale;
+                state.viewBox.y = worldY - mouseY / state.scale;
+
+                updateViewBox();
+            }, { passive: false });
+
+            // Click (Select Coordinates)
+            container.addEventListener('click', (e) => {
+                const rect = container.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                const worldX = state.viewBox.x + mouseX / state.scale;
+                const worldY = state.viewBox.y + mouseY / state.scale;
+
+                const projX = (worldX - centerX) / scale;
+                const projY = -(worldY - centerY) / scale;
+
+                try {
+                    const coords = EqualEarth.inverse(projX, projY);
+                    // Display in Panel
+                    document.getElementById('click-output').innerHTML = 
+                        `<span class="text-white">Lat:</span> ${coords.lat.toFixed(4)}<br>` + 
+                        `<span class="text-white">Lon:</span> ${coords.lon.toFixed(4)}`;
+                    
+                    // Also fill inputs
+                    document.getElementById('input-lat').value = coords.lat.toFixed(4);
+                    document.getElementById('input-lon').value = coords.lon.toFixed(4);
+
+                    // Visual feedback on map (click ripple)
+                    const ripple = uiGroup.circle(10).fill('none').stroke('#22d3ee').center(worldX, worldY);
+                    ripple.animate(500).radius(20).opacity(0).after(() => ripple.remove());
+
+                } catch (err) {
+                    document.getElementById('click-output').innerText = "Invalid coordinate";
+                }
+            });
+
+            // 4. Plotting Functionality
+            document.getElementById('btn-plot').addEventListener('click', () => {
+                const lat = parseFloat(document.getElementById('input-lat').value);
+                const lon = parseFloat(document.getElementById('input-lon').value);
+
+                if (isNaN(lat) || isNaN(lon)) {
+                    alert("Please enter valid coordinates");
+                    return;
+                }
+
+                try {
+                    const p = EqualEarth.forward(lat, lon);
+                    // Convert to World Coordinates
+                    const worldX = centerX + p.x * scale;
+                    const worldY = centerY - p.y * scale;
+
+                    // Check if valid
+                    if (isNaN(worldX) || isNaN(worldY)) throw new Error("Invalid Projection");
+
+                    // Add Marker
+                    const marker = uiGroup.circle(8).addClass('marker').center(worldX, worldY);
+                    
+                    // Add text label
+                    const text = uiGroup.text(`${lat.toFixed(1)}, ${lon.toFixed(1)}`)
+                        .font({ family: 'monospace', size: 12, anchor: 'middle', fill: '#fff' })
+                        .move(worldX, worldY - 15);
+
+                    // Pan to marker
+                    // Center view on this point
+                    const newX = worldX - (container.clientWidth / state.scale) / 2;
+                    const newY = worldY - (container.clientHeight / state.scale) / 2;
+                    
+                    // Animate Viewbox change
+                    // Simple interpolation could go here, but direct set for responsiveness
+                    state.viewBox.x = newX;
+                    state.viewBox.y = newY;
+                    updateViewBox();
+
+                } catch (e) {
+                    console.error(e);
+                    alert("Error projecting point. Check coordinates range.");
+                }
+            });
+        });
+    </script>
+</body>
+</html>
