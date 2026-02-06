@@ -393,7 +393,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **0/10** |
 | **Kimi K2 Turbo**     | **3/10** |
 | **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
+| **Мinimax m2.1**      | **9/10** |
 | **Мimo 2**            | **0/10** |
 
 ---
@@ -413,7 +413,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **0/10** |
 | **Kimi K2 Turbo**     | **1/10** |
 | **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
+| **Мinimax m2.1**      | **1/10** |
 | **Мimo 2**            | **0/10** |
 
 ---
@@ -433,7 +433,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **0/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
+| **Мinimax m2.1**      | **10/10** |
 | **Мimo 2**            | **0/10** |
 
 ---
@@ -453,7 +453,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **0/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
+| **Мinimax m2.1**      | **1/10** |
 | **Мimo 2**            | **0/10** |
 
 ---
@@ -473,7 +473,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **0/10** |
 | **Kimi K2 Turbo**     | **1/10** |
 | **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
+| **Мinimax m2.1**      | **7/10** |
 | **Мimo 2**            | **0/10** |
 
 ---
@@ -493,7 +493,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **0/10** |
 | **Kimi K2 Turbo**     | **4/10** |
 | **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
+| **Мinimax m2.1**      | **1/10** |
 | **Мimo 2**            | **0/10** |
 
 ---
@@ -513,7 +513,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **0/10** |
 | **Kimi K2 Turbo**     | **2/10** |
 | **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
+| **Мinimax m2.1**      | **1/10** |
 | **Мimo 2**            | **0/10** |
 
 ---
@@ -533,7 +533,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **0/10** |
 | **Kimi K2 Turbo**     | **1/10** |
 | **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
+| **Мinimax m2.1**      | **6/10** |
 | **Мimo 2**            | **0/10** |
 
 ---
@@ -553,7 +553,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **0/10** |
 | **Kimi K2 Turbo**     | **2/10** |
 | **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
+| **Мinimax m2.1**      | **1/10** |
 | **Мimo 2**            | **0/10** |
 
 
