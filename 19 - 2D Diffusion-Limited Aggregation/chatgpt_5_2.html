@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>2D Diffusion-Limited Aggregation (DLA) — Real-time</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; background: #0b0e14; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #wrap {
+      height: 100%;
+      display: grid;
+      place-items: center;
+    }
+    #stage {
+      position: relative;
+      width: min(900px, 92vw);
+      aspect-ratio: 1 / 1;
+      border-radius: 14px;
+      overflow: hidden;
+      background: radial-gradient(1200px 1200px at 50% 45%, #0f1522 0%, #070910 55%, #05060a 100%);
+      box-shadow: 0 10px 40px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.06);
+    }
+    canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    #ui {
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(10, 12, 18, 0.78);
+      backdrop-filter: blur(6px);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+      user-select: none;
+      max-width: calc(100% - 24px);
+    }
+    #ui .row {
+      display: grid;
+      grid-template-columns: 160px 1fr 52px;
+      gap: 10px;
+      align-items: center;
+      margin: 7px 0;
+      font-size: 12px;
+      color: rgba(255,255,255,.88);
+    }
+    #ui label { opacity: .92; }
+    #ui input[type="range"] { width: 100%; }
+    #ui .val { text-align: right; font-variant-numeric: tabular-nums; opacity: .95; }
+    #buttons {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: rgba(255,255,255,.10);
+      color: rgba(255,255,255,.92);
+      cursor: pointer;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.10);
+    }
+    button:hover { background: rgba(255,255,255,.14); }
+    button:active { transform: translateY(1px); }
+    #stats {
+      margin-top: 8px;
+      font-size: 12px;
+      color: rgba(255,255,255,.78);
+      display: grid;
+      gap: 2px;
+      font-variant-numeric: tabular-nums;
+    }
+    #hint {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      padding: 8px 10px;
+      border-radius: 12px;
+      background: rgba(10, 12, 18, 0.65);
+      backdrop-filter: blur(6px);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+      font-size: 12px;
+      color: rgba(255,255,255,.72);
+      max-width: min(420px, 70%);
+    }
+    a { color: #b9d2ff; }
+  </style>
+</head>
+
+<body>
+<div id="wrap">
+  <div id="stage">
+    <!-- Fixed structure is drawn once and never cleared -->
+    <canvas id="fixed"></canvas>
+    <!-- Moving walkers drawn each frame -->
+    <canvas id="moving"></canvas>
+
+    <div id="ui">
+      <div class="row">
+        <label for="activeCount">Active particles</label>
+        <input id="activeCount" type="range" min="10" max="600" step="10" value="100">
+        <div class="val" id="activeCountVal">100</div>
+      </div>
+      <div class="row">
+        <label for="stepsPerFrame">Steps / frame</label>
+        <input id="stepsPerFrame" type="range" min="1" max="12" step="1" value="3">
+        <div class="val" id="stepsPerFrameVal">3</div>
+      </div>
+      <div class="row">
+        <label for="stepSize">Step size (px)</label>
+        <input id="stepSize" type="range" min="0.6" max="3.0" step="0.1" value="1.2">
+        <div class="val" id="stepSizeVal">1.2</div>
+      </div>
+      <div class="row">
+        <label for="bias">Inward bias</label>
+        <input id="bias" type="range" min="0.00" max="0.30" step="0.01" value="0.08">
+        <div class="val" id="biasVal">0.08</div>
+      </div>
+      <div class="row">
+        <label for="spawnMargin">Spawn margin (px)</label>
+        <input id="spawnMargin" type="range" min="10" max="160" step="5" value="50">
+        <div class="val" id="spawnMarginVal">50</div>
+      </div>
+
+      <div id="buttons">
+        <button id="restartBtn" title="Restart simulation">Restart</button>
+        <button id="pauseBtn" title="Pause/Resume">Pause</button>
+        <button id="clearBtn" title="Clear and restart with same settings">Clear</button>
+      </div>
+
+      <div id="stats">
+        <div id="statFixed">Fixed: 0</div>
+        <div id="statBounds">Bounds: —</div>
+        <div id="statStatus">Status: running</div>
+      </div>
+    </div>
+
+    <div id="hint">
+      Real-time DLA: 100 walkers start active, and a new walker spawns whenever one sticks (keeping the active count steady).
+      Growth stops when the cluster comes within <b>50px</b> of any canvas edge.
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ---------- Canvas + HiDPI ----------
+  const stage = document.getElementById('stage');
+  const fixedCanvas = document.getElementById('fixed');
+  const movingCanvas = document.getElementById('moving');
+  const fctx = fixedCanvas.getContext('2d', { alpha: true });
+  const mctx = movingCanvas.getContext('2d', { alpha: true });
+
+  // ---------- UI ----------
+  const ui = {
+    activeCount: document.getElementById('activeCount'),
+    stepsPerFrame: document.getElementById('stepsPerFrame'),
+    stepSize: document.getElementById('stepSize'),
+    bias: document.getElementById('bias'),
+    spawnMargin: document.getElementById('spawnMargin'),
+    activeCountVal: document.getElementById('activeCountVal'),
+    stepsPerFrameVal: document.getElementById('stepsPerFrameVal'),
+    stepSizeVal: document.getElementById('stepSizeVal'),
+    biasVal: document.getElementById('biasVal'),
+    spawnMarginVal: document.getElementById('spawnMarginVal'),
+    restartBtn: document.getElementById('restartBtn'),
+    pauseBtn: document.getElementById('pauseBtn'),
+    clearBtn: document.getElementById('clearBtn'),
+    statFixed: document.getElementById('statFixed'),
+    statBounds: document.getElementById('statBounds'),
+    statStatus: document.getElementById('statStatus'),
+  };
+
+  function syncLabels() {
+    ui.activeCountVal.textContent = ui.activeCount.value;
+    ui.stepsPerFrameVal.textContent = ui.stepsPerFrame.value;
+    ui.stepSizeVal.textContent = (+ui.stepSize.value).toFixed(1);
+    ui.biasVal.textContent = (+ui.bias.value).toFixed(2);
+    ui.spawnMarginVal.textContent = ui.spawnMargin.value;
+  }
+  ['activeCount','stepsPerFrame','stepSize','bias','spawnMargin'].forEach(id => {
+    ui[id].addEventListener('input', syncLabels);
+  });
+  syncLabels();
+
+  // ---------- Simulation state ----------
+  const EDGE_STOP_MARGIN = 50; // stop when cluster is within 50px of any edge
+
+  let W = 0, H = 0;
+  let dpr = 1;
+
+  // Occupancy grid for fixed pixels (fast neighbor checks)
+  // 0 = empty, 1 = occupied
+  let occ = null;
+
+  let cx = 0, cy = 0;                 // center
+  let maxR = 1;                       // current max radius of cluster
+  let fixedCount = 0;
+
+  let minX, maxX, minY, maxY;         // bounds of fixed cluster
+  let walkers = [];
+  let running = true;
+  let paused = false;
+  let stopGrowth = false;
+
+  // ---------- Helpers ----------
+  const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+  function resize() {
+    const rect = stage.getBoundingClientRect();
+    const cssW = Math.max(200, Math.floor(rect.width));
+    const cssH = Math.max(200, Math.floor(rect.height));
+
+    dpr = Math.min(2, window.devicePixelRatio || 1);
+
+    fixedCanvas.width = Math.floor(cssW * dpr);
+    fixedCanvas.height = Math.floor(cssH * dpr);
+    movingCanvas.width = Math.floor(cssW * dpr);
+    movingCanvas.height = Math.floor(cssH * dpr);
+
+    fixedCanvas.style.width = cssW + 'px';
+    fixedCanvas.style.height = cssH + 'px';
+    movingCanvas.style.width = cssW + 'px';
+    movingCanvas.style.height = cssH + 'px';
+
+    // Work in CSS pixel coords; scale contexts once
+    fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    W = cssW; H = cssH;
+    cx = W * 0.5; cy = H * 0.5;
+
+    // Recreate occupancy on resize (restart to keep correct geometry)
+    restart(true);
+  }
+
+  window.addEventListener('resize', resize, { passive: true });
+
+  function idx(x, y) { return y * W + x; }
+
+  function isOccupied(x, y) {
+    if (x < 0 || y < 0 || x >= W || y >= H) return false;
+    return occ[idx(x, y)] === 1;
+  }
+
+  function setOccupied(x, y) {
+    occ[idx(x, y)] = 1;
+  }
+
+  function neighborOccupied(x, y) {
+    // 8-neighborhood
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        if (ox === 0 && oy === 0) continue;
+        const nx = x + ox, ny = y + oy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        if (occ[idx(nx, ny)] === 1) return true;
+      }
+    }
+    return false;
+  }
+
+  function rand01() { return Math.random(); }
+  function randAngle() { return Math.random() * Math.PI * 2; }
+
+  function spawnRadius() {
+    // Spawn around the cluster: just outside current max radius + margin
+    const margin = +ui.spawnMargin.value;
+    return Math.min(Math.min(cx, cy), Math.min(W - cx, H - cy)) - 2
+           ? (maxR + margin)
+           : (Math.min(W, H) * 0.45);
+  }
+
+  function killRadius() {
+    // If a walker strays too far out, respawn it.
+    return spawnRadius() + 120;
+  }
+
+  function spawnWalker(w) {
+    const r = spawnRadius();
+    const a = randAngle();
+    w.x = cx + Math.cos(a) * r;
+    w.y = cy + Math.sin(a) * r;
+    w.age = 0;
+    w.alive = true;
+  }
+
+  function updateBounds(x, y) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+
+  function reachedEdgeStop() {
+    return (minX <= EDGE_STOP_MARGIN ||
+            minY <= EDGE_STOP_MARGIN ||
+            maxX >= W - EDGE_STOP_MARGIN ||
+            maxY >= H - EDGE_STOP_MARGIN);
+  }
+
+  // ---------- Init / Restart ----------
+  function clearFixedLayer() {
+    fctx.clearRect(0, 0, W, H);
+    // subtle “glow” seed background? keep clean; just draw fixed pixels.
+  }
+
+  function seedCenter() {
+    const x = Math.round(cx);
+    const y = Math.round(cy);
+    setOccupied(x, y);
+    fixedCount = 1;
+
+    minX = maxX = x;
+    minY = maxY = y;
+    maxR = 1;
+
+    // Draw the seed
+    fctx.fillStyle = 'rgba(220, 235, 255, 0.95)';
+    fctx.fillRect(x, y, 1, 1);
+  }
+
+  function rebuildWalkers() {
+    const n = +ui.activeCount.value;
+    walkers = new Array(n);
+    for (let i = 0; i < n; i++) {
+      walkers[i] = { x: 0, y: 0, age: 0, alive: true };
+      spawnWalker(walkers[i]);
+    }
+  }
+
+  function restart(fromResize = false) {
+    running = true;
+    paused = false;
+    stopGrowth = false;
+    ui.pauseBtn.textContent = 'Pause';
+    ui.statStatus.textContent = 'Status: running';
+
+    occ = new Uint8Array(W * H);
+
+    clearFixedLayer();
+    seedCenter();
+    rebuildWalkers();
+
+    // If called from resize, we keep running; otherwise it's a manual restart
+    if (!fromResize) {
+      // no-op
+    }
+  }
+
+  // ---------- DLA Step ----------
+  function stepWalker(w, stepLen, biasStrength) {
+    // Slight inward bias: random step + (unit vector toward center)*biasStrength*stepLen
+    const dxC = cx - w.x;
+    const dyC = cy - w.y;
+    const dist = Math.hypot(dxC, dyC) || 1;
+
+    const a = randAngle();
+    const rx = Math.cos(a);
+    const ry = Math.sin(a);
+
+    const bx = (dxC / dist) * (biasStrength);
+    const by = (dyC / dist) * (biasStrength);
+
+    const vx = rx + bx;
+    const vy = ry + by;
+
+    w.x += vx * stepLen;
+    w.y += vy * stepLen;
+
+    w.age++;
+
+    // If out of bounds, respawn
+    if (w.x < 1 || w.y < 1 || w.x > W - 2 || w.y > H - 2) {
+      spawnWalker(w);
+      return;
+    }
+
+    // If too far from cluster, respawn
+    const r = Math.hypot(w.x - cx, w.y - cy);
+    if (r > killRadius()) {
+      spawnWalker(w);
+      return;
+    }
+
+    // Stick check (pixel grid)
+    const ix = w.x | 0;
+    const iy = w.y | 0;
+
+    if (neighborOccupied(ix, iy)) {
+      // Fix the particle
+      setOccupied(ix, iy);
+      fixedCount++;
+
+      updateBounds(ix, iy);
+      maxR = Math.max(maxR, Math.hypot(ix - cx, iy - cy));
+
+      // Draw fixed pixel once (efficient layer)
+      // Color can vary a bit by radius to make it visually clearer without being expensive
+      const t = clamp((Math.hypot(ix - cx, iy - cy) / (Math.min(W, H) * 0.5)), 0, 1);
+      const rC = (180 + 50 * t) | 0;
+      const gC = (205 + 35 * t) | 0;
+      const bC = (235 + 20 * t) | 0;
+      fctx.fillStyle = `rgba(${rC},${gC},${bC},0.95)`;
+      fctx.fillRect(ix, iy, 1, 1);
+
+      // Stop if near edge
+      if (reachedEdgeStop()) {
+        stopGrowth = true;
+        running = false;
+        ui.statStatus.textContent = 'Status: stopped (cluster near edge)';
+        return;
+      }
+
+      // Immediately respawn this walker to keep active count constant
+      spawnWalker(w);
+    }
+  }
+
+  // ---------- Render ----------
+  function renderMoving() {
+    mctx.clearRect(0, 0, W, H);
+
+    // Draw moving walkers
+    mctx.fillStyle = 'rgba(255,255,255,0.85)';
+    const R = 1.15; // radius for visibility; keep small for speed
+    mctx.beginPath();
+    for (let i = 0; i < walkers.length; i++) {
+      const w = walkers[i];
+      mctx.moveTo(w.x + R, w.y);
+      mctx.arc(w.x, w.y, R, 0, Math.PI * 2);
+    }
+    mctx.fill();
+
+    // Optional: show stop margin (light guide)
+    mctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    mctx.lineWidth = 1;
+    mctx.strokeRect(EDGE_STOP_MARGIN, EDGE_STOP_MARGIN, W - EDGE_STOP_MARGIN*2, H - EDGE_STOP_MARGIN*2);
+  }
+
+  function updateStats() {
+    ui.statFixed.textContent = `Fixed: ${fixedCount.toLocaleString()}`;
+    ui.statBounds.textContent =
+      `Bounds: x[${minX}, ${maxX}] y[${minY}, ${maxY}]  maxR≈${maxR.toFixed(1)}`;
+  }
+
+  // ---------- Main loop ----------
+  function tick() {
+    if (!paused && running) {
+      const steps = +ui.stepsPerFrame.value;
+      const stepLen = +ui.stepSize.value;
+      const biasStrength = +ui.bias.value;
+
+      // Do a few simulation steps per frame for faster growth
+      // (still shows smooth motion because walkers are rendered each frame)
+      for (let s = 0; s < steps; s++) {
+        for (let i = 0; i < walkers.length; i++) {
+          stepWalker(walkers[i], stepLen, biasStrength);
+          if (!running) break; // stop early if edge reached
+        }
+        if (!running) break;
+      }
+    }
+
+    renderMoving();
+    updateStats();
+
+    requestAnimationFrame(tick);
+  }
+
+  // ---------- Controls ----------
+  ui.restartBtn.addEventListener('click', () => restart(false));
+  ui.clearBtn.addEventListener('click', () => {
+    // Clear & restart with same settings, but keep current canvas size
+    restart(false);
+  });
+
+  ui.pauseBtn.addEventListener('click', () => {
+    paused = !paused;
+    ui.pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+    ui.statStatus.textContent = paused ? 'Status: paused' : (running ? 'Status: running' : ui.statStatus.textContent);
+  });
+
+  // If the user changes active count, rebuild walkers without clearing the cluster
+  ui.activeCount.addEventListener('change', () => {
+    const old = walkers.length;
+    const n = +ui.activeCount.value;
+    if (n === old) return;
+    const next = new Array(n);
+
+    // Keep as many as possible, spawn the rest
+    const keep = Math.min(old, n);
+    for (let i = 0; i < keep; i++) next[i] = walkers[i];
+    for (let i = keep; i < n; i++) {
+      next[i] = { x: 0, y: 0, age: 0, alive: true };
+      spawnWalker(next[i]);
+    }
+    walkers = next;
+  });
+
+  // ---------- Start ----------
+  resize();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

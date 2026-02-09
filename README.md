@@ -402,7 +402,7 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **7/10** |
-| **ChatGPT 5.2**       | **0/10** |
+| **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.6**   | **0/10** |
@@ -423,7 +423,7 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **4/10** |
-| **ChatGPT 5.2**       | **0/10** |
+| **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **1/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **0/10** |
@@ -444,7 +444,7 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **4/10** |
-| **ChatGPT 5.2**       | **0/10** |
+| **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.6**   | **0/10** |
@@ -465,7 +465,7 @@ Testing different LLMs to do software tasks
 | Model                 | Score    |
 | --------------------- | -------- |
 | **Gemini 3**          | **7/10** |
-| **ChatGPT 5.2**       | **0/10** |
+| **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **0/10** |

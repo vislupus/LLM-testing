@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>p5.js Von Kármán Vortex Street (Lattice Boltzmann D2Q9) — Move/Rotate Obstacle</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e14; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #hud{
+      position: fixed; left: 12px; top: 12px; z-index: 10;
+      padding: 10px 12px; border-radius: 12px;
+      background: rgba(10,12,18,0.74);
+      backdrop-filter: blur(6px);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.09), 0 10px 30px rgba(0,0,0,0.35);
+      color: rgba(255,255,255,0.88);
+      font-size: 12px; line-height: 1.35;
+      max-width: min(820px, calc(100vw - 24px));
+      user-select: none;
+    }
+    #hud b{ color: rgba(255,255,255,0.95); }
+    #hud .row{ display:flex; gap:10px; flex-wrap:wrap; margin-top:6px; opacity:.92; }
+    #hud .pill{
+      padding: 3px 8px; border-radius: 999px;
+      background: rgba(255,255,255,0.10);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+      font-variant-numeric: tabular-nums;
+    }
+    #hint{
+      position: fixed; right: 12px; bottom: 12px; z-index: 10;
+      padding: 10px 12px; border-radius: 12px;
+      background: rgba(10,12,18,0.62);
+      backdrop-filter: blur(6px);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.09);
+      color: rgba(255,255,255,0.76);
+      font-size: 12px; line-height: 1.35;
+      max-width: min(780px, calc(100vw - 24px));
+      user-select: none;
+    }
+    #hint kbd{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px; padding: 1px 6px; border-radius: 6px;
+      background: rgba(255,255,255,0.10);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div><b>Von Kármán vortex street</b> — Lattice Boltzmann (D2Q9) in a tube with a movable, rotatable obstacle</div>
+    <div class="row">
+      <div class="pill" id="fps">FPS: —</div>
+      <div class="pill" id="grid">Grid: —</div>
+      <div class="pill" id="shape">Shape: —</div>
+      <div class="pill" id="angle">Angle: —</div>
+      <div class="pill" id="re">Re~ —</div>
+      <div class="pill" id="mode">View: vorticity</div>
+    </div>
+  </div>
+
+  <div id="hint">
+    <b>Mouse:</b> drag the obstacle to move it. <b>Mouse wheel</b>: resize (hold <kbd>Shift</kbd> to rotate).<br/>
+    <b>Keys:</b>
+    <kbd>1</kbd> circle • <kbd>2</kbd> ellipse • <kbd>3</kbd> rectangle •
+    <kbd>Q</kbd>/<kbd>E</kbd> rotate • <kbd>+</kbd>/<kbd>-</kbd> size •
+    <kbd>A</kbd>/<kbd>D</kbd> widen/narrow • <kbd>W</kbd>/<kbd>S</kbd> taller/shorter (ellipse/rect) •
+    <kbd>V</kbd> toggle view (vorticity/speed) • <kbd>G</kbd> toggle vectors •
+    <kbd>[</kbd>/<kbd>]</kbd> viscosity • <kbd>{</kbd>/<kbd>}</kbd> flow speed •
+    <kbd>R</kbd> reset flow • <kbd>P</kbd> pause • <kbd>H</kbd> hide UI
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+  <script>
+  (() => {
+    // ================================================================
+    // Lattice Boltzmann Method (LBM) D2Q9
+    // - Incompressible-ish flow approximation, good for vortex streets.
+    // - Tube walls (no-slip) + obstacle bounce-back (no-slip).
+    // - Inlet: prescribed equilibrium velocity.
+    // - Outlet: simple zero-gradient copy (fast, stable enough for visuals).
+    //
+    // Visualization:
+    // - Vorticity (alternating red/blue vortices) or speed magnitude.
+    // - Optional velocity vectors.
+    //
+    // Obstacle:
+    // - Move by dragging
+    // - Shape: circle / ellipse / rectangle
+    // - Size + aspect ratio
+    // - Rotation 0..360
+    // ================================================================
+
+    // ---------- Grid size (tube) ----------
+    // Keep modest for smooth browser FPS while still showing shedding.
+    let NX = 360;
+    let NY = 180;
+
+    // Auto-tune a bit for small screens
+    function pickGrid() {
+      const m = Math.min(window.innerWidth, window.innerHeight);
+      if (m < 650) return { NX: 280, NY: 140 };
+      if (m < 1000) return { NX: 340, NY: 170 };
+      return { NX: 400, NY: 200 };
+    }
+
+    // ---------- LBM constants ----------
+    const cxs = [0, 1, 0, -1, 0,  1, -1, -1,  1];
+    const cys = [0, 0, 1,  0,-1,  1,  1, -1, -1];
+    const wts = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36];
+    const opp = [0, 3, 4, 1, 2, 7, 8, 5, 6];
+
+    // Storage: direction-major arrays for speed (dirBlock * size + id)
+    let size = 0;
+    let f, f2;                // distribution functions
+    let ux, uy, rho;           // macroscopic fields (for viz)
+    let solid, prevSolid;      // solid mask (tube walls + obstacle)
+
+    // Simulation parameters
+    let uIn = 0.090;           // inlet speed (lattice units)
+    let nu  = 0.015;           // kinematic viscosity
+    let tau = 0.5 + 3.0 * nu;  // relaxation time
+    let omega = 1.0 / tau;
+
+    let stepsPerFrame = 2;     // increase for faster evolution, decrease for FPS
+    let paused = false;
+
+    // Visualization
+    let img;
+    let viewMode = "vorticity";  // "vorticity" or "speed"
+    let showVectors = false;
+
+    // Obstacle parameters (in lattice coords)
+    const obs = {
+      x: 0, y: 0,
+      rx: 18, ry: 18,
+      angle: 0,
+      shape: "circle" // circle|ellipse|rect
+    };
+    let dragging = false;
+    let dragOffsetX = 0, dragOffsetY = 0;
+
+    // UI
+    const elFPS = () => document.getElementById("fps");
+    const elGrid = () => document.getElementById("grid");
+    const elShape = () => document.getElementById("shape");
+    const elAngle = () => document.getElementById("angle");
+    const elRe = () => document.getElementById("re");
+    const elMode = () => document.getElementById("mode");
+    const hud = () => document.getElementById("hud");
+    const hint = () => document.getElementById("hint");
+    let showUI = true;
+
+    // ---------- Helpers ----------
+    const clamp = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
+    function idOf(x, y) { return x + y * NX; }
+
+    // Keep a consistent drawing region (letterbox) so mouse mapping is correct
+    function computeViewport() {
+      const s = Math.min(width / NX, height / NY);
+      const ox = (width - NX * s) * 0.5;
+      const oy = (height - NY * s) * 0.5;
+      return { s, ox, oy };
+    }
+
+    function screenToLattice(px, py) {
+      const { s, ox, oy } = computeViewport();
+      const x = (px - ox) / s;
+      const y = (py - oy) / s;
+      return { x, y, s, ox, oy };
+    }
+
+    function equilibrium(dir, r, ux, uy) {
+      const eu = cxs[dir] * ux + cys[dir] * uy;
+      const uu = ux*ux + uy*uy;
+      return wts[dir] * r * (1 + 3*eu + 4.5*eu*eu - 1.5*uu);
+    }
+
+    function setCellEquilibrium(arr, id, r, ux0, uy0) {
+      for (let d = 0; d < 9; d++) arr[d*size + id] = equilibrium(d, r, ux0, uy0);
+    }
+
+    // ---------- Obstacle geometry ----------
+    function pointInObstacle(x, y) {
+      // x,y in lattice coordinates (cell centers)
+      const dx = x - obs.x;
+      const dy = y - obs.y;
+
+      // Rotate into obstacle local frame
+      const ca = Math.cos(obs.angle);
+      const sa = Math.sin(obs.angle);
+      const lx =  ca * dx + sa * dy;
+      const ly = -sa * dx + ca * dy;
+
+      if (obs.shape === "circle") {
+        const r = obs.rx;
+        return (lx*lx + ly*ly) <= r*r;
+      } else if (obs.shape === "ellipse") {
+        const a = Math.max(2, obs.rx);
+        const b = Math.max(2, obs.ry);
+        const q = (lx*lx)/(a*a) + (ly*ly)/(b*b);
+        return q <= 1.0;
+      } else { // rect
+        const a = Math.max(2, obs.rx);
+        const b = Math.max(2, obs.ry);
+        return (Math.abs(lx) <= a) && (Math.abs(ly) <= b);
+      }
+    }
+
+    function rebuildSolids() {
+      // Keep previous to reinitialize newly solid/fluid
+      prevSolid.set(solid);
+
+      solid.fill(0);
+
+      // Tube walls (no-slip)
+      for (let x = 0; x < NX; x++) {
+        solid[idOf(x, 0)] = 1;
+        solid[idOf(x, NY-1)] = 1;
+      }
+
+      // Obstacle
+      // Scan a bounding box for speed
+      const pad = 3;
+      const xmin = Math.floor(obs.x - obs.rx - pad);
+      const xmax = Math.ceil (obs.x + obs.rx + pad);
+      const ymin = Math.floor(obs.y - obs.ry - pad);
+      const ymax = Math.ceil (obs.y + obs.ry + pad);
+
+      for (let y = Math.max(1, ymin); y <= Math.min(NY-2, ymax); y++) {
+        for (let x = Math.max(0, xmin); x <= Math.min(NX-1, xmax); x++) {
+          // use cell center
+          if (pointInObstacle(x + 0.5, y + 0.5)) {
+            solid[idOf(x,y)] = 1;
+          }
+        }
+      }
+
+      // Reinitialize distributions for changed cells to avoid numerical junk
+      for (let i = 0; i < size; i++) {
+        if (solid[i] && !prevSolid[i]) {
+          // newly solid: set to rest equilibrium
+          setCellEquilibrium(f, i, 1.0, 0.0, 0.0);
+          setCellEquilibrium(f2, i, 1.0, 0.0, 0.0);
+        } else if (!solid[i] && prevSolid[i]) {
+          // newly fluid: start near inlet equilibrium
+          setCellEquilibrium(f, i, 1.0, uIn, 0.0);
+          setCellEquilibrium(f2, i, 1.0, uIn, 0.0);
+        }
+      }
+    }
+
+    // ---------- Initialization ----------
+    function alloc() {
+      size = NX * NY;
+      f = new Float32Array(9 * size);
+      f2 = new Float32Array(9 * size);
+      ux = new Float32Array(size);
+      uy = new Float32Array(size);
+      rho = new Float32Array(size);
+      solid = new Uint8Array(size);
+      prevSolid = new Uint8Array(size);
+
+      img = createImage(NX, NY);
+      img.loadPixels();
+    }
+
+    function resetFlow() {
+      // Initialize as uniform flow with small perturbation
+      for (let y = 0; y < NY; y++) {
+        for (let x = 0; x < NX; x++) {
+          const id = idOf(x,y);
+          const isWall = (y === 0 || y === NY-1);
+          solid[id] = isWall ? 1 : 0;
+        }
+      }
+      prevSolid.set(solid);
+
+      // Place obstacle somewhat upstream
+      obs.x = NX * 0.28;
+      obs.y = NY * 0.50;
+      obs.rx = Math.max(10, Math.floor(NY * 0.10));
+      obs.ry = obs.rx;
+      obs.angle = 0;
+      obs.shape = "circle";
+
+      rebuildSolids();
+
+      for (let y = 0; y < NY; y++) {
+        for (let x = 0; x < NX; x++) {
+          const id = idOf(x,y);
+          if (solid[id]) {
+            setCellEquilibrium(f,  id, 1.0, 0.0, 0.0);
+            setCellEquilibrium(f2, id, 1.0, 0.0, 0.0);
+          } else {
+            // tiny y-perturbation breaks symmetry -> vortex shedding
+            const perturb = 0.0025 * Math.sin((y / (NY-1)) * Math.PI * 2.0);
+            setCellEquilibrium(f,  id, 1.0, uIn, perturb);
+            setCellEquilibrium(f2, id, 1.0, uIn, perturb);
+          }
+        }
+      }
+    }
+
+    // ---------- Core LBM step ----------
+    function collide() {
+      // BGK collision: f <- f + omega (feq - f)
+      for (let y = 1; y < NY-1; y++) {
+        const row = y * NX;
+        for (let x = 0; x < NX; x++) {
+          const id = row + x;
+          if (solid[id]) {
+            ux[id] = 0; uy[id] = 0; rho[id] = 1;
+            continue;
+          }
+
+          // macroscopic
+          let r = 0;
+          for (let d = 0; d < 9; d++) r += f[d*size + id];
+
+          // avoid division by zero
+          if (r < 1e-9) r = 1e-9;
+
+          const f1 = f[1*size + id], f2v = f[2*size + id], f3 = f[3*size + id], f4 = f[4*size + id];
+          const f5 = f[5*size + id], f6 = f[6*size + id], f7 = f[7*size + id], f8 = f[8*size + id];
+
+          const ux0 = (f1 + f5 + f8 - (f3 + f6 + f7)) / r;
+          const uy0 = (f2v + f5 + f6 - (f4 + f7 + f8)) / r;
+
+          rho[id] = r;
+          ux[id] = ux0;
+          uy[id] = uy0;
+
+          const uu = ux0*ux0 + uy0*uy0;
+
+          // collide
+          for (let d = 0; d < 9; d++) {
+            const eu = cxs[d]*ux0 + cys[d]*uy0;
+            const feq = wts[d]*r*(1 + 3*eu + 4.5*eu*eu - 1.5*uu);
+            const off = d*size + id;
+            f[off] = f[off] + omega*(feq - f[off]);
+          }
+        }
+      }
+    }
+
+    function streamAndBounce(t) {
+      // Pull-streaming with bounce-back when source cell is solid.
+      // Also handle inlet/outlet cheaply.
+      for (let y = 1; y < NY-1; y++) {
+        const row = y * NX;
+        for (let x = 0; x < NX; x++) {
+          const id = row + x;
+
+          if (solid[id]) {
+            // keep rest in solids
+            setCellEquilibrium(f2, id, 1.0, 0.0, 0.0);
+            continue;
+          }
+
+          for (let d = 0; d < 9; d++) {
+            const sx = x - cxs[d];
+            const sy = y - cys[d];
+
+            // Inlet: if pulling from outside left, inject equilibrium flow
+            if (sx < 0) {
+              // small time-varying vertical component to encourage shedding
+              const vin = 0.0020 * Math.sin(t * 0.04);
+              f2[d*size + id] = equilibrium(d, 1.0, uIn, vin);
+              continue;
+            }
+
+            // Outlet: if pulling from outside right, temporarily copy from self (we’ll fix boundary after)
+            if (sx >= NX) {
+              f2[d*size + id] = f[d*size + id];
+              continue;
+            }
+
+            const sid = sx + sy * NX;
+
+            // Bounce-back if source is solid
+            if (solid[sid]) {
+              f2[d*size + id] = f[opp[d]*size + id];
+            } else {
+              f2[d*size + id] = f[d*size + sid];
+            }
+          }
+        }
+      }
+
+      // Enforce tube walls explicitly (top/bottom are solid already, but keep safe)
+      for (let x = 0; x < NX; x++) {
+        solid[idOf(x, 0)] = 1;
+        solid[idOf(x, NY-1)] = 1;
+      }
+
+      // Inlet boundary: set x=0 to equilibrium (overrides any drift)
+      for (let y = 1; y < NY-1; y++) {
+        const id = idOf(0, y);
+        if (!solid[id]) {
+          const vin = 0.0020 * Math.sin(t * 0.04);
+          setCellEquilibrium(f2, id, 1.0, uIn, vin);
+        }
+      }
+
+      // Outlet boundary: zero-gradient copy from x=NX-2
+      for (let y = 1; y < NY-1; y++) {
+        const idO = idOf(NX-1, y);
+        const idI = idOf(NX-2, y);
+        for (let d = 0; d < 9; d++) f2[d*size + idO] = f2[d*size + idI];
+      }
+
+      // swap
+      const tmp = f; f = f2; f2 = tmp;
+    }
+
+    function lbmStep(t) {
+      collide();
+      streamAndBounce(t);
+    }
+
+    // ---------- Visualization ----------
+    function renderField() {
+      img.loadPixels();
+      const px = img.pixels;
+
+      // Compute vorticity or speed + color map.
+      // Vorticity: ω = ∂v/∂x - ∂u/∂y (central diff)
+      const vortScale = 26.0; // increase to saturate colors
+      const spScale = 1.0 / Math.max(1e-6, uIn * 2.0);
+
+      for (let y = 0; y < NY; y++) {
+        for (let x = 0; x < NX; x++) {
+          const id = idOf(x,y);
+          const k = 4 * (x + y * NX);
+
+          if (solid[id]) {
+            px[k+0] = 18; px[k+1] = 20; px[k+2] = 30; px[k+3] = 255;
+            continue;
+          }
+
+          let r=0,g=0,b=0;
+
+          if (viewMode === "vorticity") {
+            // clamp neighbors for edges
+            const xm = (x > 0)     ? idOf(x-1,y) : id;
+            const xp = (x < NX-1)  ? idOf(x+1,y) : id;
+            const ym = (y > 0)     ? idOf(x,y-1) : id;
+            const yp = (y < NY-1)  ? idOf(x,y+1) : id;
+
+            const dvy_dx = 0.5 * (uy[xp] - uy[xm]);
+            const dux_dy = 0.5 * (ux[yp] - ux[ym]);
+            const w = dvy_dx - dux_dy;
+
+            // Map w to [-1,1] via tanh
+            const c = Math.tanh(w * vortScale);
+
+            // Add brightness from speed
+            const sp = Math.min(1.0, Math.hypot(ux[id], uy[id]) * spScale);
+            const base = 18 + sp * 70;
+
+            if (c >= 0) {
+              r = base + c * 190;
+              g = base + c * 60;
+              b = base;
+            } else {
+              const cc = -c;
+              r = base;
+              g = base + cc * 60;
+              b = base + cc * 190;
+            }
+          } else {
+            // speed view
+            const sp = Math.min(1.0, Math.hypot(ux[id], uy[id]) * spScale);
+            // blue->cyan->yellow->white
+            const t = sp;
+            const rr = (t < 0.6) ? (t/0.6) * 0.25 : 0.25 + ((t-0.6)/0.4) * 0.75;
+            const gg = (t < 0.6) ? (t/0.6) * 1.00 : 1.00;
+            const bb = (t < 0.6) ? 1.00 : 1.00 - ((t-0.6)/0.4) * 0.45;
+            r = 20 + rr * 235;
+            g = 20 + gg * 235;
+            b = 20 + bb * 235;
+          }
+
+          px[k+0] = clamp(r, 0, 255);
+          px[k+1] = clamp(g, 0, 255);
+          px[k+2] = clamp(b, 0, 255);
+          px[k+3] = 255;
+        }
+      }
+
+      img.updatePixels();
+
+      const { s, ox, oy } = computeViewport();
+      drawingContext.imageSmoothingEnabled = true;
+      image(img, ox, oy, NX * s, NY * s);
+
+      // Draw obstacle outline on top (screen space)
+      push();
+      translate(ox, oy);
+      scale(s);
+
+      noFill();
+      stroke(255, 255, 255, 190);
+      strokeWeight(1.0 / s);
+
+      translate(obs.x, obs.y);
+      rotate(obs.angle);
+
+      if (obs.shape === "circle") {
+        ellipse(0, 0, obs.rx * 2, obs.rx * 2);
+      } else if (obs.shape === "ellipse") {
+        ellipse(0, 0, obs.rx * 2, obs.ry * 2);
+      } else {
+        rectMode(CENTER);
+        rect(0, 0, obs.rx * 2, obs.ry * 2, 2);
+      }
+
+      // Show a tiny axis/handle to indicate rotation
+      stroke(255, 255, 255, 120);
+      line(0, 0, Math.max(obs.rx, obs.ry) * 1.1, 0);
+
+      pop();
+
+      // Optional velocity vectors (sampled)
+      if (showVectors) drawVectors();
+    }
+
+    function drawVectors() {
+      const { s, ox, oy } = computeViewport();
+      const step = Math.max(8, Math.floor(Math.min(NX, NY) / 22));
+      push();
+      translate(ox, oy);
+      scale(s);
+
+      stroke(255, 255, 255, 80);
+      strokeWeight(1.0 / s);
+
+      for (let y = 1; y < NY-1; y += step) {
+        for (let x = 0; x < NX; x += step) {
+          const id = idOf(x,y);
+          if (solid[id]) continue;
+
+          const vx = ux[id];
+          const vy = uy[id];
+          const len = Math.min(step * 0.65, Math.hypot(vx, vy) * 140);
+
+          const ang = Math.atan2(vy, vx);
+          const x2 = x + Math.cos(ang) * len;
+          const y2 = y + Math.sin(ang) * len;
+
+          line(x, y, x2, y2);
+        }
+      }
+
+      pop();
+    }
+
+    // ---------- Interaction ----------
+    function updateObstacleDrag() {
+      if (!dragging) return;
+      const p = screenToLattice(mouseX, mouseY);
+      obs.x = clamp(p.x - dragOffsetX, 8, NX - 10);
+      obs.y = clamp(p.y - dragOffsetY, 8, NY - 10);
+      rebuildSolids();
+    }
+
+    function obstacleContainsScreen(px, py) {
+      const p = screenToLattice(px, py);
+      return pointInObstacle(p.x, p.y);
+    }
+
+    function normalizeAngle() {
+      const twoPi = Math.PI * 2;
+      obs.angle = ((obs.angle % twoPi) + twoPi) % twoPi;
+    }
+
+    function setShape(s) {
+      obs.shape = s;
+      if (s === "circle") obs.ry = obs.rx;
+      rebuildSolids();
+    }
+
+    function adjustSize(factor) {
+      obs.rx = clamp(obs.rx * factor, 6, Math.min(NX, NY) * 0.18);
+      if (obs.shape === "circle") obs.ry = obs.rx;
+      else obs.ry = clamp(obs.ry * factor, 6, Math.min(NX, NY) * 0.18);
+      rebuildSolids();
+    }
+
+    function adjustAspect(dx, dy) {
+      // dx changes rx, dy changes ry
+      if (obs.shape === "circle") return;
+      obs.rx = clamp(obs.rx + dx, 6, Math.min(NX, NY) * 0.22);
+      obs.ry = clamp(obs.ry + dy, 6, Math.min(NX, NY) * 0.22);
+      rebuildSolids();
+    }
+
+    function adjustRotation(dA) {
+      obs.angle += dA;
+      normalizeAngle();
+      rebuildSolids();
+    }
+
+    function setViscosity(newNu) {
+      nu = clamp(newNu, 0.004, 0.080);
+      tau = 0.5 + 3.0 * nu;
+      omega = 1.0 / tau;
+    }
+
+    function setFlowSpeed(newU) {
+      uIn = clamp(newU, 0.02, 0.16);
+      // reinit only inlet boundary naturally changes; no need to reset full field
+    }
+
+    // ---------- UI stats ----------
+    function updateHUD() {
+      elFPS().textContent = `FPS: ${frameRate().toFixed(0)}`;
+      elGrid().textContent = `Grid: ${NX}×${NY}`;
+
+      const sh = (obs.shape === "circle") ? "circle" : (obs.shape === "ellipse" ? "ellipse" : "rect");
+      elShape().textContent = `Shape: ${sh} (${obs.rx.toFixed(0)}×${(obs.shape==="circle"?obs.rx:obs.ry).toFixed(0)})`;
+
+      elAngle().textContent = `Angle: ${(obs.angle * 180/Math.PI).toFixed(0)}°`;
+
+      // Rough Reynolds number Re ~ U * D / nu
+      const D = (obs.shape === "circle") ? (2*obs.rx) : (2*Math.max(obs.rx, obs.ry));
+      const Re = (uIn * D) / Math.max(1e-6, nu);
+      elRe().textContent = `Re~ ${Re.toFixed(0)} (U=${uIn.toFixed(3)}, ν=${nu.toFixed(3)})`;
+
+      elMode().textContent = `View: ${viewMode}`;
+    }
+
+    // ---------- p5 lifecycle ----------
+    window.setup = function() {
+      const g = pickGrid();
+      NX = g.NX; NY = g.NY;
+
+      const c = createCanvas(window.innerWidth, window.innerHeight);
+      c.elt.style.display = "block";
+      pixelDensity(1);
+
+      alloc();
+      resetFlow();
+      updateHUD();
+    };
+
+    window.windowResized = function() {
+      resizeCanvas(window.innerWidth, window.innerHeight);
+    };
+
+    window.draw = function() {
+      background(6, 8, 12);
+
+      updateObstacleDrag();
+
+      if (!paused) {
+        // run multiple LBM steps per frame
+        const t = frameCount;
+        for (let s = 0; s < stepsPerFrame; s++) lbmStep(t + s);
+      }
+
+      renderField();
+      updateHUD();
+    };
+
+    window.mousePressed = function() {
+      // Begin dragging only if click hits obstacle
+      if (obstacleContainsScreen(mouseX, mouseY)) {
+        const p = screenToLattice(mouseX, mouseY);
+        dragging = true;
+        dragOffsetX = p.x - obs.x;
+        dragOffsetY = p.y - obs.y;
+      }
+    };
+
+    window.mouseReleased = function() { dragging = false; };
+
+    window.mouseWheel = function(e) {
+      // wheel: resize; shift+wheel: rotate
+      const delta = Math.sign(e.deltaY);
+      if (keyIsDown(SHIFT)) {
+        adjustRotation(delta * 0.08);
+      } else {
+        adjustSize(delta > 0 ? 0.94 : 1.06);
+      }
+      return false;
+    };
+
+    window.keyPressed = function() {
+      const k = key;
+
+      if (k === 'H' || k === 'h') {
+        showUI = !showUI;
+        hud().style.display = showUI ? "block" : "none";
+        hint().style.display = showUI ? "block" : "none";
+      }
+
+      if (k === 'P' || k === 'p') paused = !paused;
+      if (k === 'R' || k === 'r') resetFlow();
+
+      if (k === '1') setShape("circle");
+      if (k === '2') setShape("ellipse");
+      if (k === '3') setShape("rect");
+
+      if (k === 'Q' || k === 'q') adjustRotation(-0.08);
+      if (k === 'E' || k === 'e') adjustRotation(+0.08);
+
+      if (k === '+' || k === '=') adjustSize(1.06);
+      if (k === '-' || k === '_') adjustSize(0.94);
+
+      // aspect ratio controls for ellipse/rect
+      if (k === 'A' || k === 'a') adjustAspect(-1.5, 0);
+      if (k === 'D' || k === 'd') adjustAspect(+1.5, 0);
+      if (k === 'W' || k === 'w') adjustAspect(0, +1.5);
+      if (k === 'S' || k === 's') adjustAspect(0, -1.5);
+
+      // toggle view
+      if (k === 'V' || k === 'v') viewMode = (viewMode === "vorticity") ? "speed" : "vorticity";
+      if (k === 'G' || k === 'g') showVectors = !showVectors;
+
+      // viscosity
+      if (k === '[') setViscosity(nu * 0.88);
+      if (k === ']') setViscosity(nu * 1.14);
+
+      // flow speed (use braces via Shift+[ / Shift+])
+      if (k === '{') setFlowSpeed(uIn * 0.92);
+      if (k === '}') setFlowSpeed(uIn * 1.08);
+    };
+
+    // prevent page scroll
+    window.addEventListener('keydown', (e) => {
+      if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+    }, { passive: false });
+
+  })();
+  </script>
+</body>
+</html>
