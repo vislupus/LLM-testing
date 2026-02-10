@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Von Kármán Vortex Street – LBM Fluid Simulation</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+canvas { display: block; }
+#controls {
+  position: absolute; top: 10px; right: 10px;
+  background: rgba(0,0,0,0.75); color: #e0e0e0; padding: 14px 18px;
+  border-radius: 10px; font-size: 13px; line-height: 1.9;
+  min-width: 220px; backdrop-filter: blur(6px);
+  border: 1px solid rgba(255,255,255,0.1);
+}
+#controls h3 { margin-bottom: 6px; color: #7fdbff; font-size: 15px; }
+#controls label { display: flex; justify-content: space-between; align-items: center; }
+#controls input[type=range] { width: 100px; accent-color: #7fdbff; }
+#controls select { background: #333; color: #e0e0e0; border: 1px solid #555; padding: 2px 6px; border-radius: 4px; }
+.key { background: rgba(255,255,255,0.15); padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+#info {
+  position: absolute; bottom: 10px; left: 10px;
+  background: rgba(0,0,0,0.65); color: #aaa; padding: 8px 14px;
+  border-radius: 8px; font-size: 12px;
+}
+</style>
+</head>
+<body>
+<div id="controls">
+  <h3>🌊 Vortex Street Controls</h3>
+  <label>Shape: <select id="shapeSelect">
+    <option value="circle">Circle</option>
+    <option value="ellipse">Ellipse</option>
+    <option value="rectangle">Rectangle</option>
+    <option value="triangle">Triangle</option>
+  </select></label>
+  <label>Size: <input type="range" id="sizeSlider" min="8" max="40" value="16"></label>
+  <label>Rotation: <input type="range" id="rotSlider" min="0" max="360" value="0"></label>
+  <label>Flow Speed: <input type="range" id="speedSlider" min="3" max="15" value="8"></label>
+  <label>Viscosity: <input type="range" id="viscSlider" min="1" max="20" value="6"></label>
+  <label>View: <select id="viewSelect">
+    <option value="vorticity">Vorticity</option>
+    <option value="speed">Speed</option>
+    <option value="curl">Curl (B&W)</option>
+    <option value="pressure">Pressure</option>
+  </select></label>
+  <hr style="border-color:#444;margin:6px 0">
+  <small>🖱️ Drag obstacle · Scroll to resize<br>
+  <span class="key">R</span> Reset · <span class="key">P</span> Pause · <span class="key">Q/E</span> Rotate</small>
+</div>
+<div id="info">FPS: <span id="fpsDisplay">--</span> | Grid: <span id="gridSize">--</span></div>
+
+<script>
+// ============================================================
+//  Lattice Boltzmann Method – D2Q9 – Von Kármán Vortex Street
+// ============================================================
+
+const canvas = document.createElement('canvas');
+document.body.prepend(canvas);
+const ctx = canvas.getContext('2d');
+
+// --- Simulation parameters ---
+let scale = 3; // pixels per lattice cell
+let NX, NY;
+let paused = false;
+
+// D2Q9 lattice velocities and weights
+const Q = 9;
+const ex = [0, 1, 0, -1, 0, 1, -1, -1, 1];
+const ey = [0, 0, 1, 0, -1, 1, 1, -1, -1];
+const wt = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36];
+const opp = [0, 3, 4, 1, 2, 7, 8, 5, 6];
+
+// Distribution functions and macroscopic fields
+let f, ftemp, rho, ux, uy, barrier;
+let imageData, pixels;
+
+// Obstacle state
+let obX, obY, obSize = 16, obAngle = 0;
+let obShape = 'circle';
+let dragging = false;
+let dragOffX = 0, dragOffY = 0;
+
+// UI elements
+const shapeSelect = document.getElementById('shapeSelect');
+const sizeSlider = document.getElementById('sizeSlider');
+const rotSlider = document.getElementById('rotSlider');
+const speedSlider = document.getElementById('speedSlider');
+const viscSlider = document.getElementById('viscSlider');
+const viewSelect = document.getElementById('viewSelect');
+const fpsDisplay = document.getElementById('fpsDisplay');
+const gridSizeEl = document.getElementById('gridSize');
+
+function getFlowSpeed() { return parseFloat(speedSlider.value) / 100; }
+function getOmega() {
+  let v = parseInt(viscSlider.value);
+  let visc = v / 100; // kinematic viscosity
+  return 1.0 / (3.0 * visc + 0.5);
+}
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  NX = Math.floor(canvas.width / scale);
+  NY = Math.floor(canvas.height / scale);
+  gridSizeEl.textContent = NX + '×' + NY;
+  initArrays();
+  initFlow();
+  stampObstacle();
+  imageData = ctx.createImageData(canvas.width, canvas.height);
+  pixels = imageData.data;
+}
+
+function initArrays() {
+  const size = NX * NY;
+  f = new Array(Q);
+  ftemp = new Array(Q);
+  for (let i = 0; i < Q; i++) {
+    f[i] = new Float32Array(size);
+    ftemp[i] = new Float32Array(size);
+  }
+  rho = new Float32Array(size);
+  ux = new Float32Array(size);
+  uy = new Float32Array(size);
+  barrier = new Uint8Array(size);
+}
+
+function idx(x, y) { return y * NX + x; }
+
+function initFlow() {
+  const u0 = getFlowSpeed();
+  const size = NX * NY;
+  for (let y = 0; y < NY; y++) {
+    for (let x = 0; x < NX; x++) {
+      const n = idx(x, y);
+      rho[n] = 1.0;
+      ux[n] = u0;
+      uy[n] = 0;
+      setEquilibrium(n, 1.0, u0, 0);
+    }
+  }
+  // set default obstacle position
+  if (obX === undefined || obX < 0 || obX >= NX) obX = Math.floor(NX * 0.25);
+  if (obY === undefined || obY < 0 || obY >= NY) obY = Math.floor(NY * 0.5);
+}
+
+function setEquilibrium(n, rho0, ux0, uy0) {
+  const uu = ux0 * ux0 + uy0 * uy0;
+  for (let i = 0; i < Q; i++) {
+    const eu = ex[i] * ux0 + ey[i] * uy0;
+    f[i][n] = wt[i] * rho0 * (1 + 3 * eu + 4.5 * eu * eu - 1.5 * uu);
+  }
+}
+
+// --- Obstacle stamping ---
+function stampObstacle() {
+  barrier.fill(0);
+  // Top and bottom walls
+  for (let x = 0; x < NX; x++) {
+    barrier[idx(x, 0)] = 1;
+    barrier[idx(x, NY - 1)] = 1;
+  }
+  // Stamp obstacle shape
+  const cosA = Math.cos(obAngle * Math.PI / 180);
+  const sinA = Math.sin(obAngle * Math.PI / 180);
+  const r = obSize;
+  const extent = Math.ceil(r * 1.5) + 2;
+  
+  for (let dy = -extent; dy <= extent; dy++) {
+    for (let dx = -extent; dx <= extent; dx++) {
+      const gx = Math.round(obX) + dx;
+      const gy = Math.round(obY) + dy;
+      if (gx < 1 || gx >= NX - 1 || gy < 1 || gy >= NY - 1) continue;
+      
+      // Transform to obstacle local coords (rotate back)
+      const lx = dx * cosA + dy * sinA;
+      const ly = -dx * sinA + dy * cosA;
+      
+      let inside = false;
+      switch (obShape) {
+        case 'circle':
+          inside = (lx * lx + ly * ly) <= r * r;
+          break;
+        case 'ellipse':
+          inside = (lx * lx) / (r * r) + (ly * ly) / (r * 0.5 * r * 0.5) <= 1;
+          break;
+        case 'rectangle':
+          inside = Math.abs(lx) <= r && Math.abs(ly) <= r * 0.5;
+          break;
+        case 'triangle': {
+          // Equilateral triangle pointing right
+          const h = r * 1.2;
+          const w = r * 1.4;
+          // Triangle vertices: right tip, top-left, bottom-left
+          if (lx >= -w * 0.5 && lx <= w * 0.5) {
+            const frac = (lx + w * 0.5) / w; // 0 at left, 1 at right
+            const halfH = h * 0.5 * (1 - frac);
+            inside = Math.abs(ly) <= halfH;
+          }
+          break;
+        }
+      }
+      if (inside) {
+        barrier[idx(gx, gy)] = 1;
+      }
+    }
+  }
+}
+
+// --- LBM Steps ---
+function collide() {
+  const omega = getOmega();
+  const oneMinusOmega = 1 - omega;
+  const size = NX * NY;
+  
+  for (let n = 0; n < size; n++) {
+    if (barrier[n]) continue;
+    
+    // Compute macroscopic
+    let r = 0, vx = 0, vy = 0;
+    for (let i = 0; i < Q; i++) {
+      const fi = f[i][n];
+      r += fi;
+      vx += ex[i] * fi;
+      vy += ey[i] * fi;
+    }
+    if (r < 0.001) r = 0.001;
+    vx /= r;
+    vy /= r;
+    rho[n] = r;
+    ux[n] = vx;
+    uy[n] = vy;
+    
+    // BGK collision
+    const uu = vx * vx + vy * vy;
+    for (let i = 0; i < Q; i++) {
+      const eu = ex[i] * vx + ey[i] * vy;
+      const feq = wt[i] * r * (1 + 3 * eu + 4.5 * eu * eu - 1.5 * uu);
+      f[i][n] = oneMinusOmega * f[i][n] + omega * feq;
+    }
+  }
+}
+
+function stream() {
+  // Copy to temp
+  for (let i = 0; i < Q; i++) {
+    ftemp[i].set(f[i]);
+  }
+  
+  for (let y = 1; y < NY - 1; y++) {
+    for (let x = 1; x < NX - 1; x++) {
+      const n = idx(x, y);
+      if (barrier[n]) continue;
+      for (let i = 0; i < Q; i++) {
+        const sx = x - ex[i];
+        const sy = y - ey[i];
+        if (sx >= 0 && sx < NX && sy >= 0 && sy < NY) {
+          const sn = idx(sx, sy);
+          if (barrier[sn]) {
+            // Bounce-back
+            f[i][n] = ftemp[opp[i]][n];
+          } else {
+            f[i][n] = ftemp[i][sn];
+          }
+        }
+      }
+    }
+  }
+}
+
+function applyBoundary() {
+  const u0 = getFlowSpeed();
+  
+  // Left inlet: Zou-He velocity boundary
+  for (let y = 1; y < NY - 1; y++) {
+    const n = idx(0, y);
+    // Small perturbation to trigger vortex shedding
+    const pert = u0 * 0.02 * Math.sin(2 * Math.PI * y / NY * 3 + performance.now() * 0.001);
+    setEquilibrium(n, 1.0, u0, pert);
+    ux[n] = u0;
+    uy[n] = pert;
+    rho[n] = 1.0;
+  }
+  
+  // Right outlet: zero-gradient (copy from interior)
+  for (let y = 1; y < NY - 1; y++) {
+    const nr = idx(NX - 1, y);
+    const ni = idx(NX - 2, y);
+    for (let i = 0; i < Q; i++) {
+      f[i][nr] = f[i][ni];
+    }
+    rho[nr] = rho[ni];
+    ux[nr] = ux[ni];
+    uy[nr] = uy[ni];
+  }
+}
+
+function step() {
+  collide();
+  stream();
+  applyBoundary();
+}
+
+// --- Rendering ---
+function hslToRgb(h, s, l) {
+  h /= 360; s /= 100; l /= 100;
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const hue2rgb = (p, q, t) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q - p) * 6 * t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+      return p;
+    };
+    const q2 = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p2 = 2 * l - q2;
+    r = hue2rgb(p2, q2, h + 1/3);
+    g = hue2rgb(p2, q2, h);
+    b = hue2rgb(p2, q2, h - 1/3);
+  }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+function render() {
+  const view = viewSelect.value;
+  const u0 = getFlowSpeed();
+  
+  // Fill pixel buffer
+  for (let y = 0; y < NY; y++) {
+    for (let x = 0; x < NX; x++) {
+      const n = idx(x, y);
+      
+      let r, g, b;
+      
+      if (barrier[n]) {
+        r = 40; g = 40; b = 50;
+      } else {
+        switch (view) {
+          case 'vorticity': {
+            // Compute curl (vorticity)
+            let curl = 0;
+            if (x > 0 && x < NX - 1 && y > 0 && y < NY - 1) {
+              curl = (uy[idx(x + 1, y)] - uy[idx(x - 1, y)]) - (ux[idx(x, y + 1)] - ux[idx(x, y - 1)]);
+            }
+            // Map curl to color
+            const intensity = curl * 800;
+            const clamped = Math.max(-1, Math.min(1, intensity));
+            
+            if (clamped > 0) {
+              // Red/orange for positive vorticity
+              const v = clamped;
+              r = Math.round(20 + 235 * v);
+              g = Math.round(10 + 80 * v);
+              b = Math.round(40 - 20 * v);
+            } else {
+              // Blue/cyan for negative vorticity
+              const v = -clamped;
+              r = Math.round(10 + 20 * v);
+              g = Math.round(30 + 120 * v);
+              b = Math.round(40 + 215 * v);
+            }
+            
+            // Darken low-speed regions slightly for depth
+            const spd = Math.sqrt(ux[n] * ux[n] + uy[n] * uy[n]);
+            const bright = 0.5 + 0.5 * Math.min(1, spd / (u0 * 2));
+            r = Math.round(r * bright);
+            g = Math.round(g * bright);
+            b = Math.round(b * bright);
+            break;
+          }
+          case 'speed': {
+            const spd = Math.sqrt(ux[n] * ux[n] + uy[n] * uy[n]);
+            const t = Math.min(1, spd / (u0 * 2.5));
+            // Inferno-like colormap
+            r = Math.round(t < 0.5 ? t * 2 * 200 : 200 + (t - 0.5) * 2 * 55);
+            g = Math.round(t < 0.3 ? 0 : t < 0.7 ? (t - 0.3) / 0.4 * 180 : 180 + (t - 0.7) / 0.3 * 75);
+            b = Math.round(t < 0.2 ? 30 + t * 5 * 200 : 230 - (t - 0.2) * 1.25 * 230);
+            break;
+          }
+          case 'curl': {
+            let curl = 0;
+            if (x > 0 && x < NX - 1 && y > 0 && y < NY - 1) {
+              curl = (uy[idx(x + 1, y)] - uy[idx(x - 1, y)]) - (ux[idx(x, y + 1)] - ux[idx(x, y - 1)]);
+            }
+            const v = Math.round(128 + curl * 4000);
+            const cv = Math.max(0, Math.min(255, v));
+            r = g = b = cv;
+            break;
+          }
+          case 'pressure': {
+            const p = (rho[n] - 1.0) * 3000;
+            const clamped = Math.max(-1, Math.min(1, p));
+            if (clamped > 0) {
+              r = Math.round(255 * clamped); g = Math.round(80 * clamped); b = 30;
+            } else {
+              r = 30; g = Math.round(80 * (-clamped)); b = Math.round(255 * (-clamped));
+            }
+            break;
+          }
+        }
+      }
+      
+      // Paint scaled pixels
+      for (let py = 0; py < scale; py++) {
+        for (let px = 0; px < scale; px++) {
+          const sx = x * scale + px;
+          const sy = y * scale + py;
+          if (sx < canvas.width && sy < canvas.height) {
+            const pi = (sy * canvas.width + sx) * 4;
+            pixels[pi] = r;
+            pixels[pi + 1] = g;
+            pixels[pi + 2] = b;
+            pixels[pi + 3] = 255;
+          }
+        }
+      }
+    }
+  }
+  
+  ctx.putImageData(imageData, 0, 0);
+  
+  // Draw obstacle outline
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.save();
+  ctx.translate(obX * scale + scale / 2, obY * scale + scale / 2);
+  ctx.rotate(obAngle * Math.PI / 180);
+  
+  const r = obSize * scale;
+  switch (obShape) {
+    case 'circle':
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.stroke();
+      break;
+    case 'ellipse':
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r, r * 0.5, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      break;
+    case 'rectangle':
+      ctx.strokeRect(-r, -r * 0.5, r * 2, r);
+      break;
+    case 'triangle':
+      ctx.beginPath();
+      const tw = obSize * 1.4 * scale;
+      const th = obSize * 1.2 * scale;
+      ctx.moveTo(tw * 0.5, 0);
+      ctx.lineTo(-tw * 0.5, -th * 0.5);
+      ctx.lineTo(-tw * 0.5, th * 0.5);
+      ctx.closePath();
+      ctx.stroke();
+      break;
+  }
+  
+  // Rotation indicator line
+  ctx.strokeStyle = 'rgba(255,255,100,0.5)';
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(r + 5, 0);
+  ctx.stroke();
+  
+  ctx.restore();
+}
+
+// --- FPS tracking ---
+let frameCount = 0;
+let lastFpsTime = performance.now();
+
+function updateFps() {
+  frameCount++;
+  const now = performance.now();
+  if (now - lastFpsTime > 500) {
+    fpsDisplay.textContent = Math.round(frameCount / (now - lastFpsTime) * 1000);
+    frameCount = 0;
+    lastFpsTime = now;
+  }
+}
+
+// --- Main loop ---
+const stepsPerFrame = 6;
+
+function loop() {
+  if (!paused) {
+    for (let s = 0; s < stepsPerFrame; s++) {
+      step();
+    }
+  }
+  render();
+  updateFps();
+  requestAnimationFrame(loop);
+}
+
+// --- Event handlers ---
+function pixelToGrid(px, py) {
+  return [px / scale, py / scale];
+}
+
+canvas.addEventListener('mousedown', (e) => {
+  const [gx, gy] = pixelToGrid(e.clientX, e.clientY);
+  const dx = gx - obX;
+  const dy = gy - obY;
+  if (dx * dx + dy * dy < (obSize + 5) * (obSize + 5)) {
+    dragging = true;
+    dragOffX = dx;
+    dragOffY = dy;
+  }
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (dragging) {
+    const [gx, gy] = pixelToGrid(e.clientX, e.clientY);
+    obX = Math.max(obSize + 2, Math.min(NX - obSize - 2, gx - dragOffX));
+    obY = Math.max(obSize + 2, Math.min(NY - obSize - 2, gy - dragOffY));
+    stampObstacle();
+  }
+});
+
+canvas.addEventListener('mouseup', () => { dragging = false; });
+canvas.addEventListener('mouseleave', () => { dragging = false; });
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  obSize = Math.max(6, Math.min(45, obSize - Math.sign(e.deltaY) * 2));
+  sizeSlider.value = obSize;
+  stampObstacle();
+}, { passive: false });
+
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const touch = e.touches[0];
+  const [gx, gy] = pixelToGrid(touch.clientX, touch.clientY);
+  const dx = gx - obX;
+  const dy = gy - obY;
+  if (dx * dx + dy * dy < (obSize + 8) * (obSize + 8)) {
+    dragging = true;
+    dragOffX = dx;
+    dragOffY = dy;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (dragging && e.touches.length > 0) {
+    const touch = e.touches[0];
+    const [gx, gy] = pixelToGrid(touch.clientX, touch.clientY);
+    obX = Math.max(obSize + 2, Math.min(NX - obSize - 2, gx - dragOffX));
+    obY = Math.max(obSize + 2, Math.min(NY - obSize - 2, gy - dragOffY));
+    stampObstacle();
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', () => { dragging = false; });
+
+document.addEventListener('keydown', (e) => {
+  switch (e.key.toLowerCase()) {
+    case 'r':
+      initFlow();
+      stampObstacle();
+      break;
+    case 'p':
+      paused = !paused;
+      break;
+    case 'q':
+      obAngle = (obAngle - 5 + 360) % 360;
+      rotSlider.value = obAngle;
+      stampObstacle();
+      break;
+    case 'e':
+      obAngle = (obAngle + 5) % 360;
+      rotSlider.value = obAngle;
+      stampObstacle();
+      break;
+  }
+});
+
+// UI controls
+shapeSelect.addEventListener('change', () => {
+  obShape = shapeSelect.value;
+  stampObstacle();
+});
+
+sizeSlider.addEventListener('input', () => {
+  obSize = parseInt(sizeSlider.value);
+  stampObstacle();
+});
+
+rotSlider.addEventListener('input', () => {
+  obAngle = parseInt(rotSlider.value);
+  stampObstacle();
+});
+
+speedSlider.addEventListener('input', () => {
+  // Flow speed changes take effect via boundary conditions
+});
+
+viscSlider.addEventListener('input', () => {
+  // Viscosity changes take effect in collision step
+});
+
+window.addEventListener('resize', () => {
+  const oldObXFrac = obX / NX;
+  const oldObYFrac = obY / NY;
+  resize();
+  obX = Math.round(oldObXFrac * NX);
+  obY = Math.round(oldObYFrac * NY);
+  stampObstacle();
+});
+
+// --- Initialize and start ---
+resize();
+loop();
+</script>
+</body>
+</html>

@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chaotic Three-Body Gravity · Spacecraft Mission</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+<style>
+  body {
+    margin: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #dcdcdc;
+  }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  CHAOTIC THREE-BODY GRAVITATIONAL SYSTEM
+//  with Spacecraft Hohmann-like Transfer Mission
+//
+//  Physics:  Newtonian gravity with velocity-Verlet integration
+//            Softened potential to prevent singularity ejections
+//            Tuned for chaotic, bounded, visually coherent orbits
+//
+//  Mission:  Spacecraft starts docked to Earth
+//            Phase 1: Depart Earth, spiral inward
+//            Phase 2: Loop around the Sun
+//            Phase 3: Transfer orbit outward to Jupiter
+//            Phase 4: Arrive at Jupiter vicinity
+// ═══════════════════════════════════════════════════════════════
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  SIMULATION CONSTANTS                                    │
+// └──────────────────────────────────────────────────────────┘
+
+const G_CONST       = 800;      // Gravitational constant (tuned for canvas scale)
+const SOFTENING     = 12;       // Softening length to prevent singularity blowups
+const DT            = 0.3;      // Time step per sub-step
+const SUBSTEPS      = 6;        // Sub-steps per frame for integration accuracy
+const TRAIL_MAX     = 1800;     // Maximum trail points stored
+const CANVAS_SIZE   = 800;      // Canvas dimensions
+const CENTER_X      = 400;      // Center of the coordinate system
+const CENTER_Y      = 400;
+
+// Mass ratios chosen so Jupiter strongly perturbs Earth's orbit,
+// creating visible chaos, but the Sun still dominates enough
+// to keep everything bound.
+const SUN_MASS      = 500;
+const EARTH_MASS    = 2.8;
+const JUPITER_MASS  = 25;
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  BODY CLASS                                              │
+// └──────────────────────────────────────────────────────────┘
+
+class Body {
+  constructor(name, mass, x, y, vx, vy, radius, col, trailCol) {
+    this.name     = name;
+    this.mass     = mass;
+    this.x        = x;
+    this.y        = y;
+    this.vx       = vx;
+    this.vy       = vy;
+    this.ax       = 0;
+    this.ay       = 0;
+    this.radius   = radius;
+    this.col      = col;
+    this.trailCol = trailCol;
+    this.trail    = [];
+  }
+
+  recordTrail() {
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > TRAIL_MAX) this.trail.shift();
+  }
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  SPACECRAFT CLASS                                        │
+// └──────────────────────────────────────────────────────────┘
+
+class Spacecraft {
+  constructor() {
+    this.x        = 0;
+    this.y        = 0;
+    this.vx       = 0;
+    this.vy       = 0;
+    this.ax       = 0;
+    this.ay       = 0;
+    this.trail    = [];
+    this.phase    = 0;  // 0=docked, 1=depart+sunloop, 2=transfer, 3=arrive
+    this.timer    = 0;
+    this.alive    = true;
+    this.thrustVx = 0;
+    this.thrustVy = 0;
+    this.launched  = false;
+    this.loopedSun = false;
+    this.minSunDist = Infinity;
+    this.sunAnglePrev = 0;
+    this.sunAngleAccum = 0;
+    this.reachedJupiter = false;
+  }
+
+  recordTrail() {
+    if (!this.alive) return;
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > TRAIL_MAX * 2) this.trail.shift();
+  }
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  GLOBALS                                                 │
+// └──────────────────────────────────────────────────────────┘
+
+let bodies = [];
+let craft;
+let sun, earth, jupiter;
+let totalTime = 0;
+let paused = false;
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  INITIAL CONDITIONS                                      │
+// │                                                          │
+// │  Tuned for CHAOTIC but BOUNDED orbits:                   │
+// │  - Sun is heavy but not at origin (slight offset)        │
+// │  - Earth and Jupiter have velocities that don't yield    │
+// │    stable ellipses — their mutual perturbation creates   │
+// │    quasi-periodic, visually interesting chaos             │
+// │  - Total momentum ≈ 0 (center of mass stays near center)│
+// └──────────────────────────────────────────────────────────┘
+
+function initBodies() {
+  // Sun: near center with slight offset, small compensating velocity
+  sun = new Body(
+    'Sun', SUN_MASS,
+    CENTER_X - 2, CENTER_Y + 1,
+    0.01, -0.005,
+    22,
+    [255, 200, 50],
+    [255, 220, 120, 40]
+  );
+
+  // Earth: inner orbit, ~120px from center
+  // Velocity tuned for a near-circular orbit that Jupiter will perturb
+  const earthDist = 120;
+  const earthAngle = 0.4; // Starting angle (radians)
+  const earthSpeed = Math.sqrt(G_CONST * SUN_MASS / earthDist) * 0.88; // Slightly sub-circular = elliptical
+  earth = new Body(
+    'Earth', EARTH_MASS,
+    CENTER_X + earthDist * Math.cos(earthAngle),
+    CENTER_Y + earthDist * Math.sin(earthAngle),
+    -earthSpeed * Math.sin(earthAngle) * 1.05,
+    earthSpeed * Math.cos(earthAngle) * 0.92,
+    8,
+    [50, 120, 220],
+    [80, 140, 240, 35]
+  );
+
+  // Jupiter: outer orbit, ~250px from center
+  // Velocity tuned for an orbit that resonates chaotically with Earth
+  const jupDist = 255;
+  const jupAngle = 3.3; // Opposite side from Earth
+  const jupSpeed = Math.sqrt(G_CONST * SUN_MASS / jupDist) * 0.82;
+  jupiter = new Body(
+    'Jupiter', JUPITER_MASS,
+    CENTER_X + jupDist * Math.cos(jupAngle),
+    CENTER_Y + jupDist * Math.sin(jupAngle),
+    -jupSpeed * Math.sin(jupAngle) * 1.08,
+    jupSpeed * Math.cos(jupAngle) * 0.95,
+    14,
+    [210, 150, 100],
+    [220, 170, 130, 35]
+  );
+
+  // Adjust Sun velocity so total momentum = 0 (center of mass stationary)
+  sun.vx = -(earth.mass * earth.vx + jupiter.mass * jupiter.vx) / sun.mass;
+  sun.vy = -(earth.mass * earth.vy + jupiter.mass * jupiter.vy) / sun.mass;
+
+  bodies = [sun, earth, jupiter];
+}
+
+function initSpacecraft() {
+  craft = new Spacecraft();
+  craft.phase = 0;
+  craft.x = earth.x;
+  craft.y = earth.y;
+  craft.vx = earth.vx;
+  craft.vy = earth.vy;
+  craft.alive = true;
+  craft.launched = false;
+  craft.loopedSun = false;
+  craft.reachedJupiter = false;
+  craft.sunAngleAccum = 0;
+  craft.timer = 0;
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  GRAVITY COMPUTATION (softened Newtonian)                │
+// └──────────────────────────────────────────────────────────┘
+
+function computeAccel(px, py, mass_self, exclude_index) {
+  let ax = 0, ay = 0;
+  for (let i = 0; i < bodies.length; i++) {
+    if (i === exclude_index) continue;
+    const b = bodies[i];
+    const dx = b.x - px;
+    const dy = b.y - py;
+    const distSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
+    const dist = Math.sqrt(distSq);
+    const force = G_CONST * b.mass / distSq;
+    ax += force * dx / dist;
+    ay += force * dy / dist;
+  }
+  return { ax, ay };
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  VELOCITY-VERLET INTEGRATION                             │
+// │                                                          │
+// │  Symplectic integrator for better energy conservation    │
+// │  than Euler, critical for keeping orbits bounded.        │
+// └──────────────────────────────────────────────────────────┘
+
+function integrateStep(dt) {
+  const n = bodies.length;
+
+  // 1. Half-step velocity update using current acceleration
+  for (let i = 0; i < n; i++) {
+    const b = bodies[i];
+    b.vx += b.ax * dt * 0.5;
+    b.vy += b.ay * dt * 0.5;
+  }
+
+  // 2. Full-step position update
+  for (let i = 0; i < n; i++) {
+    const b = bodies[i];
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+  }
+
+  // 3. Compute new accelerations
+  for (let i = 0; i < n; i++) {
+    const b = bodies[i];
+    const a = computeAccel(b.x, b.y, b.mass, i);
+    b.ax = a.ax;
+    b.ay = a.ay;
+  }
+
+  // 4. Second half-step velocity update
+  for (let i = 0; i < n; i++) {
+    const b = bodies[i];
+    b.vx += b.ax * dt * 0.5;
+    b.vy += b.ay * dt * 0.5;
+  }
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  SPACECRAFT PHYSICS & MISSION LOGIC                      │
+// └──────────────────────────────────────────────────────────┘
+
+function integrateCraft(dt) {
+  if (!craft.alive) return;
+
+  if (craft.phase === 0) {
+    // Docked to Earth — follow Earth
+    craft.x = earth.x;
+    craft.y = earth.y;
+    craft.vx = earth.vx;
+    craft.vy = earth.vy;
+    return;
+  }
+
+  // Gravity from all bodies acts on spacecraft (spacecraft is massless test particle)
+  const a = computeAccel(craft.x, craft.y, 0, -1);
+
+  // Add any thrust
+  const thrustAx = craft.thrustVx;
+  const thrustAy = craft.thrustVy;
+  craft.thrustVx = 0;
+  craft.thrustVy = 0;
+
+  // Velocity-Verlet for spacecraft
+  craft.vx += (craft.ax + thrustAx) * dt * 0.5;
+  craft.vy += (craft.ay + thrustAy) * dt * 0.5;
+
+  craft.x += craft.vx * dt;
+  craft.y += craft.vy * dt;
+
+  craft.ax = a.ax + thrustAx;
+  craft.ay = a.ay + thrustAy;
+
+  craft.vx += craft.ax * dt * 0.5;
+  craft.vy += craft.ay * dt * 0.5;
+}
+
+function updateMission(dt) {
+  craft.timer += dt;
+
+  if (craft.phase === 0) {
+    // Wait for 120 time units, then launch
+    if (craft.timer > 120) {
+      launchFromEarth();
+    }
+    return;
+  }
+
+  if (craft.phase === 1) {
+    // Phase 1: Heading toward Sun for a loop
+    // Track angular position around Sun to detect a full loop
+    const dx = craft.x - sun.x;
+    const dy = craft.y - sun.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx);
+
+    if (craft.sunAnglePrev !== 0) {
+      let dAngle = angle - craft.sunAnglePrev;
+      // Wrap to [-PI, PI]
+      while (dAngle > Math.PI) dAngle -= Math.PI * 2;
+      while (dAngle < -Math.PI) dAngle += Math.PI * 2;
+      craft.sunAngleAccum += dAngle;
+    }
+    craft.sunAnglePrev = angle;
+
+    // Track minimum distance to sun
+    if (dist < craft.minSunDist) craft.minSunDist = dist;
+
+    // Once we've accumulated ~2π radians of angle around the Sun, the loop is complete
+    if (Math.abs(craft.sunAngleAccum) > Math.PI * 2.0 && craft.timer > 80) {
+      craft.loopedSun = true;
+      craft.phase = 2;
+      craft.timer = 0;
+      // Apply a thrust kick toward Jupiter
+      burnTowardJupiter();
+    }
+
+    // Safety: if taking too long in phase 1, force transition
+    if (craft.timer > 800) {
+      craft.phase = 2;
+      craft.timer = 0;
+      burnTowardJupiter();
+    }
+    return;
+  }
+
+  if (craft.phase === 2) {
+    // Phase 2: Transfer to Jupiter
+    const dx = craft.x - jupiter.x;
+    const dy = craft.y - jupiter.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    // Periodic gentle corrections toward Jupiter
+    if (craft.timer > 40 && Math.floor(craft.timer) % 60 === 0) {
+      gentleCorrectionToward(jupiter, 0.15);
+    }
+
+    // Check if we've reached Jupiter's vicinity
+    if (dist < 35) {
+      craft.phase = 3;
+      craft.timer = 0;
+      craft.reachedJupiter = true;
+      // Circularize: match Jupiter's velocity with slight tangential offset
+      captureAtJupiter();
+    }
+
+    // Safety timeout
+    if (craft.timer > 1500) {
+      // Force toward Jupiter
+      burnTowardJupiter();
+      craft.timer = 0;
+    }
+    return;
+  }
+
+  // Phase 3: Orbiting Jupiter — no special logic, just let gravity work
+}
+
+function launchFromEarth() {
+  craft.phase = 1;
+  craft.timer = 0;
+  craft.launched = true;
+  craft.sunAngleAccum = 0;
+  craft.sunAnglePrev = 0;
+  craft.minSunDist = Infinity;
+
+  // Compute launch direction: toward the Sun with a tangential component
+  // to create an inward spiral that will loop around it
+  const dx = sun.x - earth.x;
+  const dy = sun.y - earth.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const nx = dx / dist;
+  const ny = dy / dist;
+
+  // Tangential direction (perpendicular, prograde relative to Sun orbit)
+  const tx = -ny;
+  const ty = nx;
+
+  // Kick: mostly toward Sun, some tangential for an elliptical loop
+  const kickSpeed = 2.2;
+  craft.vx = earth.vx + nx * kickSpeed * 0.7 + tx * kickSpeed * 0.5;
+  craft.vy = earth.vy + ny * kickSpeed * 0.7 + ty * kickSpeed * 0.5;
+
+  // Initialize acceleration
+  const a = computeAccel(craft.x, craft.y, 0, -1);
+  craft.ax = a.ax;
+  craft.ay = a.ay;
+}
+
+function burnTowardJupiter() {
+  const dx = jupiter.x - craft.x;
+  const dy = jupiter.y - craft.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 1) return;
+  const nx = dx / dist;
+  const ny = dy / dist;
+
+  // Tangential to create a transfer orbit, not a direct line
+  const tx = -ny;
+  const ty = nx;
+
+  const burnMag = 1.8;
+  craft.vx += nx * burnMag * 0.65 + tx * burnMag * 0.35;
+  craft.vy += ny * burnMag * 0.65 + ty * burnMag * 0.35;
+}
+
+function gentleCorrectionToward(target, strength) {
+  const dx = target.x - craft.x;
+  const dy = target.y - craft.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 1) return;
+  craft.vx += (dx / dist) * strength;
+  craft.vy += (dy / dist) * strength;
+}
+
+function captureAtJupiter() {
+  // Match Jupiter's velocity and add a small tangential kick for orbit
+  const dx = craft.x - jupiter.x;
+  const dy = craft.y - jupiter.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const nx = dx / dist;
+  const ny = dy / dist;
+
+  // Tangential direction for prograde orbit
+  const tx = -ny;
+  const ty = nx;
+
+  // Orbital speed for a close orbit around Jupiter
+  const orbSpeed = Math.sqrt(G_CONST * JUPITER_MASS / Math.max(dist, 20)) * 0.7;
+
+  craft.vx = jupiter.vx + tx * orbSpeed;
+  craft.vy = jupiter.vy + ty * orbSpeed;
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  SOFT BOUNDARY — gentle restoring force at canvas edges  │
+// │  Prevents bodies from drifting off while preserving      │
+// │  chaotic dynamics in the interior                        │
+// └──────────────────────────────────────────────────────────┘
+
+function applyBoundary(b) {
+  const margin = 50;
+  const strength = 0.002;
+  const xMin = margin, xMax = CANVAS_SIZE - margin;
+  const yMin = margin, yMax = CANVAS_SIZE - margin;
+
+  if (b.x < xMin) b.vx += (xMin - b.x) * strength;
+  if (b.x > xMax) b.vx += (xMax - b.x) * strength;
+  if (b.y < yMin) b.vy += (yMin - b.y) * strength;
+  if (b.y > yMax) b.vy += (yMax - b.y) * strength;
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  p5.js SETUP & DRAW                                      │
+// └──────────────────────────────────────────────────────────┘
+
+function setup() {
+  createCanvas(CANVAS_SIZE, CANVAS_SIZE);
+  pixelDensity(1);
+
+  initBodies();
+  initSpacecraft();
+
+  // Initialize accelerations
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    const a = computeAccel(b.x, b.y, b.mass, i);
+    b.ax = a.ax;
+    b.ay = a.ay;
+  }
+}
+
+function draw() {
+  background(220);
+  noStroke();
+
+  if (!paused) {
+    // Sub-step integration for stability
+    for (let s = 0; s < SUBSTEPS; s++) {
+      const subDt = DT / SUBSTEPS;
+
+      integrateStep(subDt);
+
+      // Apply boundary forces
+      for (const b of bodies) applyBoundary(b);
+
+      // Spacecraft
+      integrateCraft(subDt);
+      updateMission(subDt);
+
+      totalTime += subDt;
+    }
+
+    // Record trails (once per frame, not per substep)
+    for (const b of bodies) b.recordTrail();
+    craft.recordTrail();
+  }
+
+  // ── Draw trails ──
+  drawTrail(sun.trail, sun.trailCol, 1.5);
+  drawTrail(earth.trail, earth.trailCol, 1.2);
+  drawTrail(jupiter.trail, jupiter.trailCol, 1.3);
+  drawCraftTrail();
+
+  // ── Draw bodies ──
+  // Sun glow
+  for (let r = sun.radius * 3; r > sun.radius; r -= 3) {
+    const a = map(r, sun.radius * 3, sun.radius, 0, 40);
+    fill(255, 210, 80, a);
+    ellipse(sun.x, sun.y, r * 2, r * 2);
+  }
+  fill(sun.col[0], sun.col[1], sun.col[2]);
+  ellipse(sun.x, sun.y, sun.radius * 2, sun.radius * 2);
+  // Sun highlight
+  fill(255, 240, 200, 180);
+  ellipse(sun.x - sun.radius * 0.25, sun.y - sun.radius * 0.25, sun.radius * 0.7, sun.radius * 0.7);
+
+  // Earth
+  fill(30, 80, 180, 25);
+  ellipse(earth.x, earth.y, earth.radius * 4, earth.radius * 4);
+  fill(earth.col[0], earth.col[1], earth.col[2]);
+  ellipse(earth.x, earth.y, earth.radius * 2, earth.radius * 2);
+  fill(80, 160, 255, 120);
+  ellipse(earth.x - earth.radius * 0.2, earth.y - earth.radius * 0.25, earth.radius * 0.6, earth.radius * 0.6);
+
+  // Jupiter
+  fill(190, 140, 90, 20);
+  ellipse(jupiter.x, jupiter.y, jupiter.radius * 3.5, jupiter.radius * 3.5);
+  fill(jupiter.col[0], jupiter.col[1], jupiter.col[2]);
+  ellipse(jupiter.x, jupiter.y, jupiter.radius * 2, jupiter.radius * 2);
+  // Jupiter bands
+  fill(180, 130, 80, 80);
+  ellipse(jupiter.x, jupiter.y - 3, jupiter.radius * 1.8, jupiter.radius * 0.35);
+  fill(220, 170, 120, 60);
+  ellipse(jupiter.x, jupiter.y + 4, jupiter.radius * 1.6, jupiter.radius * 0.3);
+  fill(200, 145, 95, 50);
+  ellipse(jupiter.x, jupiter.y - 7, jupiter.radius * 1.4, jupiter.radius * 0.25);
+
+  // ── Draw spacecraft ──
+  if (craft.alive && craft.launched) {
+    // Thrust glow
+    fill(100, 200, 255, 50);
+    ellipse(craft.x, craft.y, 14, 14);
+    fill(200, 240, 255, 100);
+    ellipse(craft.x, craft.y, 8, 8);
+    // Ship body
+    fill(255);
+    ellipse(craft.x, craft.y, 5, 5);
+    fill(100, 220, 255);
+    ellipse(craft.x, craft.y, 3, 3);
+  } else if (craft.alive && !craft.launched) {
+    // Docked indicator
+    fill(100, 255, 100, 150);
+    ellipse(craft.x + 10, craft.y - 10, 4, 4);
+  }
+
+  // ── Labels ──
+  drawLabels();
+
+  // ── HUD ──
+  drawHUD();
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  TRAIL RENDERING                                         │
+// └──────────────────────────────────────────────────────────┘
+
+function drawTrail(trail, col, weight) {
+  if (trail.length < 2) return;
+  for (let i = 1; i < trail.length; i++) {
+    const alpha = map(i, 0, trail.length, 2, col[3] || 40);
+    const w = map(i, 0, trail.length, 0.3, weight);
+    fill(col[0], col[1], col[2], alpha);
+    ellipse(trail[i].x, trail[i].y, w, w);
+  }
+}
+
+function drawCraftTrail() {
+  if (craft.trail.length < 2) return;
+  for (let i = 1; i < craft.trail.length; i++) {
+    const t = i / craft.trail.length;
+    // Color shifts through mission phases
+    const r = lerp(100, 255, t * 0.5);
+    const g = lerp(220, 150, t);
+    const b = 255;
+    const alpha = map(i, 0, craft.trail.length, 3, 50);
+    const w = map(i, 0, craft.trail.length, 0.3, 1.2);
+    fill(r, g, b, alpha);
+    ellipse(craft.trail[i].x, craft.trail[i].y, w, w);
+  }
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  LABELS                                                  │
+// └──────────────────────────────────────────────────────────┘
+
+function drawLabels() {
+  textAlign(CENTER, CENTER);
+  textSize(10);
+
+  // Sun label
+  fill(180, 140, 20);
+  text('Sun', sun.x, sun.y - sun.radius - 10);
+
+  // Earth label
+  fill(30, 80, 180);
+  text('Earth', earth.x, earth.y - earth.radius - 8);
+
+  // Jupiter label
+  fill(170, 120, 70);
+  text('Jupiter', jupiter.x, jupiter.y - jupiter.radius - 10);
+
+  // Spacecraft label
+  if (craft.alive && craft.launched) {
+    fill(60, 160, 200);
+    textSize(9);
+    const phaseNames = ['Docked', 'Sun Loop', 'Transfer', 'At Jupiter'];
+    text('Craft · ' + phaseNames[craft.phase], craft.x, craft.y - 12);
+  }
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  HUD (Heads-Up Display)                                  │
+// └──────────────────────────────────────────────────────────┘
+
+function drawHUD() {
+  // Top-left info
+  textAlign(LEFT, TOP);
+  textSize(11);
+  fill(80);
+  text('Chaotic Three-Body System', 14, 12);
+
+  textSize(9);
+  fill(120);
+  const phaseNames = ['Docked on Earth', 'Looping the Sun', 'Transfer to Jupiter', 'Orbiting Jupiter'];
+  text('Spacecraft: ' + phaseNames[craft.phase], 14, 28);
+  text('Time: ' + Math.floor(totalTime), 14, 42);
+
+  // Mission progress bar
+  const barX = 14, barY = 58, barW = 160, barH = 4;
+  fill(190);
+  rect(barX, barY, barW, barH, 2);
+
+  let progress = 0;
+  if (craft.phase === 0) progress = map(craft.timer, 0, 120, 0, 0.15);
+  else if (craft.phase === 1) progress = map(Math.abs(craft.sunAngleAccum), 0, Math.PI * 2, 0.15, 0.5);
+  else if (craft.phase === 2) {
+    const d = dist(craft.x, craft.y, jupiter.x, jupiter.y);
+    progress = map(d, 300, 35, 0.5, 0.95);
+  }
+  else progress = 1;
+  progress = constrain(progress, 0, 1);
+
+  fill(80, 180, 220);
+  rect(barX, barY, barW * progress, barH, 2);
+
+  // Phase markers on bar
+  fill(60, 60, 60, 100);
+  for (const px of [0.15, 0.5, 0.95]) {
+    rect(barX + barW * px - 0.5, barY - 1, 1, barH + 2);
+  }
+
+  // Legend
+  textSize(8);
+  fill(160);
+  text('Depart    Sun Loop    Transfer    Arrive', barX, barY + 9);
+
+  // Bottom info
+  textAlign(LEFT, BOTTOM);
+  textSize(8);
+  fill(160);
+  text('N-body gravity · Velocity-Verlet · Softened potential', 14, CANVAS_SIZE - 12);
+
+  // Pause indicator
+  if (paused) {
+    textAlign(CENTER, CENTER);
+    textSize(18);
+    fill(60, 60, 60, 180);
+    text('⏸  PAUSED  (click to resume)', CENTER_X, CANVAS_SIZE - 40);
+  }
+
+  // Controls hint
+  textAlign(RIGHT, BOTTOM);
+  textSize(8);
+  fill(170);
+  text('Click: pause/resume · R: restart', CANVAS_SIZE - 14, CANVAS_SIZE - 12);
+}
+
+// ┌──────────────────────────────────────────────────────────┐
+// │  INTERACTION                                             │
+// └──────────────────────────────────────────────────────────┘
+
+function mousePressed() {
+  paused = !paused;
+}
+
+function keyPressed() {
+  if (key === 'r' || key === 'R') {
+    totalTime = 0;
+    initBodies();
+    initSpacecraft();
+    // Re-init accelerations
+    for (let i = 0; i < bodies.length; i++) {
+      const b = bodies[i];
+      const a = computeAccel(b.x, b.y, b.mass, i);
+      b.ax = a.ax;
+      b.ay = a.ay;
+    }
+  }
+}
+</script>
+</body>
+</html>

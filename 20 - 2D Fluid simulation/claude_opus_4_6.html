@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fluid Dynamics · Navier-Stokes Simulation</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+<style>
+:root{--bg:#0a0a0c;--panel:rgba(10,10,12,0.92);--border:rgba(255,255,255,0.05);--text:#b0b4be;--text2:#50545e;--accent:#60a0c0}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);font-family:'Segoe UI',system-ui,sans-serif;color:var(--text)}
+canvas{display:block;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}
+
+#hud{position:absolute;top:10px;left:10px;z-index:10;pointer-events:none}
+.hud-title{font-size:14px;font-weight:700;color:#d0d4de;letter-spacing:.5px}
+.hud-sub{font-size:8.5px;color:var(--text2);margin-top:2px;letter-spacing:1px}
+
+#panel{position:absolute;top:10px;right:10px;width:200px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;z-index:10;backdrop-filter:blur(6px);pointer-events:all}
+.sec{font-size:8px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--accent);margin-bottom:6px;padding-bottom:3px;border-bottom:1px solid var(--border)}
+.row{display:flex;justify-content:space-between;font-size:9px;color:var(--text2);margin-bottom:3px}
+.row b{color:var(--text);font-weight:500}
+.colors{display:flex;gap:3px;margin:6px 0}
+.cswatch{width:20px;height:14px;border-radius:3px;border:1.5px solid transparent;cursor:pointer;pointer-events:all;transition:.1s}
+.cswatch:hover,.cswatch.on{border-color:#fff}
+.sep{height:1px;background:var(--border);margin:8px 0}
+.keys{font-size:8px;color:var(--text2);line-height:1.8}
+.keys b{color:var(--text)}
+
+#stats{position:absolute;bottom:10px;left:10px;font-size:8px;color:rgba(80,84,94,0.5);z-index:10;letter-spacing:.5px;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="hud-title">Fluid Dynamics</div>
+  <div class="hud-sub">Navier-Stokes · Interactive Simulation</div>
+</div>
+
+<div id="panel">
+  <div class="sec">State</div>
+  <div class="row">Viscosity <b id="v-visc">0.0001</b></div>
+  <div class="row">Diffusion <b id="v-diff">0.00002</b></div>
+  <div class="row">Vorticity <b id="v-vort">ON</b></div>
+  <div class="row">Obstacle <b id="v-obs">OFF</b></div>
+  <div class="row">Grid <b id="v-grid">200×200</b></div>
+
+  <div class="sep"></div>
+  <div class="sec">Ink Color</div>
+  <div class="colors" id="swatches"></div>
+
+  <div class="sep"></div>
+  <div class="sec">Controls</div>
+  <div class="keys">
+    <b>Mouse drag</b> — inject ink + velocity<br>
+    <b>1-7</b> — select ink color<br>
+    <b>V</b> — toggle vorticity confinement<br>
+    <b>+/−</b> — adjust viscosity<br>
+    <b>D</b> — increase diffusion<br>
+    <b>O</b> — toggle obstacle<br>
+    <b>Space</b> — random splashes<br>
+    <b>C</b> — clear fluid<br>
+    <b>R</b> — full reset
+  </div>
+</div>
+
+<div id="stats">
+  <span id="st-fps">60</span> fps · <span id="st-cells">40000</span> cells · <span id="st-step">0</span> steps
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  2D NAVIER-STOKES FLUID SIMULATION
+//
+//  Implementation: Jos Stam's "Stable Fluids" (1999)
+//    - Semi-Lagrangian advection (unconditionally stable)
+//    - Gauss-Seidel iterative pressure solver
+//    - Vorticity confinement for swirl preservation
+//    - RGB dye advection with smooth color mixing
+//    - Interactive mouse force injection
+//    - Circular obstacle with no-slip boundary
+//
+//  Grid: 200×200 velocity + dye fields, rendered via ImageData
+// ═══════════════════════════════════════════════════════════════
+
+// ─── Grid Configuration ──────────────────────────────────────
+const N       = 200;            // Grid resolution (N×N interior cells)
+const SIZE    = N + 2;          // Total grid size including boundary
+const TOTAL   = SIZE * SIZE;    // Total cell count
+
+// ─── Simulation Parameters ───────────────────────────────────
+let viscosity   = 0.0001;       // Velocity diffusion rate
+let diffusion   = 0.00002;      // Dye diffusion rate
+let dt          = 0.15;         // Time step
+let solverIter  = 4;            // Gauss-Seidel iterations
+let vortEnable  = true;         // Vorticity confinement
+let vortStrength = 8.0;         // Vorticity confinement strength
+let obstacleOn  = false;        // Circular obstacle
+let obsCx, obsCy, obsR;        // Obstacle center and radius
+
+// ─── Field Arrays (flat Float32Array for performance) ────────
+let u     = new Float32Array(TOTAL);  // Velocity X
+let v     = new Float32Array(TOTAL);  // Velocity Y
+let u0    = new Float32Array(TOTAL);  // Previous velocity X
+let v0    = new Float32Array(TOTAL);  // Previous velocity Y
+let dyeR  = new Float32Array(TOTAL);  // Red dye channel
+let dyeG  = new Float32Array(TOTAL);  // Green dye channel
+let dyeB  = new Float32Array(TOTAL);  // Blue dye channel
+let dyeR0 = new Float32Array(TOTAL);  // Previous red
+let dyeG0 = new Float32Array(TOTAL);  // Previous green
+let dyeB0 = new Float32Array(TOTAL);  // Previous blue
+
+// Vorticity workspace
+let vorticity = new Float32Array(TOTAL);
+
+// ─── Indexing ────────────────────────────────────────────────
+function IX(i, j) { return i + j * SIZE; }
+
+// ─── Boundary Conditions ─────────────────────────────────────
+// b=1: negate x-component at vertical walls
+// b=2: negate y-component at horizontal walls
+// b=0: simple copy
+
+function setBnd(b, x) {
+  for (let i = 1; i <= N; i++) {
+    x[IX(0,     i)] = b === 1 ? -x[IX(1, i)] : x[IX(1, i)];
+    x[IX(N + 1, i)] = b === 1 ? -x[IX(N, i)] : x[IX(N, i)];
+    x[IX(i,     0)] = b === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
+    x[IX(i, N + 1)] = b === 2 ? -x[IX(i, N)] : x[IX(i, N)];
+  }
+  // Corners: average of neighbors
+  x[IX(0,     0    )] = 0.5 * (x[IX(1, 0)]     + x[IX(0, 1)]);
+  x[IX(0,     N + 1)] = 0.5 * (x[IX(1, N + 1)] + x[IX(0, N)]);
+  x[IX(N + 1, 0    )] = 0.5 * (x[IX(N, 0)]     + x[IX(N + 1, 1)]);
+  x[IX(N + 1, N + 1)] = 0.5 * (x[IX(N, N + 1)] + x[IX(N + 1, N)]);
+
+  // Obstacle boundary: zero velocity inside obstacle
+  if (obstacleOn) {
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const dx = i - obsCx, dy = j - obsCy;
+        if (dx * dx + dy * dy < obsR * obsR) {
+          x[IX(i, j)] = 0;
+        }
+      }
+    }
+  }
+}
+
+// ─── Diffusion (implicit Gauss-Seidel) ──────────────────────
+function diffuse(b, x, x0, diff) {
+  const a = dt * diff * N * N;
+  if (a === 0) { x.set(x0); return; }
+  const invDenom = 1 / (1 + 4 * a);
+  for (let k = 0; k < solverIter; k++) {
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = IX(i, j);
+        x[idx] = (x0[idx] + a * (
+          x[IX(i - 1, j)] + x[IX(i + 1, j)] +
+          x[IX(i, j - 1)] + x[IX(i, j + 1)]
+        )) * invDenom;
+      }
+    }
+    setBnd(b, x);
+  }
+}
+
+// ─── Advection (semi-Lagrangian, unconditionally stable) ─────
+function advect(b, d, d0, uField, vField) {
+  const dt0 = dt * N;
+  for (let j = 1; j <= N; j++) {
+    for (let i = 1; i <= N; i++) {
+      const idx = IX(i, j);
+      // Trace back
+      let x = i - dt0 * uField[idx];
+      let y = j - dt0 * vField[idx];
+      // Clamp
+      if (x < 0.5) x = 0.5;
+      if (x > N + 0.5) x = N + 0.5;
+      if (y < 0.5) y = 0.5;
+      if (y > N + 0.5) y = N + 0.5;
+      // Bilinear interpolation
+      const i0 = Math.floor(x), i1 = i0 + 1;
+      const j0 = Math.floor(y), j1 = j0 + 1;
+      const s1 = x - i0, s0 = 1 - s1;
+      const t1 = y - j0, t0 = 1 - t1;
+      d[idx] = s0 * (t0 * d0[IX(i0, j0)] + t1 * d0[IX(i0, j1)]) +
+               s1 * (t0 * d0[IX(i1, j0)] + t1 * d0[IX(i1, j1)]);
+    }
+  }
+  setBnd(b, d);
+}
+
+// ─── Projection (Hodge decomposition: make velocity divergence-free)
+// Solves the Poisson pressure equation via Gauss-Seidel
+function project(uF, vF, p, div) {
+  const h = 1.0 / N;
+  // Compute divergence
+  for (let j = 1; j <= N; j++) {
+    for (let i = 1; i <= N; i++) {
+      div[IX(i, j)] = -0.5 * h * (
+        uF[IX(i + 1, j)] - uF[IX(i - 1, j)] +
+        vF[IX(i, j + 1)] - vF[IX(i, j - 1)]
+      );
+      p[IX(i, j)] = 0;
+    }
+  }
+  setBnd(0, div);
+  setBnd(0, p);
+
+  // Solve pressure Poisson equation
+  for (let k = 0; k < solverIter; k++) {
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        p[IX(i, j)] = (div[IX(i, j)] +
+          p[IX(i - 1, j)] + p[IX(i + 1, j)] +
+          p[IX(i, j - 1)] + p[IX(i, j + 1)]) * 0.25;
+      }
+    }
+    setBnd(0, p);
+  }
+
+  // Subtract pressure gradient from velocity
+  for (let j = 1; j <= N; j++) {
+    for (let i = 1; i <= N; i++) {
+      uF[IX(i, j)] -= 0.5 * N * (p[IX(i + 1, j)] - p[IX(i - 1, j)]);
+      vF[IX(i, j)] -= 0.5 * N * (p[IX(i, j + 1)] - p[IX(i, j - 1)]);
+    }
+  }
+  setBnd(1, uF);
+  setBnd(2, vF);
+}
+
+// ─── Vorticity Confinement ───────────────────────────────────
+// Computes curl of velocity and applies a force that amplifies
+// existing vortices, counteracting numerical dissipation.
+function vorticityConfinement() {
+  if (!vortEnable) return;
+
+  // Compute vorticity (curl in 2D = dv/dx - du/dy)
+  for (let j = 1; j <= N; j++) {
+    for (let i = 1; i <= N; i++) {
+      vorticity[IX(i, j)] =
+        0.5 * ((v[IX(i + 1, j)] - v[IX(i - 1, j)]) -
+               (u[IX(i, j + 1)] - u[IX(i, j - 1)]));
+    }
+  }
+
+  // Apply confinement force
+  const eps = vortStrength * dt;
+  for (let j = 2; j < N; j++) {
+    for (let i = 2; i < N; i++) {
+      const idx = IX(i, j);
+      // Gradient of |vorticity|
+      const dwdx = Math.abs(vorticity[IX(i + 1, j)]) - Math.abs(vorticity[IX(i - 1, j)]);
+      const dwdy = Math.abs(vorticity[IX(i, j + 1)]) - Math.abs(vorticity[IX(i, j - 1)]);
+      const len = Math.sqrt(dwdx * dwdx + dwdy * dwdy) + 1e-5;
+      // Normalized gradient × vorticity = confinement force direction
+      const nx = dwdx / len;
+      const ny = dwdy / len;
+      const w = vorticity[idx];
+      u[idx] += eps * (ny * w);
+      v[idx] -= eps * (nx * w);
+    }
+  }
+}
+
+// ─── Full Velocity Step ──────────────────────────────────────
+function velocityStep() {
+  // Add forces are already in u0, v0 (accumulated externally)
+  for (let i = 0; i < TOTAL; i++) { u[i] += dt * u0[i]; v[i] += dt * v0[i]; }
+
+  // Diffuse
+  [u0, u] = [u, u0]; diffuse(1, u, u0, viscosity);
+  [v0, v] = [v, v0]; diffuse(2, v, v0, viscosity);
+
+  // Project
+  project(u, v, u0, v0);
+
+  // Advect
+  [u0, u] = [u, u0];
+  [v0, v] = [v, v0];
+  advect(1, u, u0, u0, v0);
+  advect(2, v, v0, u0, v0);
+
+  // Project again
+  project(u, v, u0, v0);
+
+  // Vorticity confinement
+  vorticityConfinement();
+
+  // Clear force accumulators
+  u0.fill(0);
+  v0.fill(0);
+}
+
+// ─── Dye Density Step ────────────────────────────────────────
+function dyeStep() {
+  // Dye sources already accumulated in dyeR0, dyeG0, dyeB0
+  for (let i = 0; i < TOTAL; i++) {
+    dyeR[i] += dt * dyeR0[i];
+    dyeG[i] += dt * dyeG0[i];
+    dyeB[i] += dt * dyeB0[i];
+  }
+
+  // Diffuse each channel
+  [dyeR0, dyeR] = [dyeR, dyeR0]; diffuse(0, dyeR, dyeR0, diffusion);
+  [dyeG0, dyeG] = [dyeG, dyeG0]; diffuse(0, dyeG, dyeG0, diffusion);
+  [dyeB0, dyeB] = [dyeB, dyeB0]; diffuse(0, dyeB, dyeB0, diffusion);
+
+  // Advect each channel
+  [dyeR0, dyeR] = [dyeR, dyeR0]; advect(0, dyeR, dyeR0, u, v);
+  [dyeG0, dyeG] = [dyeG, dyeG0]; advect(0, dyeG, dyeG0, u, v);
+  [dyeB0, dyeB] = [dyeB, dyeB0]; advect(0, dyeB, dyeB0, u, v);
+
+  // Clear source accumulators
+  dyeR0.fill(0);
+  dyeG0.fill(0);
+  dyeB0.fill(0);
+
+  // Gentle dye decay to prevent saturation
+  for (let i = 0; i < TOTAL; i++) {
+    dyeR[i] *= 0.998;
+    dyeG[i] *= 0.998;
+    dyeB[i] *= 0.998;
+  }
+}
+
+// ─── Color Palette ───────────────────────────────────────────
+const PALETTE = [
+  { name: 'Cyan',    r: 0.2, g: 0.8, b: 1.0, hex: '#33ccff' },
+  { name: 'Magenta', r: 1.0, g: 0.2, b: 0.6, hex: '#ff3399' },
+  { name: 'Gold',    r: 1.0, g: 0.8, b: 0.1, hex: '#ffcc1a' },
+  { name: 'Lime',    r: 0.3, g: 1.0, b: 0.3, hex: '#4dff4d' },
+  { name: 'Orange',  r: 1.0, g: 0.5, b: 0.1, hex: '#ff801a' },
+  { name: 'Violet',  r: 0.6, g: 0.2, b: 1.0, hex: '#9933ff' },
+  { name: 'White',   r: 1.0, g: 1.0, b: 1.0, hex: '#ffffff' },
+];
+let activeColor = 0;
+
+// ─── Interaction State ───────────────────────────────────────
+let prevMx = 0, prevMy = 0;
+let canvasW, canvasH;
+let stepCount = 0;
+let img;
+
+// ─── p5.js Setup ─────────────────────────────────────────────
+function setup() {
+  // Canvas sized to fit viewport
+  canvasW = Math.min(window.innerWidth - 240, window.innerHeight - 40, 800);
+  canvasH = canvasW;
+  createCanvas(canvasW, canvasH);
+  pixelDensity(1);
+
+  // Obstacle at center
+  obsCx = N / 2;
+  obsCy = N / 2;
+  obsR = N * 0.06;
+
+  // Build color swatches
+  const swatchContainer = document.getElementById('swatches');
+  PALETTE.forEach((c, i) => {
+    const el = document.createElement('div');
+    el.className = 'cswatch' + (i === 0 ? ' on' : '');
+    el.style.background = c.hex;
+    el.id = 'sw-' + i;
+    el.onclick = () => selectColor(i);
+    swatchContainer.appendChild(el);
+  });
+
+  // Pre-create p5 image for efficient pixel writing
+  img = createImage(N, N);
+}
+
+function selectColor(idx) {
+  activeColor = idx;
+  document.querySelectorAll('.cswatch').forEach((el, i) => {
+    el.classList.toggle('on', i === idx);
+  });
+}
+
+// ─── Mouse → Grid Coordinate Mapping ────────────────────────
+function mouseToGrid() {
+  const gx = Math.floor((mouseX / canvasW) * N) + 1;
+  const gy = Math.floor((mouseY / canvasH) * N) + 1;
+  return { i: constrain(gx, 1, N), j: constrain(gy, 1, N) };
+}
+
+function prevMouseToGrid() {
+  const gx = Math.floor((prevMx / canvasW) * N) + 1;
+  const gy = Math.floor((prevMy / canvasH) * N) + 1;
+  return { i: constrain(gx, 1, N), j: constrain(gy, 1, N) };
+}
+
+// ─── Add Force + Dye at Mouse Position ───────────────────────
+function addMouseForce() {
+  if (!mouseIsPressed) return;
+  if (mouseX < 0 || mouseX > canvasW || mouseY < 0 || mouseY > canvasH) return;
+
+  const g = mouseToGrid();
+  const pg = prevMouseToGrid();
+
+  // Velocity from mouse movement (scaled up for visible effect)
+  const forceMul = 5.0;
+  const dx = (g.i - pg.i) * forceMul;
+  const dy = (g.j - pg.j) * forceMul;
+
+  const col = PALETTE[activeColor];
+  const dyeAmount = 120;
+  const radius = 3;
+
+  // Apply force and dye in a small radius around cursor
+  for (let dj = -radius; dj <= radius; dj++) {
+    for (let di = -radius; di <= radius; di++) {
+      const ci = g.i + di;
+      const cj = g.j + dj;
+      if (ci < 1 || ci > N || cj < 1 || cj > N) continue;
+      const distSq = di * di + dj * dj;
+      if (distSq > radius * radius) continue;
+
+      const falloff = 1 - distSq / (radius * radius + 1);
+      const idx = IX(ci, cj);
+
+      u0[idx] += dx * falloff;
+      v0[idx] += dy * falloff;
+
+      dyeR0[idx] += col.r * dyeAmount * falloff;
+      dyeG0[idx] += col.g * dyeAmount * falloff;
+      dyeB0[idx] += col.b * dyeAmount * falloff;
+    }
+  }
+}
+
+// ─── Add Random Splashes ─────────────────────────────────────
+function randomSplash() {
+  for (let s = 0; s < 5; s++) {
+    const ci = Math.floor(random(20, N - 20));
+    const cj = Math.floor(random(20, N - 20));
+    const angle = random(TWO_PI);
+    const force = random(15, 40);
+    const col = PALETTE[Math.floor(random(PALETTE.length))];
+    const radius = Math.floor(random(4, 8));
+
+    for (let dj = -radius; dj <= radius; dj++) {
+      for (let di = -radius; di <= radius; di++) {
+        const ni = ci + di, nj = cj + dj;
+        if (ni < 1 || ni > N || nj < 1 || nj > N) continue;
+        const distSq = di * di + dj * dj;
+        if (distSq > radius * radius) continue;
+
+        const f = 1 - distSq / (radius * radius + 1);
+        const idx = IX(ni, nj);
+        u0[idx] += Math.cos(angle) * force * f;
+        v0[idx] += Math.sin(angle) * force * f;
+        dyeR0[idx] += col.r * 200 * f;
+        dyeG0[idx] += col.g * 200 * f;
+        dyeB0[idx] += col.b * 200 * f;
+      }
+    }
+  }
+}
+
+// ─── Rendering ───────────────────────────────────────────────
+function renderFluid() {
+  img.loadPixels();
+  const px = img.pixels;
+
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const idx = IX(i + 1, j + 1);
+      const pIdx = (j * N + i) * 4;
+
+      // Background base: very dark (near black for contrast)
+      let r = dyeR[idx] * 255;
+      let g = dyeG[idx] * 255;
+      let b = dyeB[idx] * 255;
+
+      // Add subtle velocity-based luminance
+      const speed = Math.sqrt(u[idx] * u[idx] + v[idx] * v[idx]);
+      const lum = Math.min(speed * 3, 30);
+      r += lum * 0.4;
+      g += lum * 0.5;
+      b += lum * 0.7;
+
+      // Clamp
+      px[pIdx]     = Math.min(255, Math.max(0, r));
+      px[pIdx + 1] = Math.min(255, Math.max(0, g));
+      px[pIdx + 2] = Math.min(255, Math.max(0, b));
+      px[pIdx + 3] = 255;
+    }
+  }
+
+  // Draw obstacle
+  if (obstacleOn) {
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const dx = (i + 1) - obsCx;
+        const dy = (j + 1) - obsCy;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < obsR) {
+          const pIdx = (j * N + i) * 4;
+          px[pIdx] = 40; px[pIdx + 1] = 42; px[pIdx + 2] = 48; px[pIdx + 3] = 255;
+        } else if (d < obsR + 1.5) {
+          const pIdx = (j * N + i) * 4;
+          // Bright rim
+          px[pIdx] = Math.min(255, px[pIdx] + 60);
+          px[pIdx + 1] = Math.min(255, px[pIdx + 1] + 65);
+          px[pIdx + 2] = Math.min(255, px[pIdx + 2] + 70);
+        }
+      }
+    }
+  }
+
+  img.updatePixels();
+
+  // Draw upscaled to canvas with smooth interpolation
+  // p5's image() uses the canvas context's imageSmoothingEnabled
+  push();
+  noSmooth(); // Crisp pixels — looks better for fluid
+  image(img, 0, 0, canvasW, canvasH);
+  pop();
+}
+
+// ─── Main Draw Loop ──────────────────────────────────────────
+function draw() {
+  // Mouse interaction
+  addMouseForce();
+
+  // Physics step
+  velocityStep();
+  dyeStep();
+  stepCount++;
+
+  // Render
+  background(10);
+  renderFluid();
+
+  // Cursor indicator
+  if (mouseX > 0 && mouseX < canvasW && mouseY > 0 && mouseY < canvasH) {
+    noFill();
+    stroke(255, 255, 255, 60);
+    strokeWeight(1);
+    const cursorR = (3 / N) * canvasW;
+    ellipse(mouseX, mouseY, cursorR * 2, cursorR * 2);
+    // Color dot
+    const col = PALETTE[activeColor];
+    fill(col.r * 255, col.g * 255, col.b * 255, 150);
+    noStroke();
+    ellipse(mouseX, mouseY, 4, 4);
+  }
+
+  // Save previous mouse position
+  prevMx = mouseX;
+  prevMy = mouseY;
+
+  // Update stats
+  if (frameCount % 15 === 0) {
+    document.getElementById('st-fps').textContent = Math.round(frameRate());
+    document.getElementById('st-cells').textContent = (N * N).toLocaleString();
+    document.getElementById('st-step').textContent = stepCount;
+  }
+}
+
+// ─── Keyboard Controls ───────────────────────────────────────
+function keyPressed() {
+  // Number keys: select color
+  if (key >= '1' && key <= '7') {
+    selectColor(parseInt(key) - 1);
+    return;
+  }
+
+  switch (key.toLowerCase()) {
+    case 'v':
+      vortEnable = !vortEnable;
+      document.getElementById('v-vort').textContent = vortEnable ? 'ON' : 'OFF';
+      break;
+    case 'o':
+      obstacleOn = !obstacleOn;
+      document.getElementById('v-obs').textContent = obstacleOn ? 'ON' : 'OFF';
+      break;
+    case 'c':
+      // Clear dye only
+      dyeR.fill(0); dyeG.fill(0); dyeB.fill(0);
+      dyeR0.fill(0); dyeG0.fill(0); dyeB0.fill(0);
+      break;
+    case 'r':
+      // Full reset
+      u.fill(0); v.fill(0); u0.fill(0); v0.fill(0);
+      dyeR.fill(0); dyeG.fill(0); dyeB.fill(0);
+      dyeR0.fill(0); dyeG0.fill(0); dyeB0.fill(0);
+      vorticity.fill(0);
+      stepCount = 0;
+      break;
+    case 'd':
+      diffusion = Math.min(0.005, diffusion * 2);
+      document.getElementById('v-diff').textContent = diffusion.toFixed(5);
+      break;
+    case ' ':
+      randomSplash();
+      break;
+  }
+
+  // +/- for viscosity
+  if (key === '=' || key === '+') {
+    viscosity = Math.min(0.01, viscosity * 2);
+    document.getElementById('v-visc').textContent = viscosity.toFixed(4);
+  }
+  if (key === '-' || key === '_') {
+    viscosity = Math.max(0.00001, viscosity / 2);
+    document.getElementById('v-visc').textContent = viscosity.toFixed(5);
+  }
+}
+</script>
+</body>
+</html>

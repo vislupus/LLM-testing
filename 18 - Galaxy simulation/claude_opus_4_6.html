@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Galaxy Formation · Protogalactic Collapse</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+<style>
+  body { margin: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #d8d8d8; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  GALAXY FORMATION SIMULATION
+//
+//  10,000 particles collapse from a protogalactic cloud into a
+//  spiral galaxy via:
+//    • Barnes-Hut quadtree gravity (θ = 0.6) → O(n log n)
+//    • Central supermassive black hole
+//    • Invisible dark-matter halo (NFW-like profile)
+//    • Gas dissipation (velocity damping toward rotational support)
+//    • Particle merging with mass conservation
+//    • Keplerian differential rotation (inner fast, outer slow)
+//
+//  All motion uses p5.Vector. Background 220 with alpha-fade trails.
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Configuration ───────────────────────────────────────────────
+const N_INITIAL    = 10000;     // Starting particle count
+const CANVAS_W     = 950;
+const CANVAS_H     = 950;
+const CX           = CANVAS_W / 2;
+const CY           = CANVAS_H / 2;
+
+// Physics
+const G            = 0.8;       // Gravitational constant (inter-particle)
+const BH_MASS      = 80000;     // Central black hole mass
+const DM_MASS      = 200000;    // Dark matter halo total effective mass
+const DM_SCALE     = 280;       // Halo scale radius (NFW-like)
+const SOFTENING    = 4.0;       // Gravitational softening length
+const BH_SOFT      = 8.0;       // Black hole softening
+const THETA        = 0.6;       // Barnes-Hut opening angle
+const DT           = 0.4;       // Integration timestep
+const MERGE_DIST   = 2.5;       // Merge radius
+const MAX_MERGE_PER_FRAME = 200;// Cap merges per frame for stability
+const DAMPING_INITIAL = 0.9985; // Gas dissipation (collapses cloud into disk)
+const DAMPING_FINAL   = 0.9998; // Reduced damping after galaxy forms
+const COLLAPSE_TIME   = 600;    // Frames for cloud→disk transition
+
+// ─── Quadtree ────────────────────────────────────────────────────
+// Barnes-Hut implementation for O(n log n) gravity computation.
+// Each node stores center-of-mass and total mass of contained particles.
+
+class QTNode {
+  constructor(x, y, w, h) {
+    this.x = x;       // bounds origin x
+    this.y = y;       // bounds origin y
+    this.w = w;       // width
+    this.h = h;       // height
+    this.mass = 0;
+    this.comX = 0;     // center of mass x
+    this.comY = 0;     // center of mass y
+    this.body = null;  // single body if leaf
+    this.nw = null;    // children
+    this.ne = null;
+    this.sw = null;
+    this.se = null;
+    this.divided = false;
+    this.count = 0;
+  }
+
+  contains(px, py) {
+    return px >= this.x && px < this.x + this.w &&
+           py >= this.y && py < this.y + this.h;
+  }
+
+  subdivide() {
+    const hw = this.w / 2, hh = this.h / 2;
+    this.nw = new QTNode(this.x, this.y, hw, hh);
+    this.ne = new QTNode(this.x + hw, this.y, hw, hh);
+    this.sw = new QTNode(this.x, this.y + hh, hw, hh);
+    this.se = new QTNode(this.x + hw, this.y + hh, hw, hh);
+    this.divided = true;
+  }
+
+  insert(p) {
+    if (!this.contains(p.pos.x, p.pos.y)) return false;
+
+    this.count++;
+    // Update center of mass incrementally
+    const totalMass = this.mass + p.mass;
+    this.comX = (this.comX * this.mass + p.pos.x * p.mass) / totalMass;
+    this.comY = (this.comY * this.mass + p.pos.y * p.mass) / totalMass;
+    this.mass = totalMass;
+
+    if (this.body === null && !this.divided) {
+      // Empty leaf: store body
+      this.body = p;
+      return true;
+    }
+
+    // Need to subdivide
+    if (!this.divided) {
+      this.subdivide();
+      // Re-insert existing body
+      const old = this.body;
+      this.body = null;
+      this.insertChild(old);
+    }
+
+    // Insert new body into appropriate child
+    this.insertChild(p);
+    return true;
+  }
+
+  insertChild(p) {
+    if (this.nw.insert(p)) return;
+    if (this.ne.insert(p)) return;
+    if (this.sw.insert(p)) return;
+    this.se.insert(p);
+  }
+
+  // Barnes-Hut force calculation
+  calcForce(p, softSq, theta) {
+    if (this.count === 0) return;
+
+    const dx = this.comX - p.pos.x;
+    const dy = this.comY - p.pos.y;
+    const distSq = dx * dx + dy * dy + softSq;
+
+    // If leaf with single body (not self)
+    if (!this.divided && this.body !== null) {
+      if (this.body === p) return;
+      const dist = Math.sqrt(distSq);
+      const f = G * this.mass / distSq;
+      p.acc.x += f * dx / dist;
+      p.acc.y += f * dy / dist;
+      return;
+    }
+
+    // Barnes-Hut criterion: if node is far enough, treat as point mass
+    const size = Math.max(this.w, this.h);
+    if ((size * size) / distSq < theta * theta) {
+      const dist = Math.sqrt(distSq);
+      const f = G * this.mass / distSq;
+      p.acc.x += f * dx / dist;
+      p.acc.y += f * dy / dist;
+      return;
+    }
+
+    // Otherwise recurse into children
+    if (this.divided) {
+      this.nw.calcForce(p, softSq, theta);
+      this.ne.calcForce(p, softSq, theta);
+      this.sw.calcForce(p, softSq, theta);
+      this.se.calcForce(p, softSq, theta);
+    }
+  }
+}
+
+// ─── Particle ────────────────────────────────────────────────────
+
+class Particle {
+  constructor(x, y, vx, vy, mass) {
+    this.pos  = createVector(x, y);
+    this.vel  = createVector(vx, vy);
+    this.acc  = createVector(0, 0);
+    this.mass = mass;
+    this.alive = true;
+  }
+}
+
+// ─── Globals ─────────────────────────────────────────────────────
+
+let particles = [];
+let frameNum = 0;
+let trailBuffer;
+
+// ─── Initialization ──────────────────────────────────────────────
+// Protogalactic cloud: spherical distribution with bulk rotation
+// and random thermal velocities. Cloud will collapse under gravity
+// and flatten into a disk due to dissipation + angular momentum.
+
+function setup() {
+  createCanvas(CANVAS_W, CANVAS_H);
+  pixelDensity(1);
+
+  // Create trail buffer with base color
+  trailBuffer = createGraphics(CANVAS_W, CANVAS_H);
+  trailBuffer.background(220);
+
+  initCloud();
+}
+
+function initCloud() {
+  particles = [];
+  frameNum = 0;
+
+  for (let i = 0; i < N_INITIAL; i++) {
+    // Spherical cloud with r^(-1) density profile (more concentrated center)
+    const u = random();
+    const r = 20 + pow(u, 0.5) * 350; // Spread: 20 to ~370px from center
+    const angle = random(TWO_PI);
+
+    const x = CX + r * cos(angle);
+    const y = CY + r * sin(angle);
+
+    // Bulk rotation: tangential velocity proportional to sqrt(r)
+    // This gives the cloud angular momentum that will form the disk
+    const rotSpeed = 0.12 * sqrt(r / 100);
+    const tx = -sin(angle);
+    const ty = cos(angle);
+    const vx = tx * rotSpeed + randomGaussian(0, 0.08);
+    const vy = ty * rotSpeed + randomGaussian(0, 0.08);
+
+    // Mass: power-law distribution (few heavy, many light)
+    const mass = 0.5 + pow(random(), 3) * 4.0;
+
+    particles.push(new Particle(x, y, vx, vy, mass));
+  }
+}
+
+// ─── Central Potential ───────────────────────────────────────────
+// Black hole + dark matter halo provide the dominant galactic potential.
+// This ensures Keplerian-like orbits (v ∝ 1/√r near center) and a
+// flat rotation curve at large radii (dark matter effect).
+
+function centralForce(p) {
+  const dx = CX - p.pos.x;
+  const dy = CY - p.pos.y;
+  const distSq = dx * dx + dy * dy;
+  const dist = Math.sqrt(distSq + BH_SOFT * BH_SOFT);
+
+  // Supermassive black hole: point mass at center
+  const fBH = G * BH_MASS / (distSq + BH_SOFT * BH_SOFT);
+  p.acc.x += fBH * dx / dist;
+  p.acc.y += fBH * dy / dist;
+
+  // Dark matter halo: NFW-like enclosed mass ∝ ln(1 + r/rs) - r/(r+rs)
+  // Simplified: force ∝ M_dm * [ln(1+r/rs)/(r²)] for a flat rotation curve
+  const rNorm = dist / DM_SCALE;
+  const enclosed = DM_MASS * (Math.log(1 + rNorm) - rNorm / (1 + rNorm));
+  const fDM = G * enclosed / (distSq + DM_SCALE * 2);
+  p.acc.x += fDM * dx / dist;
+  p.acc.y += fDM * dy / dist;
+}
+
+// ─── Integration (Leapfrog / Kick-Drift-Kick) ───────────────────
+
+function integrate() {
+  const softSq = SOFTENING * SOFTENING;
+
+  // Build quadtree
+  const tree = new QTNode(-100, -100, CANVAS_W + 200, CANVAS_H + 200);
+  for (const p of particles) {
+    if (p.alive) tree.insert(p);
+  }
+
+  // Compute forces
+  for (const p of particles) {
+    if (!p.alive) continue;
+    p.acc.set(0, 0);
+
+    // Central potential (black hole + dark matter)
+    centralForce(p);
+
+    // Inter-particle gravity via Barnes-Hut
+    tree.calcForce(p, softSq, THETA);
+  }
+
+  // Dissipation: gradually decreasing damping simulates gas cooling
+  // and disk formation. Early on, strong damping collapses the cloud;
+  // later, minimal damping preserves orbital energy.
+  const t = constrain(frameNum / COLLAPSE_TIME, 0, 1);
+  const damping = lerp(DAMPING_INITIAL, DAMPING_FINAL, t * t);
+
+  // Update velocities and positions (symplectic Euler)
+  for (const p of particles) {
+    if (!p.alive) continue;
+
+    p.vel.x += p.acc.x * DT;
+    p.vel.y += p.acc.y * DT;
+
+    // Apply dissipation
+    p.vel.mult(damping);
+
+    // Speed limit to prevent numerical blowup
+    const spd = p.vel.mag();
+    if (spd > 6) p.vel.mult(6 / spd);
+
+    p.pos.x += p.vel.x * DT;
+    p.pos.y += p.vel.y * DT;
+
+    // Soft boundary: gentle push back if straying too far
+    const dx = p.pos.x - CX;
+    const dy = p.pos.y - CY;
+    const edgeDist = Math.sqrt(dx * dx + dy * dy);
+    const maxR = 460;
+    if (edgeDist > maxR) {
+      const push = 0.01 * (edgeDist - maxR);
+      p.vel.x -= dx / edgeDist * push;
+      p.vel.y -= dy / edgeDist * push;
+    }
+  }
+}
+
+// ─── Particle Merging ────────────────────────────────────────────
+// When two particles are within MERGE_DIST, they merge:
+// conserving total mass and momentum (center-of-mass velocity).
+
+function mergeParticles() {
+  const n = particles.length;
+  let mergeCount = 0;
+
+  // Use spatial hashing for efficient neighbor lookup
+  const cellSize = MERGE_DIST * 3;
+  const grid = new Map();
+
+  for (let i = 0; i < n; i++) {
+    const p = particles[i];
+    if (!p.alive) continue;
+    const cx = Math.floor(p.pos.x / cellSize);
+    const cy = Math.floor(p.pos.y / cellSize);
+    const key = cx * 10000 + cy;
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(i);
+  }
+
+  for (const [key, indices] of grid) {
+    if (indices.length < 2) continue;
+
+    for (let a = 0; a < indices.length && mergeCount < MAX_MERGE_PER_FRAME; a++) {
+      const i = indices[a];
+      const pi = particles[i];
+      if (!pi.alive) continue;
+
+      for (let b = a + 1; b < indices.length; b++) {
+        const j = indices[b];
+        const pj = particles[j];
+        if (!pj.alive) continue;
+
+        const dx = pi.pos.x - pj.pos.x;
+        const dy = pi.pos.y - pj.pos.y;
+        if (dx * dx + dy * dy < MERGE_DIST * MERGE_DIST) {
+          // Merge j into i: conserve mass and momentum
+          const totalMass = pi.mass + pj.mass;
+          pi.vel.x = (pi.vel.x * pi.mass + pj.vel.x * pj.mass) / totalMass;
+          pi.vel.y = (pi.vel.y * pi.mass + pj.vel.y * pj.mass) / totalMass;
+          pi.pos.x = (pi.pos.x * pi.mass + pj.pos.x * pj.mass) / totalMass;
+          pi.pos.y = (pi.pos.y * pi.mass + pj.pos.y * pj.mass) / totalMass;
+          pi.mass = totalMass;
+          pj.alive = false;
+          mergeCount++;
+        }
+      }
+    }
+  }
+
+  // Compact array periodically
+  if (mergeCount > 0 && frameNum % 30 === 0) {
+    particles = particles.filter(p => p.alive);
+  }
+}
+
+// ─── Rendering ───────────────────────────────────────────────────
+
+function draw() {
+  frameNum++;
+
+  // Physics step
+  integrate();
+
+  // Merge check every 4 frames for performance
+  if (frameNum % 4 === 0) mergeParticles();
+
+  // ── Trail: semi-transparent overlay on persistent buffer ──
+  // This creates fading motion trails without full-scene alpha
+  trailBuffer.noStroke();
+  trailBuffer.fill(220, 18); // Base 220, very low alpha for slow fade
+  trailBuffer.rect(0, 0, CANVAS_W, CANVAS_H);
+
+  // Draw particles onto trail buffer
+  trailBuffer.noStroke();
+  const aliveCount = particles.filter(p => p.alive).length;
+
+  for (const p of particles) {
+    if (!p.alive) continue;
+
+    const dx = p.pos.x - CX;
+    const dy = p.pos.y - CY;
+    const distFromCenter = Math.sqrt(dx * dx + dy * dy);
+    const speed = p.vel.mag();
+
+    // Size based on mass (log scale for visual balance)
+    const baseSize = 0.8 + Math.log(1 + p.mass) * 0.7;
+    const sz = Math.min(baseSize, 6);
+
+    // Color: inner particles are hotter (blue-white), outer are cooler (orange-red)
+    // Speed also affects brightness
+    const rDist = constrain(distFromCenter / 350, 0, 1);
+    const brightness = constrain(100 + speed * 60, 80, 255);
+
+    let r, g, b;
+    if (rDist < 0.15) {
+      // Core: bright blue-white
+      r = brightness;
+      g = brightness * 0.92;
+      b = brightness;
+    } else if (rDist < 0.4) {
+      // Inner disk: warm white-yellow
+      r = brightness;
+      g = brightness * 0.85;
+      b = brightness * 0.55;
+    } else if (rDist < 0.7) {
+      // Mid disk: orange-ish
+      r = brightness * 0.95;
+      g = brightness * 0.60;
+      b = brightness * 0.30;
+    } else {
+      // Outer regions: dim red
+      r = brightness * 0.75;
+      g = brightness * 0.35;
+      b = brightness * 0.20;
+    }
+
+    // Alpha: more massive particles are more opaque
+    const alpha = constrain(30 + p.mass * 15 + speed * 20, 25, 220);
+
+    trailBuffer.fill(r, g, b, alpha);
+    trailBuffer.ellipse(p.pos.x, p.pos.y, sz, sz);
+  }
+
+  // Draw central black hole glow on trail buffer
+  for (let ring = 30; ring > 2; ring -= 3) {
+    const a = map(ring, 30, 2, 2, 30);
+    trailBuffer.fill(255, 240, 200, a);
+    trailBuffer.ellipse(CX, CY, ring, ring);
+  }
+  trailBuffer.fill(255, 250, 230, 200);
+  trailBuffer.ellipse(CX, CY, 5, 5);
+
+  // ── Composite: draw trail buffer to main canvas ──
+  image(trailBuffer, 0, 0);
+
+  // ── Draw particles again on top for sharp current positions ──
+  noStroke();
+  for (const p of particles) {
+    if (!p.alive) continue;
+
+    const dx = p.pos.x - CX;
+    const dy = p.pos.y - CY;
+    const distFromCenter = Math.sqrt(dx * dx + dy * dy);
+    const speed = p.vel.mag();
+
+    const baseSize = 0.8 + Math.log(1 + p.mass) * 0.7;
+    const sz = Math.min(baseSize, 6);
+
+    const rDist = constrain(distFromCenter / 350, 0, 1);
+    const brightness = constrain(120 + speed * 50, 100, 255);
+
+    let r, g, b;
+    if (rDist < 0.15) {
+      r = brightness; g = brightness * 0.95; b = brightness;
+    } else if (rDist < 0.4) {
+      r = brightness; g = brightness * 0.82; b = brightness * 0.5;
+    } else if (rDist < 0.7) {
+      r = brightness * 0.9; g = brightness * 0.55; b = brightness * 0.25;
+    } else {
+      r = brightness * 0.7; g = brightness * 0.30; b = brightness * 0.15;
+    }
+
+    const alpha = constrain(50 + p.mass * 20 + speed * 15, 40, 240);
+    fill(r, g, b, alpha);
+    ellipse(p.pos.x, p.pos.y, sz, sz);
+  }
+
+  // ── Central black hole on main canvas ──
+  noStroke();
+  for (let ring = 22; ring > 2; ring -= 2) {
+    const a = map(ring, 22, 2, 3, 50);
+    fill(255, 245, 210, a);
+    ellipse(CX, CY, ring, ring);
+  }
+  fill(255, 252, 240);
+  ellipse(CX, CY, 4, 4);
+
+  // ── HUD ──
+  drawHUD(aliveCount);
+}
+
+// ─── HUD ─────────────────────────────────────────────────────────
+
+function drawHUD(aliveCount) {
+  noStroke();
+
+  // Subtle background panels
+  fill(220, 220, 220, 180);
+  rect(8, 8, 200, 72, 4);
+  rect(CANVAS_W - 205, CANVAS_H - 32, 197, 24, 4);
+
+  fill(60);
+  textSize(11);
+  textAlign(LEFT, TOP);
+  text('Galaxy Formation Simulation', 16, 14);
+
+  textSize(9);
+  fill(100);
+  const phase = frameNum < COLLAPSE_TIME * 0.3 ? 'Collapsing' :
+                frameNum < COLLAPSE_TIME ? 'Disk Forming' :
+                frameNum < COLLAPSE_TIME * 2 ? 'Spiral Arms' : 'Evolved Galaxy';
+  text('Phase: ' + phase, 16, 32);
+  text('Particles: ' + aliveCount.toLocaleString(), 16, 46);
+  text('Frame: ' + frameNum + '  FPS: ' + Math.round(frameRate()), 16, 60);
+
+  textAlign(RIGHT, BOTTOM);
+  textSize(8);
+  fill(120);
+  text('Barnes-Hut N-body · NFW Halo · Click: restart', CANVAS_W - 16, CANVAS_H - 14);
+}
+
+// ─── Interaction ─────────────────────────────────────────────────
+
+function mousePressed() {
+  initCloud();
+  trailBuffer.background(220);
+}
+</script>
+</body>
+</html>

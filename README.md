@@ -90,7 +90,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **1/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **0/10** |
@@ -111,7 +111,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **0/10** |
@@ -132,7 +132,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **1/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **3/10** |
@@ -153,7 +153,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Glm 4.7**           | **7/10** |
 | **Glm 4.6**           | **3/10** |
@@ -174,7 +174,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **8/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **2/10** |
@@ -195,7 +195,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **4/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Glm 4.7**           | **6/10** |
 | **Glm 4.6**           | **0/10** |
@@ -216,7 +216,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **Grok 4.1**          | **4/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **10/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **0/10** |
@@ -237,7 +237,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **7/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **8/10** |
@@ -258,7 +258,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **3/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **3/10** |
@@ -279,7 +279,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **Grok 4.1**          | **6/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **0/10** |
@@ -300,7 +300,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **3/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **8/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **5/10** |
@@ -321,7 +321,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **7/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **0/10** |
@@ -342,7 +342,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **0/10** |
@@ -363,7 +363,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **4/10** |
@@ -384,7 +384,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **4/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **2/10** |
@@ -405,7 +405,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **3/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **10/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **4/10** |
@@ -426,7 +426,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **1/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **4/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **6/10** |
@@ -447,7 +447,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **4/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **2/10** |
@@ -468,7 +468,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **4/10** |
@@ -489,7 +489,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Glm 4.7**           | **4/10** |
 | **Glm 4.6**           | **8/10** |
@@ -510,7 +510,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **8/10** |
@@ -531,7 +531,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **2/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **2/10** |
@@ -552,7 +552,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **5/10** |
@@ -573,7 +573,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **Grok 4.1**          | **4/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **1/10** |
