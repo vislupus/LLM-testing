@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Babylon.js — City Growth Simulator (Single‑File)</title>
+<style>
+  html,body{height:100%}
+  body{margin:0;background:#0b1220;color:#e7eefc;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  #game{position:fixed;inset:0}
+  .hud{position:fixed;left:12px;top:12px;display:flex;flex-direction:column;gap:10px;z-index:10}
+  .panel{background:rgba(10,18,40,.75);border:1px solid #21335d;border-radius:12px;padding:10px;backdrop-filter:blur(3px)}
+  .row{display:flex;align-items:center;gap:10px}
+  .label{width:150px;color:#aac1ef;font-size:12px}
+  input[type=range]{width:220px}
+  .value{width:46px;text-align:right;color:#cfe0ff}
+  .stats{display:grid;grid-template-columns:auto auto;gap:6px 14px;font-size:12px}
+  .statv{font-weight:700;color:#a9c8ff}
+  .hint{font-size:12px;color:#9fb3d9;margin-top:6px}
+</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div class="hud panel">
+    <div class="row"><strong>🏙️ City Growth Simulator</strong><span class="hint"> • Drag to orbit • Wheel to zoom • Shift+Drag to pan</span></div>
+    <div class="row"><div class="label">City Size (pop/density)</div><input id="size" type="range" min="10" max="100" value="60"><div class="value" id="sizeV">60</div></div>
+    <div class="row"><div class="label">Traffic Intensity</div><input id="traffic" type="range" min="0" max="100" value="50"><div class="value" id="trafficV">50</div></div>
+    <div class="row"><div class="label">Development Speed</div><input id="dev" type="range" min="5" max="100" value="60"><div class="value" id="devV">60</div></div>
+    <div class="stats">
+      <div>Roads built</div><div class="statv" id="roadsS">0</div>
+      <div>Buildings</div><div class="statv" id="bldS">0</div>
+      <div>Vehicles</div><div class="statv" id="carS">0</div>
+      <div>People</div><div class="statv" id="peepS">0</div>
+    </div>
+  </div>
+
+  <!-- Babylon.js from CDN (allowed) -->
+  <script src="https://cdn.jsdelivr.net/npm/babylonjs@6.39.0/babylon.js"></script>
+  <script>
+  (()=>{
+    const canvas = document.getElementById('game');
+    const engine = new BABYLON.Engine(canvas, true, {preserveDrawingBuffer:true, stencil:true, antialias:true});
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0.04,0.07,0.15,1);
+
+    // Camera & lights
+    const cam = new BABYLON.ArcRotateCamera('cam', -Math.PI/2, Math.PI/3, 160, new BABYLON.Vector3(0,0,0), scene);
+    cam.lowerRadiusLimit = 80; cam.upperRadiusLimit = 600; cam.panningSensibility = 650; cam.attachControl(canvas, true);
+    const sun = new BABYLON.DirectionalLight('sun', new BABYLON.Vector3(-0.6,-1,-0.5), scene); sun.position = new BABYLON.Vector3(250,350,200); sun.intensity=1.2;
+    const hemi = new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0,1,0), scene); hemi.intensity=0.5;
+
+    // Nice rendering pipeline
+    const pipe = new BABYLON.DefaultRenderingPipeline('p', true, scene, [cam]);
+    pipe.fxaaEnabled = true; pipe.samples = 4; pipe.bloomEnabled = true; pipe.bloomThreshold=0.8; pipe.bloomWeight=0.2; pipe.bloomKernel=24;
+
+    const shadows = new BABYLON.ShadowGenerator(2048, sun); shadows.usePercentageCloserFiltering = true;
+
+    // Materials
+    function mat(rgb){ const m=new BABYLON.StandardMaterial('m',scene); m.diffuseColor=rgb; m.specularColor=new BABYLON.Color3(0.2,0.2,0.2); return m; }
+    const groundMat = mat(new BABYLON.Color3(0.12,0.16,0.29)); groundMat.specularColor = new BABYLON.Color3(0,0,0);
+    const parkMat   = mat(new BABYLON.Color3(0.15,0.45,0.25));
+    const roadMat   = mat(new BABYLON.Color3(0.1,0.1,0.12)); roadMat.specularPower=32; roadMat.emissiveColor = new BABYLON.Color3(0.02,0.02,0.03);
+    const carMat    = mat(new BABYLON.Color3(0.9,0.3,0.35)); carMat.emissiveColor = new BABYLON.Color3(0.2,0.05,0.05);
+    const peopleMat = mat(new BABYLON.Color3(0.95,0.85,0.4)); peopleMat.emissiveColor = new BABYLON.Color3(0.1,0.1,0);
+
+    // Big base plate (sea-level)
+    const base = BABYLON.MeshBuilder.CreateGround('base', {width:2000,height:2000}, scene); base.material = groundMat; base.receiveShadows = true;
+
+    // City container
+    const cityRoot = new BABYLON.TransformNode('city');
+
+    // UI elements
+    const sizeSlider = document.getElementById('size');
+    const trafficSlider = document.getElementById('traffic');
+    const devSlider = document.getElementById('dev');
+    const sizeV = document.getElementById('sizeV');
+    const trafficV = document.getElementById('trafficV');
+    const devV = document.getElementById('devV');
+    const roadsS = document.getElementById('roadsS');
+    const bldS = document.getElementById('bldS');
+    const carS = document.getElementById('carS');
+    const peepS = document.getElementById('peepS');
+
+    // City system -------------------------------------------------
+    const City = {
+      gridN: 10,            // half grid in blocks (so total blocks ~ (2N)^2)
+      block: 14,            // block size
+      roadW: 3.2,           // road width
+      roads: [],            // {a:Vec3, b:Vec3, mesh, grow}
+      plots: [],            // building plot positions {p, rot}
+      buildings: [],
+      growingRoads: [],
+      growingBld: [],
+      cars: [],
+      people: [],
+      totals: {roads:0, bld:0},
+      params: {
+        density: 0.65,
+        devSpeed: 0.6,     // 0..1
+        traffic: 0.5       // 0..1
+      },
+      reset(){
+        // dispose children meshes
+        this.roads.forEach(s=> s.mesh && s.mesh.dispose()); this.roads.length=0; this.growingRoads.length=0;
+        this.buildings.forEach(b=> b.mesh && b.mesh.dispose()); this.buildings.length=0; this.growingBld.length=0;
+        this.cars.forEach(c=> c.mesh.dispose()); this.cars.length=0;
+        this.people.forEach(p=> p.mesh.dispose()); this.people.length=0;
+        this.plots.length=0;
+        this.totals.roads=0; this.totals.bld=0;
+      },
+      plan(){
+        // Build road segment list and plot positions for current gridN
+        const N=this.gridN, B=this.block, rw=this.roadW; const Z0=-N*B, X0=-N*B;
+        // Roads: full grid (avenues)
+        // Horizontal segments (z fixed, x varying)
+        for(let zi=-N; zi<=N; zi++){
+          const z = zi*B;
+          for(let xi=-N; xi< N; xi++){
+            const a = new BABYLON.Vector3((xi)*B, 0.02, z);
+            const b = new BABYLON.Vector3((xi+1)*B, 0.02, z);
+            this.roads.push({a,b,mesh:null,grow:0});
+          }
+        }
+        // Vertical segments
+        for(let xi=-N; xi<=N; xi++){
+          const x = xi*B;
+          for(let zi=-N; zi< N; zi++){
+            const a = new BABYLON.Vector3(x, 0.02, (zi)*B);
+            const b = new BABYLON.Vector3(x, 0.02, (zi+1)*B);
+            this.roads.push({a,b,mesh:null,grow:0});
+          }
+        }
+        // Randomize build order for organic growth
+        shuffle(this.roads);
+        this.totals.roads = this.roads.length;
+
+        // Building plots (one per quadrant in a block, with jitter)
+        for(let xi=-N+1; xi<=N-1; xi++){
+          for(let zi=-N+1; zi<=N-1; zi++){
+            const cx = xi*B, cz = zi*B;
+            for(let q=0;q<4;q++){
+              const ox = (q%2?-1:1)*(B*0.35) + randRange(-2,2);
+              const oz = (q<2?-1:1)*(B*0.35) + randRange(-2,2);
+              const rot = Math.atan2(oz,ox)+Math.PI/2; // face toward road
+              this.plots.push({p:new BABYLON.Vector3(cx+ox, 0, cz+oz), rot});
+            }
+          }
+        }
+        shuffle(this.plots);
+      },
+      buildSome(dt){
+        // Roads per second & buildings per second scale with devSpeed and city size
+        const dev = this.params.devSpeed; // 0..1
+        const baseR = 40; const baseB = 20; // per minute baseline
+        this._roadAcc = (this._roadAcc||0) + dt*(baseR*dev)/60;
+        this._bldAcc  = (this._bldAcc ||0) + dt*(baseB*dev*this.params.density)/60;
+        while(this._roadAcc>1 && this.roads.length){ this._roadAcc-=1; this.spawnRoad(this.roads.pop()); }
+        while(this._bldAcc>1 && this.plots.length){ this._bldAcc-=1; if(Math.random()<this.params.density) this.spawnBuilding(this.plots.pop()); }
+      },
+      spawnRoad(seg){
+        const len = BABYLON.Vector3.Distance(seg.a, seg.b);
+        const road = BABYLON.MeshBuilder.CreateBox('road',{width:this.roadW, height:0.12, depth:len}, scene);
+        road.material = roadMat; road.position = seg.a.add(seg.b).scale(0.5); road.rotation.y = Math.atan2(seg.b.x-seg.a.x, seg.b.z-seg.a.z);
+        road.parent = cityRoot; road.scaling.z = 0.001; // grow
+        seg.mesh = road; seg.grow = 0.001; this.growingRoads.push(seg); shadows.addShadowCaster(road);
+      },
+      spawnBuilding(plot){
+        const h = 6 + Math.pow(Math.random(),0.4) * (this.gridN*2*this.params.density);
+        const w = 2.8 + Math.random()*2.4; const d = 2.8 + Math.random()*2.4;
+        const mesh = BABYLON.MeshBuilder.CreateBox('b',{width:w, depth:d, height:h}, scene);
+        mesh.position = plot.p.add(new BABYLON.Vector3(0, h/2, 0));
+        mesh.rotation.y = plot.rot + (Math.random()-0.5)*0.4;
+        // color tint
+        const tint = new BABYLON.Color3(0.5+Math.random()*0.4, 0.6+Math.random()*0.3, 0.8+Math.random()*0.15);
+        const bm = new BABYLON.StandardMaterial('bm', scene); bm.diffuseColor = tint; bm.specularColor = new BABYLON.Color3(0.2,0.2,0.25); bm.emissiveColor = new BABYLON.Color3(0.05,0.07,0.09);
+        mesh.material = bm; mesh.parent = cityRoot; mesh.scaling.y = 0.001; this.growingBld.push({mesh, target:h});
+        shadows.addShadowCaster(mesh);
+        this.buildings.push({mesh}); this.totals.bld++;
+      },
+      animate(dt){
+        // grow roads
+        for(let i=this.growingRoads.length-1;i>=0;i--){ const s=this.growingRoads[i]; s.grow = Math.min(1, s.grow + dt*1.8*this.params.devSpeed); s.mesh.scaling.z = s.grow; if(s.grow>=1){ this.growingRoads.splice(i,1); } }
+        // grow buildings
+        for(let i=this.growingBld.length-1;i>=0;i--){ const g=this.growingBld[i]; const t = Math.min(1, (g.mesh.scaling.y + dt*1.6*this.params.devSpeed)); g.mesh.scaling.y = t; if(t>=1){ this.growingBld.splice(i,1); } }
+      },
+      // ------------------ Traffic & People ------------------
+      updateAgents(dt){
+        // Adjust target counts
+        const buildFrac = Math.min(1, this.totals.bld / (this.gridN*this.gridN*8));
+        const roadFrac  = 1 - (this.roads.length / Math.max(1,this.totals.roads));
+        const readiness = 0.2 + 0.8*Math.min(buildFrac, roadFrac);
+        const baseCars = Math.round(this.gridN * this.gridN * 0.2 * this.params.traffic * readiness);
+        const basePeople = Math.round(this.gridN * this.gridN * 0.3 * this.params.traffic * readiness);
+        while(this.cars.length < baseCars) this.spawnCar();
+        while(this.cars.length > baseCars) { const c=this.cars.pop(); c.mesh.dispose(); }
+        while(this.people.length < basePeople) this.spawnPerson();
+        while(this.people.length > basePeople) { const p=this.people.pop(); p.mesh.dispose(); }
+
+        // Move cars
+        for(const c of this.cars){
+          if(!c.path || c.path.length<2 || c.t>1){ this.assignCarPath(c); }
+          if(!c.path) continue;
+          c.t += dt * c.speed / c.segLen;
+          const a = c.path[c.segIndex], b = c.path[c.segIndex+1];
+          const pos = BABYLON.Vector3.Lerp(a,b, Math.min(1,c.t));
+          c.mesh.position = pos.add(c.laneOffset);
+          c.mesh.rotation.y = Math.atan2(b.x-a.x, b.z-a.z);
+          if(c.t>=1){ c.segIndex++; c.t=0; if(c.segIndex>=c.path.length-1){ this.assignCarPath(c); } else { c.segLen = BABYLON.Vector3.Distance(c.path[c.segIndex], c.path[c.segIndex+1]); } }
+        }
+        // Move people
+        for(const p of this.people){
+          const to = p.target.subtract(p.mesh.position); const d = to.length();
+          if(d<0.5){ p.target = this.randomSidewalkNear(p.home); }
+          else { const dir = to.scale(1/d); p.mesh.position.addInPlace(dir.scale(dt * p.speed)); p.mesh.rotation.y = Math.atan2(dir.x, dir.z); }
+        }
+      },
+      roadNodes(){ // intersections positions array
+        const N=this.gridN, B=this.block; const arr=[]; for(let i=-N;i<=N;i++){ for(let j=-N;j<=N;j++){ arr.push(new BABYLON.Vector3(i*B, 0.02, j*B)); }} return arr; },
+      assignCarPath(c){
+        const nodes = this.roadNodes();
+        const pick = ()=> nodes[(Math.random()*nodes.length)|0];
+        const a = pick(), b = pick();
+        const path = [];
+        // Manhattan path: move in X then Z
+        const step = this.block; const dx = Math.sign(b.x - a.x); const dz = Math.sign(b.z - a.z);
+        let x=a.x, z=a.z; path.push(new BABYLON.Vector3(x,0.06,z));
+        while(x!=b.x){ x += dx*step; path.push(new BABYLON.Vector3(x,0.06,z)); }
+        while(z!=b.z){ z += dz*step; path.push(new BABYLON.Vector3(x,0.06,z)); }
+        c.path = path; c.segIndex = 0; c.t = 0; c.segLen = BABYLON.Vector3.Distance(path[0], path[1]||path[0]);
+      },
+      spawnCar(){
+        const body = BABYLON.MeshBuilder.CreateBox('car',{width:1.4, height:0.9, depth:2.4}, scene);
+        const m = new BABYLON.StandardMaterial('cm', scene); m.diffuseColor = new BABYLON.Color3(0.6+Math.random()*0.4, 0.2+Math.random()*0.6, 0.2+Math.random()*0.6); m.emissiveColor = new BABYLON.Color3(0.05,0.05,0.05); body.material = m; body.position.y=0.5; body.parent = cityRoot; shadows.addShadowCaster(body);
+        const lane = (Math.random()<0.5? -1:1); const laneOffset = new BABYLON.Vector3(lane*0.6, 0, 0); // left/right of centerline
+        const speed = 8 + Math.random()*8 * (0.5 + this.params.traffic);
+        const c = {mesh:body, laneOffset, speed, path:null, segIndex:0, t:0, segLen:1};
+        this.assignCarPath(c); this.cars.push(c);
+      },
+      spawnPerson(){
+        const s = BABYLON.MeshBuilder.CreateCylinder('peep',{diameterTop:0.3, diameterBottom:0.5, height:1.6, tessellation:6}, scene); s.position.y=0.8; s.parent=cityRoot; s.material = peopleMat; shadows.addShadowCaster(s);
+        const home = this.randomBlockCenter(); s.position.copyFrom(this.randomSidewalkNear(home));
+        const p = {mesh:s, home, target:this.randomSidewalkNear(home), speed: 2.2 + Math.random()*1.2};
+        this.people.push(p);
+      },
+      randomBlockCenter(){ const N=this.gridN-1, B=this.block; const i = (Math.random()* (2*N) - N)|0; const j = (Math.random()* (2*N) - N)|0; return new BABYLON.Vector3(i*B, 0, j*B); },
+      randomSidewalkNear(center){ const o = new BABYLON.Vector3((Math.random()<0.5? -1:1)*(this.block*0.4), 0, (Math.random()<0.5? -1:1)*(this.block*0.4)); return center.add(o); },
+      updateStats(){ roadsS.textContent = `${this.totals.roads - this.roads.length}/${this.totals.roads}`; bldS.textContent = `${this.totals.bld}`; carS.textContent = `${this.cars.length}`; peepS.textContent = `${this.people.length}`; }
+    };
+
+    // Helpers
+    function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [a[i],a[j]]=[a[j],a[i]]; } return a; }
+    function randRange(a,b){ return a + Math.random()*(b-a); }
+
+    // Initialize
+    function rebuildCityFromSliders(){
+      sizeV.textContent = sizeSlider.value; trafficV.textContent = trafficSlider.value; devV.textContent = devSlider.value;
+      City.params.traffic = trafficSlider.value/100;
+      City.params.devSpeed = devSlider.value/100;
+      const size = sizeSlider.value|0;
+      City.gridN = Math.max(4, Math.round(BABYLON.Scalar.Lerp(6, 16, size/100)));
+      City.params.density = BABYLON.Scalar.Clamp(0.45 + (size/100)*0.55, 0.45, 1);
+      City.reset(); City.plan();
+      // Add some parks quickly (green quads) just for looks
+      scatterParks();
+      City.updateStats();
+      cam.setTarget(new BABYLON.Vector3(0,0,0));
+      cam.radius = Math.max(160, City.gridN*18);
+    }
+
+    function scatterParks(){
+      // remove old parks
+      cityRoot.getChildren().filter(m=>m.name==='park').forEach(m=>m.dispose());
+      const count = Math.round(City.gridN*1.2);
+      for(let i=0;i<count;i++){
+        const c = City.randomBlockCenter();
+        const p = BABYLON.MeshBuilder.CreateGround('park',{width:6+Math.random()*6, height:6+Math.random()*6}, scene);
+        p.position = new BABYLON.Vector3(c.x + randRange(-3,3), 0.021, c.z + randRange(-3,3)); p.material = parkMat; p.parent=cityRoot; p.name='park'; p.receiveShadows = true;
+      }
+    }
+
+    rebuildCityFromSliders();
+
+    // Slider handlers (rebuild or update live)
+    sizeSlider.addEventListener('input', rebuildCityFromSliders);
+    trafficSlider.addEventListener('input', ()=>{ trafficV.textContent=trafficSlider.value; City.params.traffic = trafficSlider.value/100; });
+    devSlider.addEventListener('input', ()=>{ devV.textContent=devSlider.value; City.params.devSpeed = devSlider.value/100; });
+
+    // Main loop
+    let last=performance.now();
+    scene.onBeforeRenderObservable.add(()=>{
+      const now=performance.now(); const dt=Math.min(0.05,(now-last)/1000); last=now;
+      City.buildSome(dt);
+      City.animate(dt);
+      City.updateAgents(dt);
+      City.updateStats();
+    });
+
+    engine.runRenderLoop(()=> scene.render());
+    window.addEventListener('resize', ()=> engine.resize());
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nonogram 20×20 — SVG.js Single‑File</title>
+<style>
+  :root{
+    --bg:#0b1220;--panel:#0f172a;--panel2:#101a31;--line:#1e2a49;--text:#e7eefc;--muted:#9fb3d9;--accent:#60a5fa;--good:#22c55e;--warn:#f59e0b;--bad:#ef4444;
+  }
+  html,body{height:100%}
+  body{margin:0;background:linear-gradient(180deg,#0a1224,#0b1220);font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--text)}
+  .wrap{max-width:1080px;margin:0 auto;padding:14px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  h1{font-size:20px;margin:0;color:#cfe0ff}
+  .controls{display:flex;gap:8px;flex-wrap:wrap}
+  .btn{background:#173162;border:1px solid #254a93;color:#cfe0ff;border-radius:10px;padding:8px 12px;cursor:pointer}
+  .btn:active{transform:translateY(1px)}
+  .toggle[aria-pressed="true"]{background:#1b3d7a}
+  #stage{width:100%;height:760px;border:1px solid var(--line);border-radius:14px;background:#0a162e;box-shadow:0 10px 40px rgba(0,0,0,.25) inset;margin-top:12px}
+  .hint{font-size:12px;color:#aac1ef;margin-top:6px}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>🧩 Nonogram 20×20</h1>
+      <div class="controls">
+        <button id="modeBtn" class="btn toggle" aria-pressed="false" title="Toggle Mark‑X Mode (keyboard: X)">Mark‑X Mode: Off</button>
+        <button id="clearBtn" class="btn" title="Clear the board">Clear</button>
+        <button id="checkBtn" class="btn" title="Check current progress">Check</button>
+      </div>
+    </header>
+    <div id="stage"></div>
+    <div class="hint">Left‑click = fill ▮  •  Right‑click (or enable <b>Mark‑X Mode</b> / press <b>X</b>) = place/remove an X. The puzzle is solved automatically when your filled cells match the hidden pattern.</div>
+  </div>
+
+  <!-- SVG.js from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3.2/dist/svg.min.js"></script>
+  <script>
+  ;(()=>{
+    // ============================
+    // CONFIG
+    // ============================
+    const N = 20;                       // grid size 20×20
+    const CELL = 28;                    // cell size (px)
+    const PAD = 16;                     // outer padding inside SVG
+    const FONT = {size:12, family:'system-ui, -apple-system, Segoe UI, Roboto, Arial'};
+
+    // ============================
+    // PATTERN (predefined 20×20) — a smiley face inside a circle, carved eyes & smile
+    // We compute it deterministically so it is predefined at load.
+    // ============================
+    function buildPattern(){
+      const pat = Array.from({length:N},()=>Array(N).fill(0));
+      const cx = (N-1)/2, cy = (N-1)/2;  // ~9.5,9.5
+      const R = 8; const R2 = R*R;
+      for(let r=0;r<N;r++){
+        for(let c=0;c<N;c++){
+          const dx=c-cx, dy=r-cy;
+          if(dx*dx+dy*dy <= R2) pat[r][c]=1; // fill face
+        }
+      }
+      // carve eyes (make empty)
+      for(let r=6;r<=8;r++) for(let c=6;c<=7;c++) pat[r][c]=0; // left eye
+      for(let r=6;r<=8;r++) for(let c=12;c<=13;c++) pat[r][c]=0; // right eye
+      // carve smile (empty arc)
+      for(let c=7;c<=12;c++) pat[13][c]=0;
+      for(let c=8;c<=11;c++) pat[12][c]=0;
+      return pat;
+    }
+
+    const ANSWER = buildPattern();
+
+    // Compute clues (arrays of run lengths)
+    const rowClues = ANSWER.map(row=>runs(row));
+    const colClues = Array.from({length:N}, (_,c)=> runs(ANSWER.map(r=>r[c])));
+
+    function runs(arr){
+      const out=[]; let cnt=0; for(const v of arr){ if(v){ cnt++; } else if(cnt){ out.push(cnt); cnt=0; } } if(cnt) out.push(cnt);
+      return out.length? out : [0];
+    }
+
+    // Margins to fit clues nicely
+    const maxRowClues = Math.max(...rowClues.map(a=>a.length));
+    const maxColClues = Math.max(...colClues.map(a=>a.length));
+    const LEFT = PAD + maxRowClues*14 + 12;     // left clue area width
+    const TOP  = PAD + maxColClues*14 + 12;     // top clue area height
+
+    // SVG total size
+    const W = LEFT + N*CELL + PAD;
+    const H = TOP  + N*CELL + PAD;
+
+    // ============================
+    // SVG LAYERS
+    // ============================
+    let draw, gBg, gClues, gGrid, gCells, gMarks, gHover, gOverlay;
+
+    // Board state (0 empty, 1 filled, 2 X mark)
+    const state = Array.from({length:N},()=>Array(N).fill(0));
+
+    // Interaction flags
+    let drag = false;            // is mouse dragging?
+    let dragKind = null;         // 'fill' or 'mark'
+    let dragSetTo = null;        // 0/1/2 target state to set while dragging
+    let markMode = false;        // touch-friendly toggle
+
+    // ============================
+    // INIT SVG
+    // ============================
+    function initSVG(){
+      draw = SVG().addTo('#stage').size('100%','100%').viewbox(0,0,W,H);
+      gBg = draw.group();
+      gBg.rect(W,H).fill('#09142a');
+      // gentle vignette
+      const grad = draw.gradient('radial', add=>{ add.stop(0,'#0d1e3f'); add.stop(1,'#081227'); });
+      gBg.rect(W,H).fill(grad).opacity(.55);
+      gClues = draw.group();
+      gGrid  = draw.group();
+      gCells = draw.group();
+      gMarks = draw.group();
+      gHover = draw.group();
+      gOverlay = draw.group();
+
+      drawBoard();
+      drawClues();
+      buildCells();
+      makeHover();
+    }
+
+    // ============================
+    // DRAW GRID & THICK 5×5 LINES
+    // ============================
+    function drawBoard(){
+      const w = N*CELL, h = N*CELL;
+      // background plate
+      gGrid.rect(w+8,h+8).move(LEFT-4,TOP-4).radius(12).fill('#0e1830').stroke({color:'#1e2a49',width:1});
+      // grid lines
+      for(let i=0;i<=N;i++){
+        const x = LEFT + i*CELL;
+        const y = TOP  + i*CELL;
+        gGrid.line(LEFT, y, LEFT+w, y).stroke({width:(i%5===0)?2.5:1, color:(i%5===0)?'#43629b':'#2a3c66'});
+        gGrid.line(x, TOP, x, TOP+h).stroke({width:(i%5===0)?2.5:1, color:(i%5===0)?'#43629b':'#2a3c66'});
+      }
+    }
+
+    // ============================
+    // DRAW CLUES (left and top)
+    // ============================
+    function drawClues(){
+      // Row clues (left, right-aligned near grid)
+      for(let r=0;r<N;r++){
+        const arr = rowClues[r];
+        const y = TOP + r*CELL + CELL/2;
+        const baseX = LEFT - 8; // we draw numbers stepping leftwards
+        for(let i=0;i<arr.length;i++){
+          const val = arr[arr.length-1-i]; // from right to left
+          const x = baseX - i*14;
+          gClues.text(String(val)).font({...FONT, anchor:'end'}).fill('#cfe0ff').center(x, y);
+        }
+      }
+      // Column clues (top, bottom-aligned above grid)
+      for(let c=0;c<N;c++){
+        const arr = colClues[c];
+        const x = LEFT + c*CELL + CELL/2;
+        const baseY = TOP - 8;
+        for(let i=0;i<arr.length;i++){
+          const val = arr[arr.length-1-i]; // from bottom to top
+          const y = baseY - i*14;
+          gClues.text(String(val)).font({...FONT, anchor:'middle'}).fill('#cfe0ff').center(x, y);
+        }
+      }
+      // title bars
+      gClues.text('Rows').move(PAD, TOP-28).font({size:12,weight:700,fill:'#8fb0ff'});
+      gClues.text('Cols').move(LEFT-36, PAD).font({size:12,weight:700,fill:'#8fb0ff'}).rotate(-90, LEFT-36, PAD);
+    }
+
+    // ============================
+    // CELLS
+    // ============================
+    const cellElems = Array.from({length:N},()=>Array(N));
+
+    function buildCells(){
+      for(let r=0;r<N;r++){
+        for(let c=0;c<N;c++){
+          const x = LEFT + c*CELL;
+          const y = TOP  + r*CELL;
+          const g = gCells.group();
+          // base (interactive hit area)
+          const base = g.rect(CELL, CELL).move(x,y).fill('#0a162e').opacity(0); // invisible hit
+          // filled rect (hidden initially)
+          const filled = g.rect(CELL-2, CELL-2).move(x+1,y+1).radius(4).fill('#60a5fa').opacity(0);
+          // X mark
+          const markGrp = g.group().opacity(0);
+          const x1 = markGrp.line(x+6, y+6, x+CELL-6, y+CELL-6).stroke({width:2, color:'#9fb3d9'});
+          const x2 = markGrp.line(x+CELL-6, y+6, x+6, y+CELL-6).stroke({width:2, color:'#9fb3d9'});
+
+          // store
+          cellElems[r][c] = {g, base, filled, markGrp, x1, x2};
+
+          // Interaction handlers
+          base.on('mousedown', (e)=> onCellDown(e, r, c));
+          base.on('mouseenter', ()=> onCellEnter(r,c));
+        }
+      }
+
+      // End drag on window mouseup
+      window.addEventListener('mouseup', ()=> { drag=false; dragKind=null; dragSetTo=null; checkSolved(); });
+      // prevent context menu for right-click marking inside stage
+      document.getElementById('stage').addEventListener('contextmenu', e=> e.preventDefault());
+    }
+
+    function onCellDown(e,r,c){
+      e.preventDefault();
+      drag = true;
+      const isRight = (e.button===2);
+      const useMark = isRight || markMode || e.altKey || e.shiftKey; // alternatives
+      const cur = state[r][c];
+      if(useMark){
+        dragKind='mark'; dragSetTo = (cur===2) ? 0 : 2; // toggle X
+        applyMark(r,c, dragSetTo);
+      } else {
+        dragKind='fill'; dragSetTo = (cur===1) ? 0 : 1; // toggle Fill
+        applyFill(r,c, dragSetTo);
+      }
+    }
+    function onCellEnter(r,c){ if(!drag) return; if(dragKind==='fill') applyFill(r,c, dragSetTo); else if(dragKind==='mark') applyMark(r,c, dragSetTo); }
+
+    function applyFill(r,c,val){
+      if(val===1){
+        state[r][c]=1;
+        const el = cellElems[r][c]; el.filled.opacity(1); el.markGrp.opacity(0);
+      } else { // clear
+        if(state[r][c]!==1) return; // if not filled, keep as is to avoid erasing X when drag toggles off
+        state[r][c]=0;
+        const el = cellElems[r][c]; el.filled.opacity(0);
+      }
+    }
+    function applyMark(r,c,val){
+      if(state[r][c]===1) return; // don't mark on filled
+      const el = cellElems[r][c];
+      if(val===2){ state[r][c]=2; el.markGrp.opacity(1); } else { state[r][c]=0; el.markGrp.opacity(0); }
+    }
+
+    // ============================
+    // HOVER HIGHLIGHT (row & column)
+    // ============================
+    function makeHover(){
+      const rowRect = gHover.rect(N*CELL, CELL).move(LEFT,TOP).fill('#8aa0c6').opacity(0.06).radius(2);
+      const colRect = gHover.rect(CELL, N*CELL).move(LEFT,TOP).fill('#8aa0c6').opacity(0.06).radius(2);
+      // track mouse to snap highlights
+      draw.on('mousemove', (e)=>{
+        const pt = screenToGrid(e);
+        if(pt){ rowRect.move(LEFT, TOP+pt.r*CELL); colRect.move(LEFT+pt.c*CELL, TOP); rowRect.opacity(0.08); colRect.opacity(0.08); }
+        else { rowRect.opacity(0); colRect.opacity(0); }
+      });
+    }
+
+    function screenToGrid(e){
+      const rect = document.getElementById('stage').getBoundingClientRect();
+      const sx = e.clientX - rect.left; const sy = e.clientY - rect.top;
+      // convert to viewbox coordinates using bounding of root svg
+      const vb = draw.viewbox(); const rx = sx/rect.width*vb.width; const ry = sy/rect.height*vb.height;
+      const c = Math.floor((rx-LEFT)/CELL); const r = Math.floor((ry-TOP)/CELL);
+      if(r>=0 && r<N && c>=0 && c<N) return {r,c}; return null;
+    }
+
+    // ============================
+    // CHECK, CLEAR, OVERLAY
+    // ============================
+    function checkSolved(){
+      for(let r=0;r<N;r++){
+        for(let c=0;c<N;c++){
+          const need = ANSWER[r][c];
+          const cur = state[r][c];
+          if(need===1 && cur!==1) return false; // required fill missing
+          if(need===0 && cur===1) return false; // extra fill placed
+        }
+      }
+      // success!
+      showSuccess();
+      return true;
+    }
+
+    function clearBoard(){
+      for(let r=0;r<N;r++){
+        for(let c=0;c<N;c++){
+          state[r][c]=0;
+          const el = cellElems[r][c]; el.filled.opacity(0); el.markGrp.opacity(0);
+        }
+      }
+    }
+
+    function showSuccess(){
+      gOverlay.clear();
+      const dim = gOverlay.rect(W,H).fill('rgba(0,0,0,.45)');
+      const card = gOverlay.group();
+      const cw=420,ch=200; const x=W/2-cw/2, y=H/2-ch/2;
+      card.rect(cw,ch).move(x,y).radius(14).fill('#0f1a36').stroke({color:'#2b3f6e',width:1});
+      card.text('🎉 Puzzle Solved!').move(x+20,y+18).font({size:22,weight:800,fill:'#cfe0ff'});
+      card.text('Great job! Every filled cell matches the secret picture.').move(x+20,y+54).font({size:14,fill:'#aac1ef'});
+      const btn = button(card, x+cw-120, y+ch-56, 96, 36, 'Play Again', '#22c55e');
+      btn.on('click', ()=>{ gOverlay.clear(); clearBoard(); });
+      // confetti squares
+      for(let i=0;i<60;i++){
+        const p = gOverlay.rect(6,8).radius(2).fill(['#60a5fa','#f472b6','#34d399','#fbbf24','#c084fc'][i%5]).center(LEFT+N*CELL/2, TOP+N*CELL/2).rotate(rand(0,360));
+        p.animate(800+rand(-200,200),0,'>').dx(rand(-140,140)).dy(rand(-100,100)).opacity(0).after(function(){ this.remove(); });
+      }
+      gOverlay.front();
+    }
+
+    function button(group,x,y,w,h,label,bg){
+      const b = group.group();
+      b.rect(w,h).move(x,y).radius(10).fill(bg).stroke({color:'#0a1a33',width:2});
+      b.text(label).center(x+w/2,y+h/2).font({size:14,weight:800});
+      b.attr({cursor:'pointer'}).on('mouseover',()=> b.animate(120).scale(1.04,1.04,x+w/2,y+h/2)).on('mouseout',()=> b.animate(120).scale(1,1,x+w/2,y+h/2));
+      return b;
+    }
+
+    // ============================
+    // UI CONTROLS
+    // ============================
+    document.getElementById('modeBtn').addEventListener('click', ()=>{
+      markMode = !markMode; const b=document.getElementById('modeBtn'); b.setAttribute('aria-pressed', String(markMode)); b.textContent = 'Mark‑X Mode: ' + (markMode? 'On':'Off');
+    });
+    document.getElementById('clearBtn').addEventListener('click', clearBoard);
+    document.getElementById('checkBtn').addEventListener('click', checkSolved);
+    window.addEventListener('keydown', (e)=>{ if(e.key.toLowerCase()==='x'){ document.getElementById('modeBtn').click(); }});
+
+    // ============================
+    // UTILS
+    // ============================
+    function rand(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
+
+    // ============================
+    // START
+    // ============================
+    initSVG();
+
+  })();
+  </script>
+</body>
+</html>

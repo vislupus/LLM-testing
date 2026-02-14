@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>p5.js — Interactive 4D Tesseract Projection</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body { margin: 0; background: #0b0f14; color: #e6eef6; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    canvas { display:block; }
+    #hud{position:fixed;left:10px;top:10px;background:rgba(14,18,24,.6);border:1px solid rgba(255,255,255,.08);padding:10px 12px;border-radius:12px;backdrop-filter: blur(6px);font-size:13px;line-height:1.35;max-width:min(760px,54vw)}
+    #hud b{color:#fff}
+    .kbd{display:inline-block; padding:0 6px; border-radius:7px; border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.06); font-weight:700; font-size:12px}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="hud"></div>
+  <script>
+    // --------------------------------------------------------------
+    // Interactive tesseract (4D hypercube) — 4D -> 3D -> 2D pipeline
+    // Multiple 4D rotation planes, orthographic/perspective toggles,
+    // mouse/keyboard control, clean wireframe with subtle shading.
+    // --------------------------------------------------------------
+
+    // Geometry --------------------------------------------------------
+    const V4 = [];   // 16 vertices in R^4
+    const edges = []; // 32 edges as [i,j]
+    function buildTesseract(){
+      V4.length = 0; edges.length = 0;
+      // vertices: (±1,±1,±1,±1)
+      for (let a of [-1,1]) for (let b of [-1,1]) for (let c of [-1,1]) for (let d of [-1,1]) V4.push([a,b,c,d]);
+      // edges: connect vertices differing by exactly one coordinate
+      for (let v=0; v<16; v++){
+        for (let dim=0; dim<4; dim++){
+          if (((v>>dim) & 1) === 0){ const u = v | (1<<dim); edges.push([v,u]); }
+        }
+      }
+    }
+
+    // Rotation state --------------------------------------------------
+    const ang = { xy:0, xz:0, xw:0, yz:0, yw:0, zw:0 }; // radians
+    const active = { xy:true, xz:false, xw:true, yz:false, yw:true, zw:false };
+    let baseSpeed = 0.9; // rad/s
+    let paused = false;
+
+    // Projection params -----------------------------------------------
+    let persp4D = true;   // 4D->3D perspective on w
+    let persp3D = true;   // 3D->2D perspective on z
+    let d4 = 3.0;         // distance for 4D perspective (d4 - w)
+    let d3 = 5.0;         // camera distance for 3D perspective (d3 - z)
+
+    // Viewer orbit (3D orientation after 4D->3D) ---------------------
+    let yaw = 0.25, pitch = -0.3; // radians
+    let dragging = false, lastX=0, lastY=0;
+
+    // Style -----------------------------------------------------------
+    let showNodes = true; let gradientEdges = true;
+
+    // p5 globals ------------------------------------------------------
+    let hudEl;
+
+    function setup(){
+      createCanvas(windowWidth, windowHeight);
+      pixelDensity(1);
+      colorMode(HSB, 360,100,100,1);
+      buildTesseract();
+      hudEl = document.getElementById('hud');
+      updateHUD();
+    }
+    function windowResized(){ resizeCanvas(windowWidth, windowHeight); }
+
+    function draw(){
+      background('#070b10');
+      const dt = (deltaTime/1000) * (keyIsDown(SHIFT) ? 0.25 : 1.0);
+      if (!paused){
+        const da = baseSpeed * dt;
+        if (active.xy) ang.xy += da*1.00;
+        if (active.xz) ang.xz += da*0.82;
+        if (active.xw) ang.xw += da*1.18;
+        if (active.yz) ang.yz += da*1.07;
+        if (active.yw) ang.yw += da*0.93;
+        if (active.zw) ang.zw += da*1.12;
+      }
+
+      // Project vertices
+      const pts2 = []; // screen positions
+      const wvals = []; // avg w per vertex for coloring
+      for (let i=0;i<V4.length;i++){
+        const v = rotate4(V4[i]); // in 4D, after rotation
+        wvals[i] = v[3];
+        const p3 = project4to3(v); // 3D
+        const p3v = orbit3(p3);    // rotate by viewer yaw/pitch
+        const p2 = project3to2(p3v);
+        pts2[i] = p2;
+      }
+
+      // Draw edges with subtle depth fade & w-gradient
+      const cx = width*0.5, cy = height*0.5, scale = Math.min(width,height)*0.26;
+      strokeWeight(1.6);
+      for (let e of edges){
+        const i=e[0], j=e[1];
+        const a = pts2[i], b = pts2[j];
+        const wavg = (wvals[i] + wvals[j]) * 0.5; // -~2..~2
+        const t = constrain((wavg + 2.0) / 4.0, 0, 1); // 0..1
+        const hue = lerp(210, 20, t); // blue -> orange
+        const depthFade = 0.55 + 0.45 * (1.0 - (abs(a.z) + abs(b.z)) * 0.15);
+        if (gradientEdges){
+          stroke(hue, 80, 100, depthFade);
+        } else {
+          stroke(200, 0, 100, depthFade);
+        }
+        line(cx + a.x*scale, cy + a.y*scale, cx + b.x*scale, cy + b.y*scale);
+      }
+
+      // Draw nodes
+      if (showNodes){
+        noStroke();
+        for (let i=0;i<pts2.length;i++){
+          const p=pts2[i]; const hue = lerp(210, 20, constrain((wvals[i]+2)/4,0,1));
+          fill(hue, 60, 100, 0.9);
+          const r = 3.0 + 1.5 * (1.0 - abs(p.z)*0.2);
+          circle(cx + p.x*scale, cy + p.y*scale, r);
+        }
+      }
+
+      if (frameCount % 2 === 0) updateHUD();
+    }
+
+    // 4D rotations: apply sequential plane rotations ------------------
+    function rotate4(v){
+      let [x,y,z,w] = v;
+      // XY
+      if (ang.xy){ const s=Math.sin(ang.xy), c=Math.cos(ang.xy); const X=x*c - y*s; const Y=x*s + y*c; x=X; y=Y; }
+      // XZ
+      if (ang.xz){ const s=Math.sin(ang.xz), c=Math.cos(ang.xz); const X=x*c - z*s; const Z=x*s + z*c; x=X; z=Z; }
+      // XW
+      if (ang.xw){ const s=Math.sin(ang.xw), c=Math.cos(ang.xw); const X=x*c - w*s; const W=x*s + w*c; x=X; w=W; }
+      // YZ
+      if (ang.yz){ const s=Math.sin(ang.yz), c=Math.cos(ang.yz); const Y=y*c - z*s; const Z=y*s + z*c; y=Y; z=Z; }
+      // YW
+      if (ang.yw){ const s=Math.sin(ang.yw), c=Math.cos(ang.yw); const Y=y*c - w*s; const W=y*s + w*c; y=Y; w=W; }
+      // ZW
+      if (ang.zw){ const s=Math.sin(ang.zw), c=Math.cos(ang.zw); const Z=z*c - w*s; const W=z*s + w*c; z=Z; w=W; }
+      return [x,y,z,w];
+    }
+
+    // Projection helpers ----------------------------------------------
+    function project4to3(v){
+      let [x,y,z,w] = v;
+      if (persp4D){ const denom = (d4 - w); const s = (denom!==0)? d4/denom : 1e6; x*=s; y*=s; z*=s; }
+      return [x,y,z];
+    }
+    function orbit3(v){ // rotate by yaw around Y, then pitch around X
+      let [x,y,z] = v;
+      // yaw (y-axis)
+      let s=Math.sin(yaw), c=Math.cos(yaw); let X =  x*c + z*s; let Z = -x*s + z*c; x=X; z=Z;
+      // pitch (x-axis)
+      s=Math.sin(pitch); c=Math.cos(pitch); let Y = y*c - z*s; Z = y*s + z*c; y=Y; z=Z;
+      return [x,y,z];
+    }
+    function project3to2(v){
+      let [x,y,z] = v;
+      let s = 1.0;
+      if (persp3D){ const denom = (d3 - z); s = (denom!==0)? d3/denom : 1e6; x*=s; y*=s; }
+      return {x:x, y:y, z:z};
+    }
+
+    // Interaction ------------------------------------------------------
+    function mousePressed(){ dragging = true; lastX = mouseX; lastY = mouseY; }
+    function mouseReleased(){ dragging = false; }
+    function mouseDragged(){
+      if (!dragging) return;
+      const dx = (mouseX - lastX) / width; const dy = (mouseY - lastY) / height;
+      yaw   += dx * Math.PI; // rotate left/right
+      pitch += dy * Math.PI; // rotate up/down
+      pitch = constrain(pitch, -Math.PI*0.49, Math.PI*0.49);
+      lastX = mouseX; lastY = mouseY; updateHUD();
+    }
+    function mouseWheel(e){
+      // Zoom 3D camera distance; hold Alt to change 4D distance
+      if (keyIsDown(ALT)) { d4 += (e.deltaY>0? 0.2 : -0.2); d4 = constrain(d4, 1.2, 8.0); }
+      else { d3 += (e.deltaY>0? 0.3 : -0.3); d3 = constrain(d3, 2.0, 12.0); }
+      updateHUD();
+      return false;
+    }
+
+    function keyPressed(){
+      if (key===' ') { paused = !paused; }
+      if (key==='1') active.xy = !active.xy;
+      if (key==='2') active.xz = !active.xz;
+      if (key==='3') active.xw = !active.xw;
+      if (key==='4') active.yz = !active.yz;
+      if (key==='5') active.yw = !active.yw;
+      if (key==='6') active.zw = !active.zw;
+      if (key==='O' || key==='o') persp3D = !persp3D; // 3D->2D
+      if (key==='W' || key==='w') persp4D = !persp4D; // 4D->3D
+      if (key==='+') baseSpeed *= 1.2;
+      if (key==='-') baseSpeed /= 1.2;
+      if (key===']') d3 = constrain(d3 + 0.3, 2.0, 12.0);
+      if (key==='[') d3 = constrain(d3 - 0.3, 2.0, 12.0);
+      if (key==="'") d4 = constrain(d4 + 0.2, 1.2, 8.0);
+      if (key===';') d4 = constrain(d4 - 0.2, 1.2, 8.0);
+      if (key==='C' || key==='c') gradientEdges = !gradientEdges;
+      if (key==='N' || key==='n') showNodes = !showNodes;
+      if (key==='R' || key==='r') { ang.xy=ang.xz=ang.xw=ang.yz=ang.yw=ang.zw=0; yaw=0.25; pitch=-0.3; }
+      if (key==='S' || key==='s') saveCanvas('tesseract','png');
+      if (keyCode===LEFT_ARROW)  yaw -= 0.08;
+      if (keyCode===RIGHT_ARROW) yaw += 0.08;
+      if (keyCode===UP_ARROW)    pitch = constrain(pitch - 0.08, -Math.PI*0.49, Math.PI*0.49);
+      if (keyCode===DOWN_ARROW)  pitch = constrain(pitch + 0.08, -Math.PI*0.49, Math.PI*0.49);
+      updateHUD();
+    }
+
+    // HUD --------------------------------------------------------------
+    function updateHUD(){
+      const fps=(frameRate()||0).toFixed(0);
+      const planes = ['xy','xz','xw','yz','yw','zw'].map(p=> active[p]?('<b>'+p.toUpperCase()+'</b>'):p).join(' · ');
+      document.getElementById('hud').innerHTML = `
+        <div><b>4D Tesseract Projection</b> — ${fps} FPS</div>
+        <div>Planes: ${planes}</div>
+        <div>Speed <b>${baseSpeed.toFixed(2)}</b> rad/s · 4D ${persp4D?'<b>persp</b>':'ortho'} (d4=${d4.toFixed(1)}) · 3D ${persp3D?'<b>persp</b>':'ortho'} (d3=${d3.toFixed(1)})</div>
+        <div>Mouse drag: orbit view · Mouse wheel: zoom 3D (hold <span class="kbd">Alt</span> = 4D depth)</div>
+        <div><span class="kbd">1..6</span> toggle planes · <span class="kbd">O</span> 3D proj · <span class="kbd">W</span> 4D proj · <span class="kbd">±</span> speed · <span class="kbd">[ ]</span> d3 · <span class="kbd">; '</span> d4 · <span class="kbd">C</span> color · <span class="kbd">N</span> nodes · <span class="kbd">Space</span> pause</div>
+      `;
+    }
+
+  </script>
+</body>
+</html>

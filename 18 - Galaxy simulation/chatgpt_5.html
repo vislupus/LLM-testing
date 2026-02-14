@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>p5.js — Galaxy Formation (10,000 particles, Quadtree, merging)</title>
+<style>
+  html,body{height:100%}
+  body{margin:0;background:#dcdcdc;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  #wrap{position:fixed;inset:0;display:grid;place-items:center}
+  canvas{box-shadow:0 14px 60px rgba(0,0,0,.25);border-radius:12px}
+  .hud{position:fixed;left:12px;top:12px;background:rgba(255,255,255,.6);border:1px solid rgba(0,0,0,.12);backdrop-filter:blur(4px);padding:8px 10px;border-radius:10px;font-size:12px}
+  .hud b{font-weight:700}
+</style>
+</head>
+<body>
+  <div id="wrap"></div>
+  <div class="hud">
+    <div><b>Galaxy Formation — 10,000 bodies</b></div>
+    <div>Background 220 · circles only · persistent trails</div>
+    <div>Keys: <b>R</b> reset · <b>P</b> pause</div>
+    <div id="stats"></div>
+  </div>
+
+  <!-- p5.js from CDN (single file) -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+  <script>
+// ================================================================
+// p5.js — Galaxy formation with 10,000 particles
+// * Newtonian gravity via Barnes–Hut quadtree (theta configurable)
+// * Mass-conserving merging (inelastic) with neighbor search via tree
+// * Dark-matter halo potential (flat rotation curve) + central BH
+// * Simple circles only (size/brightness by mass); background(220)
+// * Persistent motion trails via translucent fade rectangle
+// * All dynamics with p5.Vector
+// ================================================================
+
+let W = 1200, H = 800;          // canvas size
+const N_BODIES = 10000;          // total particle count
+const G = 0.6;                   // gravitational constant (screen units)
+const SOFTEN2 = 1.2;             // gravitational softening^2 (px^2)
+const DT = 0.25;                 // timestep (s, arbitrary)
+const THETA = 0.6;               // Barnes–Hut opening angle (smaller = more precise)
+const V_HALO = 2.8;              // halo circular velocity ~ const (px/s)
+const BH_MASS = 22000;           // central black hole mass (big point mass)
+const MERGE_LIMIT_PER_FRAME = 200; // cap merges per frame (performance & visuals)
+const MERGE_K = 0.55;            // how close (fraction of radius sum) to merge
+
+let stars = [];                  // array of bodies (p5 vectors)
+let paused = false;
+let sinceReset = 0;
+
+// -------------------------------------
+// Data structures
+// -------------------------------------
+class Body{
+  constructor(mass, pos, vel){
+    this.m = mass;                   // mass
+    this.p = pos.copy();             // position (p5.Vector)
+    this.v = vel.copy();             // velocity (p5.Vector)
+    this.a = createVector(0,0);      // acceleration (p5.Vector)
+    this.alive = true;               // for merging
+  }
+  radius(){ return 0.6 + Math.sqrt(this.m)*0.18; }
+}
+
+class QNode{
+  constructor(cx, cy, half){
+    this.cx = cx; this.cy = cy; this.h = half;
+    this.mass = 0; this.com = createVector(0,0); // center of mass
+    this.body = null; this.divided = false;
+    this.nw = this.ne = this.sw = this.se = null;
+  }
+  contains(x,y){ return (x>=this.cx-this.h && x<this.cx+this.h && y>=this.cy-this.h && y<this.cy+this.h); }
+  insert(b){
+    if(!this.contains(b.p.x, b.p.y)) return false;
+    // update COM
+    const M = this.mass + b.m;
+    if(M>0){ this.com.x = (this.com.x*this.mass + b.p.x*b.m)/M; this.com.y = (this.com.y*this.mass + b.p.y*b.m)/M; }
+    this.mass = M;
+
+    if(!this.divided && this.body===null){ this.body = b; return true; }
+    if(!this.divided){ this.subdivide(); if(this.body){ const old = this.body; this.body=null; this.insert(old); } }
+    return this.nw.insert(b) || this.ne.insert(b) || this.sw.insert(b) || this.se.insert(b);
+  }
+  subdivide(){
+    const h = this.h*0.5; const cx=this.cx, cy=this.cy;
+    this.nw = new QNode(cx-h, cy-h, h);
+    this.ne = new QNode(cx+h, cy-h, h);
+    this.sw = new QNode(cx-h, cy+h, h);
+    this.se = new QNode(cx+h, cy+h, h);
+    this.divided = true;
+  }
+  // Barnes–Hut force on target body
+  addForceTo(target, out){
+    if(this.mass===0) return;
+    // if leaf with no body or only contains the target itself
+    if(!this.divided && (this.body===null || this.body===target)) return;
+
+    // size of node and distance to COM
+    const dx = this.com.x - target.p.x; const dy = this.com.y - target.p.y;
+    const dist2 = dx*dx + dy*dy + SOFTEN2; const dist = Math.sqrt(dist2);
+    const s = this.h*2;
+
+    if(!this.divided || (s / dist) < THETA){
+      // approximate whole cell as single mass at COM
+      const inv = 1.0 / (dist2 * Math.sqrt(dist2)); // 1/r^3
+      const f = G * this.mass * inv;
+      out.x += dx * f; out.y += dy * f;
+    } else {
+      this.nw.addForceTo(target, out);
+      this.ne.addForceTo(target, out);
+      this.sw.addForceTo(target, out);
+      this.se.addForceTo(target, out);
+    }
+  }
+  // collect potential merge partners within radius R of (x,y)
+  queryCircle(x, y, r, results){
+    // quick reject by AABB vs circle
+    if(x + r < this.cx - this.h || x - r > this.cx + this.h || y + r < this.cy - this.h || y - r > this.cy + this.h) return;
+    if(!this.divided){ if(this.body && this.body.alive){ const dx=this.body.p.x-x, dy=this.body.p.y-y; if(dx*dx+dy*dy <= r*r) results.push(this.body); } return; }
+    this.nw.queryCircle(x,y,r,results);
+    this.ne.queryCircle(x,y,r,results);
+    this.sw.queryCircle(x,y,r,results);
+    this.se.queryCircle(x,y,r,results);
+  }
+}
+
+// -------------------------------------
+// Initialization
+// -------------------------------------
+function setup(){
+  const holder = document.getElementById('wrap');
+  const c = createCanvas(W, H);
+  c.parent(holder);
+  noStroke(); // circles only (as requested)
+  resetGalaxy();
+}
+
+function resetGalaxy(){
+  background(220);
+  stars.length = 0; paused=false; sinceReset = 0;
+
+  // Protogalactic cloud: exponential radial profile with global spin
+  const CX = width/2, CY = height/2;
+  const R0 = min(width,height)*0.42;
+  const angMom = 0.015; // base spin for initial swirl
+
+  for(let i=0;i<N_BODIES;i++){
+    // sample radius by exponential (denser center)
+    const u = random();
+    const r = -Math.log(1-u) * (R0*0.45); // exp dist
+    const a = random(TWO_PI);
+    const x = CX + r * Math.cos(a) + randomGaussian()*3;
+    const y = CY + r * Math.sin(a) + randomGaussian()*3;
+
+    // mass ~ log-normal-ish (lots of tiny dust, some heavier clumps)
+    const m = max(0.2, Math.exp(randomGaussian()*0.6) * 0.6);
+
+    // initial velocity: slow spin + slight inward bias for collapse
+    const tang = createVector(-(y-CY), (x-CX)).normalize();
+    const radial = createVector(CX-x, CY-y).setMag(0.02*r);
+    const v = p5.Vector.add(tang.mult(angMom*r), radial).add(p5.Vector.random2D().mult(0.2));
+
+    stars.push(new Body(m, createVector(x,y), v));
+  }
+}
+
+// -------------------------------------
+// Physics helpers
+// -------------------------------------
+function haloAccelAt(pos){
+  // Flat rotation curve: |a| = V_HALO^2 / r inward
+  const dx = pos.x - width/2, dy = pos.y - height/2; let r2 = dx*dx + dy*dy + 1e-6; let r = Math.sqrt(r2);
+  const aMag = (V_HALO*V_HALO) / r; // 1/r
+  return createVector(-dx/r * aMag, -dy/r * aMag);
+}
+
+function bhAccelAt(pos){
+  // Central black hole gravity at canvas center
+  const dx = width/2 - pos.x, dy = height/2 - pos.y; const r2 = dx*dx + dy*dy + SOFTEN2; const inv = G*BH_MASS / (r2*Math.sqrt(r2));
+  return createVector(dx*inv, dy*inv);
+}
+
+// -------------------------------------
+// Simulation step
+// -------------------------------------
+function draw(){
+  if(paused){ drawFrame(); return; }
+
+  // Fade with translucent rect to create persistent trails (bg base 220)
+  fill(220, 26); // subtle fade
+  rect(0,0,width,height);
+
+  // Build quadtree around viewport
+  const root = new QNode(width/2, height/2, max(width,height));
+  for(const b of stars){ if(b.alive) root.insert(b); }
+
+  // Forces and integrate (leapfrog)
+  for(const b of stars){ if(!b.alive) continue; b.a.set(0,0); // reset
+    // Barnes–Hut approx from other baryons
+    root.addForceTo(b, b.a);
+    // Add halo and BH
+    const ah = haloAccelAt(b.p); b.a.add(ah);
+    const ab = bhAccelAt(b.p);  b.a.add(ab);
+    // Update velocity & position (symplectic Euler/leapfrog)
+    b.v.add(p5.Vector.mult(b.a, DT));
+    b.p.add(p5.Vector.mult(b.v, DT));
+  }
+
+  // Merging pass (limited per frame for perf & visuals)
+  let merges = 0;
+  for(const b of stars){ if(!b.alive) continue; if(merges>=MERGE_LIMIT_PER_FRAME) break; const r = b.radius(); const cand = []; root.queryCircle(b.p.x, b.p.y, r*1.6, cand);
+    for(const c of cand){ if(merges>=MERGE_LIMIT_PER_FRAME) break; if(c===b || !c.alive) continue; const d2 = distSq(b.p, c.p); const rsum = (b.radius()+c.radius())*MERGE_K; if(d2 < rsum*rsum){ // merge smaller into larger
+        const big = (b.m>=c.m)? b: c; const small = (b.m>=c.m)? c: b; if(!small.alive||!big.alive) continue;
+        const M = big.m + small.m; // momentum conservation
+        big.v = p5.Vector.add(p5.Vector.mult(big.v, big.m), p5.Vector.mult(small.v, small.m)).div(M);
+        big.p = p5.Vector.add(p5.Vector.mult(big.p, big.m), p5.Vector.mult(small.p, small.m)).div(M);
+        big.m = M; small.alive = false; merges++;
+      }
+    }
+  }
+
+  sinceReset += DT;
+  drawFrame();
+}
+
+function drawFrame(){
+  // Render all alive bodies as circles
+  // size & brightness scale with mass (clamped), slight velocity glare inside
+  for(const b of stars){ if(!b.alive) continue; const m = b.m; const s = constrain(0.9 + 0.22*Math.sqrt(m), 1.0, 2.8); const vmag = b.v.mag();
+    const glow = constrain(40 + m*18 + vmag*2, 40, 255);
+    fill(glow);
+    circle(b.p.x, b.p.y, s);
+  }
+
+  // Optional: bright core hint at the center (not a body; BH is invisible)
+  const corePulse = 180 + 40*Math.sin(frameCount*0.01);
+  fill(corePulse, corePulse, corePulse, 60);
+  circle(width/2, height/2, 16);
+
+  // HUD
+  const alive = stars.reduce((a,b)=> a+(b.alive?1:0), 0);
+  document.getElementById('stats').innerHTML = `alive: ${alive} · dt=${DT} · θ=${THETA} · merges/frame≈${MERGE_LIMIT_PER_FRAME}`;
+}
+
+// -------------------------------------
+// Utilities & interaction
+// -------------------------------------
+function distSq(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return dx*dx+dy*dy; }
+function keyPressed(){ if(key==='R'||key==='r'){ resetGalaxy(); } if(key==='P'||key==='p'){ paused=!paused; } }
+  </script>
+</body>
+</html>

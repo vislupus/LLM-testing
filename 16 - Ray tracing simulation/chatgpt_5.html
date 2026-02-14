@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Babylon.js — Real‑Time Ray Traced Spheres over Street (Single‑File)</title>
+<style>
+  html,body{height:100%}
+  body{margin:0;background:#060913;color:#e7eefc;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  #game{position:fixed;inset:0}
+  .hud{position:fixed;left:12px;top:12px;display:flex;flex-direction:column;gap:10px;z-index:10}
+  .panel{background:rgba(8,14,32,.78);border:1px solid #20325e;border-radius:12px;padding:10px;backdrop-filter:blur(4px)}
+  .row{display:flex;align-items:center;gap:10px}
+  .label{width:130px;color:#a9c5ff;font-size:12px}
+  input[type=range]{width:220px}
+  .value{width:46px;text-align:right;color:#cfe0ff}
+  .hint{font-size:12px;color:#9fb3d9;margin-top:4px}
+</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div class="hud panel">
+    <div style="display:flex;align-items:center;gap:8px"><strong>🔮 Ray‑Traced Metallic Spheres</strong><span class="hint"> • Orbit: drag • Zoom: wheel • Pan: Shift+drag</span></div>
+    <div class="row"><div class="label">Reflectivity (F0)</div><input id="f0" type="range" min="0" max="100" value="92"><div id="f0v" class="value">0.92</div></div>
+    <div class="row"><div class="label">Roughness</div><input id="rough" type="range" min="0" max="100" value="18"><div id="roughv" class="value">0.18</div></div>
+    <div class="row"><div class="label">Metal Tint Hue</div><input id="hue" type="range" min="0" max="360" value="210"><div id="huev" class="value">210°</div></div>
+    <div class="row"><div class="label">Exposure</div><input id="expo" type="range" min="50" max="200" value="100"><div id="expov" class="value">1.00</div></div>
+    <div class="hint">Scene is ray‑marched in a shader (spheres + street & buildings) and driven by a Babylon.js orbit camera.</div>
+  </div>
+
+  <!-- Babylon.js (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/babylonjs@6.39.0/babylon.js"></script>
+  <script>
+(() => {
+  const canvas = document.getElementById('game');
+  const engine = new BABYLON.Engine(canvas, true, {preserveDrawingBuffer:true, stencil:true, antialias:true});
+  const scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0.02,0.03,0.08,1);
+
+  const cam = new BABYLON.ArcRotateCamera('cam', -Math.PI/2, Math.PI/3, 32, new BABYLON.Vector3(0,2,0), scene);
+  cam.lowerRadiusLimit = 10; cam.upperRadiusLimit = 120; cam.panningSensibility = 600; cam.wheelPrecision = 40; cam.attachControl(canvas, true);
+
+  const hemi = new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0,1,0), scene); hemi.intensity = 0.6;
+
+  // Fullscreen quad for ray‑marching
+  const plane = BABYLON.MeshBuilder.CreatePlane('screen', {size:2}, scene);
+  plane.position.z = 0; plane.isPickable=false;
+
+  const vertex = `
+    precision highp float;
+    attribute vec3 position; attribute vec2 uv; varying vec2 vUV;
+    void main(){ vUV = uv; gl_Position = vec4(position,1.0); }
+  `;
+
+  const fragment = `
+    precision highp float;
+    varying vec2 vUV;
+    uniform vec2  iResolution;
+    uniform float iTime;
+    uniform vec3  camPos, camFwd, camRight, camUp;
+    uniform float camFov;
+    uniform float uF0;      // reflectivity at normal incidence (0..1)
+    uniform float uRough;   // 0..1
+    uniform vec3  uTint;    // metal tint
+    uniform float uExposure;
+
+    // ===== helpers =====
+    #define TAU 6.28318530718
+    float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*.1031); p3 += dot(p3, p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
+    float smin(float a, float b, float k){ float h = clamp(0.5+0.5*(b-a)/k, 0.0, 1.0); return mix(b, a, h) - k*h*(1.0-h); }
+    
+    // sdf primitives
+    float sdSphere(vec3 p, float r){ return length(p)-r; }
+    float sdBox(vec3 p, vec3 b){ vec3 q = abs(p)-b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }
+    float sdPlane(vec3 p, vec3 n, float h){ return dot(p,n)+h; } // n normalized, plane at -h along normal
+
+    struct Mat { int id; }; // 0 background, 1 ground, 2 building, 3 sphere
+    struct Res { float d; Mat m; };
+
+    // hash for building height per block
+    float rand1(float x){ return fract(sin(x*127.1)*43758.5453); }
+
+    // scene SDF + material id
+    Res map(vec3 p){
+      // ground plane at y=0
+      Res res; res.d = sdPlane(p, vec3(0,1,0), 0.0); res.m.id = 1;
+
+      // road: just affect material ID near center x
+      float roadW = 6.0; // total width
+      float isRoad = step(abs(p.x), roadW*0.5);
+
+      // buildings rows along z on left/right
+      float spacing = 12.0; // block spacing
+      float side = sign(p.x);
+      side = side==0.0?1.0:side;
+      float bx = (roadW*0.5 + 2.0); // offset from center
+      float zc = (floor((p.z)/spacing)+0.5)*spacing;
+      float hVar = 6.0 + rand1(zc*0.73 + side*17.0)*18.0; // 6..24
+      vec3 bCenter = vec3(side*bx, hVar*0.5, zc);
+      vec3 bSize = vec3(3.5, hVar*0.5, 4.0);
+      float dB = sdBox(p - bCenter, bSize);
+      if(dB < res.d){ res.d = dB; res.m.id = 2; }
+
+      // two spheres above street
+      vec3 s1 = vec3(-3.0, 3.2, 0.0);
+      vec3 s2 = vec3( 3.2, 3.6, 2.0);
+      float d1 = sdSphere(p - s1, 1.6);
+      float d2 = sdSphere(p - s2, 1.9);
+      float dS = min(d1, d2);
+      if(dS < res.d){ res.d = dS; res.m.id = 3; }
+
+      // sidewalk curbs (cosmetic rounding near road)
+      float curb = sdBox(p - vec3(0.0, 0.2, zc), vec3(roadW*0.5+0.3, 0.2, spacing*0.5));
+      res.d = smin(res.d, curb, 0.1);
+
+      return res;
+    }
+
+    // numerical normal
+    vec3 calcNormal(vec3 p){ const float e=0.0015; vec2 k=vec2(1,-1); return normalize(k.xyy*map(p+k.xyy*e).d + k.yyx*map(p+k.yyx*e).d + k.yxy*map(p+k.yxy*e).d + k.xxx*map(p+k.xxx*e).d); }
+
+    // soft shadow
+    float softShadow(vec3 ro, vec3 rd){ float res=1.0; float t=0.02; for(int i=0;i<48;i++){ Res h=map(ro+rd*t); if(h.d<0.0008) return 0.0; res=min(res, 12.0*h.d/t); t+=clamp(h.d,0.02,1.0); if(t>80.0) break;} return clamp(res,0.0,1.0); }
+
+    // ambient occlusion (cheap)
+    float ao(vec3 p, vec3 n){ float r=0.0, w=1.0; for(int i=1;i<=5;i++){ float d=float(i)*0.18; r+=w*(d - map(p+n*d).d); w*=0.6; } return clamp(1.0 - r, 0.0, 1.0); }
+
+    // march
+    bool raymarch(vec3 ro, vec3 rd, out vec3 pos, out vec3 nrm, out Mat mat){ float t=0.0; for(int i=0;i<160;i++){ vec3 p = ro + rd*t; Res r = map(p); if(r.d<0.001){ pos=p; nrm=calcNormal(p); mat=r.m; return true; } t+=r.d; if(t>300.0) break; } return false; }
+
+    vec3 hsv2rgb(vec3 c){ vec3 p = abs(fract(c.xxx+vec3(0,2,1)/3.0)*6.0-3.0); return c.z * mix(vec3(1.0), clamp(p-1.0,0.0,1.0), c.y); }
+
+    // simple sun/sky
+    vec3 skyColor(vec3 rd){ float t=pow(max(rd.y,0.0), 0.6); vec3 zen = vec3(0.56,0.68,0.95); vec3 hor = vec3(0.08,0.12,0.2); return mix(hor, zen, t); }
+
+    // BRDF-ish shading for non‑metal surfaces
+    vec3 lambert(vec3 albedo, vec3 n, vec3 l, vec3 v){ float ndl = max(dot(n,l),0.0); float ndv = max(dot(n,v),0.0); vec3 h = normalize(l+v); float spec = pow(max(dot(n,h),0.0), 64.0); return albedo*ndl + vec3(0.9)*spec*0.1; }
+
+    // random hemisphere sample
+    vec3 sampleHemisphere(vec3 n, vec2 xi){ float phi = TAU*xi.x; float cosT = pow(1.0 - xi.y, 1.0/(uRough*2.0 + 1.0)); float sinT = sqrt(max(0.0,1.0 - cosT*cosT)); vec3 t = normalize(abs(n.y) < 0.99 ? cross(n, vec3(0,1,0)) : cross(n, vec3(1,0,0))); vec3 b = cross(t,n); return normalize(t*(cos(phi)*sinT) + b*(sin(phi)*sinT) + n*cosT);
+    }
+
+    vec3 shade(vec3 ro, vec3 rd){
+      vec3 pos, n; Mat m; if(!raymarch(ro,rd,pos,n,m)){
+        return skyColor(rd);
+      }
+      vec3 sunDir = normalize(vec3(0.6,1.0,0.2));
+      float sh = softShadow(pos + n*0.002, sunDir);
+      float amb = 0.24;
+      float occ = ao(pos, n);
+      vec3 v = normalize(ro - pos);
+
+      if(m.id==3){ // metallic spheres
+        // base color tint
+        vec3 base = uTint;
+        // Fresnel Schlick
+        float ndv = max(dot(n,v), 0.0);
+        float F = uF0 + (1.0 - uF0)*pow(1.0 - ndv, 5.0);
+        vec3 reflDir = reflect(-v, n);
+        // roughness → perturb reflected dir
+        vec2 xi = vec2(hash12(pos.xz*1.23 + iTime), hash12(pos.zx*0.91 + iTime*1.3));
+        vec3 rdir = normalize(mix(reflDir, sampleHemisphere(n, xi), clamp(uRough,0.0,1.0)));
+        vec3 rc = skyColor(rdir); // background reflection default
+        // secondary bounce against scene
+        vec3 p2,n2; Mat m2; if(raymarch(pos + n*0.01, rdir, p2, n2, m2)){
+          // simple color for hit
+          vec3 c2; if(m2.id==2) c2 = vec3(0.35,0.38,0.46); else if(m2.id==1) c2 = vec3(0.18,0.18,0.2); else c2 = skyColor(rdir);
+          // add some sun lighting
+          float ndl2 = max(dot(n2, sunDir), 0.0); c2 *= amb + sh*ndl2;
+          rc = c2;
+        }
+        vec3 col = mix(base*0.04, rc, F);
+        // subtle direct light tinting
+        float ndl = max(dot(n, sunDir), 0.0);
+        col += vec3(1.0,0.95,0.85) * ndl * sh * 0.1;
+        return col * uExposure;
+      }
+
+      // materials for ground/buildings
+      vec3 albedo;
+      if(m.id==2){ // buildings
+        albedo = vec3(0.32,0.35,0.45);
+      } else { // ground / road markings
+        // road center stripes
+        float roadW = 6.0; float isRoad = step(abs(pos.x), roadW*0.5);
+        float stripe = step(0.48, fract((pos.z*0.2 + 0.5)))*step(fract((pos.z*0.2 + 0.5)),0.8);
+        vec3 asphalt = vec3(0.08,0.09,0.1);
+        vec3 pave = vec3(0.16,0.18,0.19);
+        albedo = mix(pave, asphalt, isRoad);
+        if(isRoad>0.5 && stripe>0.5 && abs(pos.x)<0.12) albedo = mix(albedo, vec3(0.95,0.9,0.2), 0.8);
+      }
+      float ndl = max(dot(n, sunDir), 0.0);
+      vec3 col = albedo * (amb + ndl*sh) * occ;
+      // subtle sky reflection on glossy pavement
+      if(m.id==1){ col = mix(col, skyColor(reflect(-v,n)), 0.06); }
+      return col * uExposure;
+    }
+
+    void main(){
+      vec2 frag = vUV * iResolution; // original pixel coords if needed
+      float aspect = iResolution.x / iResolution.y;
+      float tanHalf = tan(camFov*0.5);
+      vec2 ndc = (vUV*2.0 - 1.0);
+      vec3 rd = normalize(camFwd + camRight * (ndc.x * tanHalf * aspect) + camUp * (-ndc.y * tanHalf));
+      vec3 ro = camPos;
+
+      vec3 col = shade(ro, rd);
+      // simple tone mapping
+      col = col / (vec3(1.0) + col);
+      gl_FragColor = vec4(pow(col, vec3(1.0/2.2)), 1.0);
+    }
+  `;
+
+  const shaderMat = new BABYLON.ShaderMaterial('raymarch', scene, { vertex: 'custom', fragment: 'custom' }, {
+    attributes: ['position','uv'], uniforms: ['iResolution','iTime','camPos','camFwd','camRight','camUp','camFov','uF0','uRough','uTint','uExposure']
+  });
+  shaderMat.setShaderSource('vertex', vertex);
+  shaderMat.setShaderSource('fragment', fragment);
+  plane.material = shaderMat;
+
+  // UI elements
+  const f0El = document.getElementById('f0'); const f0v = document.getElementById('f0v');
+  const roughEl = document.getElementById('rough'); const roughv = document.getElementById('roughv');
+  const hueEl = document.getElementById('hue'); const huev = document.getElementById('huev');
+  const expoEl = document.getElementById('expo'); const expov = document.getElementById('expov');
+
+  // hue to rgb
+  function hsv2rgb(h,s,v){ h/=360; let r,g,b,i=Math.floor(h*6), f=h*6-i, p=v*(1-s), q=v*(1-f*s), t=v*(1-(1-f)*s); switch(i%6){case 0:r=v,g=t,b=p;break;case 1:r=q,g=v,b=p;break;case 2:r=p,g=v,b=t;break;case 3:r=p,g=q,b=v;break;case 4:r=t,g=p,b=v;break;case 5:r=v,g=p,b=q;break;} return new BABYLON.Color3(r,g,b); }
+
+  function updateUniforms(){
+    const dpr = window.devicePixelRatio||1;
+    shaderMat.setVector2('iResolution', new BABYLON.Vector2(engine.getRenderWidth(), engine.getRenderHeight()));
+    shaderMat.setFloat('iTime', performance.now()/1000);
+    shaderMat.setVector3('camPos', cam.position);
+    shaderMat.setVector3('camFwd', cam.getDirection(BABYLON.Vector3.Forward()));
+    shaderMat.setVector3('camRight', cam.getDirection(BABYLON.Vector3.Right()));
+    shaderMat.setVector3('camUp', cam.getDirection(BABYLON.Vector3.Up()));
+    shaderMat.setFloat('camFov', cam.fov);
+
+    const F0 = (parseFloat(f0El.value)/100);
+    const R = (parseFloat(roughEl.value)/100);
+    const H = parseFloat(hueEl.value);
+    const EXP = parseFloat(expoEl.value)/100;
+    const tint = hsv2rgb(H, 0.6, 1.0);
+    shaderMat.setFloat('uF0', F0);
+    shaderMat.setFloat('uRough', R);
+    shaderMat.setColor3('uTint', tint);
+    shaderMat.setFloat('uExposure', EXP);
+
+    f0v.textContent = F0.toFixed(2);
+    roughv.textContent = R.toFixed(2);
+    huev.textContent = `${H}\u00B0`;
+    expov.textContent = EXP.toFixed(2);
+  }
+
+  [f0El, roughEl, hueEl, expoEl].forEach(el=> el.addEventListener('input', updateUniforms));
+
+  scene.registerBeforeRender(()=> updateUniforms());
+
+  engine.runRenderLoop(()=> scene.render());
+  window.addEventListener('resize', ()=> engine.resize());
+})();
+  </script>
+</body>
+</html>

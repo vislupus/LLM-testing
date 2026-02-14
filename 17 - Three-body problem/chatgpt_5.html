@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chaotic Three‑Body Orbits + Transfer Craft — p5.js (Single‑File)</title>
+<style>
+  html,body{height:100%}
+  body{margin:0;background:#dcdcdc;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  #wrap{position:fixed;inset:0;display:grid;place-items:center}
+  canvas{box-shadow:0 14px 60px rgba(0,0,0,.25);border-radius:12px}
+  .hud{position:fixed;left:12px;top:12px;background:rgba(255,255,255,.6);border:1px solid rgba(0,0,0,.12);backdrop-filter:blur(4px);padding:8px 10px;border-radius:10px;font-size:12px}
+  .hud b{font-weight:700}
+</style>
+</head>
+<body>
+  <div id="wrap"></div>
+  <div class="hud">
+    <div><b>Chaotic 3‑body + Spacecraft (p5.js)</b></div>
+    <div>Background 220 · noStroke() · persistent trails</div>
+    <div>Keys: <b>R</b> reset · <b>P</b> pause</div>
+    <div id="status"></div>
+  </div>
+
+  <!-- p5.js from CDN (allowed) -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+  <script>
+// ================================================================
+// Chaotic three‑body simulation (Sun–Earth–Jupiter) + a spacecraft
+// * Newtonian gravity (with tiny softening to avoid singularities)
+// * Velocity‑Verlet (symplectic) integration for smooth stability
+// * Trails are redrawn each frame; background(220) ensures clean UI
+// * Auto view centers on barycenter and auto‑zooms to keep planets
+//   fully within the canvas while preserving world‑space physics.
+// * Spacecraft: starts at Earth, solar loop, transfer toward Jupiter
+// ================================================================
+
+let W = 980, H = 720;
+let G = 10.0;           // gravitational constant (tuned for on‑screen units)
+const EPS2 = 36.0;      // softening^2 to avoid blowups on close approaches
+const DT = 0.02;        // simulation timestep (seconds, arbitrary)
+
+let bodies = [];        // the three massive bodies
+let craft;              // the spacecraft
+let simTime = 0;        // accumulated simulation time
+let paused = false;
+
+let viewScale = 1, targetScale = 1; // auto zoom
+
+// Colors
+const COL = {
+  sun:    [255, 160,  40],
+  earth:  [ 70, 140, 255],
+  jupiter:[226, 183, 128],
+  craft:  [ 40,  40,  40]
+};
+
+function setup(){
+  const holder = document.getElementById('wrap');
+  const c = createCanvas(W, H);
+  c.parent(holder);
+  noStroke();               // required by prompt
+  resetSystem();
+}
+
+function resetSystem(){
+  background(220); // required background value
+  simTime = 0;
+  paused = false;
+  bodies.length = 0;
+
+  // --- Define bodies (units are pixels, seconds, mass in arbitrary units)
+  // We exaggerate Earth/Jupiter masses to create bounded, chaotic motion.
+  const Sun     = new Body('Sun',     1500, createVector(-65, -40),  null, 16, color(...COL.sun));
+  const Earth   = new Body('Earth',    220, createVector( 150,   0),  null,  9, color(...COL.earth));
+  const Jupiter = new Body('Jupiter',  500, createVector( -10, 170),  null, 12, color(...COL.jupiter));
+
+  // Initial velocities: almost‑circular around Sun but deliberately off
+  Earth.vel   = orbitalVelocity(Earth.pos, Sun.pos, Sun.mass + Earth.mass, 1.08);
+  Jupiter.vel = orbitalVelocity(Jupiter.pos, Sun.pos, Sun.mass + Jupiter.mass, 0.92);
+
+  // Sun velocity chosen so total momentum ~ 0 (keeps system centered)
+  const p = p5.Vector.add(p5.Vector.mult(Earth.vel, Earth.mass), p5.Vector.mult(Jupiter.vel, Jupiter.mass));
+  Sun.vel = p5.Vector.mult(p, -1 / Sun.mass);
+
+  // Register bodies (Sun first makes trails look nice when overdrawn)
+  bodies.push(Sun, Earth, Jupiter);
+
+  // Spacecraft: begins near Earth, in a low Earth orbit
+  craft = new Craft(0.001);
+  const rLEO = 14; // ~pixels from Earth center (small, just for the sim)
+  const radial = p5.Vector.sub(createVector(Earth.pos.x + rLEO, Earth.pos.y), Earth.pos);
+  const tang   = createVector(-radial.y, radial.x).normalize();
+  const vRel   = Math.sqrt(G*Earth.mass / (rLEO)); // circular speed ~ sqrt(mu/r)
+  craft.pos = p5.Vector.add(Earth.pos, radial);
+  craft.vel = p5.Vector.add(Earth.vel, p5.Vector.mult(tang, vRel));
+  craft.phase = 0; // 0: Earth parking, 1: solar loop, 2: transfer burn, 3: coasting to Jupiter
+  craft.burn1Done = false; craft.burn2Done = false;
+  craft.trailMax = 2400;
+
+  // Clear trails
+  for(const b of bodies){ b.trail.length = 0; }
+  craft.trail.length = 0;
+}
+
+function draw(){
+  if(paused) return;
+  // === Physics step ===
+  stepPhysics(DT);
+
+  // === View transform: center on barycenter of the three bodies ===
+  const com = barycenter(bodies);
+  const maxR = maxDistFrom(com, bodies);
+  const fit = 0.44 * min(width, height) / (maxR + 40); // fit planets with margin
+  targetScale = constrain(fit, 0.35, 2.2);
+  viewScale = lerp(viewScale, targetScale, 0.08);
+
+  // === Render ===
+  background(220); // trails are re‑drawn every frame to persist and scale
+
+  push();
+  translate(width/2, height/2);
+  scale(viewScale);
+  translate(-com.x, -com.y);
+
+  // Trails (draw oldest with lowest alpha for depth)
+  for(const b of bodies){ drawTrail(b, 2.2); }
+  drawTrail(craft, 1.4, 160); // longer, darker trail for spacecraft
+
+  // Draw bodies
+  for(const b of bodies){
+    fill(b.col);
+    circle(b.pos.x, b.pos.y, b.radius*2);
+  }
+
+  // Draw spacecraft (dark body with faint halo)
+  fill(20,20,20, 230); circle(craft.pos.x, craft.pos.y, 6);
+  fill(60,60,60, 90);  circle(craft.pos.x, craft.pos.y, 11);
+
+  pop();
+
+  // HUD
+  const st = document.getElementById('status');
+  st.innerHTML = `t=${simTime.toFixed(1)}s · phase: ${craft.phase} ${craft.burn1Done? '· burn1✓':''} ${craft.burn2Done? '· burn2✓':''}`;
+}
+
+// ================================================================
+// Physics
+// ================================================================
+class Body{
+  constructor(name, mass, pos, vel, radius, col){
+    this.name = name; this.mass = mass;
+    this.pos = pos.copy();
+    this.vel = vel? vel.copy(): createVector(0,0);
+    this.acc = createVector(0,0);
+    this.radius = radius; this.col = col;
+    this.trail = []; this.trailMax = 1200;
+  }
+}
+
+class Craft{
+  constructor(mass){ this.mass = mass; this.pos = createVector(0,0); this.vel = createVector(0,0); this.acc = createVector(0,0); this.trail=[]; this.trailMax=1400; this.phase=0; }
+}
+
+function stepPhysics(dt){
+  // 1) compute accelerations at t
+  const accOld = computeAccelerations(bodies);
+  const accCraftOld = craftAccel(craft, bodies);
+
+  // 2) update positions
+  for(let i=0;i<bodies.length;i++){
+    const b = bodies[i];
+    b.pos.add(p5.Vector.add(p5.Vector.mult(b.vel, dt), p5.Vector.mult(accOld[i], 0.5*dt*dt)));
+  }
+  craft.pos.add(p5.Vector.add(p5.Vector.mult(craft.vel, dt), p5.Vector.mult(accCraftOld, 0.5*dt*dt)));
+
+  // 3) compute accelerations at t+dt
+  const accNew = computeAccelerations(bodies);
+  const accCraftNew = craftAccel(craft, bodies);
+
+  // 4) update velocities
+  for(let i=0;i<bodies.length;i++){
+    const b = bodies[i];
+    b.vel.add(p5.Vector.mult(p5.Vector.add(accOld[i], accNew[i]), 0.5*dt));
+    b.acc = accNew[i];
+  }
+  craft.vel.add(p5.Vector.mult(p5.Vector.add(accCraftOld, accCraftNew), 0.5*dt));
+  craft.acc = accCraftNew.copy();
+
+  simTime += dt;
+
+  // Spacecraft autopilot: two burns at set times (physically plausible impulses)
+  // Burn 1: depart Earth along current prograde to make a clear solar loop
+  if(simTime > 8 && !craft.burn1Done){
+    const vhat = craft.vel.copy().normalize();
+    craft.vel.add(p5.Vector.mult(vhat, 4.2)); // small prograde delta‑v
+    craft.burn1Done = true; craft.phase = 1;
+  }
+  // Burn 2: transfer toward Jupiter — aim toward current Jupiter position
+  if(simTime > 36 && !craft.burn2Done){
+    const J = bodies.find(b=>b.name==='Jupiter');
+    const dir = p5.Vector.sub(J.pos, craft.pos).normalize();
+    craft.vel.add(p5.Vector.mult(dir, 5.6));
+    craft.burn2Done = true; craft.phase = 2;
+  }
+  if(simTime > 36 && craft.burn2Done) craft.phase = 3;
+
+  // Append trail points (world space)
+  for(const b of bodies){
+    b.trail.push(b.pos.copy()); if(b.trail.length > b.trailMax) b.trail.shift();
+  }
+  craft.trail.push(craft.pos.copy()); if(craft.trail.length > craft.trailMax) craft.trail.shift();
+}
+
+function computeAccelerations(arr){
+  const acc = arr.map(()=> createVector(0,0));
+  for(let i=0;i<arr.length;i++){
+    for(let j=i+1;j<arr.length;j++){
+      const bi = arr[i], bj = arr[j];
+      const diff = p5.Vector.sub(bj.pos, bi.pos);
+      const r2 = diff.x*diff.x + diff.y*diff.y + EPS2; // softened distance^2
+      const invR3 = 1 / Math.pow(r2, 1.5);
+      const f = p5.Vector.mult(diff, G * invR3);
+      acc[i].add(p5.Vector.mult(f, bj.mass));
+      acc[j].sub(p5.Vector.mult(f, bi.mass));
+    }
+  }
+  return acc;
+}
+
+function craftAccel(c, arr){
+  const a = createVector(0,0);
+  for(const b of arr){
+    const d = p5.Vector.sub(b.pos, c.pos);
+    const r2 = d.x*d.x + d.y*d.y + EPS2;
+    a.add(p5.Vector.mult(d, G * b.mass / Math.pow(r2, 1.5)));
+  }
+  return a;
+}
+
+// Compute near‑circular orbital velocity vector around mass M at pos C, with multiplier k
+function orbitalVelocity(pos, center, M, k=1.0){
+  const r = p5.Vector.sub(pos, center);
+  const dist = Math.max(1, r.mag());
+  const speed = Math.sqrt(G * M / dist) * k; // k!=1 → deliberate non‑stable orbits
+  const tang = createVector(-r.y, r.x).normalize();
+  return p5.Vector.mult(tang, speed);
+}
+
+// Barycenter (COM) of massive bodies
+function barycenter(arr){
+  let msum = 0; let px=0, py=0;
+  for(const b of arr){ msum += b.mass; px += b.pos.x*b.mass; py += b.pos.y*b.mass; }
+  return createVector(px/msum, py/msum);
+}
+
+function maxDistFrom(c, arr){
+  let m = 0; for(const b of arr){ m = Math.max(m, p5.Vector.dist(c, b.pos)); } return m;
+}
+
+// Render trail as a string of soft dots with increasing alpha
+function drawTrail(entity, dotSize=2, maxAlpha=130){
+  const n = entity.trail.length;
+  for(let i=0;i<n;i++){
+    const p = entity.trail[i];
+    const t = i/(n-1 || 1);
+    const a = (t*t)*maxAlpha; // more opaque for newer points
+    if(entity === craft){ fill(20,20,20, a); }
+    else { const c = red(entity.col); const g = green(entity.col); const b = blue(entity.col); fill(c,g,b, a); }
+    circle(p.x, p.y, dotSize);
+  }
+}
+
+// Interactivity
+function keyPressed(){
+  if(key==='R' || key==='r') resetSystem();
+  if(key==='P' || key==='p') paused = !paused;
+}
+  </script>
+</body>
+</html>

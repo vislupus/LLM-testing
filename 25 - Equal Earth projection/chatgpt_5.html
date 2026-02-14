@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Equal Earth — Interactive SVG.js Map (Forward & Inverse Projection)</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body { margin:0; background:#0b0f14; color:#e6eef6; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    #app { position: absolute; inset: 0; }
+    #hud {
+      position: fixed; left: 10px; top: 10px;
+      background: rgba(14,18,24,.65); border: 1px solid rgba(255,255,255,.08);
+      padding: 10px 12px; border-radius: 12px; backdrop-filter: blur(6px);
+      font-size: 12.5px; line-height: 1.35; max-width: min(640px, 58vw);
+    }
+    #hud b { color: #fff }
+    .row { display:flex; gap:6px; align-items:center; margin:4px 0 }
+    .row label { min-width: 88px; opacity:.92 }
+    .row input[type="number"]{ width: 94px; background: rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius: 8px; color:#e6eef6; padding:4px 6px }
+    .row input[type="checkbox"]{ transform: translateY(1px); }
+    .row button{ background:#0e7c66; color:#fff; border:0; padding:6px 10px; border-radius:10px; font-weight:700; cursor:pointer }
+    .row button.secondary{ background:#334155 }
+    #readout{ margin-top:6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; color:#cfe4ff }
+    #credit { position:fixed; right:10px; bottom:10px; opacity:.65; font-size:12px }
+    a { color:#8bd5ff; text-decoration:none }
+  </style>
+  <!-- SVG.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3.2/dist/svg.min.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<div id="hud">
+  <div style="font-weight:700;color:#fff">Equal Earth — Interactive SVG Map</div>
+  <div>• <b>Mouse drag</b> pan · <b>Wheel</b> zoom (cursor‑centric) · <b>Click</b> to read lat/lon & drop marker</div>
+  <div class="row">
+    <label>Projection</label>
+    <label><input id="chkPersp" type="checkbox" checked> perspective‑style fit</label>
+    <label><input id="chkGrat" type="checkbox" checked> graticule</label>
+  </div>
+  <div class="row">
+    <label>Lon λ (°)</label><input id="lonIn" type="number" step="0.0001" value="-0.1278"> 
+    <label>Lat φ (°)</label><input id="latIn" type="number" step="0.0001" value="51.5074">
+    <button id="plotBtn">Plot</button>
+    <button id="clearBtn" class="secondary">Clear</button>
+  </div>
+  <div id="readout">Click map…</div>
+</div>
+<div id="credit">SVG.js · Equal Earth projection · © public domain formulas</div>
+<script>
+(function(){
+  // ---------------------------------------------------------------
+  // Equal Earth projection (spherical) — forward & inverse
+  // Formulation per published equations (A1..A4 constants).
+  // y(θ) = A1 θ + A2 θ^3 + A3 θ^7 + A4 θ^9
+  // x(λ,θ) = (2√3 λ cosθ) / (3 (A1 + 3A2 θ^2 + 7A3 θ^6 + 9A4 θ^8))
+  // with sinθ = (√3/2) sinφ
+  // Inverse: given (x,y) -> solve θ from polynomial via Newton, then
+  // φ = asin( (2/√3) sinθ ),  λ from x formula.
+  // ---------------------------------------------------------------
+  const A1=1.340264, A2=-0.081106, A3=0.000893, A4=0.003796;
+  const SQRT3=Math.sqrt(3);
+
+  function deg2rad(d){ return d*Math.PI/180; }
+  function rad2deg(r){ return r*180/Math.PI; }
+  function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+
+  function eeForward(lonDeg, latDeg){
+    const λ = deg2rad(lonDeg), φ = deg2rad(latDeg);
+    const sinθ = (SQRT3/2) * Math.sin(φ);
+    const θ = Math.asin(clamp(sinθ,-1,1));
+    const θ2 = θ*θ, θ6 = θ2*θ2*θ2, θ8=θ6*θ2;
+    const denom = A1 + 3*A2*θ2 + 7*A3*θ6 + 9*A4*θ8; // inside parentheses
+    const x = (2*SQRT3 * λ * Math.cos(θ)) / (3 * denom);
+    const y = A1*θ + A2*θ*θ2 + A3*θ*θ6 + A4*θ*θ8; // θ + θ^3 + θ^7 + θ^9 combo
+    return {x,y};
+  }
+
+  function eeInverse(x,y){
+    // Solve y = f(θ) for θ by Newton-Raphson
+    let θ = y; // good initial guess since f'(0)=A1 ~1.34
+    for (let it=0; it<12; it++){
+      const θ2=θ*θ, θ4=θ2*θ2, θ6=θ4*θ2, θ8=θ4*θ4;
+      const fy = A1*θ + A2*θ*θ2 + A3*θ*θ6 + A4*θ*θ8 - y;
+      const fdy = A1 + 3*A2*θ2 + 7*A3*θ6 + 9*A4*θ8;
+      const step = fy/fdy; θ -= step; if (Math.abs(step)<1e-12) break;
+    }
+    // φ from θ
+    const sinφ = clamp( (2/SQRT3)*Math.sin(θ), -1, 1 );
+    const φ = Math.asin(sinφ);
+    // λ from x
+    const θ2=θ*θ, θ6=θ2*θ2*θ2, θ8=θ6*θ2;
+    const denom = A1 + 3*A2*θ2 + 7*A3*θ6 + 9*A4*θ8;
+    const cosθ = Math.cos(θ);
+    let λ = (3 * x * denom) / (2*SQRT3 * (cosθ===0?1e-12:cosθ));
+    // wrap λ to [-π,π]
+    λ = ((λ + Math.PI) % (2*Math.PI)) - Math.PI;
+    return { lon: rad2deg(λ), lat: rad2deg(φ) };
+  }
+
+  // ---------------------------------------------------------------
+  // SVG.js scene & view transform
+  // ---------------------------------------------------------------
+  const app = SVG().addTo('#app').size('100%','100%');
+  const root = app.group(); // zoom+pan applied here
+  const oceans = root.group();
+  const grat = root.group();
+  const markers = root.group();
+
+  // World boundary path (outer shape of Equal Earth), for a nice ocean fill.
+  function buildWorldOutline(){
+    const ptsTop=[], ptsBottom=[], ptsL=[], ptsR=[];
+    // sample top/bottom edges at φ=±90°, varying λ; and vertical edges at λ=±180°
+    for (let lon=-180; lon<=180; lon+=1){ ptsTop.push(eeForward(lon,  90)); }
+    for (let lon=180; lon>=-180; lon-=1){ ptsBottom.push(eeForward(lon, -90)); }
+    for (let lat=90; lat>=-90; lat-=1){ ptsR.push(eeForward( 180, lat)); }
+    for (let lat=-90; lat<=90; lat+=1){ ptsL.push(eeForward(-180, lat)); }
+    const outline = [...ptsTop, ...ptsR, ...ptsBottom, ...ptsL];
+    const d = outline.map((p,i)=> (i? 'L':'M')+p.x+','+p.y ).join(' ') + ' Z';
+    oceans.clear();
+    oceans.path(d).fill('#0a2433').stroke({width:0});
+  }
+
+  // Graticule (meridians/parallels)
+  function buildGraticule(step=10){
+    grat.clear();
+    const meridianStroke = { color:'#2e4b5b', width:0.004, opacity:0.6 };
+    const parallelStroke = { color:'#2a3f4b', width:0.004, opacity:0.55 };
+    const fine = 1; // sampling step (deg) along a line
+    // Meridians
+    for (let lon=-180; lon<=180; lon+=step){
+      const seg=[]; for (let lat=-89.5; lat<=89.5; lat+=fine) seg.push(eeForward(lon, lat));
+      const d = seg.map((p,i)=> (i? 'L':'M')+p.x+','+p.y ).join(' ');
+      grat.path(d).fill('none').stroke(meridianStroke);
+    }
+    // Parallels
+    for (let lat=-80; lat<=80; lat+=step){
+      const seg=[]; for (let lon=-180; lon<=180; lon+=fine) seg.push(eeForward(lon, lat));
+      const d = seg.map((p,i)=> (i? 'L':'M')+p.x+','+p.y ).join(' ');
+      grat.path(d).fill('none').stroke(parallelStroke);
+    }
+    // Equator & Greenwich emphasized
+    const eq=[]; for (let lon=-180; lon<=180; lon+=fine) eq.push(eeForward(lon,0));
+    grat.path(eq.map((p,i)=>(i?'L':'M')+p.x+','+p.y).join(' ')).fill('none').stroke({color:'#86e1ff',width:0.007,opacity:0.85});
+    const gr=[]; for (let lat=-89.5; lat<=89.5; lat+=fine) gr.push(eeForward(0,lat));
+    grat.path(gr.map((p,i)=>(i?'L':'M')+p.x+','+p.y).join(' ')).fill('none').stroke({color:'#86e1ff',width:0.007,opacity:0.85});
+  }
+
+  // Initial world-fit: compute bounds by sampling
+  function computeBounds(){
+    let minx= 1e9, maxx=-1e9, miny=1e9, maxy=-1e9;
+    for (let lon=-180; lon<=180; lon+=5){
+      for (let lat=-90; lat<=90; lat+=5){ const p=eeForward(lon,lat); if (p.x<minx)minx=p.x; if (p.x>maxx)maxx=p.x; if (p.y<miny)miny=p.y; if (p.y>maxy)maxy=p.y; }
+    }
+    return { minx, maxx, miny, maxy };
+  }
+
+  // View transform (projection units → screen)
+  const view = { s:1, tx:0, ty:0 };
+  function applyView(){ root.transform({ scale: view.s, translateX: view.tx, translateY: view.ty }); }
+
+  function fitToScreen(){
+    const b = computeBounds();
+    const w = app.node.clientWidth, h = app.node.clientHeight;
+    const worldW = b.maxx - b.minx, worldH = b.maxy - b.miny;
+    // Add margin
+    const m = 0.06; // 6%
+    const sx = (w*(1-m)) / worldW; const sy = (h*(1-m)) / worldH;
+    view.s = Math.min(sx, sy);
+    // Center
+    view.tx = w/2 - view.s * (b.minx + worldW/2);
+    view.ty = h/2 - view.s * (b.miny + worldH/2);
+    applyView();
+  }
+
+  // Screen ↔ world conversion
+  function screenToWorld(px,py){ return { x: (px - view.tx)/view.s, y: (py - view.ty)/view.s }; }
+  function worldToScreen(x,y){ return { x: view.tx + view.s*x, y: view.ty + view.s*y }; }
+
+  // Zoom & pan handlers ----------------------------------------------
+  let isPanning=false, last={x:0,y:0};
+  app.on('mousedown', (e)=>{ isPanning=true; last={x:e.clientX, y:e.clientY}; });
+  window.addEventListener('mouseup', ()=>{ isPanning=false; });
+  window.addEventListener('mousemove', (e)=>{
+    if (!isPanning) return;
+    const dx=e.clientX-last.x, dy=e.clientY-last.y; last={x:e.clientX,y:e.clientY};
+    view.tx += dx; view.ty += dy; applyView();
+  });
+  app.on('wheel', (e)=>{
+    e.preventDefault();
+    const rect = app.node.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const before = screenToWorld(cx,cy);
+    const k = Math.pow(1.08, -Math.sign(e.deltaY)); // zoom in on wheel up
+    const ns = clamp(view.s * k, 0.5, 100);
+    view.s = ns;
+    const after = worldToScreen(before.x, before.y);
+    // keep point under cursor fixed
+    view.tx += (cx - after.x); view.ty += (cy - after.y);
+    applyView();
+  }, {passive:false});
+
+  // Inverse projection on click, drop marker
+  app.on('click', (e)=>{
+    if (isPanning) return; // avoid click while dragging
+    const rect = app.node.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const wpt = screenToWorld(cx, cy);
+    const geo = eeInverse(wpt.x, wpt.y);
+    addMarker(geo.lon, geo.lat);
+    setReadout(geo.lon, geo.lat, wpt.x, wpt.y);
+  });
+
+  function setReadout(lon, lat, x, y){
+    document.getElementById('readout').textContent = `lon λ = ${lon.toFixed(6)}°, lat φ = ${lat.toFixed(6)}°  |  x=${x.toFixed(5)}, y=${y.toFixed(5)}`;
+  }
+
+  // Markers -----------------------------------------------------------
+  function addMarker(lon, lat){
+    const p = eeForward(lon, lat);
+    const r = 0.02; // in projection units (scales with zoom)
+    markers.circle(r*2).center(p.x, p.y).fill('#ffd166').stroke({width:0.003, color:'#000', opacity:0.5}).attr({'vector-effect':'non-scaling-stroke'}).title(`${lon.toFixed(5)}, ${lat.toFixed(5)}`);
+  }
+  function clearMarkers(){ markers.clear(); }
+
+  // UI ----------------------------------------------------------------
+  function hookUI(){
+    const lonIn = document.getElementById('lonIn');
+    const latIn = document.getElementById('latIn');
+    document.getElementById('plotBtn').addEventListener('click', ()=>{
+      const lon = parseFloat(lonIn.value), lat = parseFloat(latIn.value);
+      if (isFinite(lon) && isFinite(lat)) { addMarker(lon,lat); const p=eeForward(lon,lat); setReadout(lon,lat,p.x,p.y); }
+    });
+    document.getElementById('clearBtn').addEventListener('click', clearMarkers);
+    document.getElementById('chkGrat').addEventListener('change', (e)=>{ grat.visible(e.target.checked); });
+    document.getElementById('chkPersp').addEventListener('change', (e)=>{ // cosmetic: adjust initial fit behavior
+      fitToScreen();
+    });
+  }
+
+  // Build scene -------------------------------------------------------
+  buildWorldOutline();
+  buildGraticule(10);
+  fitToScreen();
+  hookUI();
+
+  // Demonstration markers
+  [
+    {lon:-0.1278, lat:51.5074}, // London
+    {lon:2.3522, lat:48.8566},  // Paris
+    {lon:-74.0060, lat:40.7128}, // NYC
+    {lon:139.6917, lat:35.6895}, // Tokyo
+    {lon:151.2093, lat:-33.8688}, // Sydney
+  ].forEach(p=>addMarker(p.lon,p.lat));
+
+  // Resize handling
+  window.addEventListener('resize', fitToScreen);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>p5.js 2D Fluid Simulation — Stable Fluids + Vorticity</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body { margin: 0; background: #0b0d10; color: #cfd8dc; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    #ui { position: fixed; left: 12px; top: 10px; background: rgba(6,10,14,0.55); padding: 10px 12px; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; backdrop-filter: blur(6px); pointer-events: none; user-select: none; line-height: 1.38; font-size: 13px; max-width: min(600px, 46vw); }
+    #ui b { color: #fff; font-weight: 700; }
+    .kbd { display: inline-block; padding: 0 6px; border-radius: 7px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); color: #e3edf3; font-weight: 600; font-size: 12px; }
+    canvas { display:block; outline: none; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="ui"></div>
+  <script>
+    // ————————————————————————————————————————————————————————————————
+    // 2D Fluid Simulation (Navier–Stokes, Stable Fluids)
+    // Grid-based with semi-Lagrangian advection, Gauss–Seidel diffusion,
+    // projection for incompressibility, optional vorticity confinement,
+    // RGB dye fields, interactive injection, and simple obstacle.
+    // Rendered via a low-res buffer upscaled with a subtle post shader.
+    // ————————————————————————————————————————————————————————————————
+
+    let fluid, vis, fxShader;
+    let useFX = true, showVectors = false, showGrid = false, paused = false;
+    let canvas, uiEl;
+
+    // Interaction & parameters
+    let currentColor = [1.0, 0.35, 0.15]; // default ink (soft orange)
+    let brushRadius = 8;       // in grid cells
+    let forceMult  = 7.5;      // velocity injection multiplier
+    let dyeAmount  = 120.0;    // dye added per drag (scaled by dt)
+
+    // Physical params
+    let viscosity = 0.00008;   // kinematic viscosity (velocity diffusion)
+    let dyeDiff   = 0.00002;   // dye diffusion (color smoothing)
+    let vorticityOn = true;    // vortex confinement toggle
+    let vortEps   = 35.0;      // confinement strength
+
+    // Grid resolution presets (pixels per cell)
+    const cellSizeOptions = [10, 7, 5]; // Low/Med/High (smaller = more cells)
+    let resIndex = 1; // start Medium
+
+    // Prevent context menu for right-click gestures
+    window.addEventListener('contextmenu', e => e.preventDefault());
+
+    function computeGridForCanvas() {
+      const cell = cellSizeOptions[resIndex];
+      const nx = Math.max(16, Math.floor(windowWidth / cell));
+      const ny = Math.max(16, Math.floor(windowHeight / cell));
+      return { nx, ny };
+    }
+
+    function makeFluid() {
+      const { nx, ny } = computeGridForCanvas();
+      fluid = new Fluid(nx, ny, dyeDiff, viscosity);
+      // Visualization buffer (1:1 with fluid grid)
+      vis = createGraphics(nx, ny);
+      vis.pixelDensity(1);
+      vis.noStroke();
+      // Optional circular obstacle in the center (toggled with O)
+      fluid.setCircleObstacle(fluid.obstacleEnabled);
+    }
+
+    function preload() {
+      // Post shader (mild vignette + gamma + tiny glow)
+      const vert = `
+        precision mediump float;
+        attribute vec3 aPosition; attribute vec2 aTexCoord;
+        varying vec2 vTexCoord; uniform mat4 uModelViewMatrix; uniform mat4 uProjectionMatrix;
+        void main() { vTexCoord = aTexCoord; gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aPosition,1.0); }
+      `;
+      const frag = `
+        precision mediump float; varying vec2 vTexCoord;
+        uniform sampler2D tex0; uniform vec2 uTexel; uniform float uTime; uniform float uVignette; uniform float uGamma;
+        void main(){
+          vec4 c = texture2D(tex0, vTexCoord);
+          // Lightweight 5-tap soft glow on high values
+          float l = dot(c.rgb, vec3(0.299,0.587,0.114));
+          vec3 blur = texture2D(tex0, vTexCoord + vec2( uTexel.x, 0.0)).rgb
+                    + texture2D(tex0, vTexCoord + vec2(-uTexel.x, 0.0)).rgb
+                    + texture2D(tex0, vTexCoord + vec2(0.0,  uTexel.y)).rgb
+                    + texture2D(tex0, vTexCoord + vec2(0.0, -uTexel.y)).rgb;
+          blur = (blur * 0.25);
+          vec3 glow = mix(c.rgb, blur, 0.18) + 0.08 * smoothstep(0.6, 1.0, l) * c.rgb;
+          // Vignette
+          float d = distance(vTexCoord, vec2(0.5));
+          float vig = mix(1.0, smoothstep(0.85, 0.4, d), uVignette);
+          vec3 outCol = glow * vig;
+          // Gamma
+          outCol = pow(max(outCol, 0.0), vec3(1.0 / max(uGamma, 1e-3)));
+          gl_FragColor = vec4(outCol, 1.0);
+        }
+      `;
+      fxShader = new p5.Shader(this._renderer, vert, frag);
+    }
+
+    function setup() {
+      canvas = createCanvas(windowWidth, windowHeight, WEBGL);
+      pixelDensity(1);
+      noStroke();
+      makeFluid();
+      uiEl = document.getElementById('ui');
+      updateUI();
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+      makeFluid();
+    }
+
+    function draw() {
+      background('#05070a');
+
+      // Interaction: inject dye + velocity with left mouse (hold SHIFT = velocity only)
+      if (mouseIsPressed && mouseInCanvas()) {
+        const { i, j, di, dj } = mouseToGrid();
+        const addDye = !keyIsDown(SHIFT);
+        const mx = (mouseX - pmouseX); // in pixels
+        const my = (mouseY - pmouseY);
+        const { nx, ny } = fluid;
+        const vx = (mx / width)  * nx * forceMult;
+        const vy = (my / height) * ny * forceMult;
+        fluid.addVelocity(i, j, vx, vy, brushRadius);
+        if (addDye) fluid.addDye(i, j, currentColor[0], currentColor[1], currentColor[2], brushRadius, dyeAmount);
+      }
+
+      const dt = constrain(deltaTime / 1000, 0.005, 0.033); // 5–33 ms
+      if (!paused) fluid.step(dt);
+
+      // Write RGB density into the visual buffer
+      vis.loadPixels();
+      const p = vis.pixels;
+      const nx = fluid.nx, ny = fluid.ny;
+      let idx = 0, k;
+      for (let y = 1; y <= ny; y++) {
+        for (let x = 1; x <= nx; x++) {
+          k = fluid.ix(x, y);
+          // Soft tonemapping + clamping
+          let r = fluid.r[k], g = fluid.g[k], b = fluid.b[k];
+          // Subtle desaturation for realism (prevents neon blowouts)
+          const m = max3(r, g, b);
+          if (m > 1.0) { r /= m; g /= m; b /= m; }
+          r = Math.max(0, Math.min(1, r));
+          g = Math.max(0, Math.min(1, g));
+          b = Math.max(0, Math.min(1, b));
+          p[idx++] = (r * 255)|0; // R
+          p[idx++] = (g * 255)|0; // G
+          p[idx++] = (b * 255)|0; // B
+          p[idx++] = 255;         // A
+        }
+      }
+      vis.updatePixels();
+
+      // Post shader upscale to screen
+      if (useFX) {
+        shader(fxShader);
+        fxShader.setUniform('tex0', vis);
+        fxShader.setUniform('uTexel', [1.0 / vis.width, 1.0 / vis.height]);
+        fxShader.setUniform('uTime', millis() * 0.001);
+        fxShader.setUniform('uVignette', 0.55);
+        fxShader.setUniform('uGamma', 2.2);
+        rectMode(CENTER);
+        // full-bleed quad
+        rect(0, 0, width, height);
+        resetShader();
+      } else {
+        // Simple upscale without shader
+        push();
+        translate(-width/2, -height/2);
+        image(vis, 0, 0, width, height);
+        pop();
+      }
+
+      // Overlays: vectors / grid / obstacle outline
+      push();
+      translate(-width/2, -height/2);
+      if (showGrid) drawGridOverlay();
+      if (showVectors) drawVelocityField();
+      drawObstacleOutline();
+      pop();
+
+      // HUD
+      if (frameCount % 2 === 0) updateUI();
+    }
+
+    function drawGridOverlay() {
+      const sX = width  / fluid.nx;
+      const sY = height / fluid.ny;
+      stroke(255, 26); strokeWeight(1);
+      for (let x = 0; x <= fluid.nx; x += 8) line(x*sX, 0, x*sX, height);
+      for (let y = 0; y <= fluid.ny; y += 8) line(0, y*sY, width, y*sY);
+      noStroke();
+    }
+
+    function drawVelocityField() {
+      const nx = fluid.nx, ny = fluid.ny;
+      const sX = width / nx, sY = height / ny;
+      stroke(255, 140); strokeWeight(1);
+      const skip = 6;
+      for (let j = skip; j <= ny - skip; j += skip) {
+        for (let i = skip; i <= nx - skip; i += skip) {
+          const k = fluid.ix(i, j);
+          const u = fluid.u[k], v = fluid.v[k];
+          const x = (i - 0.5) * sX, y = (j - 0.5) * sY;
+          line(x, y, x + u * 3.0, y + v * 3.0);
+        }
+      }
+      noStroke();
+    }
+
+    function drawObstacleOutline() {
+      if (!fluid.obstacleEnabled) return;
+      const sX = width / fluid.nx, sY = height / fluid.ny;
+      const cx = (fluid.obsCx - 0.5) * sX; const cy = (fluid.obsCy - 0.5) * sY;
+      const r = fluid.obsR * ((sX + sY) * 0.5);
+      noFill(); stroke('#9ad1ff'); strokeWeight(2);
+      circle(cx, cy, r*2);
+      noStroke();
+    }
+
+    function mouseInCanvas() {
+      return mouseX >= 0 && mouseX < width && mouseY >= 0 && mouseY < height;
+    }
+
+    function mouseToGrid() {
+      const nx = fluid.nx, ny = fluid.ny;
+      const gx = Math.floor((mouseX / width)  * nx) + 1; // 1..nx
+      const gy = Math.floor((mouseY / height) * ny) + 1; // 1..ny
+      const i = Math.max(1, Math.min(nx, gx));
+      const j = Math.max(1, Math.min(ny, gy));
+      const di = (mouseX - pmouseX) / width * nx;
+      const dj = (mouseY - pmouseY) / height * ny;
+      return { i, j, di, dj };
+    }
+
+    function updateUI() {
+      const fps = (frameRate() || 0).toFixed(0);
+      const resLut = ['Low', 'Medium', 'High'];
+      const colHex = rgbToHex(currentColor[0], currentColor[1], currentColor[2]);
+      uiEl.innerHTML = `
+        <div><b>2D Fluid (Stable Fluids)</b> — ${fps} FPS</div>
+        <div>Grid: <b>${fluid.nx}×${fluid.ny}</b> (${resLut[resIndex]}) · Viscosity <b>${viscosity.toExponential(1)}</b> · DyeDiff <b>${dyeDiff.toExponential(1)}</b></div>
+        <div>Vorticity: <b>${vorticityOn ? 'On' : 'Off'}</b> (ε=${vortEps.toFixed(0)}) · FX Shader: <b>${useFX?'On':'Off'}</b> · Obstacle: <b>${fluid.obstacleEnabled ? 'On' : 'Off'}</b></div>
+        <div>Brush: <b>${brushRadius}</b> cells · Force: <b>${forceMult.toFixed(1)}</b> · Color: <span class="kbd" style="background:${colHex}; color:#000; border-color:#000;">&nbsp;&nbsp;</span></div>
+        <div style="margin-top:6px; opacity:.95">Mouse drag = inject velocity ${'<span style="opacity:.8">+ dye</span>'}. Hold <span class="kbd">Shift</span> for velocity-only.</div>
+        <div style="margin-top:6px">
+          <span class="kbd">1..7</span> colors · <span class="kbd">V</span> vorticity · <span class="kbd">O</span> obstacle · <span class="kbd">B</span> FX · <span class="kbd">X</span> vectors · <span class="kbd">G</span> grid · <span class="kbd">H</span> resolution · <span class="kbd">P</span> pause
+        </div>
+        <div>
+          <span class="kbd">+</span>/<span class="kbd">-</span> viscosity · <span class="kbd">[</span>/<span class="kbd">]</span> dye diff · <span class="kbd">;</span>/<span class="kbd">'</span> vortex ε · <span class="kbd">C</span> clear dye · <span class="kbd">R</span> reset · <span class="kbd">S</span> save PNG
+        </div>
+      `;
+    }
+
+    function keyPressed() {
+      // Colors: 1..7
+      const colors = {
+        '1':[1.00,0.35,0.15], // orange
+        '2':[0.35,0.85,1.00], // sky
+        '3':[0.30,1.00,0.40], // green
+        '4':[1.00,0.95,0.30], // yellow
+        '5':[1.00,0.30,0.80], // magenta
+        '6':[0.35,0.50,1.00], // violet-blue
+        '7':[1.00,1.00,1.00]  // white
+      };
+      if (colors[key]) currentColor = colors[key];
+
+      if (key === 'V' || key === 'v') { vorticityOn = !vorticityOn; fluid.vorticityOn = vorticityOn; }
+      if (key === 'B' || key === 'b') { useFX = !useFX; }
+      if (key === 'X' || key === 'x') { showVectors = !showVectors; }
+      if (key === 'G' || key === 'g') { showGrid = !showGrid; }
+      if (key === 'P' || key === 'p') { paused = !paused; }
+      if (key === 'H' || key === 'h') { resIndex = (resIndex + 1) % cellSizeOptions.length; makeFluid(); }
+      if (key === 'O' || key === 'o') { fluid.obstacleEnabled = !fluid.obstacleEnabled; fluid.setCircleObstacle(fluid.obstacleEnabled); }
+      if (key === 'C' || key === 'c') { fluid.clearDye(); }
+      if (key === 'R' || key === 'r') { fluid.reset(); }
+      if (key === 'S' || key === 's') { saveCanvas('fluid-sim', 'png'); }
+
+      if (key === '+') { viscosity *= 1.5; fluid.visc = viscosity; }
+      if (key === '-') { viscosity /= 1.5; fluid.visc = viscosity; }
+      if (key === '[') { dyeDiff /= 1.5; fluid.diff = dyeDiff; }
+      if (key === ']') { dyeDiff *= 1.5; fluid.diff = dyeDiff; }
+      if (key === ';') { vortEps = Math.max(0.0, vortEps - 4.0); fluid.vortEps = vortEps; }
+      if (key === "'") { vortEps = Math.min(120.0, vortEps + 4.0); fluid.vortEps = vortEps; }
+      updateUI();
+    }
+
+    function max3(a,b,c){ return a > b ? (a > c ? a : c) : (b > c ? b : c); }
+    function rgbToHex(r,g,b){
+      const R = (Math.round(r*255)).toString(16).padStart(2,'0');
+      const G = (Math.round(g*255)).toString(16).padStart(2,'0');
+      const B = (Math.round(b*255)).toString(16).padStart(2,'0');
+      return `#${R}${G}${B}`;
+    }
+
+    // ——————————————————————————————————————
+    // Fluid core (Stable Fluids)
+    // ——————————————————————————————————————
+    class Fluid {
+      constructor(nx, ny, diff, visc) {
+        this.nx = nx; this.ny = ny;
+        this.size = (nx + 2) * (ny + 2);
+        // Scalars (RGB dye)
+        this.r = new Float32Array(this.size);
+        this.g = new Float32Array(this.size);
+        this.b = new Float32Array(this.size);
+        this.r0 = new Float32Array(this.size);
+        this.g0 = new Float32Array(this.size);
+        this.b0 = new Float32Array(this.size);
+        // Velocity
+        this.u = new Float32Array(this.size);
+        this.v = new Float32Array(this.size);
+        this.u0 = new Float32Array(this.size);
+        this.v0 = new Float32Array(this.size);
+        // Temp arrays for projection
+        this.p  = new Float32Array(this.size);
+        this.div= new Float32Array(this.size);
+        // Obstacle mask
+        this.obs = new Uint8Array(this.size);
+        this.obstacleEnabled = true;
+        this.obsCx = Math.floor((nx+1)/2); this.obsCy = Math.floor((ny+1)/2);
+        this.obsR  = Math.floor(0.18 * Math.min(nx, ny));
+        // Params
+        this.diff = diff; this.visc = visc;
+        this.vorticityOn = vorticityOn;
+        this.vortEps = vortEps;
+      }
+
+      ix(i, j) { return i + (this.nx + 2) * j; } // 1..nx, 1..ny in interior
+
+      clearDye() { this.r.fill(0); this.g.fill(0); this.b.fill(0); }
+      reset() { this.r.fill(0); this.g.fill(0); this.b.fill(0); this.u.fill(0); this.v.fill(0); this.u0.fill(0); this.v0.fill(0); }
+
+      setCircleObstacle(enable=true) {
+        this.obs.fill(0);
+        if (!enable) return;
+        const cx = this.obsCx, cy = this.obsCy, R2 = this.obsR*this.obsR;
+        for (let j=1;j<=this.ny;j++) {
+          for (let i=1;i<=this.nx;i++) {
+            const dx = i - cx, dy = j - cy; if (dx*dx + dy*dy <= R2) this.obs[this.ix(i,j)] = 1;
+          }
+        }
+      }
+
+      addDye(i, j, rr, gg, bb, rad, amount) {
+        const nx = this.nx, ny = this.ny; const R2 = rad*rad;
+        for (let y = -rad; y <= rad; y++) {
+          const jy = j + y; if (jy < 1 || jy > ny) continue;
+          for (let x = -rad; x <= rad; x++) {
+            const ix_ = i + x; if (ix_ < 1 || ix_ > nx) continue;
+            if (x*x + y*y > R2) continue;
+            const k = this.ix(ix_, jy);
+            if (this.obs[k]) continue;
+            this.r0[k] += rr * amount;
+            this.g0[k] += gg * amount;
+            this.b0[k] += bb * amount;
+          }
+        }
+      }
+
+      addVelocity(i, j, u, v, rad) {
+        const nx = this.nx, ny = this.ny; const R2 = rad*rad;
+        for (let y = -rad; y <= rad; y++) {
+          const jy = j + y; if (jy < 1 || jy > ny) continue;
+          for (let x = -rad; x <= rad; x++) {
+            const ix_ = i + x; if (ix_ < 1 || ix_ > nx) continue;
+            if (x*x + y*y > R2) continue;
+            const k = this.ix(ix_, jy);
+            if (this.obs[k]) continue;
+            this.u0[k] += u; this.v0[k] += v;
+          }
+        }
+      }
+
+      step(dt) {
+        const nx = this.nx, ny = this.ny;
+        // Velocity step
+        this.addSource(this.u, this.u0, dt); this.addSource(this.v, this.v0, dt);
+        if (this.vorticityOn && this.vortEps > 0) this.applyVorticityConfinement(dt);
+        this.swap('u', 'u0'); this.diffuse(1, this.u, this.u0, this.visc, dt);
+        this.swap('v', 'v0'); this.diffuse(2, this.v, this.v0, this.visc, dt);
+        this.project(this.u, this.v, this.p, this.div);
+        this.swap('u', 'u0'); this.swap('v', 'v0');
+        this.advect(1, this.u, this.u0, this.u0, this.v0, dt);
+        this.advect(2, this.v, this.v0, this.u0, this.v0, dt);
+        this.project(this.u, this.v, this.p, this.div);
+        // Enforce obstacle no-slip
+        if (this.obstacleEnabled) {
+          for (let j=1;j<=ny;j++) {
+            for (let i=1;i<=nx;i++) {
+              const k = this.ix(i,j); if (this.obs[k]) { this.u[k]=0; this.v[k]=0; }
+            }
+          }
+        }
+        // Dye step (RGB)
+        this.addSource(this.r, this.r0, dt); this.addSource(this.g, this.g0, dt); this.addSource(this.b, this.b0, dt);
+        this.swap('r','r0'); this.diffuse(0, this.r, this.r0, this.diff, dt);
+        this.swap('g','g0'); this.diffuse(0, this.g, this.g0, this.diff, dt);
+        this.swap('b','b0'); this.diffuse(0, this.b, this.b0, this.diff, dt);
+        this.swap('r','r0'); this.advect(0, this.r, this.r0, this.u, this.v, dt);
+        this.swap('g','g0'); this.advect(0, this.g, this.g0, this.u, this.v, dt);
+        this.swap('b','b0'); this.advect(0, this.b, this.b0, this.u, this.v, dt);
+        // Clear dye inside obstacle
+        if (this.obstacleEnabled) {
+          for (let j=1;j<=ny;j++) {
+            for (let i=1;i<=nx;i++) {
+              const k = this.ix(i,j); if (this.obs[k]) { this.r[k]=this.g[k]=this.b[k]=0; }
+            }
+          }
+        }
+      }
+
+      addSource(x, s, dt) {
+        const N = this.size; for (let i=0;i<N;i++) { x[i] += dt * s[i]; s[i] = 0; }
+      }
+
+      diffuse(b, x, x0, diff, dt) {
+        const nx = this.nx, ny = this.ny;
+        const a = dt * diff * nx * ny;
+        this.linearSolve(b, x, x0, a, 1 + 4*a);
+      }
+
+      advect(b, d, d0, u, v, dt) {
+        const nx = this.nx, ny = this.ny;
+        const N = Math.max(nx, ny);
+        for (let j=1;j<=ny;j++) {
+          for (let i=1;i<=nx;i++) {
+            let x = i - dt * N * u[this.ix(i,j)];
+            let y = j - dt * N * v[this.ix(i,j)];
+            if (x < 0.5) x = 0.5; if (x > nx + 0.5) x = nx + 0.5;
+            if (y < 0.5) y = 0.5; if (y > ny + 0.5) y = ny + 0.5;
+            const i0 = x|0, i1 = i0 + 1;
+            const j0 = y|0, j1 = j0 + 1;
+            const s1 = x - i0, s0 = 1 - s1;
+            const t1 = y - j0, t0 = 1 - t1;
+            const k = this.ix(i,j);
+            d[k] = s0*(t0*d0[this.ix(i0,j0)] + t1*d0[this.ix(i0,j1)]) + s1*(t0*d0[this.ix(i1,j0)] + t1*d0[this.ix(i1,j1)]);
+          }
+        }
+        this.set_bnd(b, d);
+      }
+
+      project(u, v, p, div) {
+        const nx = this.nx, ny = this.ny;
+        const N = Math.max(nx, ny);
+        for (let j=1;j<=ny;j++) {
+          for (let i=1;i<=nx;i++) {
+            const k = this.ix(i,j);
+            // zero divergence inside obstacles
+            const rhs = -0.5 * ( (u[this.ix(i+1,j)] - u[this.ix(i-1,j)]) + (v[this.ix(i,j+1)] - v[this.ix(i,j-1)]) ) / N;
+            div[k] = this.obs[k] ? 0.0 : rhs;
+            p[k] = 0.0;
+          }
+        }
+        this.set_bnd(0, div); this.set_bnd(0, p);
+        this.linearSolve(0, p, div, 1, 4);
+        for (let j=1;j<=ny;j++) {
+          for (let i=1;i<=nx;i++) {
+            const k = this.ix(i,j);
+            u[k] -= 0.5 * N * (p[this.ix(i+1,j)] - p[this.ix(i-1,j)]);
+            v[k] -= 0.5 * N * (p[this.ix(i,j+1)] - p[this.ix(i,j-1)]);
+            if (this.obs[k]) { u[k]=0; v[k]=0; }
+          }
+        }
+        this.set_bnd(1, u); this.set_bnd(2, v);
+      }
+
+      linearSolve(b, x, x0, a, c) {
+        const nx = this.nx, ny = this.ny;
+        for (let it=0; it<20; it++) {
+          for (let j=1;j<=ny;j++) {
+            for (let i=1;i<=nx;i++) {
+              const k = this.ix(i,j);
+              let sum = x[this.ix(i-1,j)] + x[this.ix(i+1,j)] + x[this.ix(i,j-1)] + x[this.ix(i,j+1)];
+              x[k] = (x0[k] + a * sum) / c;
+              if (this.obs[k]) x[k] = 0; // keep obstacles solid
+            }
+          }
+          this.set_bnd(b, x);
+        }
+      }
+
+      set_bnd(b, x) {
+        const nx = this.nx, ny = this.ny;
+        for (let i=1;i<=nx;i++) {
+          x[this.ix(i,0)]     = (b===2 ? -x[this.ix(i,1)]    : x[this.ix(i,1)]);
+          x[this.ix(i,ny+1)]  = (b===2 ? -x[this.ix(i,ny)]   : x[this.ix(i,ny)]);
+        }
+        for (let j=1;j<=ny;j++) {
+          x[this.ix(0,j)]     = (b===1 ? -x[this.ix(1,j)]    : x[this.ix(1,j)]);
+          x[this.ix(nx+1,j)]  = (b===1 ? -x[this.ix(nx,j)]   : x[this.ix(nx,j)]);
+        }
+        x[this.ix(0,0)]           = 0.5*(x[this.ix(1,0)]+x[this.ix(0,1)]);
+        x[this.ix(0,ny+1)]        = 0.5*(x[this.ix(1,ny+1)]+x[this.ix(0,ny)]);
+        x[this.ix(nx+1,0)]        = 0.5*(x[this.ix(nx,0)]+x[this.ix(nx+1,1)]);
+        x[this.ix(nx+1,ny+1)]     = 0.5*(x[this.ix(nx,ny+1)]+x[this.ix(nx+1,ny)]);
+        // Obstacle interior: zero content for scalars and no-slip for velocities
+        for (let j=1;j<=ny;j++) {
+          for (let i=1;i<=nx;i++) {
+            const k = this.ix(i,j);
+            if (!this.obs[k]) continue;
+            if (b===0) x[k] = 0; // absorb dye inside obstacle
+            else x[k] = 0;       // velocities zero inside obstacle
+          }
+        }
+      }
+
+      applyVorticityConfinement(dt) {
+        const nx = this.nx, ny = this.ny; const N = Math.max(nx, ny);
+        // Reuse r0 as curl magnitude temporarily to reduce allocations
+        const curl = this.r0; // temp: stores scalar curl at each cell
+        for (let j=1;j<=ny;j++) {
+          for (let i=1;i<=nx;i++) {
+            const k = this.ix(i,j);
+            const dw_dy = (this.u[this.ix(i,j+1)] - this.u[this.ix(i,j-1)]) * 0.5;
+            const dv_dx = (this.v[this.ix(i+1,j)] - this.v[this.ix(i-1,j)]) * 0.5;
+            // 2D curl (z-component): w = dv/dx - du/dy
+            curl[k] = (dv_dx - dw_dy);
+          }
+        }
+        // Force is epsilon * (N * (Nabla |curl| / |Nabla |curl||)) x k_hat * curl
+        for (let j=2;j<=ny-1;j++) {
+          for (let i=2;i<=nx-1;i++) {
+            const k = this.ix(i,j);
+            if (this.obs[k]) continue;
+            const Nx = Math.abs(curl[this.ix(i+1,j)]) - Math.abs(curl[this.ix(i-1,j)]);
+            const Ny = Math.abs(curl[this.ix(i,j+1)]) - Math.abs(curl[this.ix(i,j-1)]);
+            let mag = Math.hypot(Nx, Ny);
+            if (mag < 1e-6) continue;
+            const nxN = Nx / mag, nyN = Ny / mag;
+            const eps = this.vortEps; // strength
+            // Perpendicular to gradient, scaled by curl sign
+            let Fx =  nyN * curl[k];
+            let Fy = -nxN * curl[k];
+            // Scale by grid and dt
+            this.u[k] += (eps * dt) * Fx;
+            this.v[k] += (eps * dt) * Fy;
+          }
+        }
+        // Boundaries will be enforced in subsequent steps
+      }
+
+      swap(a, b) {
+        const tmp = this[a]; this[a] = this[b]; this[b] = tmp;
+      }
+    }
+
+  </script>
+</body>
+</html>

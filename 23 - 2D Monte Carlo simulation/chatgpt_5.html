@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>p5.js — Monte Carlo Evolutionary Ecosystem</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body { margin: 0; background: #0b0f14; color: #e6eef6; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    canvas { display:block; }
+    #hud{position:fixed;left:10px;top:10px;background:rgba(14,18,24,.6);border:1px solid rgba(255,255,255,.08);padding:10px 12px;border-radius:12px;backdrop-filter: blur(6px);font-size:13px;line-height:1.35;max-width:min(760px,54vw)}
+    #hud b{color:#fff}
+    .kbd{display:inline-block; padding:0 6px; border-radius:7px; border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.06); font-weight:700; font-size:12px}
+    #panel{position:fixed;right:12px;top:12px;width:300px;max-width:44vw;background:rgba(15,18,25,.7);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:12px;backdrop-filter:blur(8px)}
+    #panel h3{margin:4px 0 10px 0;font-size:14px;color:#fff}
+    #panel .row{display:flex;align-items:center;gap:8px;margin:6px 0}
+    #panel label{flex: 0 0 160px; font-size:12px; opacity:.9}
+    #panel input[type=range]{flex:1}
+    #panel input[type=number]{width:84px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:8px;color:#e6eef6;padding:4px 6px}
+    #panel button{margin-top:6px;background:#0e7c66;color:#fff;border:0;padding:8px 10px;border-radius:10px;font-weight:700;cursor:pointer}
+    #panel button.secondary{background:#334155}
+    #panel small{display:block;color:#b8c8d9;opacity:.9}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="hud"></div>
+  <div id="panel">
+    <h3>Monte Carlo Ecosystem Controls</h3>
+    <div class="row"><label>Mutation rate</label><input id="mut" type="range" min="0" max="0.2" step="0.002" value="0.02"><span id="mutV">0.02</span></div>
+    <div class="row"><label>Plant carrying capacity K</label><input id="cap" type="range" min="0.2" max="4" step="0.05" value="1.2"><span id="capV">1.2</span></div>
+    <div class="row"><label>Plant growth rate r</label><input id="grow" type="range" min="0.0" max="0.15" step="0.005" value="0.025"><span id="growV">0.025</span></div>
+    <div class="row"><label>Herbivore bite gain</label><input id="hGain" type="range" min="0.2" max="3" step="0.05" value="1.1"><span id="hGainV">1.1</span></div>
+    <div class="row"><label>Predator attack prob</label><input id="pAtk" type="range" min="0.05" max="0.9" step="0.01" value="0.35"><span id="pAtkV">0.35</span></div>
+    <div class="row"><label>Move cost factor</label><input id="mCost" type="range" min="0" max="0.08" step="0.002" value="0.02"><span id="mCostV">0.02</span></div>
+    <div class="row"><label>Steps per frame</label><input id="spf" type="range" min="1" max="5" step="1" value="2"><span id="spfV">2</span></div>
+    <div class="row"><label>Initial herbivores</label><input id="h0" type="number" min="0" max="6000" step="50" value="900"></div>
+    <div class="row"><label>Initial predators</label><input id="p0" type="number" min="0" max="4000" step="25" value="250"></div>
+    <div class="row"><label>Trait render</label><input id="traitMode" type="range" min="0" max="2" step="1" value="0"><span id="traitV">speed</span></div>
+    <div class="row"><button id="resetBtn">Reset world</button> <button class="secondary" id="pauseBtn">Pause</button></div>
+    <small>Tips: drag to pan view? Not needed — world wraps. Hold <b>Shift</b> to slow-mo, <b>Space</b> to pause, <b>S</b> to save PNG. Use <b>Z/X</b> for mutation -, +.</small>
+  </div>
+
+  <script>
+    // --------------------------------------------------------------
+    // Monte Carlo adaptive ecosystem
+    // Grid plants (biomass); agents: herbivores & predators with traits:
+    // speed, vision, reproduction rate. Stochastic birth, death, move,
+    // feeding, mutation. World wraps. Plots + HUD.
+    // --------------------------------------------------------------
+
+    // Layout -----------------------------------------------------------
+    const plotW = 320; // right-side plot area inside canvas
+    let simW, simH, cols, rows, cellSize;
+
+    // Plant field ------------------------------------------------------
+    let plant; // Float32Array size cols*rows
+
+    // Agents -----------------------------------------------------------
+    let herbs = []; // list of herb objects
+    let preds = []; // list of predator objects
+
+    // Cell occupancy (rebuilt each step)
+    let occH, occP; // arrays of arrays
+
+    // Parameters -------------------------------------------------------
+    const params = {
+      K: 1.2,              // carrying capacity (plant biomass per cell)
+      r: 0.025,            // plant logistic growth rate per tick
+      mutation: 0.02,      // gaussian mutation std fraction
+      herbGain: 1.1,       // energy gain per unit biomass eaten
+      predAttack: 0.35,    // probability to catch when predator meets herb
+      moveCost: 0.02,      // base movement cost multiplier
+      stepsPerFrame: 2,
+      // Default trait ranges
+      speedMin: 0.8, speedMax: 3.2, // steps per tick
+      visionMin: 1, visionMax: 8,   // cells
+      reproMin: 0.02, reproMax: 0.25,
+      // Energetics
+      herbStartE: 2.2, herbMetab: 0.03, bite: 0.22, reproE_H: 4.0,
+      predStartE: 3.0, predMetab: 0.05, eatGain: 2.6, reproE_P: 6.0,
+      baseMort: 0.0006,
+    };
+
+    // Stats ------------------------------------------------------------
+    const historyLen = 600;
+    const hist = {
+      herbs: [], preds: [], biomass: [],
+      hSpeed: [], hVision: [], hRepro: [],
+      pSpeed: [], pVision: [], pRepro: [],
+    };
+
+    // UI hooks ---------------------------------------------------------
+    const ui = {};
+
+    // Helpers ----------------------------------------------------------
+    function clamp(x,a,b){ return x<a?a:(x>b?b:x); }
+    function rnd(){ return Math.random(); }
+    function randInt(a,b){ return (a + Math.floor(Math.random()*(b-a+1))); }
+    function gauss(){ // Box-Muller
+      let u=0,v=0; while(u===0)u=Math.random(); while(v===0)v=Math.random();
+      return Math.sqrt(-2.0*Math.log(u))*Math.cos(2.0*Math.PI*v);
+    }
+    function mutate(val, min, max){
+      const m = params.mutation; const span = (max-min);
+      const nv = val + gauss()*m*span*0.15; // scale mutation
+      return clamp(nv, min, max);
+    }
+
+    function idx(i,j){ return i + cols*j; }
+
+    function computeGrid(){
+      const cell = 6; // px per cell base; will compute cols/rows based on canvas
+      cellSize = cell;
+      cols = Math.max(80, Math.floor((windowWidth - plotW - 10) / cellSize));
+      rows = Math.max(60, Math.floor(windowHeight / cellSize));
+      simW = cols*cellSize; simH = rows*cellSize;
+    }
+
+    function allocGrids(){
+      plant = new Float32Array(cols*rows);
+      occH = new Array(cols*rows); occP = new Array(cols*rows);
+      for (let i=0;i<cols*rows;i++){ occH[i]=[]; occP[i]=[]; }
+    }
+
+    function seedWorld(hCount=900, pCount=250){
+      // plants
+      for (let k=0;k<cols*rows;k++) plant[k] = params.K*0.5*(0.9 + 0.2*rnd());
+      // agents
+      herbs = []; preds = [];
+      for (let i=0;i<hCount;i++) herbs.push(makeHerb());
+      for (let i=0;i<pCount;i++) preds.push(makePred());
+      clearHistory();
+    }
+
+    function makeHerb(){
+      return {
+        x: randInt(0, cols-1), y: randInt(0, rows-1),
+        e: params.herbStartE,
+        speed: params.speedMin + rnd()*(params.speedMax-params.speedMin),
+        vision: randInt(params.visionMin, params.visionMin+2),
+        repro: params.reproMin + rnd()*(params.reproMax-params.reproMin),
+        dead: false
+      };
+    }
+    function makePred(){
+      return {
+        x: randInt(0, cols-1), y: randInt(0, rows-1),
+        e: params.predStartE,
+        speed: params.speedMin + rnd()*(params.speedMax-params.speedMin),
+        vision: randInt(params.visionMin+1, params.visionMax),
+        repro: params.reproMin + rnd()*(params.reproMax-params.reproMin),
+        dead: false
+      };
+    }
+
+    function wrapX(x){ if (x<0) x+=cols; if (x>=cols) x-=cols; return x; }
+    function wrapY(y){ if (y<0) y+=rows; if (y>=rows) y-=rows; return y; }
+
+    // Occupancy rebuild -----------------------------------------------
+    function rebuildOccupancy(){
+      for (let k=0;k<cols*rows;k++){ occH[k].length=0; occP[k].length=0; }
+      for (let i=0;i<herbs.length;i++){ const h=herbs[i]; occH[idx(h.x,h.y)].push(i); }
+      for (let i=0;i<preds.length;i++){ const p=preds[i]; occP[idx(p.x,p.y)].push(i); }
+    }
+
+    // Plant growth (logistic) -----------------------------------------
+    function growPlants(){
+      const K=params.K, r=params.r;
+      for (let j=0;j<rows;j++){
+        for (let i=0;i<cols;i++){
+          const k=idx(i,j); const b=plant[k];
+          // dB = r*B*(1 - B/K) + small noise
+          const d = r*b*(1 - b/Math.max(1e-6,K));
+          plant[k] = clamp(b + d, 0, K);
+        }
+      }
+    }
+
+    // Local search helpers --------------------------------------------
+    function bestPlantDir(x,y,rad){
+      let bx=0, by=0, best=0;
+      for (let dy=-rad; dy<=rad; dy++){
+        for (let dx=-rad; dx<=rad; dx++){
+          if (dx===0 && dy===0) continue;
+          const xi=wrapX(x+dx), yj=wrapY(y+dy);
+          const b = plant[idx(xi,yj)];
+          if (b>best){ best=b; bx=Math.sign(dx); by=Math.sign(dy); }
+        }
+      }
+      return {bx,by,best};
+    }
+
+    function nearestHerbDir(x,y,rad){
+      let bx=0, by=0, best=1e9; let found=false;
+      for (let dy=-rad; dy<=rad; dy++){
+        for (let dx=-rad; dx<=rad; dx++){
+          if (dx===0 && dy===0) continue;
+          const xi=wrapX(x+dx), yj=wrapY(y+dy);
+          const arr = occH[idx(xi,yj)];
+          if (arr.length>0){ const d=Math.abs(dx)+Math.abs(dy); if (d<best){ best=d; bx=Math.sign(dx); by=Math.sign(dy); found=true; } }
+        }
+      }
+      return {bx,by,found};
+    }
+
+    // Agent steps (Monte Carlo) ---------------------------------------
+    function stepHerb(h){
+      if (h.dead) return;
+      // Move up to floor(speed) micro-steps
+      const steps = Math.max(1, Math.floor(h.speed));
+      for (let s=0;s<steps;s++){
+        const dir = bestPlantDir(h.x, h.y, h.vision);
+        if (dir.best>0 && rnd()<0.8){ h.x=wrapX(h.x + dir.bx); h.y=wrapY(h.y + dir.by); }
+        else { h.x=wrapX(h.x + randInt(-1,1)); h.y=wrapY(h.y + randInt(-1,1)); }
+      }
+      // Movement cost ~ speed
+      h.e -= params.herbMetab + params.moveCost*(0.2 + h.speed*0.25);
+      // Eat
+      const k=idx(h.x,h.y);
+      if (plant[k]>1e-3){ const take=Math.min(plant[k], params.bite*(0.7+0.6*rnd())); plant[k]-=take; h.e += take*params.herbGain; }
+      // Reproduce
+      if (h.e>params.reproE_H && rnd()<h.repro){
+        const child = {
+          x: wrapX(h.x+randInt(-1,1)), y: wrapY(h.y+randInt(-1,1)), e: params.herbStartE,
+          speed: mutate(h.speed, params.speedMin, params.speedMax),
+          vision: Math.round(mutate(h.vision, params.visionMin, params.visionMax)),
+          repro: mutate(h.repro, params.reproMin, params.reproMax), dead:false
+        };
+        herbs.push(child);
+        h.e *= 0.5; // split energy
+      }
+      // Death
+      if (h.e<=0 || rnd()<params.baseMort) h.dead=true;
+    }
+
+    function stepPred(p){
+      if (p.dead) return;
+      // Move
+      const steps = Math.max(1, Math.floor(p.speed));
+      for (let s=0;s<steps;s++){
+        const dir = nearestHerbDir(p.x,p.y,p.vision);
+        if (dir.found && rnd()<0.9){ p.x=wrapX(p.x + dir.bx); p.y=wrapY(p.y + dir.by); }
+        else { p.x=wrapX(p.x + randInt(-1,1)); p.y=wrapY(p.y + randInt(-1,1)); }
+      }
+      // Cost
+      p.e -= params.predMetab + params.moveCost*(0.25 + p.speed*0.3);
+      // Hunt
+      const k=idx(p.x,p.y); const prey = occH[k];
+      if (prey.length>0){
+        // Try to catch one random herbivore in the cell
+        const hi = prey[(Math.random()*prey.length)|0];
+        const h = herbs[hi]; if (h && !h.dead && rnd()<params.predAttack){ h.dead=true; p.e += params.eatGain; }
+      }
+      // Reproduce
+      if (p.e>params.reproE_P && rnd()<p.repro*0.6){
+        const child = {
+          x: wrapX(p.x+randInt(-1,1)), y: wrapY(p.y+randInt(-1,1)), e: params.predStartE,
+          speed: mutate(p.speed, params.speedMin, params.speedMax),
+          vision: Math.round(mutate(p.vision, params.visionMin, params.visionMax)),
+          repro: mutate(p.repro, params.reproMin, params.reproMax), dead:false
+        };
+        preds.push(child); p.e *= 0.55;
+      }
+      if (p.e<=0 || rnd()<params.baseMort*1.2) p.dead=true;
+    }
+
+    function shuffleInPlace(arr){
+      for(let i=arr.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; const t=arr[i]; arr[i]=arr[j]; arr[j]=t; }
+      return arr;
+    }
+
+    function stepSimulation(){
+      // Plants
+      growPlants();
+      // Occupancy
+      rebuildOccupancy();
+      // Monte Carlo: random visitation order
+      const hIdx = Array.from({length:herbs.length}, (_,i)=>i); shuffleInPlace(hIdx);
+      for (let ii=0; ii<hIdx.length; ii++) stepHerb(herbs[hIdx[ii]]);
+      // Update occupancy before predators hunt (optional for more accuracy); here we reuse previous and allow hunts on previous positions; acceptable stochasticity.
+      const pIdx = Array.from({length:preds.length}, (_,i)=>i); shuffleInPlace(pIdx);
+      for (let ii=0; ii<pIdx.length; ii++) stepPred(preds[pIdx[ii]]);
+      // Cull dead
+      herbs = herbs.filter(h=>!h.dead);
+      preds = preds.filter(p=>!p.dead);
+    }
+
+    // Rendering --------------------------------------------------------
+    function drawPlants(){
+      noStroke();
+      const sx = cellSize, sy = cellSize;
+      for (let j=0;j<rows;j++){
+        for (let i=0;i<cols;i++){
+          const b = plant[idx(i,j)] / params.K; // 0..<=1
+          const g = Math.max(0, Math.min(255, Math.round(40 + 215*b)));
+          fill(20, g, 30);
+          rect(i*sx, j*sy, sx, sy);
+        }
+      }
+    }
+
+    let traitMode = 0; // 0 speed, 1 vision, 2 repro
+
+    function colorForHerb(h){
+      if (traitMode===0){ // speed: blue (slow) -> cyan -> white (fast)
+        const t = (h.speed - params.speedMin)/(params.speedMax-params.speedMin);
+        const r = Math.round(120 + 135*t);
+        const g = Math.round(160 + 80*t);
+        const b = Math.round(220);
+        return color(r,g,b);
+      } else if (traitMode===1){ // vision: green shades
+        const t = (h.vision - params.visionMin)/(params.visionMax-params.visionMin);
+        return color(50, 120 + 130*t, 60);
+      } else { // repro: purple
+        const t = (h.repro - params.reproMin)/(params.reproMax-params.reproMin);
+        return color(170 + 80*t, 70, 200);
+      }
+    }
+
+    function colorForPred(p){
+      if (traitMode===0){ // speed -> orange scale
+        const t = (p.speed - params.speedMin)/(params.speedMax-params.speedMin);
+        return color(230, 120 + 80*t, 40);
+      } else if (traitMode===1){ // vision -> red intensity
+        const t = (p.vision - params.visionMin)/(params.visionMax-params.visionMin);
+        return color(150 + 100*t, 60, 60);
+      } else { // repro -> magenta
+        const t = (p.repro - params.reproMin)/(params.reproMax-params.reproMin);
+        return color(255, 50 + 120*t, 160 + 50*t);
+      }
+    }
+
+    function drawAgents(){
+      noStroke();
+      const rH = clamp(cellSize*0.28, 1.5, 3.5);
+      const rP = clamp(cellSize*0.38, 2.0, 4.2);
+      for (let i=0;i<herbs.length;i++){
+        fill(colorForHerb(herbs[i]));
+        circle(herbs[i].x*cellSize + cellSize*0.5, herbs[i].y*cellSize + cellSize*0.5, rH*2);
+      }
+      for (let i=0;i<preds.length;i++){
+        fill(colorForPred(preds[i]));
+        circle(preds[i].x*cellSize + cellSize*0.5, preds[i].y*cellSize + cellSize*0.5, rP*2);
+      }
+    }
+
+    // Stats ------------------------------------------------------------
+    function pushHistory(){
+      const sum = (arr, fn)=>arr.reduce((a,x)=>a+fn(x),0);
+      const safeAvg = (arr, fn)=> arr.length? sum(arr,fn)/arr.length : 0;
+      const biom = plant.reduce((a,x)=>a+x,0)/(cols*rows);
+      hist.biomass.push(biom);
+      hist.herbs.push(herbs.length);
+      hist.preds.push(preds.length);
+      hist.hSpeed.push(safeAvg(herbs, x=>x.speed));
+      hist.hVision.push(safeAvg(herbs, x=>x.vision));
+      hist.hRepro.push(safeAvg(herbs, x=>x.repro));
+      hist.pSpeed.push(safeAvg(preds, x=>x.speed));
+      hist.pVision.push(safeAvg(preds, x=>x.vision));
+      hist.pRepro.push(safeAvg(preds, x=>x.repro));
+      for (const k in hist){ if (hist[k].length>historyLen) hist[k].shift(); }
+    }
+
+    function clearHistory(){ for (const k in hist) hist[k].length=0; }
+
+    function drawPlots(){
+      const x0 = simW + 8; const y0 = 8; const w = plotW - 16; const h = height - 16;
+      // Panel background
+      noStroke(); fill(20,24,30,230); rect(x0-6, y0-6, w+12, h+12, 12);
+      // Titles
+      fill(240); textSize(12); textStyle(BOLD);
+      text('Populations', x0+6, y0+12);
+      textStyle(NORMAL);
+      // Plot populations (top half)
+      const mid = y0 + h*0.45;
+      drawLinePlot(hist.herbs, x0, y0+18, w, h*0.35, color(120,220,150), 0, Math.max(10, Math.max(...hist.herbs, ...hist.preds)*1.1));
+      drawLinePlot(hist.preds, x0, y0+18, w, h*0.35, color(255,120,120), 0, Math.max(10, Math.max(...hist.herbs, ...hist.preds)*1.1));
+      // Biomass
+      textStyle(BOLD); text('Biomass', x0+6, mid+14); textStyle(NORMAL);
+      drawLinePlot(hist.biomass, x0, mid+18, w, h*0.18, color(100,180,255), 0, params.K);
+      // Traits
+      let ty = mid + h*0.18 + 40;
+      textStyle(BOLD); text('Avg Traits', x0+6, ty-6); textStyle(NORMAL);
+      const tH = h*0.28;
+      drawLinePlot(hist.hSpeed, x0, ty, w, tH*0.33, color(180,210,255), params.speedMin, params.speedMax);
+      drawLinePlot(hist.hVision, x0, ty+tH*0.33, w, tH*0.33, color(120,240,160), params.visionMin, params.visionMax);
+      drawLinePlot(hist.hRepro, x0, ty+tH*0.66, w, tH*0.33, color(220,160,255), params.reproMin, params.reproMax);
+
+      // Labels
+      fill(190); textSize(11);
+      text('herb', x0+w-36, y0+26);
+      fill(255,150,150); text('pred', x0+w-36, y0+40);
+    }
+
+    function drawLinePlot(arr, x, y, w, h, col, minVal, maxVal){
+      noFill(); stroke(60); rect(x, y, w, h);
+      if (arr.length<2) return;
+      stroke(col); strokeWeight(1.5);
+      const n = arr.length; const dx = w/(historyLen-1);
+      beginShape();
+      for (let i=0;i<n;i++){
+        const vx = x + i*dx;
+        const t = (arr[i] - minVal) / Math.max(1e-6, (maxVal-minVal));
+        const vy = y + (1-t)*h;
+        vertex(vx, vy);
+      }
+      endShape();
+      strokeWeight(1);
+    }
+
+    // HUD --------------------------------------------------------------
+    function updateHUD(){
+      const fps=(frameRate()||0).toFixed(0);
+      const info = `
+        <div><b>Evolutionary Ecosystem (Monte Carlo)</b> — ${fps} FPS · Grid <b>${cols}×${rows}</b></div>
+        <div>Herb <b>${herbs.length}</b> · Pred <b>${preds.length}</b> · Mean biomass <b>${(plant.reduce((a,x)=>a+x,0)/(cols*rows)).toFixed(2)}</b></div>
+        <div>Mutation <b>${params.mutation.toFixed(3)}</b> · K <b>${params.K.toFixed(2)}</b> · r <b>${params.r.toFixed(3)}</b> · move cost <b>${params.moveCost.toFixed(3)}</b> · steps/frame <b>${params.stepsPerFrame}</b></div>
+        <div>Trait view: <b>${['speed','vision','repro'][traitMode]}</b> — <span class="kbd">Space</span> pause · <span class="kbd">Z/X</span> mutation ± · <span class="kbd">S</span> save PNG</div>
+      `;
+      document.getElementById('hud').innerHTML=info;
+    }
+
+    // p5 lifecycle -----------------------------------------------------
+    function setup(){
+      computeGrid();
+      createCanvas(simW + plotW, Math.max(rows*cellSize, windowHeight));
+      pixelDensity(1);
+      allocGrids();
+      seedWorld(parseInt(document.getElementById('h0').value,10), parseInt(document.getElementById('p0').value,10));
+      hookUI();
+      updateHUD();
+    }
+
+    function windowResized(){
+      computeGrid();
+      resizeCanvas(simW + plotW, Math.max(rows*cellSize, windowHeight));
+      allocGrids();
+      seedWorld(herbs.length, preds.length);
+    }
+
+    function draw(){
+      background('#070b10');
+
+      const spf = params.stepsPerFrame * (keyIsDown(SHIFT)? 0.4 : 1.0);
+      for (let s=0; s<spf; s++) stepSimulation();
+
+      // Left: world
+      push();
+      drawPlants();
+      drawAgents();
+      pop();
+
+      // Right: plots
+      push();
+      drawPlots();
+      pop();
+
+      // Stats
+      if (frameCount%2===0) { pushHistory(); updateHUD(); }
+    }
+
+    // UI & Keys --------------------------------------------------------
+    function hookUI(){
+      function bindRange(id, on){ const el=document.getElementById(id); const lbl=document.getElementById(id+'V');
+        const write=()=>{ lbl && (lbl.textContent = el.value); on(parseFloat(el.value)); };
+        el.addEventListener('input', write); write(); return el; }
+      ui.mut = bindRange('mut', v=>params.mutation=v);
+      ui.cap = bindRange('cap', v=>params.K=v);
+      ui.grow= bindRange('grow',v=>params.r=v);
+      ui.hGain=bindRange('hGain',v=>params.herbGain=v);
+      ui.pAtk =bindRange('pAtk', v=>params.predAttack=v);
+      ui.mCost=bindRange('mCost',v=>params.moveCost=v);
+      ui.spf  =bindRange('spf', v=>params.stepsPerFrame=v|0);
+      // trait mode slider → words
+      const tEl=document.getElementById('traitMode'); const tv=document.getElementById('traitV');
+      const tWrite=()=>{ traitMode=parseInt(tEl.value,10); tv.textContent=['speed','vision','repro'][traitMode]; };
+      tEl.addEventListener('input', tWrite); tWrite();
+
+      document.getElementById('resetBtn').addEventListener('click', ()=>{
+        const h0=parseInt(document.getElementById('h0').value,10);
+        const p0=parseInt(document.getElementById('p0').value,10);
+        seedWorld(h0, p0);
+      });
+      const pauseBtn=document.getElementById('pauseBtn');
+      pauseBtn.addEventListener('click', ()=>{ paused=!paused; pauseBtn.textContent = paused? 'Resume' : 'Pause'; });
+    }
+
+    let paused=false;
+    function keyPressed(){
+      if (key===' ') { paused=!paused; document.getElementById('pauseBtn').textContent = paused? 'Resume' : 'Pause'; noLoop(); setTimeout(()=>loop(),0); }
+      if (key==='S' || key==='s') saveCanvas('ecosystem','png');
+      if (key==='Z' || key==='z'){ params.mutation=Math.max(0, params.mutation-0.002); document.getElementById('mut').value=params.mutation; document.getElementById('mutV').textContent=params.mutation.toFixed(3); }
+      if (key==='X' || key==='x'){ params.mutation=Math.min(0.2, params.mutation+0.002); document.getElementById('mut').value=params.mutation; document.getElementById('mutV').textContent=params.mutation.toFixed(3); }
+    }
+  </script>
+</body>
+</html>

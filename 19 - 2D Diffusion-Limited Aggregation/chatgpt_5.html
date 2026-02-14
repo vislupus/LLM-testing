@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Diffusion‑Limited Aggregation (DLA) — Single‑File</title>
+<style>
+  html,body{height:100%}
+  body{margin:0;background:#0b0f1a;color:#e7eefc;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  #wrap{position:fixed;inset:0;display:grid;grid-template-columns:1fr auto}
+  #ui{padding:12px;display:flex;flex-direction:column;gap:10px}
+  .panel{background:rgba(10,17,34,.75);border:1px solid #1f2e55;border-radius:12px;padding:10px;backdrop-filter:blur(3px);width:280px}
+  .row{display:flex;align-items:center;gap:10px}
+  .row input[type=range]{flex:1}
+  .label{width:120px;color:#a9c5ff;font-size:12px}
+  .val{width:40px;text-align:right;color:#cfe0ff}
+  .btn{background:#183064;border:1px solid #3156a8;color:#e7eefc;border-radius:10px;padding:6px 10px;cursor:pointer}
+  .hint{color:#9fb3d9;font-size:12px}
+  canvas{display:block;background:#111827}
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="view"></canvas>
+    <div id="ui">
+      <div class="panel">
+        <div class="row" style="justify-content:space-between"><strong>🧪 Diffusion‑Limited Aggregation</strong><span class="hint">(real‑time)</span></div>
+        <div class="row"><div class="label">Active walkers</div><input id="count" type="range" min="10" max="400" value="100"><div id="countv" class="val">100</div></div>
+        <div class="row"><div class="label">Speed (steps/frame)</div><input id="speed" type="range" min="1" max="10" value="3"><div id="speedv" class="val">3</div></div>
+        <div class="row"><div class="label">Inward bias</div><input id="bias" type="range" min="0" max="40" value="10"><div id="biasv" class="val">0.10</div></div>
+        <div class="row" style="gap:8px"><button id="pause" class="btn">Pause</button><button id="reset" class="btn">Reset</button></div>
+        <div class="hint" id="stats">—</div>
+        <div class="hint">Growth halts once the cluster comes within <b>50 px</b> of the canvas edge.
+          New walkers spawn on a ring just outside the aggregate and drift inward with a slight bias.</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// =============================================================
+// Diffusion‑Limited Aggregation (DLA) — vanilla Canvas 2D
+// * Starts with 100 walkers (adjustable)
+// * Walkers spawn around cluster, random walk with slight inward bias
+// * Stick to cluster when touching occupied pixel (8‑neighborhood)
+// * Continuous growth until the cluster is within 50 px of edge
+// * Efficient: cluster drawn on offscreen canvas; main canvas only
+//   composites cluster + 100 lightweight moving walkers per frame.
+// =============================================================
+(() => {
+  const canvas = document.getElementById('view');
+  const ctx = canvas.getContext('2d');
+  const DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  function resize(){
+    const w = Math.min(window.innerWidth - 300, 1000);
+    const h = Math.min(window.innerHeight, 1000);
+    canvas.width = Math.floor(w * DPR); canvas.height = Math.floor(h * DPR);
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    initScene();
+  }
+  window.addEventListener('resize', resize);
+
+  // Offscreen canvas holds the fixed cluster (fast incremental draws)
+  const layer = document.createElement('canvas');
+  const lctx = layer.getContext('2d');
+
+  // UI
+  const elCount = document.getElementById('count');
+  const elCountV = document.getElementById('countv');
+  const elSpeed = document.getElementById('speed');
+  const elSpeedV = document.getElementById('speedv');
+  const elBias = document.getElementById('bias');
+  const elBiasV = document.getElementById('biasv');
+  const statsEl = document.getElementById('stats');
+  const btnPause = document.getElementById('pause');
+  const btnReset = document.getElementById('reset');
+
+  // Simulation state
+  let W=0, H=0, CX=0, CY=0; // canvas dims / center
+  let occupancy;            // Uint8Array occupancy grid for cluster pixels
+  let walkers = [];         // active walkers
+  let clusterR = 1;         // current aggregate radius
+  let spawnMargin = 14;     // distance beyond clusterR to spawn walkers
+  let killRadius = 0;       // far boundary for walkers (respawn)
+  let running = true;       // paused or finished
+  let stepsPerFrame = 3;    // moves per frame
+  let biasStrength = 0.10;  // inward bias (0..~0.4)
+
+  // Color palette by radius: hue shift for nice visuals
+  function colorForRadius(r){
+    const t = Math.min(1, r / (Math.min(W,H)*0.5));
+    const hue = 200 - 180*t; // blue→orange
+    const light = 70 + 20*(1-t);
+    return `hsl(${hue.toFixed(1)} 80% ${light.toFixed(1)}%)`;
+  }
+
+  function initScene(){
+    W = Math.floor(parseFloat(getComputedStyle(canvas).width));
+    H = Math.floor(parseFloat(getComputedStyle(canvas).height));
+    CX = Math.floor(W/2); CY = Math.floor(H/2);
+
+    // resize offscreen layer and clear
+    layer.width = W; layer.height = H; lctx.clearRect(0,0,W,H);
+
+    // occupancy grid
+    occupancy = new Uint8Array(W*H); occupancy.fill(0);
+
+    // seed in the center
+    setPixel(CX, CY);
+    clusterR = 1; killRadius = clusterR + spawnMargin*6;
+
+    // seed walkers
+    walkers.length = 0; const n = parseInt(elCount.value,10) || 100; for(let i=0;i<n;i++) walkers.push(spawnWalker());
+
+    // UI text
+    updateLabels(); running = true; btnPause.textContent = 'Pause';
+  }
+
+  function updateLabels(){
+    elCountV.textContent = String(elCount.value);
+    elSpeedV.textContent = String(elSpeed.value);
+    biasStrength = (parseInt(elBias.value,10) / 100);
+    elBiasV.textContent = biasStrength.toFixed(2);
+  }
+
+  elCount.addEventListener('input', ()=>{
+    const target = parseInt(elCount.value,10);
+    if(target > walkers.length){ for(let i=walkers.length;i<target;i++) walkers.push(spawnWalker()); }
+    else if(target < walkers.length){ walkers.length = target; }
+    updateLabels();
+  });
+  elSpeed.addEventListener('input', ()=>{ stepsPerFrame = parseInt(elSpeed.value,10); updateLabels(); });
+  elBias.addEventListener('input', updateLabels);
+  btnPause.addEventListener('click', ()=>{ running = !running; btnPause.textContent = running? 'Pause':'Resume'; if(running) requestAnimationFrame(tick); });
+  btnReset.addEventListener('click', initScene);
+
+  // Occupancy helpers
+  function idx(x,y){ return y*W + x; }
+  function inBounds(x,y){ return x>=0 && x<W && y>=0 && y<H; }
+  function occupied(x,y){ return inBounds(x,y) && occupancy[idx(x,y)]===1; }
+  function setPixel(x,y){ if(!inBounds(x,y)) return; occupancy[idx(x,y)]=1; lctx.fillStyle = colorForRadius(Math.hypot(x-CX,y-CY)); lctx.fillRect(x,y,1,1); }
+
+  // Walker spawner: place on ring outside cluster, random angle
+  function spawnWalker(){
+    const r = clusterR + spawnMargin + Math.random()*spawnMargin*0.5;
+    const a = Math.random()*Math.PI*2;
+    const x = CX + Math.cos(a)*r; const y = CY + Math.sin(a)*r;
+    return { x, y };
+  }
+
+  function respawnWalker(w){ const nw = spawnWalker(); w.x=nw.x; w.y=nw.y; }
+
+  function stepWalker(w){
+    // Random step (unit) + inward bias toward center
+    const th = Math.random()*Math.PI*2; let dx = Math.cos(th), dy = Math.sin(th);
+    const vx = (CX - w.x), vy = (CY - w.y); const vlen = Math.hypot(vx,vy) || 1; dx += biasStrength * (vx / vlen); dy += biasStrength * (vy / vlen);
+    // normalize to ~1px step
+    const m = Math.hypot(dx,dy) || 1; dx/=m; dy/=m; w.x += dx; w.y += dy;
+
+    // Kill if too far or outside
+    const r = Math.hypot(w.x-CX, w.y-CY);
+    if(r > killRadius || w.x<1 || w.x>W-2 || w.y<1 || w.y>H-2){ respawnWalker(w); return; }
+
+    // Stick if touching an occupied pixel (8‑neighborhood)
+    const ix = Math.round(w.x), iy = Math.round(w.y);
+    for(let oy=-1; oy<=1; oy++){
+      for(let ox=-1; ox<=1; ox++){
+        if(ox===0 && oy===0) continue;
+        if(occupied(ix+ox, iy+oy)){
+          setPixel(ix, iy);
+          // update cluster radius and radii
+          const d = Math.hypot(ix-CX, iy-CY); if(d > clusterR){ clusterR = d; killRadius = clusterR + spawnMargin*6; }
+          respawnWalker(w);
+          return;
+        }
+      }
+    }
+  }
+
+  function render(){
+    // Composite background (subtle) + cluster layer + active walkers
+    ctx.fillStyle = '#0b0f1a'; // deep blue background (smooth updating)
+    ctx.fillRect(0,0,W,H);
+
+    // draw fixed cluster layer
+    ctx.drawImage(layer, 0, 0);
+
+    // draw live walkers as faint circles
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    for(let i=0;i<walkers.length;i++){
+      const w = walkers[i];
+      ctx.beginPath(); ctx.arc(w.x, w.y, 1.2, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+
+    // Stats
+    const stuck = occupancyCount;
+    statsEl.innerHTML = `stuck: <b>${stuck}</b> · radius: <b>${clusterR.toFixed(1)}</b> px · walkers: <b>${walkers.length}</b>`;
+  }
+
+  let occupancyCount = 1; // seed
+
+  function tick(){
+    if(!running) return;
+
+    // advance walkers
+    const limit = walkers.length;
+    for(let s=0;s<stepsPerFrame;s++){
+      for(let i=0;i<limit;i++){
+        const beforeCount = occupancyCount;
+        stepWalker(walkers[i]);
+        // recompute occupancyCount by sampling last painted pixel? Keep a counter:
+        if(occupancyCount < W*H){ // cheap: check if pixel at current walker got set in stepWalker by comparing layer? Instead, intercept setPixel.
+        }
+      }
+    }
+
+    // Stop when cluster ~50 px from edge
+    const edgeDist = Math.min(CX, CY, W-CX, H-CY);
+    if(clusterR >= edgeDist - 50){ running = false; statsEl.innerHTML += ' · <b>HALTED</b> (near edge)'; btnPause.textContent = 'Resume'; }
+
+    render();
+    requestAnimationFrame(tick);
+  }
+
+  // Monkey‑patch setPixel to keep a global count efficiently
+  const _setPixelRef = setPixel;
+  function setPixel(x,y){ if(!inBounds(x,y)) return; const id = idx(x,y); if(occupancy[id]===1) return; occupancy[id]=1; occupancyCount++; lctx.fillStyle = colorForRadius(Math.hypot(x-CX,y-CY)); lctx.fillRect(x,y,1,1); }
+
+  resize();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

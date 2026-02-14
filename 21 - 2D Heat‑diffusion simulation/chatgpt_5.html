@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>p5.js — 2D Heat Diffusion (Finite Differences)</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body { margin: 0; background: #0b0e12; color: #e2ecf3; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    canvas { display:block; }
+    #hud{position:fixed;left:10px;top:10px;background:rgba(15,18,24,.6);border:1px solid rgba(255,255,255,.06);padding:10px 12px;border-radius:12px;backdrop-filter: blur(6px);font-size:13px;line-height:1.35;max-width:min(680px,48vw)}
+    #hud b{color:#fff}
+    .kbd{display:inline-block; padding:0 6px; border-radius:7px;border:1px solid rgba(255,255,255,.14); background:rgba(255,255,255,.06); font-weight:700; font-size:12px}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="hud"></div>
+  <script>
+    // --------------------------------------------------------------
+    // 2D Heat Diffusion simulation (∂T/∂t = α ∇² T + optional convection)
+    // Explicit finite differences (FTCS) with per-cell α (material diffusivity),
+    // insulated / fixed-temperature / periodic boundaries, interactive heat sources,
+    // material painting, optional semi-Lagrangian convection, and a heatmap renderer.
+    // CPU solver by default; optional experimental GPU step for uniform α.
+    // --------------------------------------------------------------
+
+    let grid, img, uiEl;
+    let paused=false, showGrid=false, brushRadius=8, paintMode='heat'; // 'heat' | 'material'
+    let bcMode='insulated'; // 'insulated' (Neumann), 'fixed' (Dirichlet), 'periodic'
+    let Tedge=0.0; // fixed boundary temperature when bcMode='fixed'
+
+    // Resolution presets: pixels per cell (smaller = more cells)
+    const cellSizeOptions=[10,7,5,4];
+    let resIndex=1; // start Medium
+
+    // Physical params
+    let ambient=0.0; // baseline temperature
+    let heatAmount=60; // amount added per stroke (scaled by dt)
+    let coolAmount=60; // amount removed when cooling
+    let speedMult=1.0; // user speed factor (scales dt)
+    let convectionOn=false, wind={u:0.0, v:0.0}; // uniform velocity field
+
+    // Materials (thermal diffusivity α in sim units). These are relative.
+    const materialPresets=[
+      {name:'Metal',   alpha:0.22},
+      {name:'Water',   alpha:0.06},
+      {name:'Wood',    alpha:0.03},
+      {name:'Foam',    alpha:0.012},
+      {name:'Custom',  alpha:0.10},
+    ];
+    let currentMaterial=0; // index into materialPresets
+    let globalAlphaScale=1.0; // scales all materials
+
+    // Persistent heat sources
+    const sources=[]; // {i,j,intensity,radius}
+
+    // GPU (experimental - uniform α only)
+    let gpuEnabled=false, fxShader=null; // color pass shader (heatmap)
+
+    // --------------------------------------------------------------
+    // Grid + solver
+    // --------------------------------------------------------------
+    function computeGridForCanvas(){
+      const cell=cellSizeOptions[resIndex];
+      const nx=Math.max(24, Math.floor(windowWidth/cell));
+      const ny=Math.max(16, Math.floor(windowHeight/cell));
+      return {nx, ny};
+    }
+
+    class HeatGrid {
+      constructor(nx, ny){
+        this.nx=nx; this.ny=ny; this.stride=nx+2; this.size=(nx+2)*(ny+2);
+        this.T=new Float32Array(this.size); // temperature
+        this.T0=new Float32Array(this.size);
+        this.alpha=new Float32Array(this.size); // per-cell diffusivity
+        this.alphaUniform=true; // track if α is uniform (enables GPU path)
+        this.ambient=ambient;
+        this.resetTemps();
+        this.resetMaterials(materialPresets[currentMaterial].alpha);
+      }
+      ix(i,j){ return i + this.stride*j; } // 0..nx+1, 0..ny+1 (ghost cells)
+      resetTemps(){ this.T.fill(this.ambient); this.T0.fill(0); }
+      resetMaterials(a){
+        for(let j=0;j<=this.ny+1;j++){
+          for(let i=0;i<=this.nx+1;i++){
+            this.alpha[this.ix(i,j)] = a;
+          }
+        }
+        this.alphaUniform=true;
+      }
+      paintMaterial(i,j,rad,a){
+        const R2=rad*rad; this.alphaUniform=false;
+        for (let y=-rad;y<=rad;y++){
+          const jy=j+y; if (jy<1||jy>this.ny) continue;
+          for (let x=-rad;x<=rad;x++){
+            const ix_=i+x; if (ix_<1||ix_>this.nx) continue;
+            if (x*x+y*y>R2) continue;
+            this.alpha[this.ix(ix_,jy)] = a;
+          }
+        }
+      }
+      addHeat(i,j,rad,amount){
+        const R2=rad*rad;
+        for (let y=-rad;y<=rad;y++){
+          const jy=j+y; if (jy<1||jy>this.ny) continue;
+          for (let x=-rad;x<=rad;x++){
+            const ix_=i+x; if (ix_<1||ix_>this.nx) continue;
+            if (x*x+y*y>R2) continue;
+            const k=this.ix(ix_,jy);
+            this.T0[k]+=amount; // use T0 as source accumulator
+          }
+        }
+      }
+      // Boundary conditions: enforce ghost cells based on bcMode
+      applyBC(T){
+        const nx=this.nx, ny=this.ny, s=this.stride;
+        if (bcMode==='fixed'){
+          for(let i=1;i<=nx;i++){ T[this.ix(i,0)]=Tedge; T[this.ix(i,ny+1)]=Tedge; }
+          for(let j=1;j<=ny;j++){ T[this.ix(0,j)]=Tedge; T[this.ix(nx+1,j)]=Tedge; }
+        } else if (bcMode==='insulated'){
+          for(let i=1;i<=nx;i++){ T[this.ix(i,0)]=T[this.ix(i,1)]; T[this.ix(i,ny+1)]=T[this.ix(i,ny)]; }
+          for(let j=1;j<=ny;j++){ T[this.ix(0,j)]=T[this.ix(1,j)]; T[this.ix(nx+1,j)]=T[this.ix(nx,j)]; }
+        } else if (bcMode==='periodic'){
+          for(let i=1;i<=nx;i++){ T[this.ix(i,0)]=T[this.ix(i,ny)]; T[this.ix(i,ny+1)]=T[this.ix(i,1)]; }
+          for(let j=1;j<=ny;j++){ T[this.ix(0,j)]=T[this.ix(nx,j)]; T[this.ix(nx+1,j)]=T[this.ix(1,j)]; }
+        }
+        // corners
+        T[this.ix(0,0)] = 0.5*(T[this.ix(1,0)] + T[this.ix(0,1)]);
+        T[this.ix(0,ny+1)] = 0.5*(T[this.ix(1,ny+1)] + T[this.ix(0,ny)]);
+        T[this.ix(nx+1,0)] = 0.5*(T[this.ix(nx,0)] + T[this.ix(nx+1,1)]);
+        T[this.ix(nx+1,ny+1)] = 0.5*(T[this.ix(nx,ny+1)] + T[this.ix(nx+1,ny)]);
+      }
+
+      // Sample with bilinear interpolation (for convection), respecting BC
+      sampleBilinear(T,x,y){ // x,y in grid index space (1..nx, 1..ny)
+        // Handle BC by clamping (insulated/fixed) or wrapping (periodic)
+        if (bcMode==='periodic'){
+          x = ( (x-1) % this.nx + this.nx ) % this.nx + 1;
+          y = ( (y-1) % this.ny + this.ny ) % this.ny + 1;
+        } else {
+          x = Math.max(1, Math.min(this.nx, x));
+          y = Math.max(1, Math.min(this.ny, y));
+        }
+        const i0=Math.floor(x), j0=Math.floor(y);
+        const i1=Math.min(i0+1, this.nx), j1=Math.min(j0+1, this.ny);
+        const sx=x-i0, sy=y-j0;
+        const k00=this.ix(i0,j0), k10=this.ix(i1,j0), k01=this.ix(i0,j1), k11=this.ix(i1,j1);
+        const a=T[k00]*(1-sx) + T[k10]*sx;
+        const b=T[k01]*(1-sx) + T[k11]*sx;
+        return a*(1-sy) + b*sy;
+      }
+
+      // One simulation step
+      step(dt){
+        const nx=this.nx, ny=this.ny, s=this.stride;
+
+        // Inject sources accumulated in T0 and from persistent sources
+        for (const src of sources){ this.addHeat(src.i, src.j, src.radius, src.intensity); }
+        for (let k=0;k<this.size;k++){ this.T[k]+=dt*this.T0[k]; this.T0[k]=0; }
+
+        // Convection (optional, semi-Lagrangian)
+        if (convectionOn && (Math.abs(wind.u)>1e-6 || Math.abs(wind.v)>1e-6)){
+          const adv=new Float32Array(this.size);
+          const scale = dt; // grid spacing = 1
+          for (let j=1;j<=ny;j++){
+            for (let i=1;i<=nx;i++){
+              const x=i - wind.u*scale; // trace backward
+              const y=j - wind.v*scale;
+              adv[this.ix(i,j)] = this.sampleBilinear(this.T, x, y);
+            }
+          }
+          // Copy back (keep ghost cells for BC)
+          for (let j=1;j<=ny;j++){
+            for (let i=1;i<=nx;i++){
+              this.T[this.ix(i,j)] = adv[this.ix(i,j)];
+            }
+          }
+        }
+
+        // Apply BC before diffusion (for accurate Laplacian near edges)
+        this.applyBC(this.T);
+
+        // Diffusion (explicit FTCS with per-cell α)
+        // dt must satisfy stability: dt <= 1/(4*max(alpha))
+        for (let j=1;j<=ny;j++){
+          for (let i=1;i<=nx;i++){
+            const k=this.ix(i,j);
+            const T0=this.T[k];
+            const lap = this.T[this.ix(i+1,j)] + this.T[this.ix(i-1,j)] + this.T[this.ix(i,j+1)] + this.T[this.ix(i,j-1)] - 4*T0;
+            const a = this.alpha[k] * globalAlphaScale;
+            this.T0[k] = T0 + dt * a * lap; // store next state in T0 temporarily
+          }
+        }
+        // Swap arrays: T0 -> T (only interior)
+        for (let j=1;j<=ny;j++){
+          let base=this.ix(1,j);
+          for (let i=1;i<=nx;i++, base++) this.T[base]=this.T0[base];
+        }
+
+        // Re-enforce BC after diffusion
+        this.applyBC(this.T);
+      }
+
+      maxAlpha(){
+        let m=0; for(let k=0;k<this.size;k++) m=Math.max(m, this.alpha[k]*globalAlphaScale); return m;
+      }
+    }
+
+    // --------------------------------------------------------------
+    // p5 lifecycle
+    // --------------------------------------------------------------
+    function setup(){
+      createCanvas(windowWidth, windowHeight);
+      pixelDensity(1);
+      const {nx,ny}=computeGridForCanvas();
+      grid=new HeatGrid(nx,ny);
+      img=createImage(nx,ny);
+      uiEl=document.getElementById('hud');
+      updateHUD();
+    }
+    function windowResized(){
+      resizeCanvas(windowWidth, windowHeight);
+      const {nx,ny}=computeGridForCanvas();
+      grid=new HeatGrid(nx,ny);
+      img=createImage(nx,ny);
+    }
+
+    function draw(){
+      background('#0a0d12');
+
+      // Interaction: left-click adds heat; hold Shift to cool; right-click paints material
+      if (mouseIsPressed && mouseInCanvas()){
+        const {i,j}=mouseToGrid();
+        if (paintMode==='material' || mouseButton===RIGHT){
+          const a = materialPresets[currentMaterial].alpha;
+          grid.paintMaterial(i,j,brushRadius,a);
+        } else {
+          const amt = keyIsDown(SHIFT) ? -coolAmount : heatAmount;
+          grid.addHeat(i,j,brushRadius,amt);
+        }
+      }
+
+      // Stable dt respecting diffusion CFL
+      const userDt = speedMult * (deltaTime/1000);
+      const dtMax = 0.25 / Math.max(1e-6, grid.maxAlpha());
+      const dt = Math.min(userDt, dtMax*0.95);
+
+      if (!paused) grid.step(dt);
+
+      // Visualize temperature as heatmap
+      renderHeatmap();
+
+      if (showGrid) drawGridOverlay();
+
+      // Small HUD update
+      if (frameCount%2===0) updateHUD(dt, dtMax);
+    }
+
+    function renderHeatmap(){
+      // Compute dynamic range around ambient for good contrast
+      const nx=grid.nx, ny=grid.ny; let tmin=1e9, tmax=-1e9;
+      for (let j=1;j<=ny;j++){
+        let base=grid.ix(1,j);
+        for (let i=1;i<=nx;i++, base++){
+          const T=grid.T[base]; if (T<tmin) tmin=T; if (T>tmax) tmax=T;
+        }
+      }
+      if (tmax - tmin < 1e-5) { tmin-=0.5; tmax+=0.5; }
+      img.loadPixels();
+      let p=0;
+      for (let j=1;j<=ny;j++){
+        let base=grid.ix(1,j);
+        for (let i=1;i<=nx;i++, base++){
+          const col = heatColor(map(grid.T[base], tmin, tmax, 0, 1));
+          img.pixels[p++] = col[0];
+          img.pixels[p++] = col[1];
+          img.pixels[p++] = col[2];
+          img.pixels[p++] = 255;
+        }
+      }
+      img.updatePixels();
+      noSmooth();
+      image(img, 0, 0, width, height);
+
+      // Draw persistent sources
+      if (sources.length){
+        noFill(); stroke('#ffd166'); strokeWeight(2);
+        const sx=width/grid.nx, sy=height/grid.ny;
+        for (const s of sources){ ellipse((s.i-0.5)*sx, (s.j-0.5)*sy, s.radius*sx*2, s.radius*sy*2); }
+        noStroke();
+      }
+    }
+
+    function drawGridOverlay(){
+      const sx=width/grid.nx, sy=height/grid.ny; stroke(255,24); strokeWeight(1);
+      for (let x=0;x<=grid.nx;x+=8) line(x*sx,0,x*sx,height);
+      for (let y=0;y<=grid.ny;y+=8) line(0,y*sy,width,y*sy);
+      noStroke();
+    }
+
+    function heatColor(t){ // t in [0,1]
+      t = Math.max(0, Math.min(1, t));
+      // blue -> cyan -> green -> yellow -> red
+      const stops=[
+        [0.00, [  0,  0,130]],
+        [0.25, [  0,120,255]],
+        [0.50, [  0,200,  0]],
+        [0.75, [255,220,  0]],
+        [1.00, [255, 50,  0]],
+      ];
+      for (let s=1; s<stops.length; s++){
+        if (t<=stops[s][0]){
+          const t0=stops[s-1][0], t1=stops[s][0];
+          const c0=stops[s-1][1], c1=stops[s][1];
+          const u=(t-t0)/(t1-t0);
+          return [
+            Math.round(c0[0]*(1-u)+c1[0]*u),
+            Math.round(c0[1]*(1-u)+c1[1]*u),
+            Math.round(c0[2]*(1-u)+c1[2]*u)
+          ];
+        }
+      }
+      return stops[stops.length-1][1];
+    }
+
+    // --------------------------------------------------------------
+    // Interaction
+    // --------------------------------------------------------------
+    function mouseInCanvas(){ return mouseX>=0 && mouseX<width && mouseY>=0 && mouseY<height; }
+    function mouseToGrid(){
+      const i=Math.max(1, Math.min(grid.nx, Math.floor(mouseX/width*grid.nx)+1));
+      const j=Math.max(1, Math.min(grid.ny, Math.floor(mouseY/height*grid.ny)+1));
+      return {i,j};
+    }
+    window.addEventListener('contextmenu', e=>e.preventDefault());
+
+    function keyPressed(){
+      // Material hotkeys 1..5
+      if (key>='1' && key<='5'){ currentMaterial = int(key)-1; }
+      if (key==='M' || key==='m'){ paintMode = (paintMode==='heat'?'material':'heat'); }
+      if (key==='B' || key==='b'){
+        const modes=['insulated','fixed','periodic'];
+        bcMode = modes[(modes.indexOf(bcMode)+1)%modes.length];
+      }
+      if (key==='P' || key==='p') paused=!paused;
+      if (key==='G' || key==='g') showGrid=!showGrid;
+      if (key==='H' || key==='h'){ resIndex=(resIndex+1)%cellSizeOptions.length; const {nx,ny}=computeGridForCanvas(); grid=new HeatGrid(nx,ny); img=createImage(nx,ny); }
+      if (key==='R' || key==='r') grid.resetTemps();
+      if (key==='T' || key==='t'){ ambient=0.0; grid.resetTemps(); }
+      if (key==='S' || key==='s') saveCanvas('heat-diffusion','png');
+      if (key==='Q' || key==='q') convectionOn=!convectionOn;
+      if (key==='+') speedMult*=1.25;
+      if (key==='-') speedMult/=1.25;
+      if (key===']') { globalAlphaScale*=1.25; }
+      if (key==='[') { globalAlphaScale/=1.25; }
+      if (key===';') { brushRadius=Math.max(1, brushRadius-1); }
+      if (key==="'") { brushRadius=Math.min(64, brushRadius+1); }
+      if (key==='K' || key==='k'){ // cool at mouse
+        if (mouseInCanvas()) { const {i,j}=mouseToGrid(); grid.addHeat(i,j,brushRadius,-coolAmount*4); }
+      }
+      if (key==='O' || key==='o'){ // add/remove persistent heat source at mouse
+        if (!mouseInCanvas()) return;
+        const {i,j}=mouseToGrid();
+        const idx=sources.findIndex(s=>s.i===i && s.j===j);
+        if (idx>=0) sources.splice(idx,1); else sources.push({i,j,intensity:heatAmount*0.8, radius:Math.max(4, Math.round(brushRadius*0.8))});
+      }
+      if (key==="\u2190") wind.u-=0.5; // left
+      if (key==="\u2192") wind.u+=0.5; // right
+      if (key==="\u2191") wind.v-=0.5; // up (screen y-)
+      if (key==="\u2193") wind.v+=0.5; // down
+      updateHUD();
+    }
+
+    // --------------------------------------------------------------
+    // HUD
+    // --------------------------------------------------------------
+    function updateHUD(dt=0, dtMax=0){
+      const fps=(frameRate()||0).toFixed(0);
+      const resLut=['Low','Med','High','Ultra'];
+      const mat=materialPresets[currentMaterial];
+      const info=`
+        <div><b>2D Heat Diffusion</b> — ${fps} FPS</div>
+        <div>Grid: <b>${grid.nx}×${grid.ny}</b> (${resLut[resIndex]}), Brush <b>${brushRadius}</b> · α scale <b>${globalAlphaScale.toFixed(2)}</b> · Speed <b>${speedMult.toFixed(2)}</b></div>
+        <div>Material: <b>${mat.name}</b> (α=${(mat.alpha*globalAlphaScale).toFixed(3)}) · Paint Mode: <b>${paintMode}</b></div>
+        <div>Boundary: <b>${bcMode}</b>${bcMode==='fixed'?` (T<sub>edge</sub>=${Tedge.toFixed(1)})`:''} · Convection: <b>${convectionOn?`On [u=${wind.u.toFixed(1)}, v=${wind.v.toFixed(1)}]`:'Off'}</b></div>
+        ${dtMax?`<div>dt=${dt?dt.toFixed(4):'-'} · stability limit <b>dt ≤ ${(dtMax).toFixed(4)}</b></div>`:''}
+        <div style="margin-top:6px;opacity:.95">
+          <span class="kbd">Mouse</span> add heat (hold <span class="kbd">Shift</span> to cool). Right‑click or <span class="kbd">M</span> = material paint.</div>
+        <div>
+          <span class="kbd">1–5</span> materials · <span class="kbd">B</span> boundaries · <span class="kbd">Q</span> convection · <span class="kbd">←↑→↓</span> wind · <span class="kbd">H</span> resolution · <span class="kbd">G</span> grid · <span class="kbd">P</span> pause
+        </div>
+        <div>
+          <span class="kbd">+</span>/<span class="kbd">-</span> speed · <span class="kbd">[</span>/<span class="kbd">]</span> α scale · <span class="kbd">;</span>/<span class="kbd">'</span> brush · <span class="kbd">K</span> cool at cursor · <span class="kbd">O</span> toggle persistent source
+        </div>
+        <div><span class="kbd">R</span> reset T · <span class="kbd">T</span> set ambient · <span class="kbd">S</span> save PNG</div>
+      `;
+      document.getElementById('hud').innerHTML=info;
+    }
+  </script>
+</body>
+</html>

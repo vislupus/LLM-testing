@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galaxy Formation Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: monospace;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #333;
+            font-size: 12px;
+            background: rgba(220, 220, 220, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        Galaxy Formation Simulation<br>
+        10,000 particles | Barnes-Hut N-body<br>
+        <span id="fps">FPS: 0</span><br>
+        <span id="phase">Phase: Protogalactic Cloud</span>
+    </div>
+
+    <script>
+        // Quadtree implementation for Barnes-Hut algorithm
+        class Quadtree {
+            constructor(boundary, capacity) {
+                this.boundary = boundary; // {x, y, w, h}
+                this.capacity = capacity;
+                this.particles = [];
+                this.divided = false;
+                this.totalMass = 0;
+                this.centerOfMass = createVector(0, 0);
+            }
+            
+            insert(particle) {
+                if (!this.contains(particle.pos)) {
+                    return false;
+                }
+                
+                if (this.particles.length < this.capacity && !this.divided) {
+                    this.particles.push(particle);
+                    return true;
+                } else {
+                    if (!this.divided) {
+                        this.subdivide();
+                        // Move existing particles to children
+                        for (let p of this.particles) {
+                            this.insertIntoChildren(p);
+                        }
+                        this.particles = [];
+                    }
+                    return this.insertIntoChildren(particle);
+                }
+            }
+            
+            insertIntoChildren(particle) {
+                return this.northeast.insert(particle) ||
+                       this.northwest.insert(particle) ||
+                       this.southeast.insert(particle) ||
+                       this.southwest.insert(particle);
+            }
+            
+            subdivide() {
+                let x = this.boundary.x;
+                let y = this.boundary.y;
+                let w = this.boundary.w / 2;
+                let h = this.boundary.h / 2;
+                
+                this.northeast = new Quadtree({x: x + w, y: y, w: w, h: h}, this.capacity);
+                this.northwest = new Quadtree({x: x, y: y, w: w, h: h}, this.capacity);
+                this.southeast = new Quadtree({x: x + w, y: y + h, w: w, h: h}, this.capacity);
+                this.southwest = new Quadtree({x: x, y: y + h, w: w, h: h}, this.capacity);
+                this.divided = true;
+            }
+            
+            contains(point) {
+                return point.x >= this.boundary.x &&
+                       point.x < this.boundary.x + this.boundary.w &&
+                       point.y >= this.boundary.y &&
+                       point.y < this.boundary.y + this.boundary.h;
+            }
+            
+            calculateMassDistribution() {
+                if (!this.divided) {
+                    this.totalMass = 0;
+                    this.centerOfMass = createVector(0, 0);
+                    for (let p of this.particles) {
+                        this.totalMass += p.mass;
+                        this.centerOfMass.add(p5.Vector.mult(p.pos, p.mass));
+                    }
+                    if (this.totalMass > 0) {
+                        this.centerOfMass.div(this.totalMass);
+                    }
+                } else {
+                    this.northeast.calculateMassDistribution();
+                    this.northwest.calculateMassDistribution();
+                    this.southeast.calculateMassDistribution();
+                    this.southwest.calculateMassDistribution();
+                    
+                    this.totalMass = this.northeast.totalMass + this.northwest.totalMass +
+                                    this.southeast.totalMass + this.southwest.totalMass;
+                    
+                    this.centerOfMass = createVector(0, 0);
+                    if (this.totalMass > 0) {
+                        this.centerOfMass.add(p5.Vector.mult(this.northeast.centerOfMass, this.northeast.totalMass));
+                        this.centerOfMass.add(p5.Vector.mult(this.northwest.centerOfMass, this.northwest.totalMass));
+                        this.centerOfMass.add(p5.Vector.mult(this.southeast.centerOfMass, this.southeast.totalMass));
+                        this.centerOfMass.add(p5.Vector.mult(this.southwest.centerOfMass, this.southwest.totalMass));
+                        this.centerOfMass.div(this.totalMass);
+                    }
+                }
+            }
+            
+            calculateForce(particle, theta = 0.5) {
+                if (this.totalMass === 0 || (this.particles.length === 1 && this.particles[0] === particle)) {
+                    return createVector(0, 0);
+                }
+                
+                let d = p5.Vector.dist(particle.pos, this.centerOfMass);
+                
+                if (!this.divided) {
+                    // Leaf node - calculate force from all particles
+                    let force = createVector(0, 0);
+                    for (let p of this.particles) {
+                        if (p !== particle) {
+                            let f = this.gravitationalForce(particle, p.pos, p.mass);
+                            force.add(f);
+                        }
+                    }
+                    return force;
+                } else {
+                    // Check if node is far enough to treat as single mass
+                    let s = this.boundary.w;
+                    if (s / d < theta) {
+                        // Treat as single mass
+                        return this.gravitationalForce(particle, this.centerOfMass, this.totalMass);
+                    } else {
+                        // Recursively calculate from children
+                        let force = createVector(0, 0);
+                        force.add(this.northeast.calculateForce(particle, theta));
+                        force.add(this.northwest.calculateForce(particle, theta));
+                        force.add(this.southeast.calculateForce(particle, theta));
+                        force.add(this.southwest.calculateForce(particle, theta));
+                        return force;
+                    }
+                }
+            }
+            
+            gravitationalForce(particle, pos, mass) {
+                let force = p5.Vector.sub(pos, particle.pos);
+                let dsq = force.magSq();
+                dsq = constrain(dsq, 25, 10000); // Prevent singularities
+                let strength = (G * mass * particle.mass) / dsq;
+                force.normalize();
+                force.mult(strength);
+                return force;
+            }
+        }
+        
+        class Particle {
+            constructor(x, y, vx, vy, mass) {
+                this.pos = createVector(x, y);
+                this.vel = createVector(vx, vy);
+                this.acc = createVector(0, 0);
+                this.mass = mass;
+                this.radius = Math.pow(mass, 0.3) * 2;
+                this.brightness = 255;
+                this.age = 0;
+                this.trail = [];
+                this.maxTrailLength = 5;
+            }
+            
+            applyForce(force) {
+                let f = p5.Vector.div(force, this.mass);
+                this.acc.add(f);
+            }
+            
+            update(dt) {
+                // Leapfrog integration for better energy conservation
+                this.vel.add(p5.Vector.mult(this.acc, dt));
+                this.pos.add(p5.Vector.mult(this.vel, dt));
+                this.acc.mult(0);
+                
+                this.age++;
+                
+                // Update trail
+                if (this.age % 5 === 0) {
+                    this.trail.push(this.pos.copy());
+                    if (this.trail.length > this.maxTrailLength) {
+                        this.trail.shift();
+                    }
+                }
+                
+                // Update brightness based on velocity (doppler-like effect)
+                let speed = this.vel.mag();
+                this.brightness = map(speed, 0, 10, 150, 255);
+            }
+            
+            display() {
+                // Draw trail
+                if (this.trail.length > 1) {
+                    for (let i = 0; i < this.trail.length - 1; i++) {
+                        let alpha = map(i, 0, this.trail.length, 0, 30);
+                        stroke(255, 255, 200, alpha);
+                        strokeWeight(this.radius * 0.5);
+                        line(this.trail[i].x, this.trail[i].y, 
+                             this.trail[i + 1].x, this.trail[i + 1].y);
+                    }
+                }
+                
+                // Draw particle
+                noStroke();
+                let alpha = map(this.radius, 0.5, 3, 200, 255);
+                fill(this.brightness, this.brightness, this.brightness * 0.9, alpha);
+                ellipse(this.pos.x, this.pos.y, this.radius * 2);
+            }
+        }
+        
+        class CentralMass {
+            constructor(x, y, mass) {
+                this.pos = createVector(x, y);
+                this.mass = mass;
+                this.radius = 15;
+            }
+            
+            display() {
+                // Black hole with accretion disk effect
+                for (let i = 5; i > 0; i--) {
+                    let alpha = map(i, 0, 5, 255, 50);
+                    fill(100, 50, 150, alpha);
+                    noStroke();
+                    ellipse(this.pos.x, this.pos.y, this.radius * i * 0.8);
+                }
+                fill(0);
+                ellipse(this.pos.x, this.pos.y, this.radius);
+            }
+        }
+        
+        let particles = [];
+        let centralMass;
+        let quadtree;
+        let G = 0.5; // Gravitational constant
+        let dt = 0.02; // Time step
+        let simulationTime = 0;
+        let darkMatterRadius = 400;
+        let darkMatterMass = 5000;
+        
+        function setup() {
+            createCanvas(windowWidth, windowHeight);
+            
+            // Create central supermassive black hole
+            centralMass = new CentralMass(width/2, height/2, 500);
+            
+            // Initialize particles in a collapsing protogalactic cloud
+            for (let i = 0; i < 10000; i++) {
+                // Initial distribution: spherical cloud with some rotation
+                let r = randomGaussian(200, 100);
+                r = constrain(r, 50, 400);
+                let theta = random(TWO_PI);
+                let phi = random(-PI/4, PI/4); // Flattened distribution
+                
+                let x = width/2 + r * cos(theta) * cos(phi);
+                let y = height/2 + r * sin(theta) * cos(phi);
+                
+                // Initial velocity: small rotation + random motion
+                let rotationSpeed = random(0.5, 1.5) * sqrt(50/r); // Keplerian-like
+                let vx = -sin(theta) * rotationSpeed + randomGaussian(0, 0.5);
+                let vy = cos(theta) * rotationSpeed + randomGaussian(0, 0.5);
+                
+                // Mass distribution: more massive particles near center
+                let mass = random(0.1, 1.0) * (1 + 100/r);
+                
+                particles.push(new Particle(x, y, vx, vy, mass));
+            }
+        }
+        
+        function draw() {
+            // Light gray background with subtle fade
+            fill(220, 220, 220, 50);
+            rect(0, 0, width, height);
+            
+            // Build quadtree
+            let boundary = {x: 0, y: 0, w: width, h: height};
+            quadtree = new Quadtree(boundary, 4);
+            
+            for (let particle of particles) {
+                quadtree.insert(particle);
+            }
+            quadtree.calculateMassDistribution();
+            
+            // Update and display particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let particle = particles[i];
+                
+                // Barnes-Hut gravity from other particles
+                let force = quadtree.calculateForce(particle, 0.5);
+                particle.applyForce(force);
+                
+                // Central black hole gravity
+                let toCentral = p5.Vector.sub(centralMass.pos, particle.pos);
+                let distToCentral = toCentral.mag();
+                if (distToCentral > 10) {
+                    let centralForce = toCentral.copy();
+                    centralForce.normalize();
+                    centralForce.mult(G * centralMass.mass * particle.mass / (distToCentral * distToCentral));
+                    particle.applyForce(centralForce);
+                }
+                
+                // Dark matter halo influence (NFW profile approximation)
+                let dmDist = p5.Vector.dist(particle.pos, centralMass.pos);
+                if (dmDist < darkMatterRadius) {
+                    let dmForce = p5.Vector.sub(centralMass.pos, particle.pos);
+                    dmForce.normalize();
+                    let dmStrength = (G * darkMatterMass * particle.mass) / 
+                                    (dmDist * dmDist) * (dmDist / darkMatterRadius);
+                    dmForce.mult(dmStrength);
+                    particle.applyForce(dmForce);
+                }
+                
+                // Tidal forces for spiral arm formation
+                if (simulationTime > 100) {
+                    let angle = atan2(particle.pos.y - height/2, particle.pos.x - width/2);
+                    let spiralForce = createVector(cos(angle + PI/2), sin(angle + PI/2));
+                    spiralForce.mult(0.02 * sin(simulationTime * 0.01 + dmDist * 0.01));
+                    particle.applyForce(spiralForce);
+                }
+                
+                particle.update(dt);
+                
+                // Remove particles that fall into the black hole
+                if (distToCentral < 5) {
+                    centralMass.mass += particle.mass;
+                    particles.splice(i, 1);
+                } else {
+                    particle.display();
+                }
+            }
+            
+            // Display central mass
+            centralMass.display();
+            
+            // Update simulation time
+            simulationTime++;
+            
+            // Update info
+            if (frameCount % 10 === 0) {
+                document.getElementById('fps').textContent = `FPS: ${Math.round(frameRate())}`;
+                
+                let phase = "Protogalactic Cloud";
+                if (simulationTime > 100) phase = "Disk Formation";
+                if (simulationTime > 300) phase = "Spiral Arms Emerging";
+                if (simulationTime > 600) phase = "Mature Galaxy";
+                document.getElementById('phase').textContent = `Phase: ${phase} | Particles: ${particles.length}`;
+            }
+        }
+        
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+        }
+    </script>
+</body>
+</html>

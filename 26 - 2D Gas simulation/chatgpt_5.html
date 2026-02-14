@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>p5.js — 2D Gas: Elastic Collisions, Pressure, Temperature & MB Histogram</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body { margin: 0; background: #0b0f14; color: #e6eef6; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    canvas { display: block; }
+    /* HUD */
+    #hud { position: fixed; left: 10px; top: 10px; background: rgba(14,18,24,.65); border: 1px solid rgba(255,255,255,.08);
+      padding: 10px 12px; border-radius: 12px; backdrop-filter: blur(6px); font-size: 12.5px; line-height: 1.35; max-width: min(700px, 58vw); }
+    #hud b { color: #fff }
+    /* Control panel */
+    #panel { position: fixed; right: 12px; top: 12px; width: 320px; max-width: 48vw; background: rgba(15,18,25,.7); border: 1px solid rgba(255,255,255,.08);
+      border-radius: 14px; padding: 12px; backdrop-filter: blur(8px); font-size: 12.5px; }
+    #panel h3 { margin: 4px 0 10px 0; font-size: 14px; color: #fff }
+    #panel .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin: 6px 0; }
+    #panel label { font-size: 12px; opacity: .95 }
+    #panel input[type=range] { grid-column: 1 / span 2; }
+    #panel input[type=checkbox] { transform: translateY(1px); }
+    #panel .btns { display:flex; gap:8px; margin-top:6px }
+    #panel button { background: #0e7c66; color: #fff; border: 0; padding: 8px 10px; border-radius: 10px; font-weight: 700; cursor: pointer }
+    #panel button.secondary { background: #334155 }
+    #panel small { display: block; color: #b8c8d9; opacity: .9 }
+    a { color:#8bd5ff; text-decoration:none }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="hud"></div>
+  <div id="panel">
+    <h3>2D Gas — Controls</h3>
+    <div class="row"><label>Particles N</label><span id="nV">—</span><input id="n" type="range" min="20" max="1200" step="10" value="400"></div>
+    <div class="row"><label>Initial temperature T<sub>0</sub></label><span id="tV">—</span><input id="t0" type="range" min="0.05" max="3.0" step="0.05" value="1.0"></div>
+    <div class="row"><label>Box size (relative)</label><span id="boxV">—</span><input id="box" type="range" min="0.5" max="1.0" step="0.01" value="0.85"></div>
+    <div class="row"><label>Heavy fraction (species B)</label><span id="fracV">—</span><input id="frac" type="range" min="0" max="1" step="0.01" value="0.35"></div>
+    <div class="row"><label>Mass ratio m<sub>B</sub>/m<sub>A</sub></label><span id="mrV">—</span><input id="mr" type="range" min="1" max="10" step="0.1" value="4"></div>
+    <div class="row"><label>Radius A (px)</label><span id="raV">—</span><input id="ra" type="range" min="2" max="8" step="0.5" value="3.5"></div>
+    <div class="row"><label>Radius ratio r<sub>B</sub>/r<sub>A</sub></label><span id="rbV">—</span><input id="rb" type="range" min="0.6" max="2.0" step="0.05" value="1.2"></div>
+    <div class="row"><label>Collisions enabled</label><input id="coll" type="checkbox" checked></div>
+    <div class="btns"><button id="reset">Reset gas</button><button id="pause" class="secondary">Pause</button><button id="save" class="secondary">Save PNG</button></div>
+    <small>Keys: <b>Space</b> pause · <b>R</b> reset · <b>C</b> toggle collisions · <b>S</b> save PNG</small>
+  </div>
+
+  <script>
+  // --------------------------------------------------------------
+  // 2D hard-disk gas with elastic collisions (particle-particle & walls)
+  // Spatial hashing for O(N) neighbor checks; displays T, pressure, hist.
+  // Units: k_B = 1; Temperature T = average kinetic energy per particle.
+  // --------------------------------------------------------------
+
+  // p5 layout
+  const rightWFrac = 0.33; // histogram panel fraction
+  let box = { x: 0, y: 0, w: 0, h: 0 };
+  let paused=false;
+
+  // Parameters (mutable via UI)
+  const P = {
+    N: 400,
+    T0: 1.0,
+    boxScale: 0.85, // relative to left region
+    fracHeavy: 0.35,
+    massRatio: 4.0,
+    rA: 3.5,
+    rRatio: 1.2,
+    collisions: true,
+  };
+
+  // Particles
+  let parts = [];
+  // Spatial hash
+  let cellSize=10, cols=0, rows=0, grid=null;
+
+  // Stats & accumulators
+  let totalKE=0, temperature=0; // T = KE/N
+  let pressX=0, pressY=0, pressAvg=0; // pressure per unit length on vertical/horizontal walls
+  let impulseX=0, impulseY=0; // per-frame impulse accumulators
+  let collCount=0, collRate=0; // particle-particle collisions per second (EMA)
+
+  // Histogram bins
+  const bins=40; let hist=new Array(bins).fill(0); let vMaxSeen=1;
+
+  function setup(){
+    createCanvas(windowWidth, windowHeight);
+    pixelDensity(1);
+    initUI();
+    layout();
+    resetGas();
+  }
+
+  function windowResized(){
+    resizeCanvas(windowWidth, windowHeight);
+    layout();
+  }
+
+  function layout(){
+    const leftW = floor(width * (1-rightWFrac));
+    const leftH = height;
+    const s = P.boxScale;
+    const bw = floor(leftW * s), bh = floor(leftH * s);
+    box.w = bw; box.h = bh; box.x = floor((leftW - bw)/2); box.y = floor((leftH - bh)/2);
+    // grid for spatial hashing — based on max diameter
+    const rB = P.rA * P.rRatio;
+    cellSize = max( (P.rA*2), (rB*2) ) + 1;
+    cols = max(2, floor(bw / cellSize));
+    rows = max(2, floor(bh / cellSize));
+    grid = new Array(cols*rows);
+    for (let i=0;i<grid.length;i++) grid[i]=[];
+  }
+
+  function initUI(){
+    const bindRange = (id, fmt=(v)=>v)=>{
+      const el=document.getElementById(id); const lab=document.getElementById(id+'V');
+      const write=()=>{ lab.textContent = (typeof fmt==='function'?fmt(parseFloat(el.value)):fmt).toString(); };
+      el.addEventListener('input', ()=>{ PMap[id](parseFloat(el.value)); write(); }); write(); return el; };
+    const PMap = {
+      n:(v)=>{ P.N=v; }, t0:(v)=>{ P.T0=v; }, box:(v)=>{ P.boxScale=v; layout(); }, frac:(v)=>{ P.fracHeavy=v; }, mr:(v)=>{ P.massRatio=v; }, ra:(v)=>{ P.rA=v; layout(); }, rb:(v)=>{ P.rRatio=v; layout(); },
+    };
+    bindRange('n', (v)=>v|0);
+    bindRange('t0', (v)=>v.toFixed(2));
+    bindRange('box', (v)=>v.toFixed(2));
+    bindRange('frac', (v)=>v.toFixed(2));
+    bindRange('mr', (v)=>v.toFixed(2));
+    bindRange('ra', (v)=>v.toFixed(1));
+    bindRange('rb', (v)=>v.toFixed(2));
+    const coll=document.getElementById('coll'); coll.checked=P.collisions; coll.addEventListener('change', ()=>{ P.collisions=coll.checked; });
+    document.getElementById('reset').addEventListener('click', resetGas);
+    const pb = document.getElementById('pause'); pb.addEventListener('click', ()=>{ paused=!paused; pb.textContent = paused? 'Resume':'Pause'; });
+    document.getElementById('save').addEventListener('click', ()=>saveCanvas('gas','png'));
+  }
+
+  function keyPressed(){
+    if (key===' ') { paused=!paused; document.getElementById('pause').textContent = paused? 'Resume':'Pause'; }
+    if (key==='R' || key==='r') resetGas();
+    if (key==='C' || key==='c') { P.collisions=!P.collisions; document.getElementById('coll').checked=P.collisions; }
+    if (key==='S' || key==='s') saveCanvas('gas','png');
+  }
+
+  function resetGas(){
+    // Create particles with mixture of species masses & radii
+    const mA=1.0, mB=P.massRatio*mA, rA=P.rA, rB=P.rA*P.rRatio;
+    const NA = max(0, round(P.N * (1 - P.fracHeavy))); const NB = max(0, P.N - NA);
+    parts = [];
+    // rejection place non-overlapping
+    const maxAttempts = P.N * 1000;
+    let attempts=0;
+    const addParticle=(isB)=>{
+      const r = isB? rB : rA; const m = isB? mB : mA; const color = isB? colorB : colorA;
+      while (attempts < maxAttempts){
+        attempts++;
+        const x = box.x + r + random(box.w - 2*r);
+        const y = box.y + r + random(box.h - 2*r);
+        let ok=true;
+        for (let p of parts){ const dx=x-p.x, dy=y-p.y; const rr=r+p.r; if (dx*dx+dy*dy < rr*rr) { ok=false; break; } }
+        if (ok){ parts.push({x,y, vx:0, vy:0, m, r, isB, col:color}); return true; }
+      }
+      return false;
+    };
+    const colorA = [170, 220, 255]; const colorB=[255, 160, 110];
+    for (let i=0;i<NA;i++) if (!addParticle(false)) break;
+    for (let i=0;i<NB;i++) if (!addParticle(true)) break;
+    // assign velocities from Maxwell-Boltzmann (2D): vx,vy ~ N(0, σ^2) with σ^2 = T/m
+    const T0=P.T0; let sumVX=0, sumVY=0;
+    for (let p of parts){ const sigma=Math.sqrt(T0/p.m); p.vx = gauss()*sigma; p.vy = gauss()*sigma; sumVX+=p.vx; sumVY+=p.vy; }
+    // remove net drift
+    const meanVX=sumVX/parts.length, meanVY=sumVY/parts.length; for (let p of parts){ p.vx-=meanVX; p.vy-=meanVY; }
+    // reset stats
+    vMaxSeen=1; hist.fill(0); totalKE=0; temperature=T0; pressX=pressY=pressAvg=0; impulseX=impulseY=0; collCount=0; collRate=0;
+  }
+
+  // Helpers
+  function gauss(){ // Box–Muller
+    let u=0,v=0; while(u===0)u=Math.random(); while(v===0)v=Math.random(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+  }
+
+  function buildGrid(){
+    for (let i=0;i<grid.length;i++) grid[i].length=0;
+    const inv = 1/cellSize;
+    for (let i=0;i<parts.length;i++){
+      const p=parts[i];
+      const cx = constrain(floor((p.x - box.x) * inv), 0, cols-1);
+      const cy = constrain(floor((p.y - box.y) * inv), 0, rows-1);
+      grid[cx + cy*cols].push(i);
+    }
+  }
+
+  function step(dt){
+    // integrate
+    const left=box.x, right=box.x+box.w, top=box.y, bottom=box.y+box.h;
+    impulseX=0; impulseY=0; collCount=0;
+
+    for (let p of parts){ p.x += p.vx*dt; p.y += p.vy*dt; }
+
+    // walls — perfectly elastic; accumulate momentum transfer
+    for (let p of parts){
+      // left
+      if (p.x - p.r < left){ const vx0=p.vx; p.x = left + p.r; p.vx = Math.abs(p.vx); impulseX += Math.abs(-vx0 - vx0) * p.m * 0.5 * 2; /*eqv 2m|vx0|*/ }
+      // right
+      if (p.x + p.r > right){ const vx0=p.vx; p.x = right - p.r; p.vx = -Math.abs(p.vx); impulseX += Math.abs(-vx0 - vx0) * p.m * 0.5 * 2; }
+      // top
+      if (p.y - p.r < top){ const vy0=p.vy; p.y = top + p.r; p.vy = Math.abs(p.vy); impulseY += Math.abs(-vy0 - vy0) * p.m * 0.5 * 2; }
+      // bottom
+      if (p.y + p.r > bottom){ const vy0=p.vy; p.y = bottom - p.r; p.vy = -Math.abs(p.vy); impulseY += Math.abs(-vy0 - vy0) * p.m * 0.5 * 2; }
+    }
+
+    if (P.collisions){
+      buildGrid();
+      const rmax = max(P.rA, P.rA*P.rRatio), rsumMax = (rmax + rmax); const rsumMax2 = rsumMax*rsumMax;
+      const neighbors = [0,1,-1, cols, -cols, cols+1, cols-1, -cols+1, -cols-1];
+      for (let cy=0; cy<rows; cy++){
+        for (let cx=0; cx<cols; cx++){
+          const base = cx+cy*cols; const arr = grid[base]; if (!arr.length) continue;
+          // check within cell
+          for (let a=0; a<arr.length; a++){
+            const i=arr[a];
+            // own cell
+            for (let b=a+1; b<arr.length; b++) checkPair(i, arr[b]);
+            // neighbor cells
+            for (let off of neighbors){ const na = base+off; if (na<0 || na>=grid.length) continue; const nbArr=grid[na]; for (let j of nbArr) checkPair(i,j); }
+          }
+        }
+      }
+    }
+
+    // stats
+    totalKE = 0; let vmax=0;
+    for (let p of parts){ const v2=p.vx*p.vx + p.vy*p.vy; totalKE += 0.5*p.m*v2; vmax = max(vmax, Math.sqrt(v2)); }
+    vMaxSeen = max(vMaxSeen*0.98 + vmax*0.02, vmax*0.9); // smooth
+    temperature = (parts.length>0) ? (totalKE/parts.length) : 0; // kB=1, f=2 ⇒ T=KE/N
+
+    // pressure per unit length on vertical/horizontal walls
+    // divide by two walls length each
+    const Lx = box.h, Ly = box.w; // lengths of vertical/horizontal walls
+    const Px_inst = (impulseX / max(1e-9, dt)) / (2*Lx);
+    const Py_inst = (impulseY / max(1e-9, dt)) / (2*Ly);
+    const alpha = 1 - Math.exp(-dt / 1.0); // EMA with ~1 s time constant
+    pressX = pressX*(1-alpha) + Px_inst*alpha;
+    pressY = pressY*(1-alpha) + Py_inst*alpha;
+    pressAvg = 0.5*(pressX + pressY);
+    // collision rate EMA
+    collRate = collRate*(1-alpha) + (collCount/dt)*(alpha);
+  }
+
+  function checkPair(i,j){ if (i>=j) return; const a=parts[i], b=parts[j];
+    const dx=b.x-a.x, dy=b.y-a.y; const dist2=dx*dx+dy*dy; const rad=a.r+b.r; if (dist2>rad*rad) return;
+    const dist = Math.max(1e-9, Math.sqrt(dist2));
+    // relative velocity along normal (i->j)
+    const nx=dx/dist, ny=dy/dist; const rvx=a.vx-b.vx, rvy=a.vy-b.vy; const rel = rvx*nx + rvy*ny; if (rel<=0) return; // already separating
+    // impulse for perfectly elastic collision (e=1)
+    const invMass = 1/a.m + 1/b.m; const J = -(1+1.0) * rel / invMass; // 2*rel / invMass, negative
+    // apply impulse
+    const Jnx = (J*nx), Jny = (J*ny);
+    a.vx += (Jnx / a.m); a.vy += (Jny / a.m);
+    b.vx -= (Jnx / b.m); b.vy -= (Jny / b.m);
+    // positional correction to resolve overlap
+    const overlap = rad - dist; const push = overlap / (invMass); // proportional to inverse masses
+    const px = (push * nx), py = (push * ny);
+    a.x -= px / a.m; a.y -= py / a.m; b.x += px / b.m; b.y += py / b.m;
+    collCount++;
+  }
+
+  function draw(){
+    background('#070b10');
+    const dt = min(0.015, deltaTime/1000); // clamp step for stability
+    const sub = 2; for (let s=0;s<sub;s++){ if (!paused) step(dt/sub); }
+
+    // left pane: box + particles
+    drawBox();
+    drawParticles();
+
+    // right pane: histogram & legend
+    drawHistogramPanel();
+
+    if (frameCount%2===0) updateHUD();
+  }
+
+  function drawBox(){
+    noFill(); stroke('#8bd5ff'); strokeWeight(2); rect(box.x, box.y, box.w, box.h, 8);
+  }
+
+  function drawParticles(){
+    noStroke();
+    for (let p of parts){ fill(p.col[0], p.col[1], p.col[2]); circle(p.x, p.y, p.r*2); }
+  }
+
+  // Histogram & MB curve ---------------------------------------------
+  function drawHistogramPanel(){
+    const x0 = floor(width*(1-rightWFrac)) + 10; const y0 = 10; const w = width - x0 - 10; const h = height - 20;
+    // panel bg
+    noStroke(); fill(20,24,30,220); rect(x0-6, y0-6, w+12, h+12, 12);
+
+    // build normalized histogram on [0, vmax]
+    const vmax = max(0.1, vMaxSeen);
+    for (let i=0;i<bins;i++) hist[i]=0;
+    for (let p of parts){ const v=Math.hypot(p.vx,p.vy); let b=floor((v / vmax) * bins); if (b>=bins) b=bins-1; if (b>=0) hist[b]++; }
+    const binW = vmax / bins;
+    const dens = hist.map(c => (parts.length>0? c / (parts.length * binW) : 0));
+    // find y scale
+    let ymax = 0; for (let d of dens) if (d>ymax) ymax=d;
+
+    // axes
+    stroke(120); strokeWeight(1); line(x0, y0+h-28, x0+w-16, y0+h-28); line(x0, y0+8, x0, y0+h-28);
+    // bars
+    const plotH = h-48; const plotY = y0+8; const plotX = x0+1; const plotW = w-20;
+    noStroke(); fill(120,180,240,220);
+    for (let i=0;i<bins;i++){
+      const x = plotX + (i/bins)*plotW; const y = plotY + (1 - (dens[i]/max(1e-9,ymax))) * plotH; const bw = plotW/bins * 0.98; rect(x, y, bw, plotY+plotH - y);
+    }
+
+    // MB mixture curve at current T (2D Rayleigh): f(v) = v/σ^2 * exp(-v^2/(2σ^2)) where σ^2=T/m
+    if (parts.length>0 && temperature>0){
+      const mA=1.0, mB=P.massRatio*mA; const NA = parts.filter(p=>!p.isB).length; const NB = parts.length-NA; const wA=NA/parts.length, wB=1-wA;
+      noFill(); stroke('#ffd166'); strokeWeight(2);
+      beginShape();
+      for (let i=0;i<=120;i++){
+        const v = (i/120) * vmax;
+        const sigA = temperature/mA; const sigB = temperature/mB; // σ^2
+        const fA = v/(sigA) * Math.exp(-v*v/(2*sigA));
+        const fB = v/(sigB) * Math.exp(-v*v/(2*sigB));
+        const f = wA*fA + wB*fB;
+        const t = f / max(1e-9,ymax);
+        const X = plotX + (v/vmax) * plotW; const Y = plotY + (1 - t) * plotH; vertex(X,Y);
+      }
+      endShape();
+      // legend
+      noStroke(); fill(230); textSize(12); text('speed v', x0 + w*0.6, y0+h-12); push(); translate(x0+10, y0+plotH+10); fill(120,180,240); rect(0,0,14,8); fill(230); text(' histogram (density)', 20,8); fill('#ffd166'); rect(160,0,14,8); fill(230); text(' 2D Maxwell–Boltzmann (mixture)', 180,8); pop();
+    }
+  }
+
+  function updateHUD(){
+    const fps=(frameRate()||0).toFixed(0);
+    const info = `
+      <div><b>2D Gas (Hard Disks)</b> — ${fps} FPS · N <b>${parts.length}</b> · collisions <b>${P.collisions?'on':'off'}</b></div>
+      <div>T (k<sub>B</sub>=1) <b>${temperature.toFixed(3)}</b> · KE <b>${totalKE.toFixed(3)}</b> · collision rate <b>${(collRate|0)}/s</b></div>
+      <div>P<sub>x</sub> <b>${pressX.toFixed(3)}</b> · P<sub>y</sub> <b>${pressY.toFixed(3)}</b> · ⟨P⟩ <b>${pressAvg.toFixed(3)}</b>  (force per unit length)</div>
+      <div>Box: <b>${box.w}×${box.h}</b> px · radii A/B <b>${P.rA.toFixed(1)}</b>/<b>${(P.rA*P.rRatio).toFixed(1)}</b> · masses A/B <b>1</b>/<b>${P.massRatio.toFixed(2)}</b></div>
+    `;
+    document.getElementById('hud').innerHTML=info;
+  }
+
+  </script>
+</body>
+</html>
