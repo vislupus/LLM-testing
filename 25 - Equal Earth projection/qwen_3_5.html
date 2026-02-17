@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Equal Earth Map</title>
+    <!-- Load SVG.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/3.1.2/svg.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #aadaff; /* Ocean color */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        #map-container {
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+        }
+
+        #map-container:active {
+            cursor: grabbing;
+        }
+
+        #ui-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            pointer-events: none; /* Let clicks pass through to map */
+            user-select: none;
+            min-width: 200px;
+        }
+
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 1.2rem;
+            color: #333;
+        }
+
+        .coord-box {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.9rem;
+            color: #555;
+            margin-bottom: 5px;
+        }
+
+        .coord-label {
+            font-weight: bold;
+            color: #000;
+        }
+
+        .instructions {
+            margin-top: 15px;
+            font-size: 0.8rem;
+            color: #666;
+            border-top: 1px solid #ddd;
+            padding-top: 10px;
+        }
+
+        /* SVG Styles */
+        .land {
+            fill: #e6e6e6;
+            stroke: #ffffff;
+            stroke-width: 0.5;
+            vector-effect: non-scaling-stroke;
+        }
+        
+        .graticule {
+            fill: none;
+            stroke: #ffffff;
+            stroke-width: 0.5;
+            opacity: 0.6;
+            vector-effect: non-scaling-stroke;
+        }
+
+        .marker {
+            fill: #ff4757;
+            stroke: #fff;
+            stroke-width: 2;
+            vector-effect: non-scaling-stroke;
+            cursor: pointer;
+            transition: r 0.2s;
+        }
+        .marker:hover {
+            r: 8;
+            fill: #ff6b81;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-overlay">
+        <h1>Equal Earth Projection</h1>
+        <div class="coord-box">
+            <span class="coord-label">Latitude:</span> <span id="disp-lat">0.0000</span>°
+        </div>
+        <div class="coord-box">
+            <span class="coord-label">Longitude:</span> <span id="disp-lon">0.0000</span>°
+        </div>
+        <div class="coord-box" style="margin-top:10px; font-size: 0.8rem; color:#888;">
+            <span class="coord-label">Screen:</span> <span id="disp-screen">0, 0</span>
+        </div>
+        <div class="instructions">
+            • <strong>Drag</strong> to pan<br>
+            • <strong>Scroll</strong> to zoom<br>
+            • <strong>Click</strong> to place marker
+        </div>
+    </div>
+
+    <div id="map-container"></div>
+
+    <script>
+        // --- 1. Equal Earth Projection Math ---
+        
+        // Coefficients from Savric et al. (2018)
+        const A1 = 1.340264, A2 = -0.081106, A3 = 0.000893, A4 = 0.003796;
+        const B1 = 1.340264, B2 = 0.621388, B3 = -0.034442, B4 = -0.003681;
+
+        // Helper: Polynomial sum for cos^2(theta)
+        function poly(theta, c1, c2, c3, c4) {
+            const cosTheta = Math.cos(theta);
+            const cos2 = cosTheta * cosTheta;
+            const cos4 = cos2 * cos2;
+            const cos6 = cos4 * cos2;
+            return c1 + c2 * cos2 + c3 * cos4 + c4 * cos6;
+        }
+
+        // Helper: Derivative of polynomial part w.r.t theta
+        // d/dtheta (Sum Ci * cos^(2i-2)) = Sum Ci * (2i-2) * cos^(2i-3) * -sin
+        function polyDeriv(theta, c1, c2, c3, c4) {
+            const cosTheta = Math.cos(theta);
+            const sinTheta = Math.sin(theta);
+            // Terms: c1 (const, deriv 0), c2*cos^2, c3*cos^4, c4*cos^6
+            // Deriv: c2*2*c*-s + c3*4*c^3*-s + c4*6*c^5*-s
+            const term2 = c2 * 2 * cosTheta * -sinTheta;
+            const term3 = c3 * 4 * Math.pow(cosTheta, 3) * -sinTheta;
+            const term4 = c4 * 6 * Math.pow(cosTheta, 5) * -sinTheta;
+            return term2 + term3 + term4;
+        }
+
+        // Forward: Lat/Lon (degrees) -> Projected X/Y
+        function project(lat, lon) {
+            const phi = lat * Math.PI / 180;
+            const lam = lon * Math.PI / 180;
+
+            const theta = Math.asin(Math.sqrt(3) / 2 * Math.sin(phi));
+            
+            const x = lam * Math.cos(theta) * poly(theta, A1, A2, A3, A4);
+            const y = theta * poly(theta, B1, B2, B3, B4);
+
+            return { x, y };
+        }
+
+        // Inverse: Projected X/Y -> Lat/Lon (degrees)
+        function unproject(x, y) {
+            // 1. Solve for theta given y using Newton-Raphson
+            // f(theta) = theta * polyB(theta) - y = 0
+            let theta = y / B1; // Initial guess
+            for (let i = 0; i < 10; i++) {
+                const pVal = poly(theta, B1, B2, B3, B4);
+                const pDeriv = polyDeriv(theta, B1, B2, B3, B4);
+                
+                const f = theta * pVal - y;
+                const fPrime = pVal + theta * pDeriv;
+                
+                if (Math.abs(fPrime) < 1e-9) break;
+                
+                const delta = f / fPrime;
+                theta -= delta;
+                if (Math.abs(delta) < 1e-9) break;
+            }
+
+            // 2. Calculate Phi
+            const sinPhi = (2 / Math.sqrt(3)) * Math.sin(theta);
+            // Clamp for safety
+            const clampedSin = Math.max(-1, Math.min(1, sinPhi));
+            const phi = Math.asin(clampedSin);
+
+            // 3. Calculate Lambda
+            const cosTheta = Math.cos(theta);
+            const polyA = poly(theta, A1, A2, A3, A4);
+            
+            let lam = 0;
+            if (Math.abs(cosTheta * polyA) > 1e-9) {
+                lam = x / (cosTheta * polyA);
+            }
+
+            return {
+                lat: phi * 180 / Math.PI,
+                lon: lam * 180 / Math.PI
+            };
+        }
+
+        // --- 2. Map Data (Simplified Low-Poly World) ---
+        // Compressed GeoJSON-like structure for brevity in single file
+        // Format: [ [lon, lat], [lon, lat], ... ] for each polygon
+        const worldData = [
+            // North America (Simplified)
+            [[-160, 70], [-100, 70], [-60, 70], [-50, 50], [-80, 30], [-100, 25], [-120, 30], [-160, 50], [-160, 70]],
+            // South America
+            [[-80, 10], [-40, 10], [-35, -5], [-40, -20], [-60, -50], [-70, -40], [-80, -10], [-80, 10]],
+            // Europe
+            [[-10, 35], [0, 35], [10, 45], [20, 45], [30, 50], [20, 60], [10, 70], [-10, 60], [-10, 35]],
+            // Africa
+            [[-20, 35], [10, 35], [40, 35], [50, 10], [40, -10], [20, -35], [-10, -35], [-20, 10], [-20, 35]],
+            // Asia
+            [[40, 35], [60, 35], [80, 20], [100, 20], [120, 40], [140, 40], [160, 60], [100, 70], [60, 70], [40, 50], [40, 35]],
+            // Australia
+            [[115, -20], [140, -20], [150, -30], [130, -35], [115, -25], [115, -20]],
+            // Greenland
+            [[-50, 60], [-20, 60], [-20, 80], [-50, 80], [-50, 60]]
+        ];
+
+        // --- 3. Application Logic ---
+
+        const container = document.getElementById('map-container');
+        const dispLat = document.getElementById('disp-lat');
+        const dispLon = document.getElementById('disp-lon');
+        const dispScreen = document.getElementById('disp-screen');
+
+        // Initialize SVG
+        const draw = SVG().addTo('#map-container').size('100%', '100%');
+        
+        // Create a group for the map content to apply transforms (zoom/pan)
+        const mapGroup = draw.group();
+        
+        // Viewport State
+        let scale = 1;
+        let panX = 0;
+        let panY = 0;
+        let isDragging = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+
+        // Projection Scaling Factors
+        // Equal Earth bounds approx: x: [-3.5, 3.5], y: [-1.8, 1.8]
+        // We want to fit this nicely in the SVG viewbox.
+        const BASE_SCALE = 100; 
+        const CENTER_X = 0; 
+        const CENTER_Y = 0;
+
+        function updateTransform() {
+            // Apply scale and pan to the group
+            // SVG.js transform syntax: scale, translate
+            mapGroup.transform({ 
+                scale: scale, 
+                origin: '0 0',
+                translate: [panX, panY] 
+            });
+        }
+
+        // Initial Render
+        function renderMap() {
+            // Draw Graticule (Grid)
+            const graticuleGroup = mapGroup.group().addClass('graticule');
+            
+            // Longitude lines (-180 to 180)
+            for (let lon = -180; lon <= 180; lon += 30) {
+                let points = "";
+                for (let lat = -90; lat <= 90; lat += 5) {
+                    const p = project(lat, lon);
+                    points += `${p.x * BASE_SCALE},${-p.y * BASE_SCALE} `; // Flip Y for SVG coords
+                }
+                graticuleGroup.polyline(points);
+            }
+            // Latitude lines (-90 to 90)
+            for (let lat = -90; lat <= 90; lat += 30) {
+                let points = "";
+                for (let lon = -180; lon <= 180; lon += 5) {
+                    const p = project(lat, lon);
+                    points += `${p.x * BASE_SCALE},${-p.y * BASE_SCALE} `;
+                }
+                graticuleGroup.polyline(points);
+            }
+
+            // Draw Land Masses
+            worldData.forEach(polygonCoords => {
+                let points = "";
+                polygonCoords.forEach(coord => {
+                    const p = project(coord[1], coord[0]); // lat, lon
+                    points += `${p.x * BASE_SCALE},${-p.y * BASE_SCALE} `;
+                });
+                // Close the loop
+                const first = project(polygonCoords[0][1], polygonCoords[0][0]);
+                points += `${first.x * BASE_SCALE},${-first.y * BASE_SCALE}`;
+                
+                mapGroup.polygon(points).addClass('land');
+            });
+
+            // Center initially
+            centerMap();
+        }
+
+        function centerMap() {
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            panX = width / 2;
+            panY = height / 2;
+            scale = Math.min(width, height) / 4; // Fit nicely
+            updateTransform();
+        }
+
+        // --- 4. Interaction Handlers ---
+
+        // Coordinate Conversion Helpers
+        function screenToProject(sx, sy) {
+            // Remove pan and scale to get projected coordinates (scaled by BASE_SCALE)
+            const projX = (sx - panX) / scale;
+            const projY = (sy - panY) / scale; // SVG Y is down, but our math Y is up
+            
+            // Convert from SVG pixels to Projection Units
+            const mathX = projX / BASE_SCALE;
+            const mathY = -projY / BASE_SCALE; // Flip Y back
+
+            return unproject(mathX, mathY);
+        }
+
+        function addMarker(lat, lon) {
+            const p = project(lat, lon);
+            const svgX = p.x * BASE_SCALE;
+            const svgY = -p.y * BASE_SCALE;
+
+            const marker = mapGroup.circle(10).addClass('marker');
+            marker.center(svgX, svgY);
+            
+            // Store data on element for potential future use
+            marker.data('lat', lat);
+            marker.data('lon', lon);
+        }
+
+        // Mouse Events
+        container.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+            container.style.cursor = 'grabbing';
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+            container.style.cursor = 'grab';
+        });
+
+        container.addEventListener('mousemove', (e) => {
+            // 1. Handle Panning
+            if (isDragging) {
+                const dx = e.clientX - lastMouseX;
+                const dy = e.clientY - lastMouseY;
+                panX += dx;
+                panY += dy;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                updateTransform();
+            }
+
+            // 2. Handle Coordinate Display (Inverse Projection)
+            const rect = container.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            dispScreen.innerText = `${Math.round(mouseX)}, ${Math.round(mouseY)}`;
+
+            const geo = screenToProject(mouseX, mouseY);
+            dispLat.innerText = geo.lat.toFixed(4);
+            dispLon.innerText = geo.lon.toFixed(4);
+        });
+
+        container.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomSensitivity = 0.001;
+            const delta = -e.deltaY * zoomSensitivity;
+            const newScale = scale * (1 + delta);
+
+            // Limit zoom
+            if (newScale > 0.1 && newScale < 50) {
+                // Zoom towards mouse pointer logic
+                const rect = container.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                // Calculate offset before zoom
+                const offsetX = (mouseX - panX) / scale;
+                const offsetY = (mouseY - panY) / scale;
+
+                scale = newScale;
+
+                // Adjust pan to keep mouse over same geographic point
+                panX = mouseX - offsetX * scale;
+                panY = mouseY - offsetY * scale;
+
+                updateTransform();
+            }
+        });
+
+        container.addEventListener('click', (e) => {
+            // Only add marker if we didn't drag significantly
+            // (Simple check: if mouseup happened immediately after mousedown roughly)
+            // For this demo, we'll just add a marker on every click that isn't a drag.
+            // To distinguish drag vs click perfectly requires more state, 
+            // but we can check if movement was minimal.
+            
+            if (!isDragging) {
+                const rect = container.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+                
+                const geo = screenToProject(mouseX, mouseY);
+                addMarker(geo.lat, geo.lon);
+            }
+        });
+
+        // Handle Window Resize
+        window.addEventListener('resize', () => {
+            // Optional: Re-center or adjust aspect ratio
+            // For now, we just let the SVG scale via CSS, 
+            // but panX/panY might need adjustment if we want to keep center fixed.
+            // Simple fix: Re-center if scale is default
+            if(scale === Math.min(container.clientWidth, container.clientHeight)/4) {
+                centerMap();
+            }
+        });
+
+        // Start
+        renderMap();
+
+    </script>
+</body>
+</html>

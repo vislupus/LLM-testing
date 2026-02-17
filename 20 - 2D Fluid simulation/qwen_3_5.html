@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive GPU Fluid Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #050505;
+            color: #eee;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 0 50px rgba(0, 100, 255, 0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(20, 20, 30, 0.85);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid #333;
+            backdrop-filter: blur(8px);
+            width: 280px;
+            pointer-events: auto;
+            user-select: none;
+            transition: opacity 0.3s;
+        }
+
+        #ui-layer:hover {
+            opacity: 1;
+        }
+
+        h1 {
+            font-size: 1.2rem;
+            margin: 0 0 15px 0;
+            color: #00ffff;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-align: center;
+            text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: #00ffff;
+        }
+
+        .checkbox-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+
+        .checkbox-item input {
+            margin-right: 10px;
+            accent-color: #00ffff;
+        }
+
+        .info-text {
+            font-size: 0.75rem;
+            color: #666;
+            margin-top: 15px;
+            line-height: 1.4;
+            border-top: 1px solid #333;
+            padding-top: 10px;
+        }
+
+        .key-badge {
+            background: #333;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #fff;
+            font-family: monospace;
+        }
+        
+        button {
+            background: linear-gradient(45deg, #0088ff, #00ffff);
+            border: none;
+            padding: 8px;
+            width: 100%;
+            border-radius: 4px;
+            color: #000;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover {
+            filter: brightness(1.1);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container">
+        <div id="ui-layer">
+            <h1>Fluid Dynamics</h1>
+            
+            <div class="control-group">
+                <label>Dissipation (Fade) <span id="val-diss" class="value-display">0.98</span></label>
+                <input type="range" id="inp-diss" min="0.90" max="1.0" step="0.001" value="0.98">
+            </div>
+
+            <div class="control-group">
+                <label>Velocity Dissipation <span id="val-vel-diss" class="value-display">0.99</span></label>
+                <input type="range" id="inp-vel-diss" min="0.90" max="1.0" step="0.001" value="0.99">
+            </div>
+
+            <div class="control-group">
+                <label>Splat Radius <span id="val-radius" class="value-display">0.004</span></label>
+                <input type="range" id="inp-radius" min="0.001" max="0.02" step="0.001" value="0.004">
+            </div>
+
+            <div class="control-group">
+                <label>Curl (Vorticity) <span id="val-curl" class="value-display">30.0</span></label>
+                <input type="range" id="inp-curl" min="0" max="50" step="1" value="30">
+            </div>
+
+            <button id="btn-clear">Clear Fluid</button>
+
+            <div class="info-text">
+                <p><strong>Mouse Drag:</strong> Inject Dye & Velocity</p>
+                <p><strong>Right Click:</strong> Inject Velocity Only</p>
+                <p><strong>Keys 1-5:</strong> Change Color</p>
+                <p><strong>Space:</strong> Pause/Resume</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Shaders ---
+
+        // Base Vertex Shader (Full Screen Quad)
+        const baseVert = `
+            attribute vec2 aPosition;
+            varying vec2 vUv;
+            void main() {
+                vUv = aPosition * 0.5 + 0.5;
+                gl_Position = vec4(aPosition, 0.0, 1.0);
+            }
+        `;
+
+        // 1. Advection Shader (Moves values along velocity field)
+        const advectionFrag = `
+            precision highp float;
+            varying vec2 vUv;
+            uniform sampler2D uVelocity;
+            uniform sampler2D uSource;
+            uniform vec2 uTexelSize;
+            uniform float uDt;
+            uniform float uDissipation;
+
+            void main() {
+                vec2 coord = vUv - uDt * texture2D(uVelocity, vUv).xy * uTexelSize;
+                vec4 result = texture2D(uSource, coord);
+                float decay = 1.0 + uDissipation * uDt;
+                gl_FragColor = result / decay;
+            }
+        `;
+
+        // 2. Divergence Shader (Calculates how much fluid is spreading out)
+        const divergenceFrag = `
+            precision highp float;
+            varying vec2 vUv;
+            varying vec2 vL;
+            varying vec2 vR;
+            varying vec2 vT;
+            varying vec2 vB;
+            uniform sampler2D uVelocity;
+            uniform sampler2D uObstacles; // Optional, for walls
+
+            void main() {
+                float L = texture2D(uVelocity, vL).x;
+                float R = texture2D(uVelocity, vR).x;
+                float T = texture2D(uVelocity, vT).y;
+                float B = texture2D(uVelocity, vB).y;
+
+                vec2 C = texture2D(uVelocity, vUv).xy;
+                if (vL.x < 0.0) { L = -C.x; }
+                if (vR.x > 1.0) { R = -C.x; }
+                if (vT.y > 1.0) { T = -C.y; }
+                if (vB.y < 0.0) { B = -C.y; }
+
+                float div = 0.5 * (R - L + T - B);
+                gl_FragColor = vec4(div, 0.0, 0.0, 1.0);
+            }
+        `;
+
+        // 3. Curl Shader (Calculates vorticity for swirling)
+        const curlFrag = `
+            precision highp float;
+            varying vec2 vUv;
+            varying vec2 vL;
+            varying vec2 vR;
+            varying vec2 vT;
+            varying vec2 vB;
+            uniform sampler2D uVelocity;
+
+            void main() {
+                float L = texture2D(uVelocity, vL).y;
+                float R = texture2D(uVelocity, vR).y;
+                float T = texture2D(uVelocity, vT).x;
+                float B = texture2D(uVelocity, vB).x;
+                float vorticity = R - L - T + B;
+                gl_FragColor = vec4(0.5 * vorticity, 0.0, 0.0, 1.0);
+            }
+        `;
+
+        // 4. Vorticity Confinement Shader (Adds swirl back into velocity)
+        const vorticityFrag = `
+            precision highp float;
+            varying vec2 vUv;
+            varying vec2 vL;
+            varying vec2 vR;
+            varying vec2 vT;
+            varying vec2 vB;
+            uniform sampler2D uVelocity;
+            uniform sampler2D uCurl;
+            uniform float uDt;
+            uniform float uStrength;
+
+            void main() {
+                float L = texture2D(uCurl, vL).x;
+                float R = texture2D(uCurl, vR).x;
+                float T = texture2D(uCurl, vT).x;
+                float B = texture2D(uCurl, vB).x;
+                float C = texture2D(uCurl, vUv).x;
+
+                vec2 force = 0.5 * vec2(abs(T) - abs(B), abs(R) - abs(L));
+                force /= length(force) + 0.0001;
+                force *= uStrength * C;
+                force.y *= -1.0;
+
+                vec2 vel = texture2D(uVelocity, vUv).xy;
+                gl_FragColor = vec4(vel + force * uDt, 0.0, 1.0);
+            }
+        `;
+
+        // 5. Pressure Solver (Jacobi Iteration)
+        const pressureFrag = `
+            precision highp float;
+            varying vec2 vUv;
+            varying vec2 vL;
+            varying vec2 vR;
+            varying vec2 vT;
+            varying vec2 vB;
+            uniform sampler2D uPressure;
+            uniform sampler2D uDivergence;
+
+            void main() {
+                float L = texture2D(uPressure, vL).x;
+                float R = texture2D(uPressure, vR).x;
+                float T = texture2D(uPressure, vT).x;
+                float B = texture2D(uPressure, vB).x;
+                float C = texture2D(uPressure, vUv).x;
+                float divergence = texture2D(uDivergence, vUv).x;
+                float pressure = (L + R + B + T - divergence) * 0.25;
+                gl_FragColor = vec4(pressure, 0.0, 0.0, 1.0);
+            }
+        `;
+
+        // 6. Gradient Subtract (Enforces incompressibility)
+        const gradientSubtractFrag = `
+            precision highp float;
+            varying vec2 vUv;
+            varying vec2 vL;
+            varying vec2 vR;
+            varying vec2 vT;
+            varying vec2 vB;
+            uniform sampler2D uPressure;
+            uniform sampler2D uVelocity;
+
+            void main() {
+                float L = texture2D(uPressure, vL).x;
+                float R = texture2D(uPressure, vR).x;
+                float T = texture2D(uPressure, vT).x;
+                float B = texture2D(uPressure, vB).x;
+                vec2 velocity = texture2D(uVelocity, vUv).xy;
+                velocity.xy -= vec2(R - L, T - B);
+                gl_FragColor = vec4(velocity, 0.0, 1.0);
+            }
+        `;
+
+        // 7. Splat Shader (Adds dye or velocity at mouse position)
+        const splatFrag = `
+            precision highp float;
+            varying vec2 vUv;
+            uniform sampler2D uTarget;
+            uniform float uAspectRatio;
+            uniform vec3 uPoint;
+            uniform vec3 uColor;
+            uniform float uRadius;
+
+            void main() {
+                vec2 p = vUv - uPoint.xy;
+                p.x *= uAspectRatio;
+                vec3 splat = exp(-dot(p, p) / uRadius) * uColor;
+                vec3 base = texture2D(uTarget, vUv).xyz;
+                gl_FragColor = vec4(base + splat, 1.0);
+            }
+        `;
+
+        // 8. Display Shader (Renders density to screen with color mapping)
+        const displayFrag = `
+            precision highp float;
+            varying vec2 vUv;
+            uniform sampler2D uTexture;
+            uniform float uBloom;
+            uniform float uSunrays;
+
+            // Simple color mapping based on density
+            vec3 colorMap(float t) {
+                vec3 c1 = vec3(0.0, 0.1, 0.4); // Deep Blue
+                vec3 c2 = vec3(0.0, 0.6, 0.9); // Cyan
+                vec3 c3 = vec3(1.0, 1.0, 0.2); // Yellow
+                vec3 c4 = vec3(1.0, 0.1, 0.1); // Red
+                
+                if(t < 0.25) return mix(c1, c2, t * 4.0);
+                if(t < 0.50) return mix(c2, c3, (t - 0.25) * 4.0);
+                return mix(c3, c4, (t - 0.50) * 2.0);
+            }
+
+            void main() {
+                float t = texture2D(uTexture, vUv).r;
+                // Add a little bloom/glow
+                vec3 color = colorMap(t);
+                color += t * 0.1; 
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+
+        // --- Simulation Class ---
+
+        class FluidSimulation {
+            constructor(resX, resY) {
+                this.resX = resX;
+                this.resY = resY;
+                this.texelSize = [1.0 / resX, 1.0 / resY];
+                this.aspectRatio = resX / resY;
+                
+                // Create Shaders
+                this.shaders = {
+                    advection: createShader(baseVert, advectionFrag),
+                    divergence: createShader(baseVert, divergenceFrag),
+                    curl: createShader(baseVert, curlFrag),
+                    vorticity: createShader(baseVert, vorticityFrag),
+                    pressure: createShader(baseVert, pressureFrag),
+                    gradient: createShader(baseVert, gradientSubtractFrag),
+                    splat: createShader(baseVert, splatFrag),
+                    display: createShader(baseVert, displayFrag)
+                };
+
+                // Create Double Buffers (Ping-Pong)
+                // We need: Velocity, Density, Divergence, Curl, Pressure
+                this.velocity = this.createDoubleFBO(resX, resY);
+                this.density = this.createDoubleFBO(resX, resY);
+                this.divergence = this.createFBO(resX, resY);
+                this.curl = this.createFBO(resX, resY);
+                this.pressure = this.createDoubleFBO(resX, resY);
+
+                // Parameters
+                this.dt = 0.016;
+                this.dissipation = 0.98;
+                this.velocityDissipation = 0.99;
+                this.splatRadius = 0.004;
+                this.curlStrength = 30.0;
+                this.paused = false;
+                
+                // Current Dye Color
+                this.currentColor = { r: 0.0, g: 0.8, b: 1.0 };
+            }
+
+            createFBO(w, h) {
+                let fbo = createGraphics(w, h, WEBGL);
+                fbo.noSmooth();
+                fbo.pixelDensity(1);
+                return fbo;
+            }
+
+            createDoubleFBO(w, h) {
+                return {
+                    read: this.createFBO(w, h),
+                    write: this.createFBO(w, h),
+                    swap: function() {
+                        let temp = this.read;
+                        this.read = this.write;
+                        this.write = temp;
+                    }
+                };
+            }
+
+            step() {
+                if (this.paused) return;
+
+                // 1. Vorticity Confinement (Optional, adds detail)
+                if (this.curlStrength > 0) {
+                    this.applyShader(this.shaders.curl, this.velocity.read, this.curl);
+                    this.applyShader(this.shaders.vorticity, this.velocity.read, this.velocity.write, {
+                        uCurl: this.curl,
+                        uDt: this.dt,
+                        uStrength: this.curlStrength
+                    });
+                    this.velocity.swap();
+                }
+
+                // 2. Advect Velocity (Move velocity by itself)
+                this.applyShader(this.shaders.advection, this.velocity.read, this.velocity.write, {
+                    uVelocity: this.velocity.read,
+                    uSource: this.velocity.read,
+                    uDt: this.dt,
+                    uDissipation: this.velocityDissipation
+                });
+                this.velocity.swap();
+
+                // 3. Project (Make fluid incompressible)
+                // 3a. Divergence
+                this.applyShader(this.shaders.divergence, this.velocity.read, this.divergence);
+                
+                // 3b. Clear Pressure
+                this.clearFBO(this.pressure.read);
+                
+                // 3c. Pressure Solve (Jacobi Iteration - run multiple times for accuracy)
+                for (let i = 0; i < 20; i++) {
+                    this.applyShader(this.shaders.pressure, this.pressure.read, this.pressure.write, {
+                        uDivergence: this.divergence
+                    });
+                    this.pressure.swap();
+                }
+
+                // 3d. Subtract Gradient
+                this.applyShader(this.shaders.gradient, this.pressure.read, this.velocity.write, {
+                    uPressure: this.pressure.read
+                });
+                this.velocity.swap();
+
+                // 4. Advect Density (Move dye by velocity)
+                this.applyShader(this.shaders.advection, this.velocity.read, this.density.write, {
+                    uVelocity: this.velocity.read,
+                    uSource: this.density.read,
+                    uDt: this.dt,
+                    uDissipation: this.dissipation
+                });
+                this.density.swap();
+            }
+
+            applyShader(shader, inputFBO, outputFBO, uniforms = {}) {
+                outputFBO.begin();
+                clear();
+                shader(shader);
+                shader.setUniform('aPosition', [-1, -1, -1, 1, 1, 1, 1, -1]); // Manual quad if needed, but p5 rect works
+                
+                // Set standard uniforms
+                shader.setUniform('uTexelSize', this.texelSize);
+                
+                // Set dynamic uniforms
+                for (let key in uniforms) {
+                    shader.setUniform(key, uniforms[key]);
+                }
+                
+                // Bind input texture
+                if (inputFBO) {
+                    shader.setUniform('uTarget', inputFBO); // For splat
+                    shader.setUniform('uVelocity', inputFBO); // For advection
+                    shader.setUniform('uSource', inputFBO); // For advection
+                    shader.setUniform('uPressure', inputFBO); // For gradient
+                    shader.setUniform('uDivergence', inputFBO); // For pressure
+                    shader.setUniform('uCurl', inputFBO); // For vorticity
+                }
+
+                rect(0, 0, outputFBO.width, outputFBO.height);
+                outputFBO.end();
+            }
+
+            clearFBO(fbo) {
+                fbo.begin();
+                clear();
+                fbo.end();
+            }
+
+            splat(x, y, dx, dy, color) {
+                // Add Velocity
+                this.applyShader(this.shaders.splat, this.velocity.read, this.velocity.write, {
+                    uPoint: [x, y, 0],
+                    uColor: [dx, dy, 0],
+                    uRadius: this.splatRadius,
+                    uAspectRatio: this.aspectRatio
+                });
+                this.velocity.swap();
+
+                // Add Density (Color)
+                this.applyShader(this.shaders.splat, this.density.read, this.density.write, {
+                    uPoint: [x, y, 0],
+                    uColor: [color.r, color.g, color.b],
+                    uRadius: this.splatRadius,
+                    uAspectRatio: this.aspectRatio
+                });
+                this.density.swap();
+            }
+
+            render() {
+                shader(this.shaders.display);
+                this.shaders.display.setUniform('uTexture', this.density.read);
+                rect(0, 0, width, height);
+            }
+        }
+
+        // --- Main Sketch ---
+
+        let sim;
+        let lastMouseX, lastMouseY;
+        let isMouseDown = false;
+        let isRightClick = false;
+
+        function setup() {
+            let cnv = createCanvas(800, 600, WEBGL);
+            cnv.parent('canvas-container');
+            noStroke();
+            
+            // Initialize Simulation at lower res for performance, scaled up by CSS/Canvas
+            // 256x192 is a good balance for CPU/GPU JS overhead
+            sim = new FluidSimulation(256, 192);
+            
+            setupUI();
+            
+            // Initial Splat
+            sim.splat(0.5, 0.5, 0, 0, {r: 1, g: 1, b: 1});
+        }
+
+        function draw() {
+            background(0);
+            
+            // Handle Input
+            if (isMouseDown) {
+                let mx = mouseX / width;
+                let my = 1.0 - (mouseY / height); // Flip Y for shader coords
+                
+                let dx = (mouseX - lastMouseX) * 5.0;
+                let dy = -(mouseY - lastMouseY) * 5.0; // Flip Y velocity
+                
+                // Normalize to 0-1 space roughly
+                dx /= width;
+                dy /= height;
+
+                if (!isRightClick) {
+                    sim.splat(mx, my, dx, dy, sim.currentColor);
+                } else {
+                    // Velocity only (invisible dye)
+                    sim.splat(mx, my, dx * 10, dy * 10, {r:0, g:0, b:0});
+                }
+            }
+
+            lastMouseX = mouseX;
+            lastMouseY = mouseY;
+
+            // Physics Step
+            sim.step();
+
+            // Render to Screen
+            // We need to render the internal FBO to the main canvas
+            // Since p5 WEBGL rect draws a quad, we can just use the display shader on the main canvas
+            sim.render();
+            
+            // Draw UI Overlay hints if needed (handled by HTML/CSS)
+        }
+
+        function setupUI() {
+            const bind = (id, key, displayId, isFloat = false) => {
+                const el = document.getElementById(id);
+                const disp = document.getElementById(displayId);
+                el.addEventListener('input', (e) => {
+                    let val = isFloat ? parseFloat(e.target.value) : parseInt(e.target.value);
+                    sim[key] = val;
+                    disp.innerText = val.toFixed(isFloat ? 3 : 0);
+                });
+            };
+
+            bind('inp-diss', 'dissipation', 'val-diss', true);
+            bind('inp-vel-diss', 'velocityDissipation', 'val-vel-diss', true);
+            bind('inp-radius', 'splatRadius', 'val-radius', true);
+            bind('inp-curl', 'curlStrength', 'val-curl', true);
+
+            document.getElementById('btn-clear').addEventListener('click', () => {
+                sim.clearFBO(sim.density.read);
+                sim.clearFBO(sim.velocity.read);
+            });
+
+            // Keyboard Controls
+            document.addEventListener('keydown', (e) => {
+                if (e.key === ' ') {
+                    sim.paused = !sim.paused;
+                }
+                if (e.key === '1') sim.currentColor = {r: 1, g: 0, b: 0}; // Red
+                if (e.key === '2') sim.currentColor = {r: 0, g: 1, b: 0}; // Green
+                if (e.key === '3') sim.currentColor = {r: 0, g: 0, b: 1}; // Blue
+                if (e.key === '4') sim.currentColor = {r: 1, g: 1, b: 0}; // Yellow
+                if (e.key === '5') sim.currentColor = {r: 1, g: 0, b: 1}; // Magenta
+            });
+
+            // Mouse Events
+            const canvasEl = document.querySelector('canvas');
+            canvasEl.addEventListener('mousedown', (e) => {
+                isMouseDown = true;
+                isRightClick = e.button === 2;
+                lastMouseX = mouseX;
+                lastMouseY = mouseY;
+            });
+            window.addEventListener('mouseup', () => isMouseDown = false);
+            canvasEl.addEventListener('contextmenu', e => e.preventDefault());
+            
+            // Touch support for mobile
+            canvasEl.addEventListener('touchstart', (e) => {
+                isMouseDown = true;
+                lastMouseX = e.touches[0].clientX;
+                lastMouseY = e.touches[0].clientY;
+                // Map touch to canvas coords roughly
+                let rect = canvasEl.getBoundingClientRect();
+                mouseX = (lastMouseX - rect.left) * (width / rect.width);
+                mouseY = (lastMouseY - rect.top) * (height / rect.height);
+            }, {passive: false});
+            canvasEl.addEventListener('touchend', () => isMouseDown = false);
+            canvasEl.addEventListener('touchmove', (e) => {
+                e.preventDefault(); // Prevent scroll
+                let rect = canvasEl.getBoundingClientRect();
+                let curX = (e.touches[0].clientX - rect.left) * (width / rect.width);
+                let curY = (e.touches[0].clientY - rect.top) * (height / rect.height);
+                
+                // Update global p5 mouse vars for the draw loop
+                let oldMX = mouseX;
+                let oldMY = mouseY;
+                mouseX = curX;
+                mouseY = curY;
+                
+                // Calculate delta manually for shader
+                let dx = (mouseX - oldMX) * 5.0;
+                let dy = -(mouseY - oldMY) * 5.0;
+                dx /= width; dy /= height;
+                
+                let mx = mouseX / width;
+                let my = 1.0 - (mouseY / height);
+                
+                sim.splat(mx, my, dx, dy, sim.currentColor);
+            }, {passive: false});
+        }
+
+        function windowResized() {
+            // Optional: Handle resize by recreating FBOs
+            // For simplicity in this single file, we keep fixed internal res
+            // and let CSS/Canvas scale it.
+        }
+    </script>
+</body>
+</html>

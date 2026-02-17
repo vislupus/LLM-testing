@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Heat Diffusion Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #121212;
+            color: #eee;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
+            border: 1px solid #333;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(30, 30, 40, 0.9);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid #444;
+            backdrop-filter: blur(5px);
+            width: 300px;
+            pointer-events: auto;
+            user-select: none;
+        }
+
+        h1 {
+            font-size: 1.2rem;
+            margin: 0 0 15px 0;
+            color: #ff6b6b;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            text-align: center;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: #ff6b6b;
+        }
+
+        .value-display {
+            color: #ff6b6b;
+            font-weight: bold;
+        }
+
+        .instructions {
+            margin-top: 20px;
+            font-size: 0.8rem;
+            color: #888;
+            line-height: 1.4;
+            border-top: 1px solid #444;
+            padding-top: 10px;
+        }
+
+        .key-badge {
+            background: #444;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #fff;
+            font-family: monospace;
+            font-size: 0.75rem;
+        }
+
+        button {
+            background-color: #333;
+            border: 1px solid #555;
+            color: #eee;
+            padding: 8px;
+            width: 100%;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 5px;
+            transition: background 0.2s;
+        }
+        button:hover { background-color: #444; }
+        button.active { background-color: #ff6b6b; border-color: #ff6b6b; color: #fff; }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container">
+        <div id="ui-layer">
+            <h1>Heat Diffusion</h1>
+            
+            <div class="control-group">
+                <label>Thermal Conductivity (α) <span id="val-alpha" class="value-display">0.15</span></label>
+                <input type="range" id="inp-alpha" min="0.01" max="0.24" step="0.01" value="0.15">
+            </div>
+
+            <div class="control-group">
+                <label>Heat Source Strength <span id="val-strength" class="value-display">1.0</span></label>
+                <input type="range" id="inp-strength" min="0.1" max="2.0" step="0.1" value="1.0">
+            </div>
+
+            <div class="control-group">
+                <label>Source Radius <span id="val-radius" class="value-display">15</span></label>
+                <input type="range" id="inp-radius" min="5" max="50" step="1" value="15">
+            </div>
+
+            <div class="control-group">
+                <label>Boundary Conditions</label>
+                <select id="inp-boundary" style="width:100%; background:#222; color:#fff; border:1px solid #444; padding:5px;">
+                    <option value="clamp">Insulated Walls (Clamp)</option>
+                    <option value="wrap">Toroidal (Wrap)</option>
+                    <option value="cold">Cold Walls (0°C)</option>
+                </select>
+            </div>
+
+            <button id="btn-clear">Clear Heat</button>
+            <button id="btn-preset">Load Preset (Gradient)</button>
+
+            <div class="instructions">
+                <p><strong>Left Click + Drag:</strong> Add Heat</p>
+                <p><strong>Right Click / Shift + Drag:</strong> Cool Down</p>
+                <p><strong>C Key:</strong> Toggle Convection Wind</p>
+                <p><strong>R Key:</strong> Reset</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Shaders ---
+
+        // Vertex Shader: Simple pass-through for a full-screen quad
+        const vertShader = `
+            attribute vec3 aPosition;
+            attribute vec2 aTexCoord;
+            varying vec2 vTexCoord;
+            void main() {
+                vTexCoord = aTexCoord;
+                gl_Position = vec4(aPosition, 1.0);
+            }
+        `;
+
+        // Fragment Shader: The Physics Engine (Heat Equation)
+        // ∂T/∂t = α * ∇²T
+        const diffShader = `
+            precision highp float;
+            varying vec2 vTexCoord;
+            uniform sampler2D uTexture;
+            uniform vec2 uTexel;
+            uniform float uAlpha;
+            uniform float uDt;
+            uniform int uBoundary; // 0: Clamp, 1: Wrap, 2: Cold
+            uniform vec2 uWind;    // Simple convection vector
+
+            void main() {
+                vec2 uv = vTexCoord;
+                
+                // Sample current temperature
+                float T_center = texture2D(uTexture, uv).r;
+                
+                // Determine neighbors based on boundary condition
+                vec2 offset = uTexel;
+                float T_up, T_down, T_left, T_right;
+
+                if (uBoundary == 1) {
+                    // Wrap (Toroidal)
+                    T_up    = texture2D(uTexture, uv + vec2(0.0, offset.y)).r;
+                    T_down  = texture2D(uTexture, uv - vec2(0.0, offset.y)).r;
+                    T_left  = texture2D(uTexture, uv - vec2(offset.x, 0.0)).r;
+                    T_right = texture2D(uTexture, uv + vec2(offset.x, 0.0)).r;
+                } else {
+                    // Clamp or Cold (Sampling outside [0,1] returns edge or 0 depending on GL clamp, 
+                    // but we handle logic manually for precision)
+                    vec2 uv_up = uv + vec2(0.0, offset.y);
+                    vec2 uv_down = uv - vec2(0.0, offset.y);
+                    vec2 uv_left = uv - vec2(offset.x, 0.0);
+                    vec2 uv_right = uv + vec2(offset.x, 0.0);
+
+                    if (uBoundary == 0) { 
+                        // Insulated: Mirror edge values (Neumann BC: dT/dn = 0)
+                        T_up    = texture2D(uTexture, min(uv_up, vec2(1.0))).r;
+                        T_down  = texture2D(uTexture, max(uv_down, vec2(0.0))).r;
+                        T_left  = texture2D(uTexture, max(uv_left, vec2(0.0))).r;
+                        T_right = texture2D(uTexture, min(uv_right, vec2(1.0))).r;
+                    } else { 
+                        // Cold Walls (Dirichlet BC: T = 0)
+                        T_up    = (uv_up.y > 1.0) ? 0.0 : texture2D(uTexture, uv_up).r;
+                        T_down  = (uv_down.y < 0.0) ? 0.0 : texture2D(uTexture, uv_down).r;
+                        T_left  = (uv_left.x < 0.0) ? 0.0 : texture2D(uTexture, uv_left).r;
+                        T_right = (uv_right.x > 1.0) ? 0.0 : texture2D(uTexture, uv_right).r;
+                    }
+                }
+
+                // Laplacian ∇²T ≈ (T_up + T_down + T_left + T_right - 4*T_center)
+                float laplacian = (T_up + T_down + T_left + T_right - 4.0 * T_center);
+
+                // Explicit Euler Integration: T_new = T_old + dt * alpha * laplacian
+                // Note: Stability requires alpha * dt / dx^2 <= 0.25
+                float T_new = T_center + uDt * uAlpha * laplacian;
+
+                // Optional: Simple Advection (Convection)
+                // Shift sampling coordinate by wind vector
+                if (length(uWind) > 0.0) {
+                    vec2 advectedUV = uv - uWind * uDt * 2.0; 
+                    // Wrap advection for simplicity in this demo
+                    advectedUV = mod(advectedUV, 1.0); 
+                    T_new = texture2D(uTexture, advectedUV).r + uDt * uAlpha * laplacian;
+                }
+
+                // Clamp temperature to [0, 1]
+                gl_FragColor = vec4(clamp(T_new, 0.0, 1.0), 0.0, 0.0, 1.0);
+            }
+        `;
+
+        // Fragment Shader: Visualization (Color Map)
+        const renderShader = `
+            precision highp float;
+            varying vec2 vTexCoord;
+            uniform sampler2D uTexture;
+
+            // Ironbow / Thermal Color Map
+            vec3 heatColor(float t) {
+                vec3 cold = vec3(0.0, 0.0, 0.5);   // Dark Blue
+                vec3 cool = vec3(0.0, 0.5, 1.0);   // Light Blue
+                vec3 warm = vec3(1.0, 1.0, 0.0);   // Yellow
+                vec3 hot  = vec3(1.0, 0.0, 0.0);   // Red
+                vec3 white = vec3(1.0, 1.0, 1.0);  // White Hot
+
+                if (t < 0.25) {
+                    return mix(cold, cool, t * 4.0);
+                } else if (t < 0.5) {
+                    return mix(cool, warm, (t - 0.25) * 4.0);
+                } else if (t < 0.75) {
+                    return mix(warm, hot, (t - 0.5) * 4.0);
+                } else {
+                    return mix(hot, white, (t - 0.75) * 4.0);
+                }
+            }
+
+            void main() {
+                float t = texture2D(uTexture, vTexCoord).r;
+                vec3 color = heatColor(t);
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+
+        // --- p5.js Sketch ---
+
+        let diffShaderInst, renderShaderInst;
+        let textureA, textureB; // Ping-pong buffers
+        let fboA, fboB;
+        
+        let params = {
+            alpha: 0.15,
+            strength: 1.0,
+            radius: 15,
+            boundary: 0, // 0: Clamp, 1: Wrap, 2: Cold
+            wind: false,
+            windVec: { x: 0.02, y: 0.0 }
+        };
+
+        let isMouseDown = false;
+        let isCooling = false;
+
+        function setup() {
+            // Create canvas but hide it initially, we will draw to FBOs
+            let cnv = createCanvas(600, 600, WEBGL);
+            cnv.parent('canvas-container');
+            
+            // Initialize Shaders
+            diffShaderInst = createShader(vertShader, diffShader);
+            renderShaderInst = createShader(vertShader, renderShader);
+
+            // Initialize Textures (Float textures for precision)
+            // We use RGBA but only write to R channel
+            textureA = createGraphics(width, height, WEBGL);
+            textureB = createGraphics(width, height, WEBGL);
+            
+            // Set texture filtering to NEAREST for grid look, or LINEAR for smooth
+            // LINEAR is better for heat diffusion visualization
+            textureA.noSmooth(); 
+            textureB.noSmooth();
+
+            // Initialize FBOs
+            fboA = createFramebuffer({ width: width, height: height, format: FLOAT });
+            fboB = createFramebuffer({ width: width, height: height, format: FLOAT });
+
+            // Initial State: All zeros (cold)
+            clearHeat();
+
+            setupUI();
+        }
+
+        function draw() {
+            background(0);
+
+            // 1. Handle Input (Draw onto Texture A)
+            if (isMouseDown || mouseIsPressed) {
+                handleInput();
+            }
+
+            // 2. Physics Step (Diffusion)
+            // Read from A, Write to B
+            runDiffusion(fboA, fboB);
+
+            // 3. Render Step (Colorize)
+            // Read from B, Draw to Screen
+            runRender(fboB);
+
+            // 4. Swap Buffers (Ping-Pong)
+            // Next frame, B becomes the source, A becomes the target
+            let tempFbo = fboA;
+            fboA = fboB;
+            fboB = tempFbo;
+        }
+
+        function runDiffusion(sourceFbo, targetFbo) {
+            targetFbo.begin();
+            clear();
+            shader(diffShaderInst);
+            
+            // Set uniforms
+            diffShaderInst.setUniform('uTexture', sourceFbo.color);
+            diffShaderInst.setUniform('uTexel', [1.0 / width, 1.0 / height]);
+            diffShaderInst.setUniform('uAlpha', params.alpha);
+            diffShaderInst.setUniform('uDt', 1.0); // Time step
+            diffShaderInst.setUniform('uBoundary', params.boundary);
+            diffShaderInst.setUniform('uWind', params.wind ? params.windVec : [0, 0]);
+
+            // Draw full screen quad
+            rect(0, 0, width, height);
+            targetFbo.end();
+        }
+
+        function runRender(sourceFbo) {
+            shader(renderShaderInst);
+            renderShaderInst.setUniform('uTexture', sourceFbo.color);
+            rect(0, 0, width, height);
+        }
+
+        function handleInput() {
+            // We need to draw directly onto the current source texture (fboA)
+            // To do this in p5 WEBGL, we begin the FBO, switch to a simple drawing shader or 2D context
+            // However, mixing 2D drawing commands in WEBGL FBOs can be tricky.
+            // Easier approach: Create a temporary graphics buffer, draw the circle, then blend it into the FBO texture.
+            
+            // Actually, simpler: Just use the fboA's context to draw a circle with additive blending
+            fboA.begin();
+            // We are now in WEBGL mode inside the FBO
+            noStroke();
+            
+            // Map mouse coordinates to FBO coordinates
+            // Note: p5 WEBGL (0,0) is center. FBO (0,0) is top-left usually? 
+            // createFramebuffer matches the canvas coordinate system if we are careful.
+            // In WEBGL, -width/2 is left. 
+            // Let's calculate offset from center.
+            
+            let mx = mouseX - width / 2;
+            let my = mouseY - height / 2;
+
+            if (isCooling) {
+                fill(0, 0, 0, params.strength); // Black (Cold)
+                blendMode(BLEND); // Overwrite with cold
+            } else {
+                fill(1, 1, 1, params.strength); // White (Hot)
+                blendMode(ADD); // Add heat
+            }
+
+            ellipse(mx, my, params.radius * 2);
+            fboA.end();
+        }
+
+        function clearHeat() {
+            fboA.begin();
+            clear(); // Clears to 0,0,0,0 (Cold)
+            fboA.end();
+            
+            fboB.begin();
+            clear();
+            fboB.end();
+        }
+
+        function loadPreset() {
+            fboA.begin();
+            clear();
+            noStroke();
+            fill(1, 1, 1, 1);
+            blendMode(BLEND);
+            // Draw a horizontal gradient line
+            for(let x = -width/2; x < width/2; x+=10) {
+                let t = map(x, -width/2, width/2, 0, 1);
+                fill(t, t, t, 1);
+                rect(x, 0, 10, height);
+            }
+            fboA.end();
+        }
+
+        function setupUI() {
+            const bind = (id, key, displayId, isFloat = false) => {
+                const el = document.getElementById(id);
+                const disp = document.getElementById(displayId);
+                el.addEventListener('input', (e) => {
+                    let val = isFloat ? parseFloat(e.target.value) : parseInt(e.target.value);
+                    params[key] = val;
+                    disp.innerText = val.toFixed(isFloat ? 2 : 0);
+                });
+            };
+
+            bind('inp-alpha', 'alpha', 'val-alpha', true);
+            bind('inp-strength', 'strength', 'val-strength', true);
+            bind('inp-radius', 'radius', 'val-radius');
+
+            document.getElementById('inp-boundary').addEventListener('change', (e) => {
+                params.boundary = parseInt(e.target.value);
+            });
+
+            document.getElementById('btn-clear').addEventListener('click', clearHeat);
+            document.getElementById('btn-preset').addEventListener('click', loadPreset);
+
+            // Mouse Events
+            const canvasEl = document.querySelector('canvas');
+            canvasEl.addEventListener('mousedown', (e) => {
+                isMouseDown = true;
+                isCooling = e.button === 2 || e.shiftKey; // Right click or Shift
+            });
+            window.addEventListener('mouseup', () => isMouseDown = false);
+            canvasEl.addEventListener('contextmenu', e => e.preventDefault()); // Block context menu
+
+            // Keyboard Events
+            document.addEventListener('keydown', (e) => {
+                if (e.key.toLowerCase() === 'c') {
+                    params.wind = !params.wind;
+                    // Toggle wind direction randomly
+                    if(params.wind) {
+                        params.windVec.x = (Math.random() - 0.5) * 0.1;
+                        params.windVec.y = (Math.random() - 0.5) * 0.1;
+                    }
+                }
+                if (e.key.toLowerCase() === 'r') {
+                    clearHeat();
+                }
+            });
+        }
+    </script>
+</body>
+</html>

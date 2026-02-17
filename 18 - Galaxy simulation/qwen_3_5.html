@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galaxy Formation Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #222; /* Fallback */
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #333;
+            pointer-events: none;
+            background: rgba(240, 240, 240, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .highlight { font-weight: bold; color: #d32f2f; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div>Particles: <span id="count" class="highlight">10000</span></div>
+        <div>FPS: <span id="fps">0</span></div>
+        <div>Core Mass: <span id="core-mass">0</span></div>
+        <div style="margin-top:10px; font-size: 12px; color: #555;">
+            Physics: Barnes-Hut Approximation<br>
+            Forces: Gravity + Dark Matter Halo<br>
+            Initial State: Rotating Protogalactic Cloud
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        const PARTICLE_COUNT = 10000;
+        const G = 0.5; // Gravitational Constant
+        const SOFTENING = 5; // Prevents division by zero/infinite forces
+        const THETA = 0.5; // Barnes-Hut opening angle (lower = more accurate, slower)
+        const DAMPING = 0.999; // Slight energy loss to help settling
+        const DARK_MATTER_STRENGTH = 0.0005; // Simulates flat rotation curve
+        
+        let particles = [];
+        let quadtree;
+        let boundary;
+        let coreMass = 0;
+
+        function setup() {
+            createCanvas(windowWidth, windowHeight);
+            background(220);
+            
+            // Define the simulation boundary (slightly larger than screen to catch outliers)
+            boundary = new Rectangle(-width, -height, width * 3, height * 3);
+            quadtree = new QuadTree(boundary, 4); // Capacity 4 per node
+
+            initGalaxy();
+        }
+
+        function initGalaxy() {
+            particles = [];
+            coreMass = 0;
+            
+            // Initial Cloud Parameters
+            const cloudRadius = width * 0.4;
+            
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                // Random position in a disk
+                let angle = random(TWO_PI);
+                let r = random(cloudRadius);
+                // Distribute more densely towards center
+                r = r * Math.sqrt(random(1)); 
+                
+                let x = cos(angle) * r;
+                let y = sin(angle) * r;
+                
+                // Initial Velocity: Give net rotation to form a disk
+                // Keplerian-ish start: v ~ 1/sqrt(r) but modified for cloud collapse
+                let dist = dist(0, 0, x, y);
+                let speed = 2.0; 
+                
+                // Add some randomness to velocity to prevent perfect rings immediately
+                let vx = -sin(angle) * speed + random(-0.5, 0.5);
+                let vy = cos(angle) * speed + random(-0.5, 0.5);
+
+                // Mass varies slightly
+                let mass = random(0.5, 2.0);
+                let radius = map(mass, 0, 5, 1, 4);
+                
+                // Color based on mass (brighter = heavier)
+                let brightness = map(mass, 0, 5, 150, 255);
+                let col = color(brightness, brightness, brightness + 20);
+
+                particles.push(new Particle(x, y, vx, vy, mass, radius, col));
+            }
+        }
+
+        function draw() {
+            // Fade effect for trails
+            noStroke();
+            fill(220, 50); // Low alpha background color creates trails
+            rect(0, 0, width, height);
+
+            // 1. Build Quadtree
+            quadtree = new QuadTree(boundary, 4);
+            for (let p of particles) {
+                quadtree.insert(p);
+            }
+
+            // 2. Calculate Forces & Update
+            // We iterate through particles, query the tree for forces
+            for (let p of particles) {
+                let force = createVector(0, 0);
+                
+                // A. Central Black Hole / Core Gravity
+                // Strong pull towards center (0,0)
+                let coreForce = p.pos.copy().mult(-1).normalize();
+                let distToCore = p.pos.mag();
+                // F = G * M_core * m / r^2
+                // We simulate a growing core mass based on merged particles near center
+                let effectiveCoreMass = 5000 + (coreMass * 10); 
+                let coreMag = (G * effectiveCoreMass * p.mass) / (distToCore * distToCore + SOFTENING);
+                force.add(coreForce.mult(coreMag));
+
+                // B. Dark Matter Halo (Linear force to keep outer stars bound)
+                // F_dm ~ r (Harmonic oscillator) or Constant. Let's use linear to stabilize disk.
+                let dmForce = p.pos.copy().mult(-1).mult(DARK_MATTER_STRENGTH * p.mass);
+                force.add(dmForce);
+
+                // C. Particle-Particle Gravity (Barnes-Hut)
+                quadtree.calculateForce(p, force);
+
+                // Apply Force
+                p.applyForce(force);
+                p.update();
+                
+                // Boundary Check (Wrap or Bounce? Let's just kill outliers to save perf)
+                if (p.pos.mag() > width * 1.5) {
+                    p.vel.mult(0);
+                    p.pos.mult(0.9); // Pull back
+                }
+
+                // Track core mass accumulation
+                if (distToCore < 20) {
+                    coreMass += 0.01;
+                }
+            }
+
+            // 3. Merge Particles (Simple O(N^2) check is too slow, so we do it loosely or skip for visual demo)
+            // For 10k particles, full merging is expensive. We will skip explicit merging logic 
+            // to maintain FPS, relying on the "Core Mass" variable to simulate the central singularity.
+            // Alternatively, we could use a spatial grid for merging, but Barnes-Hut handles the clustering visually well enough.
+
+            // 4. Draw Particles
+            // Use additive blending for glowing star effect
+            blendMode(ADD);
+            for (let p of particles) {
+                p.display();
+            }
+            blendMode(BLEND);
+
+            // Update UI
+            if (frameCount % 10 === 0) {
+                document.getElementById('fps').innerText = Math.round(frameRate());
+                document.getElementById('core-mass').innerText = Math.floor(coreMass);
+            }
+        }
+
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+            background(220);
+            boundary = new Rectangle(-width, -height, width * 3, height * 3);
+        }
+
+        // --- Classes ---
+
+        class Particle {
+            constructor(x, y, vx, vy, mass, radius, col) {
+                this.pos = createVector(x, y);
+                this.vel = createVector(vx, vy);
+                this.acc = createVector(0, 0);
+                this.mass = mass;
+                this.radius = radius;
+                this.col = col;
+            }
+
+            applyForce(force) {
+                let f = p5.Vector.div(force, this.mass);
+                this.acc.add(f);
+            }
+
+            update() {
+                this.vel.add(this.acc);
+                this.vel.mult(DAMPING);
+                this.pos.add(this.vel);
+                this.acc.mult(0); // Reset accel
+            }
+
+            display() {
+                fill(this.col);
+                // Draw circle. For 10k particles, ellipse is okay, but rect is faster.
+                // Let's use ellipse for better look.
+                ellipse(this.pos.x + width/2, this.pos.y + height/2, this.radius * 2);
+            }
+        }
+
+        class Rectangle {
+            constructor(x, y, w, h) {
+                this.x = x; // Center x
+                this.y = y; // Center y
+                this.w = w; // Width
+                this.h = h; // Height
+            }
+
+            contains(point) {
+                return (point.pos.x >= this.x - this.w / 2 &&
+                        point.pos.x < this.x + this.w / 2 &&
+                        point.pos.y >= this.y - this.h / 2 &&
+                        point.pos.y < this.y + this.h / 2);
+            }
+
+            intersects(range) {
+                return !(range.x - range.w / 2 > this.x + this.w / 2 ||
+                         range.x + range.w / 2 < this.x - this.w / 2 ||
+                         range.y - range.h / 2 > this.y + this.h / 2 ||
+                         range.y + range.h / 2 < this.y - this.h / 2);
+            }
+        }
+
+        class QuadTree {
+            constructor(boundary, capacity) {
+                this.boundary = boundary;
+                this.capacity = capacity;
+                this.points = [];
+                this.divided = false;
+                
+                // Aggregate properties for Barnes-Hut
+                this.totalMass = 0;
+                this.centerOfMass = createVector(0, 0);
+            }
+
+            insert(point) {
+                if (!this.boundary.contains(point)) {
+                    return false;
+                }
+
+                if (this.points.length < this.capacity) {
+                    this.points.push(point);
+                    this.updateAggregate(point);
+                    return true;
+                } else {
+                    if (!this.divided) {
+                        this.subdivide();
+                        // Redistribute existing points
+                        for (let p of this.points) {
+                            this.northeast.insert(p);
+                            this.northwest.insert(p);
+                            this.southeast.insert(p);
+                            this.southwest.insert(p);
+                        }
+                        this.points = []; // Clear local points
+                    }
+                    
+                    // Try to insert into children
+                    if (this.northeast.insert(point)) return true;
+                    if (this.northwest.insert(point)) return true;
+                    if (this.southeast.insert(point)) return true;
+                    if (this.southwest.insert(point)) return true;
+                }
+                return false;
+            }
+
+            updateAggregate(point) {
+                // Update center of mass for this node
+                // COM = (m1*p1 + m2*p2 + ...) / totalMass
+                let weightedPos = p5.Vector.mult(point.pos, point.mass);
+                this.centerOfMass.add(weightedPos);
+                this.totalMass += point.mass;
+                if (this.totalMass > 0) {
+                    this.centerOfMass.div(this.totalMass); // Normalize? No, wait.
+                    // Actually, standard formula: COM_new = (COM_old * Mass_old + p * m) / Mass_new
+                    // My implementation above adds weighted pos. 
+                    // Let's fix: store sum of weighted positions separately or recalc.
+                    // Simpler: Just store totalMass and recalc COM when needed? 
+                    // No, for performance, let's store weighted sum.
+                }
+            }
+            
+            // Correction: Let's store weightedSum vector explicitly
+            constructor(boundary, capacity) {
+                this.boundary = boundary;
+                this.capacity = capacity;
+                this.points = [];
+                this.divided = false;
+                this.totalMass = 0;
+                this.weightedSum = createVector(0,0); 
+            }
+            
+            updateAggregate(point) {
+                let weighted = p5.Vector.mult(point.pos, point.mass);
+                this.weightedSum.add(weighted);
+                this.totalMass += point.mass;
+                this.centerOfMass = p5.Vector.div(this.weightedSum, this.totalMass);
+            }
+
+            subdivide() {
+                let x = this.boundary.x;
+                let y = this.boundary.y;
+                let w = this.boundary.w / 2;
+                let h = this.boundary.h / 2;
+
+                this.northeast = new QuadTree(new Rectangle(x + w/2, y - h/2, w, h), this.capacity);
+                this.northwest = new QuadTree(new Rectangle(x - w/2, y - h/2, w, h), this.capacity);
+                this.southeast = new QuadTree(new Rectangle(x + w/2, y + h/2, w, h), this.capacity);
+                this.southwest = new QuadTree(new Rectangle(x - w/2, y + h/2, w, h), this.capacity);
+
+                this.divided = true;
+            }
+
+            calculateForce(particle, forceAccumulator) {
+                // If this node is far enough away, treat as a single body
+                let d = dist(particle.pos.x, particle.pos.y, this.centerOfMass.x, this.centerOfMass.y);
+                let s = this.boundary.w; // Width of region
+
+                // Barnes-Hut condition: s / d < theta
+                // Also ensure we don't calculate force from self (d > 0)
+                if (this.divided && (s / d < THETA) && (d > 0)) {
+                    // Apply force from this node's center of mass
+                    this.applyGravity(particle, forceAccumulator, this.centerOfMass, this.totalMass);
+                } else if (this.divided) {
+                    // Recurse
+                    this.northeast.calculateForce(particle, forceAccumulator);
+                    this.northwest.calculateForce(particle, forceAccumulator);
+                    this.southeast.calculateForce(particle, forceAccumulator);
+                    this.southwest.calculateForce(particle, forceAccumulator);
+                } else {
+                    // Leaf node: apply force from individual points
+                    for (let other of this.points) {
+                        if (other !== particle) {
+                            this.applyGravity(particle, forceAccumulator, other.pos, other.mass);
+                        }
+                    }
+                }
+            }
+
+            applyGravity(p1, forceAcc, pos2, mass2) {
+                let forceDir = p5.Vector.sub(pos2, p1.pos);
+                let distSq = forceDir.magSq();
+                
+                // Softening parameter to prevent singularities
+                if (distSq < SOFTENING * SOFTENING) distSq = SOFTENING * SOFTENING;
+                
+                let dist = Math.sqrt(distSq);
+                forceDir.normalize();
+                
+                let strength = (G * p1.mass * mass2) / distSq;
+                let force = forceDir.mult(strength);
+                
+                forceAcc.add(force);
+            }
+        }
+    </script>
+</body>
+</html>

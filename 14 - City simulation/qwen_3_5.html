@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Procedural City Growth Simulation</title>
+    <style>
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #87CEEB; /* Sky blue fallback */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+            outline: none;
+        }
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 300px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(5px);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            pointer-events: auto;
+            z-index: 10;
+        }
+        h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            color: #333;
+            border-bottom: 2px solid #ddd;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+        .control-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 5px;
+        }
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+        }
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 5px;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.5rem;
+            color: white;
+            font-weight: bold;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            pointer-events: none;
+            transition: opacity 0.5s;
+        }
+    </style>
+    <!-- Babylon.js Core -->
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <!-- Babylon.js Loaders -->
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+</head>
+<body>
+
+    <div id="loading">Generating City...</div>
+
+    <div id="ui-panel">
+        <h2>City Controls</h2>
+        
+        <div class="control-group">
+            <label>Development Speed <span id="val-speed">50%</span></label>
+            <input type="range" id="inp-speed" min="0" max="100" value="50">
+        </div>
+
+        <div class="control-group">
+            <label>Traffic Intensity <span id="val-traffic">30%</span></label>
+            <input type="range" id="inp-traffic" min="0" max="100" value="30">
+        </div>
+
+        <div class="control-group">
+            <label>Population Density <span id="val-density">40%</span></label>
+            <input type="range" id="inp-density" min="10" max="100" value="40">
+        </div>
+
+        <div style="margin-top: 20px; border-top: 1px solid #ddd; padding-top: 10px;">
+            <div class="stat-row"><span>Buildings:</span> <span id="stat-buildings">0</span></div>
+            <div class="stat-row"><span>Vehicles:</span> <span id="stat-cars">0</span></div>
+            <div class="stat-row"><span>Pedestrians:</span> <span id="stat-people">0</span></div>
+        </div>
+        
+        <button onclick="resetCity()" style="width:100%; margin-top:15px; padding:10px; background:#333; color:white; border:none; border-radius:4px; cursor:pointer;">Reset City</button>
+    </div>
+
+    <canvas id="renderCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById("renderCanvas");
+        const engine = new BABYLON.Engine(canvas, true);
+
+        // --- Configuration & State ---
+        const CONFIG = {
+            gridSize: 40, // 40x40 blocks
+            blockSize: 10, // Size of one grid cell
+            roadWidth: 4,
+            buildingColors: [
+                new BABYLON.Color3(0.8, 0.8, 0.8), // White
+                new BABYLON.Color3(0.6, 0.6, 0.7), // Grey-Blue
+                new BABYLON.Color3(0.7, 0.6, 0.5), // Beige
+                new BABYLON.Color3(0.5, 0.5, 0.5), // Dark Grey
+                new BABYLON.Color3(0.9, 0.9, 0.8)  // Light Cream
+            ],
+            carColors: [
+                new BABYLON.Color3(1, 0.2, 0.2), // Red
+                new BABYLON.Color3(0.2, 0.2, 1), // Blue
+                new BABYLON.Color3(0.2, 0.8, 0.2), // Green
+                new BABYLON.Color3(1, 1, 0.2), // Yellow
+                new BABYLON.Color3(0.1, 0.1, 0.1) // Black
+            ]
+        };
+
+        let scene, camera;
+        let grid = []; // 2D array: 0=Empty, 1=Road, 2=Building
+        let buildings = [];
+        let cars = [];
+        let peopleSystem;
+        
+        // Simulation Timers
+        let lastBuildTime = 0;
+        let lastCarSpawnTime = 0;
+        let lastPeopleUpdate = 0;
+
+        // UI State
+        const uiState = {
+            speed: 0.5,
+            traffic: 0.3,
+            density: 0.4
+        };
+
+        // --- Initialization ---
+
+        const createScene = function () {
+            const scene = new BABYLON.Scene(engine);
+            scene.clearColor = new BABYLON.Color4(0.6, 0.8, 1.0, 1.0); // Sky blue
+            scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
+            scene.fogDensity = 0.002;
+            scene.fogColor = new BABYLON.Color3(0.6, 0.8, 1.0);
+
+            // Camera
+            camera = new BABYLON.ArcRotateCamera("camera", -Math.PI / 4, Math.PI / 3, 150, new BABYLON.Vector3(0, 0, 0), scene);
+            camera.attachControl(canvas, true);
+            camera.lowerRadiusLimit = 50;
+            camera.upperRadiusLimit = 400;
+            camera.wheelPrecision = 50;
+
+            // Lights
+            const hemiLight = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+            hemiLight.intensity = 0.6;
+            hemiLight.groundColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+
+            const dirLight = new BABYLON.DirectionalLight("dir", new BABYLON.Vector3(-1, -2, -1), scene);
+            dirLight.intensity = 0.8;
+            dirLight.position = new BABYLON.Vector3(50, 100, 50);
+            dirLight.shadowEnabled = true;
+
+            // Ground (Grass)
+            const ground = BABYLON.MeshBuilder.CreateGround("ground", {width: CONFIG.gridSize * CONFIG.blockSize, height: CONFIG.gridSize * CONFIG.blockSize}, scene);
+            const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+            groundMat.diffuseColor = new BABYLON.Color3(0.2, 0.6, 0.2);
+            groundMat.specularColor = new BABYLON.Color3(0,0,0);
+            ground.material = groundMat;
+            ground.receiveShadows = true;
+
+            // Initialize Grid Data
+            initGrid();
+
+            // People Particle System
+            createPeopleSystem(scene);
+
+            // Hide Loading
+            document.getElementById('loading').style.opacity = 0;
+            setTimeout(() => document.getElementById('loading').style.display = 'none', 500);
+
+            return scene;
+        };
+
+        function initGrid() {
+            grid = [];
+            // Clear existing meshes
+            buildings.forEach(b => b.dispose());
+            buildings = [];
+            cars.forEach(c => c.dispose());
+            cars = [];
+
+            const offset = (CONFIG.gridSize * CONFIG.blockSize) / 2;
+
+            for (let x = 0; x < CONFIG.gridSize; x++) {
+                grid[x] = [];
+                for (let z = 0; z < CONFIG.gridSize; z++) {
+                    // Create Roads every 4 blocks
+                    if (x % 4 === 0 || z % 4 === 0) {
+                        grid[x][z] = 1; // Road
+                        createRoadSegment(x, z, offset);
+                    } else {
+                        grid[x][z] = 0; // Empty (Potential Building)
+                    }
+                }
+            }
+            updateStats();
+        }
+
+        function createRoadSegment(gridX, gridZ, offset) {
+            const road = BABYLON.MeshBuilder.CreateBox("road", {
+                width: CONFIG.blockSize,
+                height: 0.1,
+                depth: CONFIG.blockSize
+            }, scene);
+            road.position.x = (gridX * CONFIG.blockSize) - offset + (CONFIG.blockSize/2);
+            road.position.z = (gridZ * CONFIG.blockSize) - offset + (CONFIG.blockSize/2);
+            road.position.y = 0.05;
+
+            const mat = new BABYLON.StandardMaterial("roadMat", scene);
+            mat.diffuseColor = new BABYLON.Color3(0.3, 0.3, 0.3);
+            mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+            road.material = mat;
+            road.receiveShadows = true;
+
+            // Road Markings
+            if (gridX % 4 === 0 && gridZ % 4 !== 0) {
+                // Vertical Road Markings
+                const line = BABYLON.MeshBuilder.CreateBox("line", {width: 0.2, height: 0.15, depth: CONFIG.blockSize * 0.6}, scene);
+                line.position.copyFrom(road.position);
+                line.position.y = 0.16;
+                const lineMat = new BABYLON.StandardMaterial("lineMat", scene);
+                lineMat.diffuseColor = new BABYLON.Color3(1, 1, 1);
+                lineMat.emissiveColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+                line.material = lineMat;
+            } else if (gridZ % 4 === 0 && gridX % 4 !== 0) {
+                // Horizontal Road Markings
+                const line = BABYLON.MeshBuilder.CreateBox("line", {width: CONFIG.blockSize * 0.6, height: 0.15, depth: 0.2}, scene);
+                line.position.copyFrom(road.position);
+                line.position.y = 0.16;
+                const lineMat = new BABYLON.StandardMaterial("lineMat", scene);
+                lineMat.diffuseColor = new BABYLON.Color3(1, 1, 1);
+                lineMat.emissiveColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+                line.material = lineMat;
+            }
+        }
+
+        function createBuilding(gridX, gridZ, offset) {
+            // Random Height based on density (higher density = taller buildings on average)
+            const heightFactor = uiState.density * 3 + Math.random() * 2;
+            const height = Math.max(2, Math.floor(heightFactor * 5));
+            
+            const building = BABYLON.MeshBuilder.CreateBox("bldg", {
+                width: CONFIG.blockSize - 1,
+                height: height,
+                depth: CONFIG.blockSize - 1
+            }, scene);
+
+            building.position.x = (gridX * CONFIG.blockSize) - offset + (CONFIG.blockSize/2);
+            building.position.z = (gridZ * CONFIG.blockSize) - offset + (CONFIG.blockSize/2);
+            building.position.y = height / 2;
+
+            const color = CONFIG.buildingColors[Math.floor(Math.random() * CONFIG.buildingColors.length)];
+            const mat = new BABYLON.StandardMaterial("bldgMat", scene);
+            mat.diffuseColor = color;
+            mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+            
+            // Add windows texture effect procedurally via noise or just simple color variation
+            // For performance in single file, we stick to solid colors with specular
+            building.material = mat;
+            building.receiveShadows = true;
+            building.castShadows = true;
+
+            // Add simple "lights" on top for night effect (emissive strips)
+            if (Math.random() > 0.7) {
+                const roofLight = BABYLON.MeshBuilder.CreateBox("roof", {width: CONFIG.blockSize - 2, height: 0.2, depth: CONFIG.blockSize - 2}, scene);
+                roofLight.position.copyFrom(building.position);
+                roofLight.position.y = height / 2 + 0.1;
+                const lightMat = new BABYLON.StandardMaterial("lightMat", scene);
+                lightMat.emissiveColor = new BABYLON.Color3(1, 1, 0.8);
+                lightMat.disableLighting = true;
+                roofLight.material = lightMat;
+                building.addChild(roofLight);
+            }
+
+            buildings.push(building);
+            grid[gridX][gridZ] = 2; // Mark as built
+        }
+
+        function createPeopleSystem(scene) {
+            peopleSystem = new BABYLON.ParticleSystem("people", 2000, scene);
+            peopleSystem.particleTexture = new BABYLON.Texture("https://www.babylonjs-playground.com/textures/flare.png", scene);
+            
+            // Emitter will be updated dynamically, but for now center
+            peopleSystem.emitter = new BABYLON.Vector3(0, 1, 0); 
+            peopleSystem.minEmitBox = new BABYLON.Vector3(-100, 0, -100);
+            peopleSystem.maxEmitBox = new BABYLON.Vector3(100, 0, 100);
+
+            peopleSystem.color1 = new BABYLON.Color4(0.8, 0.8, 0.8, 1.0);
+            peopleSystem.color2 = new BABYLON.Color4(0.5, 0.5, 0.5, 1.0);
+            peopleSystem.colorDead = new BABYLON.Color4(0, 0, 0, 0.0);
+
+            peopleSystem.minSize = 0.3;
+            peopleSystem.maxSize = 0.5;
+            peopleSystem.minLifeTime = 2.0;
+            peopleSystem.maxLifeTime = 5.0;
+            peopleSystem.emitRate = 500;
+            peopleSystem.gravity = new BABYLON.Vector3(0, 0, 0);
+            peopleSystem.direction1 = new BABYLON.Vector3(-0.5, 0, -0.5);
+            peopleSystem.direction2 = new BABYLON.Vector3(0.5, 0, 0.5);
+            peopleSystem.minEmitPower = 1;
+            peopleSystem.maxEmitPower = 3;
+            peopleSystem.updateSpeed = 0.02;
+            peopleSystem.start();
+        }
+
+        class Car {
+            constructor(scene, isVertical) {
+                this.mesh = BABYLON.MeshBuilder.CreateBox("car", {width: 1.5, height: 1, depth: 3}, scene);
+                const color = CONFIG.carColors[Math.floor(Math.random() * CONFIG.carColors.length)];
+                const mat = new BABYLON.StandardMaterial("carMat", scene);
+                mat.diffuseColor = color;
+                mat.specularColor = new BABYLON.Color3(0.5, 0.5, 0.5);
+                this.mesh.material = mat;
+                this.mesh.castShadows = true;
+
+                // Headlights
+                const lightGeo = BABYLON.MeshBuilder.CreateBox("light", {width: 0.4, height: 0.2, depth: 0.1}, scene);
+                lightGeo.position.z = 1.5;
+                lightGeo.position.y = 0.2;
+                lightGeo.parent = this.mesh;
+                const lightMat = new BABYLON.StandardMaterial("lightMat", scene);
+                lightMat.emissiveColor = new BABYLON.Color3(1, 1, 0.8);
+                lightMat.disableLighting = true;
+                lightGeo.material = lightMat;
+
+                this.isVertical = isVertical;
+                this.speed = 15 + Math.random() * 10;
+                this.resetPosition();
+                cars.push(this);
+            }
+
+            resetPosition() {
+                const offset = (CONFIG.gridSize * CONFIG.blockSize) / 2;
+                // Pick a random road line
+                // Vertical roads are at x % 4 == 0
+                // Horizontal roads are at z % 4 == 0
+                
+                if (this.isVertical) {
+                    const roadIndex = Math.floor(Math.random() * (CONFIG.gridSize / 4)) * 4;
+                    this.mesh.position.x = (roadIndex * CONFIG.blockSize) - offset + (CONFIG.blockSize/2);
+                    this.mesh.position.z = -100 + Math.random() * 200; // Start off screen or random
+                    this.mesh.rotation.y = Math.PI; // Face forward
+                    this.direction = new BABYLON.Vector3(0, 0, 1);
+                } else {
+                    const roadIndex = Math.floor(Math.random() * (CONFIG.gridSize / 4)) * 4;
+                    this.mesh.position.z = (roadIndex * CONFIG.blockSize) - offset + (CONFIG.blockSize/2);
+                    this.mesh.position.x = -100 + Math.random() * 200;
+                    this.mesh.rotation.y = Math.PI / 2;
+                    this.direction = new BABYLON.Vector3(1, 0, 0);
+                }
+                this.mesh.position.y = 0.6;
+            }
+
+            update(dt) {
+                this.mesh.position.addInPlace(this.direction.scale(this.speed * dt));
+                
+                // Wrap around
+                const limit = (CONFIG.gridSize * CONFIG.blockSize) / 2 + 20;
+                if (this.isVertical) {
+                    if (this.mesh.position.z > limit) this.mesh.position.z = -limit;
+                } else {
+                    if (this.mesh.position.x > limit) this.mesh.position.x = -limit;
+                }
+            }
+
+            dispose() {
+                this.mesh.dispose();
+            }
+        }
+
+        // --- Main Loop ---
+
+        engine.runRenderLoop(function () {
+            if (scene) {
+                const now = Date.now();
+                const dt = engine.getDeltaTime() / 1000;
+
+                // 1. City Growth Logic
+                // Chance to build based on speed slider and empty slots
+                if (Math.random() < uiState.speed * 0.1) {
+                    // Find a random empty slot
+                    let attempts = 0;
+                    while(attempts < 10) {
+                        const gx = Math.floor(Math.random() * CONFIG.gridSize);
+                        const gz = Math.floor(Math.random() * CONFIG.gridSize);
+                        if (grid[gx][gz] === 0) {
+                            // Check density constraint: don't build if too many buildings already
+                            if (buildings.length < (CONFIG.gridSize * CONFIG.gridSize * 0.6 * uiState.density)) {
+                                const offset = (CONFIG.gridSize * CONFIG.blockSize) / 2;
+                                createBuilding(gx, gz, offset);
+                                updateStats();
+                                break;
+                            }
+                        }
+                        attempts++;
+                    }
+                }
+
+                // 2. Traffic Logic
+                // Spawn cars based on traffic slider
+                const maxCars = Math.floor(uiState.traffic * 100);
+                if (cars.length < maxCars && Math.random() < 0.05) {
+                    new Car(scene, Math.random() > 0.5);
+                    updateStats();
+                }
+                // Update existing cars
+                cars.forEach(car => car.update(dt));
+
+                // 3. People Logic
+                // Update particle emitter to follow buildings roughly
+                if (buildings.length > 0 && now - lastPeopleUpdate > 1000) {
+                    const randomBldg = buildings[Math.floor(Math.random() * buildings.length)];
+                    peopleSystem.emitter = randomBldg.position;
+                    // Move emitter slightly to simulate walking around the block
+                    peopleSystem.emitter.x += (Math.random() - 0.5) * 10;
+                    peopleSystem.emitter.z += (Math.random() - 0.5) * 10;
+                    lastPeopleUpdate = now;
+                }
+
+                scene.render();
+            }
+        });
+
+        // --- UI Handling ---
+
+        function setupUI() {
+            const bindSlider = (id, key, displayId) => {
+                const el = document.getElementById(id);
+                const disp = document.getElementById(displayId);
+                el.addEventListener('input', (e) => {
+                    const val = parseInt(e.target.value);
+                    uiState[key] = val / 100;
+                    disp.innerText = val + "%";
+                });
+            };
+
+            bindSlider('inp-speed', 'speed', 'val-speed');
+            bindSlider('inp-traffic', 'traffic', 'val-traffic');
+            bindSlider('inp-density', 'density', 'val-density');
+        }
+
+        function updateStats() {
+            document.getElementById('stat-buildings').innerText = buildings.length;
+            document.getElementById('stat-cars').innerText = cars.length;
+            // Approximate people count based on particle system active count
+            if(peopleSystem) {
+                document.getElementById('stat-people').innerText = peopleSystem.activeCount;
+            }
+        }
+
+        window.resetCity = function() {
+            initGrid();
+            updateStats();
+        }
+
+        // Start
+        setupUI();
+        createScene().then(scene => {
+            // Scene is ready
+        });
+
+        window.addEventListener("resize", function () {
+            engine.resize();
+        });
+
+    </script>
+</body>
+</html>

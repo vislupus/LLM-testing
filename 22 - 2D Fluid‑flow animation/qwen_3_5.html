@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Von Kármán Vortex Street</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            color: #eee;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #canvas-container {
+            position: relative;
+            margin-top: 20px;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.8);
+            border: 1px solid #333;
+            cursor: crosshair;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(30, 30, 40, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            pointer-events: auto;
+            width: 280px;
+            backdrop-filter: blur(5px);
+        }
+
+        h1 {
+            font-size: 1.1rem;
+            margin: 0 0 15px 0;
+            color: #4db8ff;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            text-align: center;
+        }
+
+        .control-group {
+            margin-bottom: 12px;
+        }
+
+        label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            margin-bottom: 4px;
+            color: #aaa;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: #4db8ff;
+        }
+
+        .value-display {
+            color: #4db8ff;
+            font-weight: bold;
+        }
+
+        .instructions {
+            margin-top: 15px;
+            font-size: 0.75rem;
+            color: #888;
+            line-height: 1.4;
+            border-top: 1px solid #444;
+            padding-top: 10px;
+        }
+
+        .stat-box {
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            color: #66ffaa;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container">
+        <div id="ui-layer">
+            <h1>Fluid Dynamics Lab</h1>
+            
+            <div class="control-group">
+                <label>Flow Speed (Reynolds #) <span id="val-speed" class="value-display">0.10</span></label>
+                <input type="range" id="inp-speed" min="0.01" max="0.25" step="0.01" value="0.10">
+            </div>
+
+            <div class="control-group">
+                <label>Viscosity <span id="val-visc" class="value-display">0.02</span></label>
+                <input type="range" id="inp-visc" min="0.005" max="0.05" step="0.001" value="0.02">
+            </div>
+
+            <div class="control-group">
+                <label>Obstacle Size <span id="val-size" class="value-display">20</span></label>
+                <input type="range" id="inp-size" min="10" max="50" step="1" value="20">
+            </div>
+
+            <div class="control-group">
+                <label>Obstacle Rotation <span id="val-rot" class="value-display">0°</span></label>
+                <input type="range" id="inp-rot" min="0" max="360" step="1" value="0">
+            </div>
+
+            <div class="control-group">
+                <label>Shape</label>
+                <select id="inp-shape" style="width:100%; background:#333; color:#fff; border:1px solid #555; padding:4px;">
+                    <option value="circle">Circle</option>
+                    <option value="rectangle">Rectangle</option>
+                    <option value="ellipse">Ellipse</option>
+                    <option value="triangle">Triangle</option>
+                </select>
+            </div>
+
+            <div class="stat-box">
+                Drag obstacle with mouse.<br>
+                Vorticity Visualization Active.
+            </div>
+
+            <div class="instructions">
+                <strong>Physics:</strong> Lattice Boltzmann (D2Q9)<br>
+                <strong>Phenomenon:</strong> Von Kármán Vortex Street forms when Reynolds number is sufficient (typically Re > 40). Adjust speed and viscosity to see the pattern emerge.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Lattice Boltzmann Constants (D2Q9 Model) ---
+        const NX = 200; // Grid width
+        const NY = 100; // Grid height
+        const Q = 9;    // Number of discrete velocities
+        
+        // Lattice weights and velocity directions
+        const W = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36];
+        const CX = [0, 1, 0, -1, 0, 1, -1, -1, 1];
+        const CY = [0, 0, 1, 0, -1, 1, 1, -1, -1];
+        const OPP = [0, 3, 4, 1, 2, 7, 8, 5, 6]; // Opposite directions for bounce-back
+
+        // Simulation State
+        let rho, ux, uy;       // Macroscopic variables (density, velocity x, velocity y)
+        let f, fTemp;          // Distribution functions
+        let obstacleMask;      // Boolean grid for solid cells
+        let vorticity;         // For visualization
+
+        // Parameters
+        let params = {
+            uInlet: 0.10,
+            omega: 1.0, // Relaxation parameter (related to viscosity)
+            obstacleRadius: 20,
+            obstacleAngle: 0,
+            obstacleShape: 'circle',
+            obstacleX: NX / 3,
+            obstacleY: NY / 2
+        };
+
+        function setup() {
+            let cnv = createCanvas(NX * 4, NY * 4); // Scale up for display
+            cnv.parent('canvas-container');
+            noSmooth();
+            pixelDensity(1);
+
+            // Initialize Arrays
+            // Using 1D arrays for performance in JS
+            rho = new Float32Array(NX * NY).fill(1.0);
+            ux = new Float32Array(NX * NY).fill(params.uInlet);
+            uy = new Float32Array(NX * NY).fill(0.0);
+            obstacleMask = new Uint8Array(NX * NY).fill(0);
+            vorticity = new Float32Array(NX * NY).fill(0.0);
+
+            // Initialize Distribution Functions (Equilibrium)
+            f = new Float32Array(NX * NY * Q);
+            fTemp = new Float32Array(NX * NY * Q);
+            initializeEquilibrium();
+
+            setupUI();
+        }
+
+        function initializeEquilibrium() {
+            for (let i = 0; i < NX * NY; i++) {
+                let r = rho[i];
+                let u = ux[i];
+                let v = uy[i];
+                let u2 = u*u + v*v;
+                let uv = u*v;
+                
+                for (let k = 0; k < Q; k++) {
+                    let cu = CX[k]*u + CY[k]*v;
+                    f[i*Q + k] = W[k] * r * (1 + 3*cu + 4.5*cu*cu - 1.5*u2);
+                }
+            }
+        }
+
+        function draw() {
+            // 1. Update Obstacle Position based on Mouse (if dragging)
+            if (mouseIsPressed && mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
+                // Map screen coords to grid coords
+                let gx = floor(mouseX / 4);
+                let gy = floor(mouseY / 4);
+                // Constrain to grid
+                gx = constrain(gx, 10, NX - 10);
+                gy = constrain(gy, 10, NY - 10);
+                params.obstacleX = gx;
+                params.obstacleY = gy;
+            }
+
+            // 2. Update Obstacle Mask
+            updateObstacleMask();
+
+            // 3. Run LBM Steps (Multiple steps per frame for stability/speed)
+            // We run 2 physics steps per visual frame to allow higher Reynolds numbers without instability
+            for(let step=0; step<2; step++) {
+                lbmStep();
+            }
+
+            // 4. Render
+            renderFlow();
+            renderObstacle();
+        }
+
+        function updateObstacleMask() {
+            obstacleMask.fill(0);
+            let r = params.obstacleRadius;
+            let cx = params.obstacleX;
+            let cy = params.obstacleY;
+            let angle = radians(params.obstacleAngle);
+            
+            // Bounding box optimization
+            let minX = floor(cx - r - 2);
+            let maxX = ceil(cx + r + 2);
+            let minY = floor(cy - r - 2);
+            let maxY = ceil(cy + r + 2);
+
+            for (let y = minY; y <= maxY; y++) {
+                for (let x = minX; x <= maxX; x++) {
+                    if (x >= 0 && x < NX && y >= 0 && y < NY) {
+                        let dx = x - cx;
+                        let dy = y - cy;
+                        let inside = false;
+
+                        if (params.obstacleShape === 'circle') {
+                            if (dx*dx + dy*dy <= r*r) inside = true;
+                        } else if (params.obstacleShape === 'rectangle') {
+                            // Rotate point
+                            let rx = dx * cos(-angle) - dy * sin(-angle);
+                            let ry = dx * sin(-angle) + dy * cos(-angle);
+                            if (abs(rx) <= r && abs(ry) <= r) inside = true;
+                        } else if (params.obstacleShape === 'ellipse') {
+                            let rx = dx * cos(-angle) - dy * sin(-angle);
+                            let ry = dx * sin(-angle) + dy * cos(-angle);
+                            if ((rx*rx)/(r*r) + (ry*ry)/((r*0.6)*(r*0.6)) <= 1) inside = true;
+                        } else if (params.obstacleShape === 'triangle') {
+                            // Equilateral triangle approximation
+                            let rx = dx * cos(-angle) - dy * sin(-angle);
+                            let ry = dx * sin(-angle) + dy * cos(-angle);
+                            // Simple bounding check for triangle
+                            if (rx > -r/2 && rx < r && abs(ry) < (r - rx)*0.866) inside = true;
+                        }
+
+                        if (inside) {
+                            obstacleMask[y * NX + x] = 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        function lbmStep() {
+            // 1. Collision Step
+            for (let i = 0; i < NX * NY; i++) {
+                // Compute macroscopic density and velocity
+                let r = 0, u = 0, v = 0;
+                for (let k = 0; k < Q; k++) {
+                    let val = f[i*Q + k];
+                    r += val;
+                    u += CX[k] * val;
+                    v += CY[k] * val;
+                }
+                
+                // Avoid division by zero
+                if (r === 0) r = 1e-9;
+                u /= r;
+                v /= r;
+
+                rho[i] = r;
+                ux[i] = u;
+                uy[i] = v;
+
+                // Compute Equilibrium Distribution
+                let u2 = u*u + v*v;
+                let uv = u*v;
+                
+                for (let k = 0; k < Q; k++) {
+                    let cu = CX[k]*u + CY[k]*v;
+                    let feq = W[k] * r * (1 + 3*cu + 4.5*cu*cu - 1.5*u2);
+                    
+                    // BGK Collision: f_new = f_old - omega * (f_old - f_eq)
+                    fTemp[i*Q + k] = f[i*Q + k] - params.omega * (f[i*Q + k] - feq);
+                }
+            }
+
+            // 2. Streaming Step & Boundary Conditions
+            // We stream from fTemp into f (double buffering effectively handled by logic)
+            // But to save memory, we can stream carefully. 
+            // Standard approach: Copy fTemp to f, then handle boundaries.
+            // Actually, let's stream directly into f for next step.
+            
+            // Reset f for streaming target
+            // Note: In JS, creating new arrays is slow. We swap references or copy.
+            // Let's copy fTemp to f first, then apply bounce-back modifications.
+            f.set(fTemp); 
+
+            // Apply Boundaries
+            for (let y = 0; y < NY; y++) {
+                for (let x = 0; x < NX; x++) {
+                    let idx = y * NX + x;
+
+                    // Inlet (Left): Constant Velocity
+                    if (x === 0) {
+                        rho[idx] = 1.0;
+                        ux[idx] = params.uInlet;
+                        uy[idx] = 0.0;
+                        // Reset distributions to equilibrium at inlet
+                        let r = rho[idx];
+                        let u = ux[idx];
+                        let v = uy[idx];
+                        let u2 = u*u + v*v;
+                        for (let k = 0; k < Q; k++) {
+                            let cu = CX[k]*u + CY[k]*v;
+                            f[idx*Q + k] = W[k] * r * (1 + 3*cu + 4.5*cu*cu - 1.5*u2);
+                        }
+                        continue;
+                    }
+
+                    // Outlet (Right): Zero Gradient (copy from left neighbor)
+                    if (x === NX - 1) {
+                        let prevIdx = idx - 1;
+                        for (let k = 0; k < Q; k++) {
+                            f[idx*Q + k] = f[prevIdx*Q + k];
+                        }
+                        continue;
+                    }
+
+                    // Walls (Top/Bottom): Bounce Back
+                    if (y === 0 || y === NY - 1) {
+                        for (let k = 0; k < Q; k++) {
+                            f[idx*Q + k] = fTemp[idx*Q + OPP[k]];
+                        }
+                        continue;
+                    }
+
+                    // Obstacle: Bounce Back
+                    if (obstacleMask[idx] === 1) {
+                        for (let k = 0; k < Q; k++) {
+                            f[idx*Q + k] = fTemp[idx*Q + OPP[k]];
+                        }
+                    }
+                }
+            }
+            
+            // Calculate Vorticity for visualization (Curl of velocity)
+            // w = dv/dx - du/dy
+            for (let y = 1; y < NY - 1; y++) {
+                for (let x = 1; x < NX - 1; x++) {
+                    let idx = y * NX + x;
+                    let dvdx = (uy[idx + 1] - uy[idx - 1]) * 0.5;
+                    let dudy = (ux[idx + NX] - ux[idx - NX]) * 0.5;
+                    vorticity[idx] = dvdx - dudy;
+                }
+            }
+        }
+
+        function renderFlow() {
+            loadPixels();
+            for (let y = 0; y < NY; y++) {
+                for (let x = 0; x < NX; x++) {
+                    let idx = y * NX + x;
+                    let v = vorticity[idx];
+                    
+                    // Color mapping: Blue (negative) -> Black (zero) -> Red (positive)
+                    // Normalize vorticity roughly
+                    let intensity = constrain(abs(v) * 40, 0, 1); 
+                    
+                    let r, g, b;
+                    if (v > 0) {
+                        // Red/Cyan range
+                        r = 255 * intensity;
+                        g = 255 * (1 - intensity);
+                        b = 255 * (1 - intensity);
+                    } else {
+                        // Blue/Yellow range
+                        r = 255 * (1 - intensity);
+                        g = 255 * (1 - intensity);
+                        b = 255 * intensity;
+                    }
+
+                    // Draw 4x4 block for each grid cell
+                    for (let dy = 0; dy < 4; dy++) {
+                        for (let dx = 0; dx < 4; dx++) {
+                            let pxIdx = ((y * 4 + dy) * width + (x * 4 + dx)) * 4;
+                            pixels[pxIdx] = r;
+                            pixels[pxIdx + 1] = g;
+                            pixels[pxIdx + 2] = b;
+                            pixels[pxIdx + 3] = 255;
+                        }
+                    }
+                }
+            }
+            updatePixels();
+        }
+
+        function renderObstacle() {
+            push();
+            scale(4);
+            translate(params.obstacleX, params.obstacleY);
+            rotate(radians(params.obstacleAngle));
+            
+            noStroke();
+            fill(50, 50, 50);
+            
+            let r = params.obstacleRadius;
+            
+            if (params.obstacleShape === 'circle') {
+                ellipse(0, 0, r*2);
+            } else if (params.obstacleShape === 'rectangle') {
+                rectMode(CENTER);
+                rect(0, 0, r*2, r*2);
+            } else if (params.obstacleShape === 'ellipse') {
+                ellipse(0, 0, r*2, r*1.2);
+            } else if (params.obstacleShape === 'triangle') {
+                triangle(r, 0, -r/2, -r*0.866, -r/2, r*0.866);
+            }
+            
+            // Draw center point
+            fill(255, 0, 0);
+            ellipse(0, 0, 4, 4);
+            pop();
+        }
+
+        function setupUI() {
+            const bind = (id, paramKey, displayId, isFloat = false) => {
+                const el = document.getElementById(id);
+                const disp = document.getElementById(displayId);
+                el.addEventListener('input', (e) => {
+                    let val = isFloat ? parseFloat(e.target.value) : parseInt(e.target.value);
+                    params[paramKey] = val;
+                    disp.innerText = val.toFixed(isFloat ? 2 : 0) + (paramKey === 'obstacleAngle' ? '°' : '');
+                    
+                    // Special handling for viscosity -> omega conversion
+                    if (paramKey === 'omega') {
+                        // nu = (1/omega - 0.5) / 3  => omega = 1 / (3*nu + 0.5)
+                        // But UI controls 'Viscosity' directly for user intuition
+                        let nu = val;
+                        params.omega = 1.0 / (3.0 * nu + 0.5);
+                    }
+                });
+            };
+
+            bind('inp-speed', 'uInlet', 'val-speed', true);
+            bind('inp-visc', 'omega', 'val-visc', true); // Note: logic inside handles nu->omega
+            bind('inp-size', 'obstacleRadius', 'val-size');
+            bind('inp-rot', 'obstacleAngle', 'val-rot');
+
+            document.getElementById('inp-shape').addEventListener('change', (e) => {
+                params.obstacleShape = e.target.value;
+            });
+        }
+    </script>
+</body>
+</html>

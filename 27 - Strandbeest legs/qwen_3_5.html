@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Babylon.js Genetic Algorithm: Evolving Strandbeest Legs</title>
+    <style>
+        html, body {
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #1a1a1a;
+            color: #eee;
+        }
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 8px;
+            pointer-events: auto;
+            max-width: 350px;
+            border: 1px solid #444;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        h1 { font-size: 1.2rem; margin-top: 0; color: #4db8ff; }
+        h2 { font-size: 1rem; margin-bottom: 10px; color: #aaa; border-bottom: 1px solid #444; padding-bottom: 5px;}
+        .control-group { margin-bottom: 15px; }
+        label { display: block; font-size: 0.85rem; margin-bottom: 5px; color: #ccc; }
+        input[type="range"] { width: 100%; cursor: pointer; }
+        .value-display { float: right; color: #4db8ff; font-weight: bold; }
+        button {
+            background-color: #4db8ff;
+            border: none;
+            color: #1a1a1a;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            width: 100%;
+            margin-top: 5px;
+            transition: background 0.2s;
+        }
+        button:hover { background-color: #3399cc; }
+        button.secondary { background-color: #444; color: #fff; }
+        button.secondary:hover { background-color: #666; }
+        #stats {
+            margin-top: 15px;
+            font-family: monospace;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+        .stat-row { display: flex; justify-content: space-between; }
+        .highlight { color: #ffeb3b; }
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 2rem; color: white; pointer-events: none;
+        }
+    </style>
+    <!-- Babylon.js Core -->
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <!-- Babylon.js GUI (Optional, but good for future) -->
+    <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+</head>
+<body>
+
+    <div id="loading">Loading Engine...</div>
+
+    <canvas id="renderCanvas"></canvas>
+
+    <div id="ui-layer">
+        <h1>Evolutionary Strandbeest</h1>
+        
+        <div class="control-group">
+            <label>Simulation Speed <span id="val-speed" class="value-display">1x</span></label>
+            <input type="range" id="inp-speed" min="1" max="20" value="1">
+        </div>
+
+        <div class="control-group">
+            <label>Population Size <span id="val-pop" class="value-display">50</span></label>
+            <input type="range" id="inp-pop" min="10" max="200" step="10" value="50">
+        </div>
+
+        <div class="control-group">
+            <label>Mutation Rate <span id="val-mut" class="value-display">0.1</span></label>
+            <input type="range" id="inp-mut" min="0.01" max="0.5" step="0.01" value="0.1">
+        </div>
+
+        <div class="control-group">
+            <label>Generation Time (sec) <span id="val-time" class="value-display">5.0</span></label>
+            <input type="range" id="inp-time" min="2" max="15" step="0.5" value="5.0">
+        </div>
+
+        <button id="btn-toggle">Pause Evolution</button>
+        <button id="btn-reset" class="secondary">Reset Evolution</button>
+        <button id="btn-focus" class="secondary">Focus Best Creature</button>
+
+        <div id="stats">
+            <div class="stat-row">Generation: <span id="stat-gen" class="highlight">1</span></div>
+            <div class="stat-row">Best Distance: <span id="stat-dist" class="highlight">0.00</span> m</div>
+            <div class="stat-row">Avg Fitness: <span id="stat-avg">0.00</span></div>
+            <div class="stat-row">Time Left: <span id="stat-time">0.0</span>s</div>
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        const CONFIG = {
+            populationSize: 50,
+            mutationRate: 0.1,
+            generationTime: 5.0, // seconds
+            simSpeed: 1,
+            crankSpeed: 2.0, // Radians per second
+            groundY: 0
+        };
+
+        // --- Genetic Algorithm Logic ---
+
+        // Genome structure: Defines a 6-bar linkage mechanism
+        // 1. Crank Length (rotating arm)
+        // 2. Coupler Length (connects crank to rocker)
+        // 3. Rocker Length (pivots on body)
+        // 4. Leg Segment Length (extends from coupler to foot)
+        // 5. Leg Angle Offset (angle of leg relative to coupler)
+        // 6. Pivot Distance (distance between crank pivot and rocker pivot on body)
+        // 7. Crank Pivot Offset (vertical offset of crank pivot relative to body center)
+        // 8. Rocker Pivot Offset (vertical offset of rocker pivot relative to body center)
+        
+        const GENOME_LENGTH = 8;
+        const GENE_BOUNDS = [
+            [0.2, 1.5], // Crank
+            [0.5, 3.0], // Coupler
+            [0.5, 3.0], // Rocker
+            [0.5, 3.0], // Leg
+            [-Math.PI, Math.PI], // Angle
+            [0.5, 2.0], // Pivot Dist
+            [-1.0, 1.0], // Crank Y
+            [-1.0, 1.0]  // Rocker Y
+        ];
+
+        class Genome {
+            constructor(data = null) {
+                if (data) {
+                    this.genes = data;
+                } else {
+                    this.genes = new Float32Array(GENOME_LENGTH);
+                    this.randomize();
+                }
+                this.fitness = 0;
+                this.distance = 0;
+                this.stabilityPenalty = 0;
+            }
+
+            randomize() {
+                for (let i = 0; i < GENOME_LENGTH; i++) {
+                    const [min, max] = GENE_BOUNDS[i];
+                    this.genes[i] = Math.random() * (max - min) + min;
+                }
+            }
+
+            clone() {
+                return new Genome(new Float32Array(this.genes));
+            }
+
+            mutate(rate) {
+                for (let i = 0; i < GENOME_LENGTH; i++) {
+                    if (Math.random() < rate) {
+                        const [min, max] = GENE_BOUNDS[i];
+                        // Gaussian mutation
+                        let change = (Math.random() * 2 - 1) * (max - min) * 0.2; 
+                        this.genes[i] += change;
+                        // Clamp
+                        this.genes[i] = Math.max(min, Math.min(max, this.genes[i]));
+                    }
+                }
+            }
+
+            static crossover(parent1, parent2) {
+                const child = new Genome();
+                for (let i = 0; i < GENOME_LENGTH; i++) {
+                    // Blend crossover
+                    const alpha = Math.random();
+                    child.genes[i] = parent1.genes[i] * alpha + parent2.genes[i] * (1 - alpha);
+                    // Clamp to bounds
+                    const [min, max] = GENE_BOUNDS[i];
+                    child.genes[i] = Math.max(min, Math.min(max, child.genes[i]));
+                }
+                return child;
+            }
+        }
+
+        class Population {
+            constructor(size) {
+                this.size = size;
+                this.individuals = [];
+                this.generation = 1;
+                for (let i = 0; i < size; i++) {
+                    this.individuals.push(new Genome());
+                }
+            }
+
+            evaluate() {
+                // Sort by fitness descending
+                this.individuals.sort((a, b) => b.fitness - a.fitness);
+            }
+
+            evolve() {
+                this.evaluate();
+                const newPop = [];
+                
+                // Elitism: Keep top 2
+                newPop.push(this.individuals[0].clone());
+                newPop.push(this.individuals[1].clone());
+
+                while (newPop.length < this.size) {
+                    // Tournament Selection
+                    const p1 = this.tournamentSelect();
+                    const p2 = this.tournamentSelect();
+                    
+                    const child = Genome.crossover(p1, p2);
+                    child.mutate(CONFIG.mutationRate);
+                    newPop.push(child);
+                }
+
+                this.individuals = newPop;
+                this.generation++;
+            }
+
+            tournamentSelect() {
+                const k = 4;
+                let best = null;
+                for (let i = 0; i < k; i++) {
+                    const ind = this.individuals[Math.floor(Math.random() * this.size)];
+                    if (best === null || ind.fitness > best.fitness) {
+                        best = ind;
+                    }
+                }
+                return best;
+            }
+
+            getBest() {
+                return this.individuals[0];
+            }
+        }
+
+        // --- Babylon.js & Simulation Logic ---
+
+        const canvas = document.getElementById("renderCanvas");
+        const engine = new BABYLON.Engine(canvas, true);
+        
+        // Global State
+        let scene, camera, ground, light;
+        let population;
+        let creatures = [];
+        let isPaused = false;
+        let generationTimer = 0;
+        let bestCreatureMeshGroup = null; // For highlighting
+
+        // Math Helper for Linkage (Geometric Solver)
+        // Solves for the position of the foot given the crank angle
+        function solveLinkage(genome, crankAngle) {
+            const L1 = genome.genes[0]; // Crank
+            const L2 = genome.genes[1]; // Coupler
+            const L3 = genome.genes[2]; // Rocker
+            const L4 = genome.genes[3]; // Leg Segment
+            const thetaOffset = genome.genes[4]; // Leg Angle
+            const pivotDist = genome.genes[5]; // Distance between fixed pivots
+            const crankY = genome.genes[6];
+            const rockerY = genome.genes[7];
+
+            // Fixed Pivots relative to Creature Body Center (0,0)
+            const P1 = new BABYLON.Vector3(0, crankY, 0); // Crank Pivot
+            const P2 = new BABYLON.Vector3(pivotDist, rockerY, 0); // Rocker Pivot
+
+            // Crank Tip Position
+            const C = new BABYLON.Vector3(
+                P1.x + L1 * Math.cos(crankAngle),
+                P1.y + L1 * Math.sin(crankAngle),
+                0
+            );
+
+            // We need to find the position of the joint between Coupler and Rocker (let's call it J)
+            // J is distance L2 from C and distance L3 from P2.
+            // Intersection of two circles.
+            
+            const d = BABYLON.Vector3.Distance(C, P2);
+            
+            // Check for impossible geometry (links too short)
+            if (d > L2 + L3 || d < Math.abs(L2 - L3)) {
+                return null; // Mechanism locked/broken
+            }
+
+            // Law of Cosines to find angle
+            const a = (L2*L2 - L3*L3 + d*d) / (2*d);
+            const h = Math.sqrt(Math.max(0, L2*L2 - a*a));
+
+            const x2 = C.x + a * (P2.x - C.x) / d;
+            const y2 = C.y + a * (P2.y - C.y) / d;
+
+            // Two solutions for intersection. We want the one that makes sense for walking (usually "up" or consistent winding)
+            // Let's pick the one that keeps the mechanism generally above the crank pivot initially
+            const rx = -(P2.y - C.y) * (h / d);
+            const ry = (P2.x - C.x) * (h / d);
+
+            // Try solution 1
+            let J1 = new BABYLON.Vector3(x2 + rx, y2 + ry, 0);
+            // Try solution 2
+            let J2 = new BABYLON.Vector3(x2 - rx, y2 - ry, 0);
+
+            // Heuristic: Pick the solution where J is generally higher than C (standard Strandbeest config)
+            // Or simply pick the one consistent with previous frame. For simplicity in GA, we pick based on Y.
+            let J = (J1.y > J2.y) ? J1 : J2;
+
+            // Foot Position: Extend from J along the vector C->J or similar?
+            // In Strandbeest, the leg is attached to the coupler.
+            // Let's assume the leg segment L4 is rigidly attached to the Coupler (C-J).
+            // Angle of Coupler:
+            const couplerAngle = Math.atan2(J.y - C.y, J.x - C.x);
+            
+            const footX = J.x + L4 * Math.cos(couplerAngle + thetaOffset);
+            const footY = J.y + L4 * Math.sin(couplerAngle + thetaOffset);
+
+            return {
+                crankPos: C,
+                jointPos: J,
+                footPos: new BABYLON.Vector3(footX, footY, 0),
+                couplerAngle: couplerAngle
+            };
+        }
+
+        class Creature {
+            constructor(genome, scene, isBest = false) {
+                this.genome = genome;
+                this.scene = scene;
+                this.isBest = isBest;
+                
+                // Simulation State
+                this.bodyPos = new BABYLON.Vector3(0, 2, 0); // Start slightly up
+                this.bodyVel = new BABYLON.Vector3(0, 0, 0);
+                this.crankAngle = 0;
+                this.distanceTraveled = 0;
+                this.prevFootPos = null;
+                this.isGrounded = false;
+
+                // Visuals
+                this.meshes = [];
+                this.createMeshes();
+            }
+
+            createMeshes() {
+                const matBody = new BABYLON.StandardMaterial("matBody", this.scene);
+                matBody.diffuseColor = this.isBest ? new BABYLON.Color3(1, 0.8, 0) : new BABYLON.Color3(0.2, 0.2, 0.2);
+                matBody.emissiveColor = this.isBest ? new BABYLON.Color3(0.2, 0.1, 0) : new BABYLON.Color3(0,0,0);
+
+                const matLink = new BABYLON.StandardMaterial("matLink", this.scene);
+                matLink.diffuseColor = this.isBest ? new BABYLON.Color3(0, 1, 0.5) : new BABYLON.Color3(0.5, 0.5, 0.5);
+                matLink.alpha = this.isBest ? 0.9 : 0.6;
+
+                const matJoint = new BABYLON.StandardMaterial("matJoint", this.scene);
+                matJoint.diffuseColor = new BABYLON.Color3(1, 1, 1);
+
+                // Create a container for this creature to move easily
+                this.root = new BABYLON.TransformNode("creatureRoot");
+                
+                // Body Box
+                const body = BABYLON.MeshBuilder.CreateBox("body", {width: 1.5, height: 0.8, depth: 0.5}, this.scene);
+                body.material = matBody;
+                body.parent = this.root;
+                body.position.y = 0.4; // Center of box relative to root
+                this.meshes.push(body);
+
+                // Legs (Left and Right for visual balance, but physics is 2D projected)
+                // We will create two identical linkages offset in Z
+                const offsets = [-0.25, 0.25];
+                this.linkageNodes = [];
+
+                offsets.forEach(zOff => {
+                    const group = new BABYLON.TransformNode("legGroup");
+                    group.parent = this.root;
+                    group.position.z = zOff;
+
+                    // Crank
+                    const crank = BABYLON.MeshBuilder.CreateBox("crank", {width: 0.1, height: 0.1, depth: 0.1}, this.scene);
+                    crank.material = matJoint;
+                    crank.parent = group;
+                    
+                    // Bars (visual only, positions updated in loop)
+                    const bar1 = BABYLON.MeshBuilder.CreateCylinder("bar1", {height: 1, diameter: 0.05}, this.scene);
+                    bar1.material = matLink;
+                    bar1.parent = group;
+
+                    const bar2 = BABYLON.MeshBuilder.CreateCylinder("bar2", {height: 1, diameter: 0.05}, this.scene);
+                    bar2.material = matLink;
+                    bar2.parent = group;
+
+                    const legSeg = BABYLON.MeshBuilder.CreateCylinder("legSeg", {height: 1, diameter: 0.08}, this.scene);
+                    legSeg.material = this.isBest ? new BABYLON.StandardMaterial("m", this.scene) { diffuseColor: new BABYLON.Color3(1,0,0) } : matLink;
+                    legSeg.parent = group;
+
+                    this.linkageNodes.push({ crank, bar1, bar2, legSeg, zOff });
+                });
+            }
+
+            update(dt) {
+                // 1. Kinematics
+                this.crankAngle += CONFIG.crankSpeed * dt;
+                
+                // Solve for one side (physics is same for both)
+                const kin = solveLinkage(this.genome, this.crankAngle);
+
+                if (!kin) {
+                    // Mechanism broke/locked, huge penalty
+                    this.genome.fitness = -1000;
+                    return; 
+                }
+
+                // 2. Physics / Walking Logic (Simplified)
+                // We treat the body as a point mass.
+                // If foot is on ground (y <= 0) and moving backward relative to body, push body forward.
+                
+                const footWorldY = this.bodyPos.y + kin.footPos.y;
+                const footWorldX = this.bodyPos.x + kin.footPos.y; // Wait, kin.footPos is local to body pivot? 
+                // In solveLinkage, P1 is (0, crankY). So kin.footPos is relative to P1.
+                // P1 is relative to Body Center.
+                // So Foot World = BodyPos + (0, crankY) + kin.footPos? 
+                // Actually, solveLinkage returns positions relative to P1 (0, crankY).
+                // Let's assume BodyPos is the location of P1 (Crank Pivot).
+                
+                const globalFootX = this.bodyPos.x + kin.footPos.x;
+                const globalFootY = this.bodyPos.y + kin.footPos.y;
+
+                let onGround = false;
+                if (globalFootY <= CONFIG.groundY) {
+                    onGround = true;
+                    // Correction: Don't let foot sink
+                    // In a real sim, we'd push the body up. Here, we just penalize sinking for fitness.
+                    if (globalFootY < CONFIG.groundY - 0.5) {
+                         this.genome.stabilityPenalty += 10 * dt; // Penalty for digging hole
+                    }
+                }
+
+                // Friction Logic:
+                // If foot is on ground, the velocity of the foot relative to ground should be 0.
+                // Foot Velocity = BodyVel + FootVel_Relative.
+                // We want FootVel_Total_X = 0 => BodyVel_X = -FootVel_Relative_X
+                
+                // Calculate relative foot velocity (derivative of kin.footPos)
+                // Approximate with finite difference
+                if (this.prevKin) {
+                    const dFootX = kin.footPos.x - this.prevKin.footPos.x;
+                    const dFootY = kin.footPos.y - this.prevKin.footPos.y;
+                    
+                    const relVelX = dFootX / dt;
+                    const relVelY = dFootY / dt;
+
+                    if (onGround) {
+                        // If foot is planted, body moves opposite to foot motion
+                        // Damping factor for "slip"
+                        const traction = 0.8; 
+                        this.bodyPos.x -= relVelX * traction * dt;
+                        
+                        // Gravity / Ground constraint for body Y
+                        // If foot is planted, body Y is constrained by leg length
+                        // Target Body Y such that Foot Y = 0
+                        // BodyY + kin.footPos.y = 0 => BodyY = -kin.footPos.y
+                        const targetBodyY = -kin.footPos.y;
+                        // Smooth lerp to target height
+                        this.bodyPos.y += (targetBodyY - this.bodyPos.y) * 10 * dt;
+                    } else {
+                        // In air: Gravity
+                        this.bodyVel.y -= 9.8 * dt;
+                        this.bodyPos.y += this.bodyVel.y * dt;
+                        
+                        // Floor collision for body
+                        if (this.bodyPos.y < 1.0) { // Body center height approx
+                            this.bodyPos.y = 1.0;
+                            this.bodyVel.y = 0;
+                            // Friction on body if dragging
+                            this.bodyPos.x *= 0.95; 
+                        }
+                    }
+                }
+                this.prevKin = kin;
+
+                // Record Distance
+                if (this.bodyPos.x > this.distanceTraveled) {
+                    this.distanceTraveled = this.bodyPos.x;
+                }
+
+                // 3. Update Visuals
+                this.root.position.x = this.bodyPos.x;
+                this.root.position.y = this.bodyPos.y;
+
+                this.linkageNodes.forEach(nodes => {
+                    // Update Crank Pivot (it's fixed to body, so already moved by root)
+                    // But visually, we need to rotate the crank mesh
+                    nodes.crank.rotation.z = this.crankAngle;
+                    
+                    // Update Bars
+                    // Bar 1: Connects Crank Tip (C) to Joint (J)
+                    // C is rotated around (0,0) in local space by crankAngle with length L1
+                    const L1 = this.genome.genes[0];
+                    const Cx = L1 * Math.cos(this.crankAngle);
+                    const Cy = L1 * Math.sin(this.crankAngle);
+
+                    // J is kin.jointPos
+                    const Jx = kin.jointPos.x;
+                    const Jy = kin.jointPos.y;
+
+                    // Position Bar 1 midpoint
+                    nodes.bar1.position.x = (Cx + Jx) / 2;
+                    nodes.bar1.position.y = (Cy + Jy) / 2;
+                    nodes.bar1.rotation.z = Math.atan2(Jy - Cy, Jx - Cx);
+                    nodes.bar1.scaling.y = BABYLON.Vector3.Distance(new BABYLON.Vector3(Cx,Cy,0), new BABYLON.Vector3(Jx,Jy,0)) / 1.0; // Height is 1, scale Y
+
+                    // Bar 2 (Rocker): Connects Joint (J) to Fixed Pivot (P2)
+                    // P2 is at (pivotDist, rockerY)
+                    const P2x = this.genome.genes[5];
+                    const P2y = this.genome.genes[7];
+                    
+                    nodes.bar2.position.x = (Jx + P2x) / 2;
+                    nodes.bar2.position.y = (Jy + P2y) / 2;
+                    nodes.bar2.rotation.z = Math.atan2(P2y - Jy, P2x - Jx);
+                    nodes.bar2.scaling.y = BABYLON.Vector3.Distance(new BABYLON.Vector3(Jx,Jy,0), new BABYLON.Vector3(P2x,P2y,0)) / 1.0;
+
+                    // Leg Segment: Connects Joint (J) to Foot
+                    const Fx = kin.footPos.x;
+                    const Fy = kin.footPos.y;
+
+                    nodes.legSeg.position.x = (Jx + Fx) / 2;
+                    nodes.legSeg.position.y = (Jy + Fy) / 2;
+                    nodes.legSeg.rotation.z = Math.atan2(Fy - Jy, Fx - Jx);
+                    nodes.legSeg.scaling.y = BABYLON.Vector3.Distance(new BABYLON.Vector3(Jx,Jy,0), new BABYLON.Vector3(Fx,Fy,0)) / 1.0;
+                });
+            }
+
+            dispose() {
+                this.meshes.forEach(m => m.dispose());
+                this.linkageNodes.forEach(n => {
+                    n.crank.dispose(); n.bar1.dispose(); n.bar2.dispose(); n.legSeg.dispose();
+                });
+                this.root.dispose();
+            }
+        }
+
+        // --- Main Loop & Initialization ---
+
+        const createScene = function () {
+            const scene = new BABYLON.Scene(engine);
+            scene.clearColor = new BABYLON.Color4(0.1, 0.1, 0.15, 1);
+
+            // Camera
+            camera = new BABYLON.ArcRotateCamera("camera", -Math.PI / 2, Math.PI / 2.5, 30, new BABYLON.Vector3(10, 0, 0), scene);
+            camera.attachControl(canvas, true);
+            camera.lowerRadiusLimit = 10;
+            camera.upperRadiusLimit = 100;
+
+            // Light
+            const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+            light.intensity = 0.7;
+            const dirLight = new BABYLON.DirectionalLight("dir", new BABYLON.Vector3(-1, -2, -1), scene);
+            dirLight.position = new BABYLON.Vector3(20, 40, 20);
+            dirLight.intensity = 0.5;
+
+            // Ground
+            ground = BABYLON.MeshBuilder.CreateGround("ground", {width: 200, height: 20}, scene);
+            const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+            groundMat.diffuseColor = new BABYLON.Color3(0.3, 0.3, 0.3);
+            groundMat.specularColor = new BABYLON.Color3(0,0,0);
+            ground.material = groundMat;
+            ground.position.y = CONFIG.groundY;
+
+            // Grid
+            const grid = BABYLON.MeshBuilder.CreateGround("grid", {width: 200, height: 20}, scene);
+            grid.position.y = CONFIG.groundY + 0.01;
+            const gridMat = new BABYLON.StandardMaterial("gridMat", scene);
+            gridMat.wireframe = true;
+            gridMat.alpha = 0.2;
+            gridMat.diffuseColor = new BABYLON.Color3(0.5, 0.5, 0.5);
+            grid.material = gridMat;
+
+            // Initialize GA
+            population = new Population(CONFIG.populationSize);
+            spawnCreatures();
+
+            document.getElementById('loading').style.display = 'none';
+
+            return scene;
+        };
+
+        function spawnCreatures() {
+            // Cleanup old
+            creatures.forEach(c => c.dispose());
+            creatures = [];
+
+            // Create meshes for all
+            population.individuals.forEach((genome, index) => {
+                // Only render top 10 fully, others simplified or hidden? 
+                // For this demo, let's render all but scale down opacity for non-best
+                const isBest = (index === 0); 
+                // Actually, we don't know who is best until simulation runs.
+                // Let's just render all. Performance might dip at 200, but 50 is fine.
+                const c = new Creature(genome, scene, false);
+                // Stagger start positions vertically so they don't overlap visually too much
+                c.root.position.z = (index % 10) * 3 - 15; 
+                c.root.position.x = 0; 
+                creatures.push(c);
+            });
+        }
+
+        function runGenerationStep(dt) {
+            if (isPaused) return;
+
+            generationTimer += dt * CONFIG.simSpeed;
+
+            // Update all creatures
+            creatures.forEach(c => c.update(dt * CONFIG.simSpeed));
+
+            // Check Generation End
+            if (generationTimer >= CONFIG.generationTime) {
+                finishGeneration();
+            }
+
+            updateUI();
+        }
+
+        function finishGeneration() {
+            // Calculate Fitness
+            population.individuals.forEach((genome, index) => {
+                const c = creatures[index];
+                // Fitness = Distance - Penalties
+                // Penalty for being upside down or too low
+                let penalty = c.genome.stabilityPenalty;
+                if (c.bodyPos.y < 0.5) penalty += 50; // Fell over
+
+                genome.fitness = Math.max(0, c.distanceTraveled - penalty);
+                genome.distance = c.distanceTraveled;
+            });
+
+            // Evolve
+            population.evolve();
+
+            // Reset Simulation for next gen
+            generationTimer = 0;
+            
+            // Update Visuals to reflect new genomes
+            // We keep the same creature objects but update their genomes and reset pos
+            creatures.forEach((c, index) => {
+                c.genome = population.individuals[index];
+                c.bodyPos = new BABYLON.Vector3(0, 2, 0);
+                c.bodyVel = new BABYLON.Vector3(0, 0, 0);
+                c.crankAngle = 0;
+                c.distanceTraveled = 0;
+                c.prevKin = null;
+                c.root.position.x = 0;
+                c.root.position.z = (index % 10) * 3 - 15;
+                
+                // Update material if this is now the best one
+                const isBest = (index === 0);
+                if(isBest !== c.isBest) {
+                    c.dispose();
+                    c.isBest = isBest;
+                    c.createMeshes();
+                    c.root.position.z = (index % 10) * 3 - 15;
+                }
+            });
+
+            // Camera focus on best
+            focusBest();
+        }
+
+        function focusBest() {
+            const bestC = creatures[0];
+            if(bestC) {
+                // Smooth camera target could be added here
+                camera.target = new BABYLON.Vector3(bestC.bodyPos.x + 5, 2, bestC.root.position.z);
+            }
+        }
+
+        function updateUI() {
+            document.getElementById('stat-gen').innerText = population.generation;
+            document.getElementById('stat-dist').innerText = population.getBest().distance.toFixed(2);
+            
+            // Avg fitness
+            const sum = population.individuals.reduce((acc, curr) => acc + curr.fitness, 0);
+            document.getElementById('stat-avg').innerText = (sum / population.size).toFixed(2);
+
+            const timeLeft = Math.max(0, (CONFIG.generationTime - generationTimer) / CONFIG.simSpeed);
+            document.getElementById('stat-time').innerText = timeLeft.toFixed(1);
+        }
+
+        // --- UI Event Listeners ---
+        document.getElementById('inp-speed').addEventListener('input', (e) => {
+            CONFIG.simSpeed = parseFloat(e.target.value);
+            document.getElementById('val-speed').innerText = CONFIG.simSpeed + 'x';
+        });
+        document.getElementById('inp-pop').addEventListener('input', (e) => {
+            CONFIG.populationSize = parseInt(e.target.value);
+            document.getElementById('val-pop').innerText = CONFIG.populationSize;
+        });
+        document.getElementById('inp-mut').addEventListener('input', (e) => {
+            CONFIG.mutationRate = parseFloat(e.target.value);
+            document.getElementById('val-mut').innerText = CONFIG.mutationRate;
+        });
+        document.getElementById('inp-time').addEventListener('input', (e) => {
+            CONFIG.generationTime = parseFloat(e.target.value);
+            document.getElementById('val-time').innerText = CONFIG.generationTime;
+        });
+
+        document.getElementById('btn-toggle').addEventListener('click', (e) => {
+            isPaused = !isPaused;
+            e.target.innerText = isPaused ? "Resume Evolution" : "Pause Evolution";
+            e.target.style.backgroundColor = isPaused ? "#ff6b6b" : "#4db8ff";
+        });
+
+        document.getElementById('btn-reset').addEventListener('click', () => {
+            population = new Population(CONFIG.populationSize);
+            generationTimer = 0;
+            spawnCreatures();
+        });
+
+        document.getElementById('btn-focus').addEventListener('click', () => {
+            focusBest();
+        });
+
+        // --- Engine Run ---
+        scene = createScene();
+
+        engine.runRenderLoop(function () {
+            if (scene) {
+                // Fixed time step for physics stability, scaled by simSpeed
+                const dt = 1/60; 
+                runGenerationStep(dt);
+                scene.render();
+            }
+        });
+
+        window.addEventListener("resize", function () {
+            engine.resize();
+        });
+
+    </script>
+</body>
+</html>

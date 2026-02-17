@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>2D Gas Simulation (Statistical Mechanics)</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #canvas-container {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #eee;
+    }
+    #controls {
+      padding: 10px;
+      background: #f5f5f5;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+    }
+    .control-group label {
+      font-size: 12px;
+      margin-bottom: 2px;
+    }
+    input[type="range"] {
+      width: 100%;
+    }
+    button {
+      padding: 5px;
+      cursor: pointer;
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
+</head>
+<body>
+  <div id="canvas-container"></div>
+  <div id="controls"></div>
+
+  <script>
+    // Global variables
+    let particles = [];
+    let boxX, boxY, boxWidth, boxHeight; // simulation box in pixels (left half of canvas)
+    let isPaused = false;
+    let collisionsEnabled = true;
+    let mixtureEnabled = false;
+    let impulseAccumulator = { total: 0, lastResetTime: 0 };
+    let stats = { temperature: 0, pressureKE: 0, pressureWall: 0 };
+    let params = {};
+    let ui = {};
+
+    // Particle class
+    class Particle {
+      constructor(x, y, vx, vy, mass, radius, species) {
+        this.x = x;
+        this.y = y;
+        this.vx = vx;
+        this.vy = vy;
+        this.mass = mass;
+        this.radius = radius;
+        this.species = species; // 0 = light, 1 = heavy
+        this.color = species === 0 ? color(100, 100, 255) : color(255, 100, 100);
+      }
+
+      draw(boxX, boxY) {
+        fill(this.color);
+        noStroke();
+        ellipse(boxX + this.x, boxY + this.y, this.radius * 2);
+      }
+
+      checkWalls(boxWidth, boxHeight, impulseAccumulator) {
+        // left
+        if (this.x - this.radius < 0) {
+          this.x = this.radius;
+          this.vx = -this.vx;
+          impulseAccumulator.total += 2 * this.mass * abs(this.vx);
+        }
+        // right
+        if (this.x + this.radius > boxWidth) {
+          this.x = boxWidth - this.radius;
+          this.vx = -this.vx;
+          impulseAccumulator.total += 2 * this.mass * abs(this.vx);
+        }
+        // top
+        if (this.y - this.radius < 0) {
+          this.y = this.radius;
+          this.vy = -this.vy;
+          impulseAccumulator.total += 2 * this.mass * abs(this.vy);
+        }
+        // bottom
+        if (this.y + this.radius > boxHeight) {
+          this.y = boxHeight - this.radius;
+          this.vy = -this.vy;
+          impulseAccumulator.total += 2 * this.mass * abs(this.vy);
+        }
+      }
+    }
+
+    // p5.js setup
+    function setup() {
+      let canvas = createCanvas(800, 600);
+      canvas.parent('canvas-container');
+      frameRate(60);
+
+      // Default parameters
+      params = {
+        N: 100,
+        T0: 1,
+        boxWidth: 300,
+        boxHeight: 400,
+        radius: 4,
+        massLight: 1,
+        mixture: false,
+        massRatio: 2,
+        fractionHeavy: 0.5,
+        collisions: true
+      };
+
+      createUI();
+      initParticles();
+    }
+
+    // p5.js draw loop
+    function draw() {
+      background(240);
+
+      if (!isPaused) {
+        updatePhysics();
+      }
+
+      drawSimulation();
+      drawHistogramAndStats();
+    }
+
+    // Create UI controls
+    function createUI() {
+      // Helper to create a control group
+      function addControl(labelText, id, type, min, max, step, value, callback) {
+        let group = createDiv('');
+        group.parent('controls');
+        group.class('control-group');
+
+        if (type !== 'checkbox') {
+          let label = createP(labelText);
+          label.parent(group);
+          label.style('font-size', '12px');
+          label.style('margin', '0');
+        }
+
+        let input;
+        if (type === 'slider') {
+          input = createSlider(min, max, value, step);
+          input.parent(group);
+          input.id(id);
+          input.style('width', '100%');
+          if (callback) input.input(callback);
+        } else if (type === 'checkbox') {
+          input = createCheckbox(labelText, value);
+          input.parent(group);
+          input.id(id);
+          if (callback) input.changed(callback);
+        } else if (type === 'button') {
+          input = createButton(labelText);
+          input.parent(group);
+          input.id(id);
+          if (callback) input.mousePressed(callback);
+        }
+        return input;
+      }
+
+      // Number of particles
+      ui.numParticles = addControl('Number of Particles', 'numParticles', 'slider', 10, 500, 10, params.N);
+      // Initial temperature
+      ui.initTemp = addControl('Initial Temperature', 'initTemp', 'slider', 0.1, 10, 0.1, params.T0);
+      // Box dimensions
+      ui.boxWidth = addControl('Box Width', 'boxWidth', 'slider', 100, 360, 10, params.boxWidth);
+      ui.boxHeight = addControl('Box Height', 'boxHeight', 'slider', 100, 560, 10, params.boxHeight);
+      // Particle radius
+      ui.partRadius = addControl('Particle Radius', 'partRadius', 'slider', 2, 10, 1, params.radius);
+      // Particle mass (light)
+      ui.partMass = addControl('Particle Mass (light)', 'partMass', 'slider', 0.1, 10, 0.1, params.massLight);
+
+      // Mixture checkbox
+      ui.mixture = addControl('Mixture', 'mixture', 'checkbox', null, null, null, params.mixture, function() {
+        mixtureEnabled = this.checked();
+        if (mixtureEnabled) {
+          ui.massRatio.show();
+          ui.fractionHeavy.show();
+        } else {
+          ui.massRatio.hide();
+          ui.fractionHeavy.hide();
+        }
+      });
+
+      // Mixture sliders (initially hidden)
+      ui.massRatio = addControl('Mass Ratio (heavy/light)', 'massRatio', 'slider', 1, 10, 0.1, params.massRatio);
+      ui.fractionHeavy = addControl('Fraction Heavy', 'fractionHeavy', 'slider', 0, 1, 0.05, params.fractionHeavy);
+      if (!params.mixture) {
+        ui.massRatio.hide();
+        ui.fractionHeavy.hide();
+      }
+
+      // Collisions checkbox
+      ui.collisions = addControl('Collisions Enabled', 'collisions', 'checkbox', null, null, null, params.collisions, function() {
+        collisionsEnabled = this.checked();
+      });
+
+      // Buttons
+      ui.reset = addControl('Reset', 'reset', 'button', null, null, null, null, resetSimulation);
+      ui.pause = addControl('Pause/Resume', 'pause', 'button', null, null, null, null, function() {
+        isPaused = !isPaused;
+        this.html(isPaused ? 'Resume' : 'Pause');
+      });
+    }
+
+    // Initialize particles with current parameters
+    function initParticles() {
+      particles = [];
+      // Set box dimensions and position (centered in left half of canvas)
+      boxWidth = params.boxWidth;
+      boxHeight = params.boxHeight;
+      boxX = (400 - boxWidth) / 2;
+      boxY = (600 - boxHeight) / 2;
+
+      // Reset accumulators and stats
+      impulseAccumulator.total = 0;
+      impulseAccumulator.lastResetTime = millis();
+      stats.temperature = 0;
+      stats.pressureKE = 0;
+      stats.pressureWall = 0;
+
+      // Create particles
+      for (let i = 0; i < params.N; i++) {
+        // Determine species
+        let species = 0; // light
+        if (mixtureEnabled) {
+          if (random() < params.fractionHeavy) species = 1;
+        }
+        let mass = (species === 0) ? params.massLight : params.massLight * params.massRatio;
+        let radius = params.radius;
+
+        // Position with overlap avoidance (try up to 100 times)
+        let x, y, attempts = 0, overlap;
+        do {
+          x = random(radius, boxWidth - radius);
+          y = random(radius, boxHeight - radius);
+          overlap = false;
+          for (let j = 0; j < particles.length; j++) {
+            let other = particles[j];
+            let dx = x - other.x;
+            let dy = y - other.y;
+            if (sqrt(dx*dx + dy*dy) < radius + other.radius) {
+              overlap = true;
+              break;
+            }
+          }
+          attempts++;
+        } while (overlap && attempts < 100);
+
+        // Velocity from Maxwell-Boltzmann (2D Gaussian)
+        let std = sqrt(params.T0 / mass);
+        let vx = randomGaussian() * std;
+        let vy = randomGaussian() * std;
+
+        particles.push(new Particle(x, y, vx, vy, mass, radius, species));
+      }
+    }
+
+    // Physics update
+    function updatePhysics() {
+      // Update positions
+      for (let p of particles) {
+        p.x += p.vx;
+        p.y += p.vy;
+      }
+
+      // Wall collisions and impulse accumulation
+      for (let p of particles) {
+        p.checkWalls(boxWidth, boxHeight, impulseAccumulator);
+      }
+
+      // Particle-particle collisions
+      if (collisionsEnabled) {
+        for (let i = 0; i < particles.length; i++) {
+          for (let j = i+1; j < particles.length; j++) {
+            resolveCollision(particles[i], particles[j]);
+          }
+        }
+      }
+
+      // Compute macroscopic quantities
+      let totalKE = 0;
+      for (let p of particles) {
+        totalKE += 0.5 * p.mass * (p.vx*p.vx + p.vy*p.vy);
+      }
+      stats.temperature = totalKE / particles.length;
+      stats.pressureKE = totalKE / (boxWidth * boxHeight);
+
+      // Update wall pressure every second
+      let currentTime = millis();
+      if (currentTime - impulseAccumulator.lastResetTime >= 1000) {
+        let perimeter = 2 * (boxWidth + boxHeight);
+        let timeInterval = (currentTime - impulseAccumulator.lastResetTime) / 1000; // seconds
+        stats.pressureWall = impulseAccumulator.total / (timeInterval * perimeter);
+        impulseAccumulator.total = 0;
+        impulseAccumulator.lastResetTime = currentTime;
+      }
+    }
+
+    // Resolve collision between two particles
+    function resolveCollision(p1, p2) {
+      let dx = p2.x - p1.x;
+      let dy = p2.y - p1.y;
+      let dist = sqrt(dx*dx + dy*dy);
+      let minDist = p1.radius + p2.radius;
+      if (dist >= minDist) return;
+
+      // Normal vector
+      let nx = dx / dist;
+      let ny = dy / dist;
+
+      // Relative velocity
+      let rvx = p2.vx - p1.vx;
+      let rvy = p2.vy - p1.vy;
+
+      // Velocity along normal
+      let velAlongNormal = rvx * nx + rvy * ny;
+
+      // Do not resolve if velocities are separating
+      if (velAlongNormal > 0) return;
+
+      // Compute impulse scalar
+      let j = (2 * p1.mass * p2.mass * velAlongNormal) / (p1.mass + p2.mass);
+
+      // Apply impulse
+      p1.vx += (j / p1.mass) * nx;
+      p1.vy += (j / p1.mass) * ny;
+      p2.vx -= (j / p2.mass) * nx;
+      p2.vy -= (j / p2.mass) * ny;
+
+      // Separate particles to avoid overlap
+      let overlap = minDist - dist;
+      let separation = overlap / 2;
+      p1.x -= separation * nx;
+      p1.y -= separation * ny;
+      p2.x += separation * nx;
+      p2.y += separation * ny;
+    }
+
+    // Draw simulation box and particles
+    function drawSimulation() {
+      // Simulation box
+      stroke(0);
+      fill(255);
+      rect(boxX, boxY, boxWidth, boxHeight);
+
+      // Particles
+      for (let p of particles) {
+        p.draw(boxX, boxY);
+      }
+
+      // Info
+      fill(0);
+      noStroke();
+      text('Particles: ' + particles.length, boxX, boxY - 10);
+    }
+
+    // Draw histogram and macroscopic quantities on the right side
+    function drawHistogramAndStats() {
+      // Histogram area (right half)
+      let histX = 420;
+      let histY = 50;
+      let histW = 360;
+      let histH = 250;
+
+      // Border
+      stroke(0);
+      fill(255);
+      rect(histX, histY, histW, histH);
+
+      // Compute speed histogram
+      let speeds = particles.map(p => sqrt(p.vx*p.vx + p.vy*p.vy));
+      let maxSpeed = max(speeds);
+      if (maxSpeed === 0) maxSpeed = 1;
+
+      let numBins = 20;
+      let binWidth = maxSpeed / numBins;
+      let binCounts = new Array(numBins).fill(0);
+      for (let s of speeds) {
+        let idx = floor(s / binWidth);
+        if (idx >= numBins) idx = numBins - 1;
+        binCounts[idx]++;
+      }
+      let maxCount = max(binCounts);
+
+      // Draw bars
+      fill(100, 100, 255, 150);
+      noStroke();
+      for (let i = 0; i < numBins; i++) {
+        let x = histX + i * (histW / numBins);
+        let barWidth = (histW / numBins) - 1;
+        let barHeight = map(binCounts[i], 0, maxCount, 0, histH - 20);
+        rect(x, histY + histH - barHeight, barWidth, barHeight);
+      }
+
+      // Draw theoretical Maxwell-Boltzmann curve
+      if (particles.length > 0) {
+        let T = stats.temperature; // average KE
+        let N = particles.length;
+        let m_light = params.massLight;
+        let m_heavy = params.massLight * params.massRatio;
+        let f_h = mixtureEnabled ? params.fractionHeavy : 0;
+
+        stroke(255, 0, 0);
+        noFill();
+        beginShape();
+        for (let i = 0; i < numBins; i++) {
+          let v = (i + 0.5) * binWidth;
+          let f;
+          if (mixtureEnabled) {
+            let f_light = (m_light / T) * v * exp(-m_light * v * v / (2 * T));
+            let f_heavy = (m_heavy / T) * v * exp(-m_heavy * v * v / (2 * T));
+            f = (1 - f_h) * f_light + f_h * f_heavy;
+          } else {
+            f = (m_light / T) * v * exp(-m_light * v * v / (2 * T));
+          }
+          let expectedCount = N * f * binWidth;
+          let y = map(expectedCount, 0, maxCount, 0, histH - 20);
+          let x = histX + i * (histW / numBins) + (histW / numBins) / 2;
+          vertex(x, histY + histH - y);
+        }
+        endShape();
+      }
+
+      // Histogram labels
+      fill(0);
+      noStroke();
+      text('Speed Distribution', histX, histY - 10);
+      text('Speed', histX + histW - 30, histY + histH + 15);
+      text('Count', histX - 30, histY + 10);
+
+      // Stats area
+      let statsX = histX;
+      let statsY = histY + histH + 30;
+      text('Macroscopic Quantities', statsX, statsY);
+      text('Temperature (avg KE): ' + stats.temperature.toFixed(3), statsX, statsY + 20);
+      text('Pressure (from KE): ' + stats.pressureKE.toFixed(3), statsX, statsY + 40);
+      text('Pressure (from walls): ' + stats.pressureWall.toFixed(3), statsX, statsY + 60);
+      text('Number of Particles: ' + particles.length, statsX, statsY + 80);
+      text('Box Size: ' + boxWidth + ' x ' + boxHeight, statsX, statsY + 100);
+      if (mixtureEnabled) {
+        text('Mass Ratio: ' + params.massRatio.toFixed(1) + ', Fraction Heavy: ' + params.fractionHeavy.toFixed(2), statsX, statsY + 120);
+      }
+      text('Collisions: ' + (collisionsEnabled ? 'Enabled' : 'Disabled'), statsX, statsY + 140);
+    }
+
+    // Reset simulation with current UI values
+    function resetSimulation() {
+      params.N = parseInt(ui.numParticles.value());
+      params.T0 = parseFloat(ui.initTemp.value());
+      params.boxWidth = parseInt(ui.boxWidth.value());
+      params.boxHeight = parseInt(ui.boxHeight.value());
+      params.radius = parseFloat(ui.partRadius.value());
+      params.massLight = parseFloat(ui.partMass.value());
+      params.mixture = ui.mixture.checked();
+      params.massRatio = parseFloat(ui.massRatio.value());
+      params.fractionHeavy = parseFloat(ui.fractionHeavy.value());
+      params.collisions = ui.collisions.checked();
+
+      collisionsEnabled = params.collisions;
+      mixtureEnabled = params.mixture;
+
+      initParticles();
+    }
+
+    // Keyboard controls
+    function keyPressed() {
+      if (key === ' ') {
+        isPaused = !isPaused;
+        if (ui.pause) ui.pause.html(isPaused ? 'Resume' : 'Pause');
+      } else if (key === 'c' || key === 'C') {
+        collisionsEnabled = !collisionsEnabled;
+        if (ui.collisions) ui.collisions.checked(collisionsEnabled);
+      } else if (key === 'r' || key === 'R') {
+        resetSimulation();
+      }
+    }
+  </script>
+</body>
+</html>

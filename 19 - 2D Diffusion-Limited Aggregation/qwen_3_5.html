@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diffusion-Limited Aggregation (DLA)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            color: #eee;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.8);
+            border: 1px solid #333;
+        }
+
+        canvas {
+            display: block;
+            background-color: #000;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(30, 30, 40, 0.9);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid #444;
+            backdrop-filter: blur(5px);
+            width: 260px;
+            pointer-events: auto;
+            user-select: none;
+        }
+
+        h1 {
+            font-size: 1.1rem;
+            margin: 0 0 15px 0;
+            color: #00d2ff;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            text-align: center;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: #00d2ff;
+        }
+
+        .value-display {
+            color: #00d2ff;
+            font-weight: bold;
+        }
+
+        .stats {
+            margin-top: 15px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            color: #888;
+            border-top: 1px solid #444;
+            padding-top: 10px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .stat-val {
+            color: #fff;
+        }
+
+        button {
+            background-color: #333;
+            border: 1px solid #555;
+            color: #eee;
+            padding: 8px;
+            width: 100%;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: background 0.2s;
+        }
+        button:hover { background-color: #444; }
+        button.reset { background-color: #00d2ff; color: #000; border: none; font-weight: bold; }
+        button.reset:hover { background-color: #00aacc; }
+
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container">
+        <canvas id="simCanvas"></canvas>
+        <div id="ui-layer">
+            <h1>DLA Simulation</h1>
+            
+            <div class="control-group">
+                <label>Particle Speed <span id="val-speed" class="value-display">2</span></label>
+                <input type="range" id="inp-speed" min="1" max="10" step="1" value="2">
+            </div>
+
+            <div class="control-group">
+                <label>Active Particles <span id="val-active" class="value-display">200</span></label>
+                <input type="range" id="inp-active" min="50" max="1000" step="50" value="200">
+            </div>
+
+            <div class="control-group">
+                <label>Stickiness (Radius) <span id="val-stick" class="value-display">1</span></label>
+                <input type="range" id="inp-stick" min="1" max="3" step="1" value="1">
+            </div>
+
+            <div class="stats">
+                <div class="stat-row"><span>Fixed Particles:</span> <span id="stat-fixed" class="stat-val">0</span></div>
+                <div class="stat-row"><span>Max Radius:</span> <span id="stat-radius" class="stat-val">0</span></div>
+                <div class="stat-row"><span>Status:</span> <span id="stat-status" class="stat-val">Growing</span></div>
+            </div>
+
+            <button id="btn-reset" class="reset">Reset Simulation</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d', { alpha: false }); // Optimize for no transparency
+        
+        // Configuration
+        const WIDTH = 800;
+        const HEIGHT = 800;
+        const CENTER_X = WIDTH / 2;
+        const CENTER_Y = HEIGHT / 2;
+        const STOP_MARGIN = 50;
+        const MAX_RADIUS = Math.min(WIDTH, HEIGHT) / 2 - STOP_MARGIN;
+
+        canvas.width = WIDTH;
+        canvas.height = HEIGHT;
+
+        // State
+        let grid = new Uint8Array(WIDTH * HEIGHT); // 1D array for 2D grid (0 = empty, 1 = occupied)
+        let fixedParticles = [];
+        let activeParticles = [];
+        let maxClusterRadius = 0;
+        let isRunning = true;
+        let animationId;
+
+        // Settings
+        let settings = {
+            speed: 2,
+            maxActive: 200,
+            stickRadius: 1
+        };
+
+        // DOM Elements
+        const ui = {
+            speed: document.getElementById('inp-speed'),
+            active: document.getElementById('inp-active'),
+            stick: document.getElementById('inp-stick'),
+            valSpeed: document.getElementById('val-speed'),
+            valActive: document.getElementById('val-active'),
+            valStick: document.getElementById('val-stick'),
+            statFixed: document.getElementById('stat-fixed'),
+            statRadius: document.getElementById('stat-radius'),
+            statStatus: document.getElementById('stat-status'),
+            btnReset: document.getElementById('btn-reset')
+        };
+
+        // --- Initialization ---
+
+        function init() {
+            // Clear Grid
+            grid.fill(0);
+            fixedParticles = [];
+            activeParticles = [];
+            maxClusterRadius = 0;
+            isRunning = true;
+            
+            // Initial Seed: Create a small cluster of 100 particles in the center
+            // To make it look organic, we place them randomly within a small radius
+            const seedCount = 100;
+            const seedRadius = 10;
+            
+            for (let i = 0; i < seedCount; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const r = Math.sqrt(Math.random()) * seedRadius;
+                const x = Math.floor(CENTER_X + r * Math.cos(angle));
+                const y = Math.floor(CENTER_Y + r * Math.sin(angle));
+                addFixedParticle(x, y);
+            }
+
+            // Spawn initial active particles
+            spawnActiveParticles();
+            
+            if (animationId) cancelAnimationFrame(animationId);
+            loop();
+        }
+
+        function addFixedParticle(x, y) {
+            // Boundary check
+            if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT) return;
+            
+            const idx = y * WIDTH + x;
+            if (grid[idx] === 0) {
+                grid[idx] = 1;
+                fixedParticles.push({ x, y });
+                
+                // Update max radius
+                const dx = x - CENTER_X;
+                const dy = y - CENTER_Y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                if (dist > maxClusterRadius) {
+                    maxClusterRadius = dist;
+                }
+            }
+        }
+
+        function spawnActiveParticles() {
+            // Ensure we have enough active particles
+            while (activeParticles.length < settings.maxActive && isRunning) {
+                // Spawn on a circle slightly larger than the current cluster
+                // This prevents particles from spawning inside the cluster
+                const spawnR = Math.max(20, maxClusterRadius + 10 + Math.random() * 20);
+                const angle = Math.random() * Math.PI * 2;
+                
+                const x = CENTER_X + spawnR * Math.cos(angle);
+                const y = CENTER_Y + spawnR * Math.sin(angle);
+
+                // Only spawn if within canvas bounds
+                if (x > 0 && x < WIDTH && y > 0 && y < HEIGHT) {
+                    activeParticles.push({
+                        x: x,
+                        y: y,
+                        vx: 0,
+                        vy: 0
+                    });
+                } else {
+                    // If spawn radius is too big, we might be done
+                    break;
+                }
+            }
+        }
+
+        // --- Simulation Logic ---
+
+        function update() {
+            if (!isRunning) return;
+
+            // Check stop condition
+            if (maxClusterRadius >= MAX_RADIUS) {
+                isRunning = false;
+                ui.statStatus.innerText = "Complete";
+                ui.statStatus.style.color = "#ff4444";
+                return;
+            }
+
+            // Replenish active particles
+            spawnActiveParticles();
+
+            const speed = settings.speed;
+            const stickR = settings.stickRadius;
+            const biasStrength = 0.05; // How strongly they are pulled to center
+
+            // Update active particles
+            for (let i = activeParticles.length - 1; i >= 0; i--) {
+                const p = activeParticles[i];
+
+                // 1. Random Walk
+                const angle = Math.random() * Math.PI * 2;
+                p.x += Math.cos(angle) * speed;
+                p.y += Math.sin(angle) * speed;
+
+                // 2. Inward Bias (keep them near the cluster)
+                const dx = CENTER_X - p.x;
+                const dy = CENTER_Y - p.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                // If too far, pull back
+                if (dist > maxClusterRadius + 50) {
+                    p.x += (dx / dist) * biasStrength * speed;
+                    p.y += (dy / dist) * biasStrength * speed;
+                }
+
+                // 3. Collision Detection
+                // Check grid points around the particle
+                const ix = Math.floor(p.x);
+                const iy = Math.floor(p.y);
+
+                // Check bounds
+                if (ix < 0 || ix >= WIDTH || iy < 0 || iy >= HEIGHT) {
+                    // Remove if out of bounds
+                    activeParticles.splice(i, 1);
+                    continue;
+                }
+
+                // Check neighbors for occupancy
+                let stuck = false;
+                for (let oy = -stickR; oy <= stickR; oy++) {
+                    for (let ox = -stickR; ox <= stickR; ox++) {
+                        const nx = ix + ox;
+                        const ny = iy + oy;
+                        if (nx >= 0 && nx < WIDTH && ny >= 0 && ny < HEIGHT) {
+                            if (grid[ny * WIDTH + nx] === 1) {
+                                stuck = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (stuck) break;
+                }
+
+                if (stuck) {
+                    // Fix particle
+                    // Snap to nearest integer grid position to avoid gaps
+                    addFixedParticle(ix, iy);
+                    
+                    // Remove from active list
+                    activeParticles.splice(i, 1);
+                }
+            }
+        }
+
+        // --- Rendering ---
+
+        function draw() {
+            // Clear background with slight fade for trail effect? 
+            // No, for DLA usually solid clear is better to see structure clearly.
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+            // Draw Fixed Particles
+            // Optimization: Draw all fixed particles as white/grey
+            ctx.fillStyle = '#ccc';
+            
+            // To render thousands of particles efficiently, we can use putImageData
+            // But for simplicity and transparency support, we'll use fillRect in batches or paths
+            // Given the count might reach 50k+, individual fillRect is slow.
+            // Let's use a single path for all fixed particles.
+            
+            ctx.beginPath();
+            for (let i = 0; i < fixedParticles.length; i++) {
+                const p = fixedParticles[i];
+                // Draw 1x1 rect
+                ctx.rect(p.x, p.y, 1, 1);
+            }
+            ctx.fill();
+
+            // Draw Active Particles
+            // Color them differently (e.g., red) to show motion
+            ctx.fillStyle = '#ff4444';
+            ctx.beginPath();
+            for (let i = 0; i < activeParticles.length; i++) {
+                const p = activeParticles[i];
+                ctx.rect(p.x, p.y, 1, 1);
+            }
+            ctx.fill();
+
+            // Update Stats UI occasionally (every 10 frames to save DOM calls)
+            if (frameCount % 10 === 0) {
+                ui.statFixed.innerText = fixedParticles.length.toLocaleString();
+                ui.statRadius.innerText = Math.floor(maxClusterRadius);
+            }
+        }
+
+        let frameCount = 0;
+        function loop() {
+            update();
+            draw();
+            frameCount++;
+            animationId = requestAnimationFrame(loop);
+        }
+
+        // --- Event Listeners ---
+
+        ui.speed.addEventListener('input', (e) => {
+            settings.speed = parseInt(e.target.value);
+            ui.valSpeed.innerText = settings.speed;
+        });
+
+        ui.active.addEventListener('input', (e) => {
+            settings.maxActive = parseInt(e.target.value);
+            ui.valActive.innerText = settings.maxActive;
+        });
+
+        ui.stick.addEventListener('input', (e) => {
+            settings.stickRadius = parseInt(e.target.value);
+            ui.valStick.innerText = settings.stickRadius;
+        });
+
+        ui.btnReset.addEventListener('click', init);
+
+        // Start
+        init();
+
+    </script>
+</body>
+</html>
