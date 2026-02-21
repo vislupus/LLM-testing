@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>2D Ideal Gas Simulation • Statistical Mechanics</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+    <style>
+        body { margin:0; padding:0; background:#0a0a1f; color:#ddd; font-family:system-ui,sans-serif; overflow:hidden; }
+        h1 { margin:12px 0 8px; text-align:center; color:#66eeff; font-size:24px; letter-spacing:1px; }
+        .container { display:flex; gap:20px; justify-content:center; align-items:flex-start; padding:20px; max-width:1180px; margin:0 auto; }
+        #sketch-holder { border:3px solid #334455; border-radius:12px; background:#000; box-shadow:0 0 40px rgba(0,180,255,0.15); }
+        .panel {
+            width:270px; background:rgba(20,22,40,0.96); border-radius:12px; padding:18px;
+            box-shadow:0 8px 32px rgba(0,0,0,0.7); border:1px solid #445577;
+        }
+        label { display:block; margin:14px 0 6px; color:#aaddff; font-size:14px; }
+        input[type=range] { width:100%; accent-color:#44ddff; }
+        .val { float:right; font-family:monospace; color:#ffdd77; font-size:13px; }
+        button {
+            padding:9px 16px; background:#226699; color:white; border:none; border-radius:6px;
+            cursor:pointer; font-weight:600; margin:4px 2px;
+        }
+        button:hover { background:#3388bb; }
+        .stat { font-family:monospace; margin:7px 0; font-size:14px; }
+        .stat span { color:#ffdd88; }
+        .hist-container {
+            margin-top:12px; height:138px; background:#0f0f22; border-radius:8px; position:relative; overflow:hidden;
+        }
+        .info { font-size:12px; color:#777; text-align:center; margin-top:8px; }
+    </style>
+</head>
+<body>
+    <h1>2D IDEAL GAS — STATISTICAL MECHANICS</h1>
+    <div class="container">
+        <div id="sketch-holder"></div>
+
+        <div class="panel">
+            <h2 style="margin:0 0 16px 0;color:#88eeff;text-align:center;">Controls</h2>
+
+            <label>Particles <span id="n-val" class="val">280</span></label>
+            <input type="range" id="n" min="50" max="600" value="280" step="10">
+
+            <label>Temperature <span id="t-val" class="val">4.0</span></label>
+            <input type="range" id="temp" min="0.5" max="20" value="4" step="0.1">
+
+            <label>Mass ratio (heavy/light) <span id="mr-val" class="val">3.5</span></label>
+            <input type="range" id="massr" min="1" max="12" value="3.5" step="0.1">
+
+            <label style="margin-top:18px;">
+                <input type="checkbox" id="coll" checked> Particle collisions enabled
+            </label>
+
+            <div style="display:flex;gap:10px;margin-top:20px;">
+                <button onclick="togglePause()" style="flex:1;">⏸ Pause / ▶ Play</button>
+                <button onclick="resetSim()" style="flex:1;">Reset</button>
+            </div>
+
+            <hr style="border-color:#334466;margin:18px 0 12px;">
+
+            <div class="stat">Temperature <span id="temp-live">4.00</span></div>
+            <div class="stat">Pressure  <span id="press-live">12.4</span></div>
+            <div class="stat">Avg speed <span id="speed-live">3.21</span></div>
+            <div class="stat">Total KE  <span id="ke-live">1120</span></div>
+
+            <div class="hist-container" id="hist"></div>
+            <div class="info">Speed histogram • Blue = simulation • Orange = 2D Maxwell–Boltzmann</div>
+        </div>
+    </div>
+
+<script>
+// ============== p5.js SKETCH ==============
+let particles = [];
+let boxX = 40, boxY = 40, boxW = 720, boxH = 520;
+let paused = false;
+let totalImpulse = 0;
+let impulseBuffer = [];
+let speedBins = new Array(45).fill(0);
+let frame = 0;
+let lastReset = 0;
+
+const LIGHT_COLOR = '#66ccff';
+const HEAVY_COLOR = '#ff6666';
+
+class Particle {
+    constructor(x, y, vx, vy, mass) {
+        this.pos = createVector(x, y);
+        this.vel = createVector(vx, vy);
+        this.mass = mass;
+        this.r = 6.2;
+        this.heavy = mass > 1.8;
+    }
+}
+
+function setup() {
+    let c = createCanvas(820, 680);
+    c.parent('sketch-holder');
+    resetSim(true);
+}
+
+function draw() {
+    background(8, 10, 24);
+
+    // Box
+    stroke(90, 110, 160);
+    strokeWeight(14);
+    noFill();
+    rect(boxX-6, boxY-6, boxW+12, boxH+12, 12);
+
+    if (!paused) {
+        for (let step = 0; step < 2; step++) updatePhysics();   // 2 sub-steps for stability
+    }
+
+    // Draw particles
+    noStroke();
+    for (let p of particles) {
+        fill(p.heavy ? HEAVY_COLOR : LIGHT_COLOR);
+        circle(p.pos.x, p.pos.y, p.r * 2);
+    }
+
+    drawHistogram();
+    updateLiveStats();
+
+    frame++;
+}
+
+// ============== PHYSICS ==============
+function updatePhysics() {
+    let dt = 0.65;
+
+    // Move + walls
+    totalImpulse = 0;
+    for (let p of particles) {
+        p.pos.x += p.vel.x * dt;
+        p.pos.y += p.vel.y * dt;
+
+        // Wall collisions (elastic, record impulse for pressure)
+        if (p.pos.x - p.r < boxX) { p.pos.x = boxX + p.r; let v = p.vel.x; p.vel.x = -v; totalImpulse += 2 * p.mass * Math.abs(v); }
+        if (p.pos.x + p.r > boxX + boxW) { p.pos.x = boxX + boxW - p.r; let v = p.vel.x; p.vel.x = -v; totalImpulse += 2 * p.mass * Math.abs(v); }
+        if (p.pos.y - p.r < boxY) { p.pos.y = boxY + p.r; let v = p.vel.y; p.vel.y = -v; totalImpulse += 2 * p.mass * Math.abs(v); }
+        if (p.pos.y + p.r > boxY + boxH) { p.pos.y = boxY + boxH - p.r; let v = p.vel.y; p.vel.y = -v; totalImpulse += 2 * p.mass * Math.abs(v); }
+    }
+
+    impulseBuffer.push(totalImpulse);
+    if (impulseBuffer.length > 30) impulseBuffer.shift();
+
+    // Particle-particle elastic collisions (if enabled)
+    if (document.getElementById('coll').checked) {
+        for (let i = 0; i < particles.length; i++) {
+            for (let j = i + 1; j < particles.length; j++) {
+                let a = particles[i], b = particles[j];
+                let dx = b.pos.x - a.pos.x;
+                let dy = b.pos.y - a.pos.y;
+                let dist2 = dx*dx + dy*dy;
+                let rSum = a.r + b.r;
+                if (dist2 >= rSum*rSum || dist2 < 1) continue;
+
+                let dist = Math.sqrt(dist2);
+                let nx = dx / dist, ny = dy / dist;
+
+                let rvx = b.vel.x - a.vel.x;
+                let rvy = b.vel.y - a.vel.y;
+                let velDot = rvx*nx + rvy*ny;
+
+                if (velDot > 0) continue; // separating
+
+                let impulse = -2 * velDot / (1/a.mass + 1/b.mass);
+
+                a.vel.x -= (impulse * nx) / a.mass;
+                a.vel.y -= (impulse * ny) / a.mass;
+                b.vel.x += (impulse * nx) / b.mass;
+                b.vel.y += (impulse * ny) / b.mass;
+
+                // tiny position correction
+                let overlap = rSum - dist;
+                a.pos.x -= overlap * nx * 0.5;
+                a.pos.y -= overlap * ny * 0.5;
+                b.pos.x += overlap * nx * 0.5;
+                b.pos.y += overlap * ny * 0.5;
+            }
+        }
+    }
+}
+
+// ============== MACROSCOPIC QUANTITIES ==============
+function getTemperature() {
+    if (!particles.length) return 0;
+    let ke = 0;
+    for (let p of particles) ke += 0.5 * p.mass * (p.vel.x*p.vel.x + p.vel.y*p.vel.y);
+    return ke / particles.length;   // 2D: ⟨KE⟩ = kT with k=1
+}
+
+function getPressure() {
+    let avgImpulse = impulseBuffer.reduce((a,b)=>a+b,0) / Math.max(1, impulseBuffer.length);
+    let perimeter = 2 * (boxW + boxH);
+    return (avgImpulse * 60) / perimeter;   // force per unit length, scaled for nice numbers
+}
+
+// ============== HISTOGRAM ==============
+function drawHistogram() {
+    const ctx = document.getElementById('hist').getContext ? null : null; // we draw with p5 in the panel area
+    let x = boxX + boxW + 50;
+    let y = 520;
+    let w = 210;
+    let h = 120;
+
+    fill(15,18,38);
+    noStroke();
+    rect(x, y, w, h, 6);
+
+    // Update bins every 6 frames
+    if (frame % 6 === 0) {
+        speedBins.fill(0);
+        for (let p of particles) {
+            let s = p.vel.mag();
+            let bin = Math.min(Math.floor(s * 2.8), speedBins.length-1); // bin width tuned
+            speedBins[bin]++;
+        }
+    }
+
+    let maxBin = Math.max(...speedBins, 1);
+    let barW = w / speedBins.length;
+
+    // Simulation bars
+    for (let i = 0; i < speedBins.length; i++) {
+        let bh = (speedBins[i] / maxBin) * h * 0.92;
+        fill(80, 190, 255);
+        rect(x + i*barW, y + h - bh, barW-1, bh);
+    }
+
+    // Theoretical 2D Maxwell-Boltzmann (Rayleigh distribution)
+    let T = getTemperature() || 4;
+    let sigma = Math.sqrt(T);
+    stroke(255, 210, 80);
+    strokeWeight(2.5);
+    noFill();
+    beginShape();
+    for (let i = 0; i < speedBins.length; i++) {
+        let v = (i + 0.5) / 2.8;
+        let pdf = (v / (sigma*sigma)) * Math.exp(-v*v / (2*sigma*sigma));
+        let py = y + h - pdf * 38;   // visual scaling
+        vertex(x + i*barW + barW/2, py);
+    }
+    endShape();
+}
+
+// ============== LIVE STATS ==============
+function updateLiveStats() {
+    let T = getTemperature();
+    let P = getPressure();
+    let avgV = 0;
+    let totalKE = T * particles.length;
+
+    for (let p of particles) avgV += p.vel.mag();
+    avgV /= particles.length || 1;
+
+    document.getElementById('temp-live').textContent = T.toFixed(2);
+    document.getElementById('press-live').textContent = P.toFixed(1);
+    document.getElementById('speed-live').textContent = avgV.toFixed(2);
+    document.getElementById('ke-live').textContent = Math.round(totalKE);
+}
+
+// ============== INITIALISATION & UI ==============
+function resetSim(first = false) {
+    particles = [];
+
+    let n = +document.getElementById('n').value;
+    let targetT = +document.getElementById('temp').value;
+    let mRatio = +document.getElementById('massr').value;
+
+    let mLight = 1.0;
+    let mHeavy = mLight * mRatio;
+    let numHeavy = Math.floor(n * 0.4);
+
+    for (let i = 0; i < n; i++) {
+        let heavy = i < numHeavy;
+        let m = heavy ? mHeavy : mLight;
+
+        let x = boxX + 25 + Math.random() * (boxW - 50);
+        let y = boxY + 25 + Math.random() * (boxH - 50);
+
+        // 2D Maxwell speed (Rayleigh)
+        let sigma = Math.sqrt(targetT / m);
+        let speed = sigma * Math.sqrt(-2 * Math.log(Math.random()));
+        let angle = Math.random() * TWO_PI;
+
+        particles.push(new Particle(x, y, speed*Math.cos(angle), speed*Math.sin(angle), m));
+    }
+
+    totalImpulse = 0;
+    impulseBuffer = [];
+    speedBins.fill(0);
+
+    if (!first) {
+        document.getElementById('n-val').textContent = n;
+        document.getElementById('t-val').textContent = targetT.toFixed(1);
+        document.getElementById('mr-val').textContent = mRatio.toFixed(1);
+    }
+}
+
+// UI listeners
+window.onload = () => {
+    const sliders = ['n','temp','massr'];
+    sliders.forEach(id => {
+        let el = document.getElementById(id);
+        el.addEventListener('input', () => {
+            document.getElementById(id + (id==='n'?'':'-val'=== '' ? '' : '-val')).textContent =
+                (id==='temp' || id==='massr') ? (+el.value).toFixed(1) : el.value;
+            if (id === 'n' || id === 'massr') resetSim();
+        });
+    });
+
+    // Keyboard support
+    document.addEventListener('keydown', e => {
+        if (e.key === ' ') { e.preventDefault(); togglePause(); }
+        if (e.key.toLowerCase() === 'r') resetSim();
+    });
+
+    // Initial values
+    document.getElementById('n-val').textContent = document.getElementById('n').value;
+    document.getElementById('t-val').textContent = document.getElementById('temp').value;
+    document.getElementById('mr-val').textContent = document.getElementById('massr').value;
+};
+
+function togglePause() {
+    paused = !paused;
+}
+
+window.togglePause = togglePause;
+window.resetSim = () => resetSim(false);
+
+</script>
+</body>
+</html>

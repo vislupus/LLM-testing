@@ -23,10 +23,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **5/10** |
 | **Gemini 3**          | **4/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **2/10** |
+| **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **5/10** |
@@ -48,10 +50,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **1/10** |
+| **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **2/10** |
@@ -73,10 +77,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **7/10** |
+| **Gemini 3.1**        | **3/10** |
+| **Gemini 3**          | **4/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **3/10** |
+| **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
@@ -98,10 +104,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **8/10** |
+| **Gemini 3.1**        | **7/10** |
+| **Gemini 3**          | **6/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **5/10** |
+| **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.6**   | **1/10** |
 | **Claude Opus 4.5**   | **9/10** |
@@ -123,10 +131,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **9/10** |
+| **Gemini 3.1**        | **3/10** |
+| **Gemini 3**          | **5/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **3/10** |
+| **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **7/10** |
@@ -148,10 +158,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **4/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **3/10** |
+| **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.6**   | **1/10** |
 | **Claude Opus 4.5**   | **5/10** |
@@ -173,10 +185,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **6/10** |
+| **Gemini 3.1**        | **3/10** |
+| **Gemini 3**          | **3/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **ChatGPT 5**         | **3/10** |
+| **Grok 4.2**          | **5/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **3/10** |
@@ -198,10 +212,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **5/10** |
+| **Gemini 3.1**        | **3/10** |
+| **Gemini 3**          | **3/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **3/10** |
+| **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.6**   | **8/10** |
 | **Claude Opus 4.5**   | **8/10** |
@@ -223,10 +239,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **8/10** |
+| **Gemini 3.1**        | **7/10** |
+| **Gemini 3**          | **5/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **6/10** |
+| **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **3/10** |
@@ -248,10 +266,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **8/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **ChatGPT 5**         | **7/10** |
+| **Grok 4.2**          | **7/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **10/10** |
@@ -273,10 +293,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **7/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **7/10** |
 | **ChatGPT 5**         | **3/10** |
+| **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **9/10** |
@@ -298,10 +320,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **3/10** |
+| **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **5/10** |
@@ -323,10 +347,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **5/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **ChatGPT 5**         | **3/10** |
+| **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **6/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **7/10** |
@@ -348,10 +374,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **6/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **2/10** |
+| **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.6**   | **8/10** |
 | **Claude Opus 4.5**   | **3/10** |
@@ -373,10 +401,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **9/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **7/10** |
 | **ChatGPT 5**         | **1/10** |
+| **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **7/10** |
@@ -398,10 +428,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **5/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **1/10** |
+| **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
@@ -423,10 +455,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **6/10** |
+| **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **7/10** |
@@ -448,10 +482,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **8/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **4/10** |
+| **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **4/10** |
@@ -473,10 +509,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **7/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **3/10** |
+| **Grok 4.2**          | **5/10** |
 | **Grok 4.1**          | **3/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **10/10** |
@@ -498,10 +536,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **1/10** |
 | **ChatGPT 5**         | **4/10** |
+| **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **4/10** |
@@ -523,10 +563,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **4/10** |
+| **Gemini 3.1**        | **4/10** |
+| **Gemini 3**          | **5/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **3/10** |
+| **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **9/10** |
@@ -548,10 +590,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **7/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **4/10** |
+| **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **8/10** |
@@ -573,10 +617,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **7/10** |
+| **Gemini 3.1**        | **7/10** |
+| **Gemini 3**          | **6/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **5/10** |
+| **Grok 4.2**          | **5/10** |
 | **Grok 4.1**          | **2/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **9/10** |
@@ -598,10 +644,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **7/10** |
+| **Gemini 3.1**        | **3/10** |
+| **Gemini 3**          | **6/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **4/10** |
+| **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **9/10** |
@@ -623,10 +671,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **3/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **2/10** |
 | **ChatGPT 5**         | **2/10** |
+| **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **5/10** |
@@ -648,10 +698,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3**          | **6/10** |
+| **Gemini 3.1**        | **2/10** |
+| **Gemini 3**          | **5/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **1/10** |
+| **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
@@ -673,10 +725,12 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
+| **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **1/10** |
+| **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **4/10** |
 | **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **7/10** |
@@ -690,3 +744,111 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **1/10** |
+
+---
+
+### 28 - Interactive unit
+**You are an expert educational designer and web developer. Using only the information from the image I provide, create a complete, fun educational unit for kids as a single self-contained HTML file. The unit should be modern, visually clean, suitable for school children, and easy to use on desktop and tablet. Include exactly three interactive simulations that help students explore or manipulate the key ideas from the unit, implemented with HTML, CSS and vanilla JavaScript. Also include five different types of tasks or exercises (for example multiple choice, fill in the blanks, matching, drag-and-drop, and short open-ended questions), each with interactive behavior and instant feedback. Use a mix of real images inspired by the input image and vector-style illustrations or icons, designed in a consistent, attractive, kid-friendly style. Place all HTML, CSS, JavaScript, images (as data URLs or SVG) and content in the same file, external libraries to be with CDN, frameworks or assets. Clearly structure the page into sections like introduction, interactive simulations, practice tasks, and summary, using short, simple sentences and friendly headings.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3.1**        | **7/10** |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.2**       | **8/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **ChatGPT 5**         | **0/10** |
+| **Grok 4.2**          | **7/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.6**   | **7/10** |
+| **Claude Opus 4.5**   | **0/10** |
+| **Claude Opus 4.1**   | **0/10** |
+| **Glm 5**             | **7/10** |
+| **Glm 4.7**           | **4/10** |
+| **Glm 4.6**           | **4/10** |
+| **Kimi K2.5**         | **7/10** |
+| **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
+| **Мinimax m2.5**      | **6/10** |
+| **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.5**          | **5/10** |
+
+---
+
+### 29 - PDF to HTML exam
+**Create a single, fully self-contained HTML file that generates an interactive and fully usable exam page based on a PDF I will provide containing all questions and answers. Extract every question from the PDF and render it as an interactive task where users can select answers, check correctness, and view optional explanations. Use modern, clean, responsive HTML5, CSS, and vanilla JavaScript without external libraries. Make the interface minimalistic, intuitive, and optimized for both desktop and mobile. Include automatic scoring, per-question feedback, a final results summary, and the ability to restart the exam. Add smooth transitions, a start screen, and simple navigation between questions. Ensure all code is in one file, well-commented, and easy to modify. Make the design modern, light, and visually appealing.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3.1**        | **8/10** |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.2**       | **9/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **ChatGPT 5**         | **0/10** |
+| **Grok 4.2**          | **4/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.6**   | **6/10** |
+| **Claude Opus 4.5**   | **0/10** |
+| **Claude Opus 4.1**   | **0/10** |
+| **Glm 5**             | **6/10** |
+| **Glm 4.7**           | **6/10** |
+| **Glm 4.6**           | **3/10** |
+| **Kimi K2.5**         | **1/10** |
+| **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.5**      | **6/10** |
+| **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.5**          | **5/10** |
+
+---
+
+### 30 - 3D animation
+**Create a beautiful, cinematic 3D animation based on the provided image, preserving the original style and key details; add smooth camera movement, subtle depth-of-field, realistic lighting, and high-quality rendering. Deliver the final result as a single self-contained HTML file (all CSS/JS/assets embedded, no external links) that is ready to share and runs offline in a browser.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3.1**        | **2/10** |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.2**       | **2/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **ChatGPT 5**         | **0/10** |
+| **Grok 4.2**          | **1/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.6**   | **5/10** |
+| **Claude Opus 4.5**   | **0/10** |
+| **Claude Opus 4.1**   | **0/10** |
+| **Glm 5**             | **4/10** |
+| **Glm 4.7**           | **2/10** |
+| **Glm 4.6**           | **2/10** |
+| **Kimi K2.5**         | **5/10** |
+| **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
+| **Мinimax m2.5**      | **2/10** |
+| **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.5**          | **1/10** |
+
+---
+
+### 31 - Mobile App Prototype
+**Build a high-fidelity mobile app prototype based on the provided image, translating its visual style into a modern interactive UI. Create a multi-screen flow with tappable navigation, realistic transitions, and responsive layouts for common phone sizes. Output everything as a single self-contained HTML file with embedded CSS and JavaScript (no external libraries, no external assets), ready to share and usable offline in any modern browser.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3.1**        | **4/10** |
+| **Gemini 3**          | **0/10** |
+| **ChatGPT 5.2**       | **4/10** |
+| **ChatGPT 5.1**       | **0/10** |
+| **ChatGPT 5**         | **0/10** |
+| **Grok 4.2**          | **3/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.6**   | **7/10** |
+| **Claude Opus 4.5**   | **0/10** |
+| **Claude Opus 4.1**   | **0/10** |
+| **Glm 5**             | **5/10** |
+| **Glm 4.7**           | **5/10** |
+| **Glm 4.6**           | **2/10** |
+| **Kimi K2.5**         | **3/10** |
+| **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 3.2**      | **0/10** |
+| **Мinimax m2.5**      | **3/10** |
+| **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.5**          | **3/10** |

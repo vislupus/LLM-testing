@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realistic Fluid Dynamics Simulator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            pointer-events: none;
+            background: rgba(10, 10, 15, 0.85);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            max-width: 320px;
+        }
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 1.2rem;
+            color: #00d2ff;
+        }
+        p {
+            margin: 5px 0;
+            font-size: 0.85rem;
+            line-height: 1.4;
+            color: #ccc;
+        }
+        .key {
+            display: inline-block;
+            background: #333;
+            color: #00d2ff;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-weight: bold;
+        }
+        .status {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            font-family: monospace;
+            color: #00ff88;
+        }
+        .color-preview {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-bottom: -2px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h1>Navier-Stokes Fluid Sim</h1>
+        <p><strong>Mouse:</strong> Click and drag to inject colored fluid and velocity.</p>
+        <p><span class="key">1</span>-<span class="key">5</span> : Change Fluid Color</p>
+        <p><span class="key">W</span> : Toggle Vorticity (Swirling: <span id="vortex-status">ON</span>)</p>
+        <p><span class="key">O</span> : Toggle Obstacle (<span id="obs-status">OFF</span>)</p>
+        <p><span class="key">V</span>/<span class="key">Shift+V</span> : Adjust Viscosity</p>
+        <p><span class="key">R</span> : Clear Simulation</p>
+        <div class="status">
+            Current Color: <span id="color-preview" class="color-preview" style="background: #00d2ff;"></span><br>
+            Viscosity: <span id="visc-status">0.000000</span>
+        </div>
+    </div>
+
+<script>
+/**
+ * Real-time Eulerian Fluid Simulation
+ * Based on Jos Stam's "Real-Time Fluid Dynamics for Games"
+ */
+
+// --- Configuration ---
+const N = 110;               // Grid resolution (N x N). Keep around 100-150 for real-time JS CPU performance.
+const iter = 10;             // Solver iterations (higher = more accurate, slower)
+const SCALE = 6;             // Visual scale factor (Screen size = N * SCALE)
+const SIZE = (N + 2) * (N + 2);
+
+// Fluid physics parameters
+let dt = 0.1;                // Time step
+let diff = 0.0000;           // Diffusion rate (color spreading)
+let visc = 0.000000;         // Viscosity (fluid thickness)
+let vorticity = 25.0;        // Vorticity confinement (swirling strength)
+let fadeRate = 0.995;        // How fast colors fade
+let applyVorticity = true;
+let hasObstacle = false;
+
+// 1D Arrays for grid data (Float32Array for maximum performance)
+let s, density_r, density_g, density_b;
+let density_r_prev, density_g_prev, density_b_prev;
+let u, v, u_prev, v_prev;
+let curl;
+
+// Rendering
+let fluidImg;
+
+// Interaction
+let colors = [
+    { r: 0, g: 210, b: 255 },  // Cyan
+    { r: 255, g: 0, b: 128 },  // Magenta
+    { r: 128, g: 255, b: 0 },  // Lime
+    { r: 255, g: 128, b: 0 },  // Orange
+    { r: 255, g: 255, b: 255 } // White
+];
+let activeColor = colors[0];
+
+// Helper to map 2D coordinates to 1D array index
+function IX(x, y) {
+    return x + (N + 2) * y;
+}
+
+// --- p5.js Setup & Draw ---
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    pixelDensity(1);
+    
+    // Initialize arrays
+    s = new Float32Array(SIZE);
+    density_r = new Float32Array(SIZE);
+    density_g = new Float32Array(SIZE);
+    density_b = new Float32Array(SIZE);
+    density_r_prev = new Float32Array(SIZE);
+    density_g_prev = new Float32Array(SIZE);
+    density_b_prev = new Float32Array(SIZE);
+    
+    u = new Float32Array(SIZE);
+    v = new Float32Array(SIZE);
+    u_prev = new Float32Array(SIZE);
+    v_prev = new Float32Array(SIZE);
+    curl = new Float32Array(SIZE);
+    
+    // Create an image to render the fluid into
+    fluidImg = createImage(N + 2, N + 2);
+    
+    updateUI();
+}
+
+function draw() {
+    background(0);
+
+    // 1. Get input from mouse
+    handleInput();
+
+    // 2. Perform Fluid Physics Steps
+    // Velocity step
+    vel_step(u, v, u_prev, v_prev, dt);
+    
+    // Density (Color) step for R, G, B
+    dens_step(density_r, density_r_prev, u, v, dt);
+    dens_step(density_g, density_g_prev, u, v, dt);
+    dens_step(density_b, density_b_prev, u, v, dt);
+
+    // Fade density over time
+    for (let i = 0; i < SIZE; i++) {
+        density_r[i] *= fadeRate;
+        density_g[i] *= fadeRate;
+        density_b[i] *= fadeRate;
+    }
+
+    // 3. Render Fluid to Image
+    fluidImg.loadPixels();
+    for (let y = 0; y < N + 2; y++) {
+        for (let x = 0; x < N + 2; x++) {
+            let i = IX(x, y);
+            let pxIdx = (x + y * fluidImg.width) * 4;
+            
+            // Draw Obstacle
+            if (hasObstacle && isObstacle(x, y)) {
+                fluidImg.pixels[pxIdx] = 50;
+                fluidImg.pixels[pxIdx + 1] = 50;
+                fluidImg.pixels[pxIdx + 2] = 50;
+                fluidImg.pixels[pxIdx + 3] = 255;
+                continue;
+            }
+
+            // Map density to pixel colors, cap at 255
+            fluidImg.pixels[pxIdx]     = Math.min(255, density_r[i]); // R
+            fluidImg.pixels[pxIdx + 1] = Math.min(255, density_g[i]); // G
+            fluidImg.pixels[pxIdx + 2] = Math.min(255, density_b[i]); // B
+            fluidImg.pixels[pxIdx + 3] = 255;                         // A
+        }
+    }
+    fluidImg.updatePixels();
+
+    // Draw the image stretched to fill the screen
+    // Using default bilinear filtering creates a smooth fluid look
+    image(fluidImg, 0, 0, width, height);
+}
+
+// --- Interaction ---
+function handleInput() {
+    if (mouseIsPressed) {
+        // Map mouse to grid
+        let gridX = Math.floor((mouseX / width) * (N + 2));
+        let gridY = Math.floor((mouseY / height) * (N + 2));
+        
+        let dx = mouseX - pmouseX;
+        let dy = mouseY - pmouseY;
+
+        // Add velocity and color in a radius around the mouse
+        let radius = 3;
+        for (let j = -radius; j <= radius; j++) {
+            for (let i = -radius; i <= radius; i++) {
+                let x = gridX + i;
+                let y = gridY + j;
+                if (x > 0 && x < N + 1 && y > 0 && y < N + 1) {
+                    let idx = IX(x, y);
+                    if (hasObstacle && isObstacle(x, y)) continue;
+
+                    // Falloff based on distance to center of brush
+                    let d = Math.sqrt(i*i + j*j);
+                    if (d > radius) continue;
+                    let force = 1 - (d / radius);
+
+                    u[idx] += dx * force * 0.1;
+                    v[idx] += dy * force * 0.1;
+                    
+                    density_r[idx] += activeColor.r * force;
+                    density_g[idx] += activeColor.g * force;
+                    density_b[idx] += activeColor.b * force;
+                }
+            }
+        }
+    }
+}
+
+function keyPressed() {
+    if (key >= '1' && key <= '5') {
+        activeColor = colors[parseInt(key) - 1];
+    }
+    if (key === 'r' || key === 'R') {
+        // Reset arrays
+        for(let i=0; i<SIZE; i++) {
+            u[i] = v[i] = u_prev[i] = v_prev[i] = 0;
+            density_r[i] = density_g[i] = density_b[i] = 0;
+        }
+    }
+    if (key === 'w' || key === 'W') {
+        applyVorticity = !applyVorticity;
+    }
+    if (key === 'o' || key === 'O') {
+        hasObstacle = !hasObstacle;
+    }
+    if (key === 'v') {
+        visc = Math.min(visc + 0.00001, 0.001);
+    }
+    if (key === 'V') {
+        visc = Math.max(visc - 0.00001, 0.0);
+    }
+    updateUI();
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+}
+
+function updateUI() {
+    document.getElementById('color-preview').style.background = `rgb(${activeColor.r}, ${activeColor.g}, ${activeColor.b})`;
+    document.getElementById('vortex-status').innerText = applyVorticity ? "ON" : "OFF";
+    document.getElementById('vortex-status').style.color = applyVorticity ? "#00ff88" : "#ff3366";
+    document.getElementById('obs-status').innerText = hasObstacle ? "ON" : "OFF";
+    document.getElementById('obs-status').style.color = hasObstacle ? "#00ff88" : "#ff3366";
+    document.getElementById('visc-status').innerText = visc.toFixed(6);
+}
+
+// --- Fluid Mathematics (Stam's Solver) ---
+
+function isObstacle(x, y) {
+    // Defines a circular obstacle in the center of the grid
+    let cx = (N + 2) / 2;
+    let cy = (N + 2) / 2;
+    let radius = N / 6;
+    let dx = x - cx;
+    let dy = y - cy;
+    return (dx * dx + dy * dy < radius * radius);
+}
+
+function set_bnd(b, x_arr) {
+    // Outer walls
+    for (let i = 1; i <= N; i++) {
+        x_arr[IX(0, i)]     = b === 1 ? -x_arr[IX(1, i)] : x_arr[IX(1, i)];
+        x_arr[IX(N + 1, i)] = b === 1 ? -x_arr[IX(N, i)] : x_arr[IX(N, i)];
+        x_arr[IX(i, 0)]     = b === 2 ? -x_arr[IX(i, 1)] : x_arr[IX(i, 1)];
+        x_arr[IX(i, N + 1)] = b === 2 ? -x_arr[IX(i, N)] : x_arr[IX(i, N)];
+    }
+    
+    // Corners
+    x_arr[IX(0, 0)]         = 0.5 * (x_arr[IX(1, 0)] + x_arr[IX(0, 1)]);
+    x_arr[IX(0, N + 1)]     = 0.5 * (x_arr[IX(1, N + 1)] + x_arr[IX(0, N)]);
+    x_arr[IX(N + 1, 0)]     = 0.5 * (x_arr[IX(N, 0)] + x_arr[IX(N + 1, 1)]);
+    x_arr[IX(N + 1, N + 1)] = 0.5 * (x_arr[IX(N, N + 1)] + x_arr[IX(N + 1, N)]);
+
+    // Internal Obstacle Boundaries
+    if (hasObstacle) {
+        for (let j = 1; j <= N; j++) {
+            for (let i = 1; i <= N; i++) {
+                if (isObstacle(i, j)) {
+                    x_arr[IX(i, j)] = b === 0 ? 0 : -x_arr[IX(i, j)]; // bounce velocity, block density
+                }
+            }
+        }
+    }
+}
+
+function lin_solve(b, x_arr, x0, a, c) {
+    let cRecip = 1.0 / c;
+    for (let k = 0; k < iter; k++) {
+        for (let j = 1; j <= N; j++) {
+            for (let i = 1; i <= N; i++) {
+                if (hasObstacle && isObstacle(i, j)) continue;
+                x_arr[IX(i, j)] =
+                    (x0[IX(i, j)] +
+                        a *
+                            (x_arr[IX(i + 1, j)] +
+                                x_arr[IX(i - 1, j)] +
+                                x_arr[IX(i, j + 1)] +
+                                x_arr[IX(i, j - 1)])) *
+                    cRecip;
+            }
+        }
+        set_bnd(b, x_arr);
+    }
+}
+
+function diffuse(b, x_arr, x0, diff_rate, dt) {
+    let a = dt * diff_rate * N * N;
+    lin_solve(b, x_arr, x0, a, 1 + 4 * a);
+}
+
+function advect(b, d, d0, u_arr, v_arr, dt) {
+    let i0, j0, i1, j1;
+    let x, y, s0, t0, s1, t1;
+    let dt0 = dt * N;
+
+    for (let j = 1; j <= N; j++) {
+        for (let i = 1; i <= N; i++) {
+            if (hasObstacle && isObstacle(i, j)) continue;
+
+            x = i - dt0 * u_arr[IX(i, j)];
+            y = j - dt0 * v_arr[IX(i, j)];
+
+            if (x < 0.5) x = 0.5;
+            if (x > N + 0.5) x = N + 0.5;
+            i0 = Math.floor(x);
+            i1 = i0 + 1;
+
+            if (y < 0.5) y = 0.5;
+            if (y > N + 0.5) y = N + 0.5;
+            j0 = Math.floor(y);
+            j1 = j0 + 1;
+
+            s1 = x - i0;
+            s0 = 1.0 - s1;
+            t1 = y - j0;
+            t0 = 1.0 - t1;
+
+            d[IX(i, j)] =
+                s0 * (t0 * d0[IX(i0, j0)] + t1 * d0[IX(i0, j1)]) +
+                s1 * (t0 * d0[IX(i1, j0)] + t1 * d0[IX(i1, j1)]);
+        }
+    }
+    set_bnd(b, d);
+}
+
+function project(u_arr, v_arr, p, div) {
+    let h = 1.0 / N;
+    for (let j = 1; j <= N; j++) {
+        for (let i = 1; i <= N; i++) {
+            if (hasObstacle && isObstacle(i, j)) continue;
+            div[IX(i, j)] =
+                -0.5 *
+                h *
+                (u_arr[IX(i + 1, j)] - u_arr[IX(i - 1, j)] +
+                 v_arr[IX(i, j + 1)] - v_arr[IX(i, j - 1)]);
+            p[IX(i, j)] = 0;
+        }
+    }
+    set_bnd(0, div);
+    set_bnd(0, p);
+
+    lin_solve(0, p, div, 1, 4);
+
+    for (let j = 1; j <= N; j++) {
+        for (let i = 1; i <= N; i++) {
+            if (hasObstacle && isObstacle(i, j)) continue;
+            u_arr[IX(i, j)] -= 0.5 * (p[IX(i + 1, j)] - p[IX(i - 1, j)]) / h;
+            v_arr[IX(i, j)] -= 0.5 * (p[IX(i, j + 1)] - p[IX(i, j - 1)]) / h;
+        }
+    }
+    set_bnd(1, u_arr);
+    set_bnd(2, v_arr);
+}
+
+function compute_vorticity(u_arr, v_arr) {
+    // Compute curl
+    for (let j = 1; j <= N; j++) {
+        for (let i = 1; i <= N; i++) {
+            let du_dy = (u_arr[IX(i, j + 1)] - u_arr[IX(i, j - 1)]) * 0.5;
+            let dv_dx = (v_arr[IX(i + 1, j)] - v_arr[IX(i - 1, j)]) * 0.5;
+            curl[IX(i, j)] = Math.abs(du_dy - dv_dx);
+        }
+    }
+    
+    // Apply force based on curl gradient
+    for (let j = 2; j < N; j++) {
+        for (let i = 2; i < N; i++) {
+            if (hasObstacle && isObstacle(i, j)) continue;
+            let dw_dx = (curl[IX(i + 1, j)] - curl[IX(i - 1, j)]) * 0.5;
+            let dw_dy = (curl[IX(i, j + 1)] - curl[IX(i, j - 1)]) * 0.5;
+            
+            let length = Math.sqrt(dw_dx * dw_dx + dw_dy * dw_dy);
+            if (length > 0.000001) {
+                let dirX = dw_dx / length;
+                let dirY = dw_dy / length;
+                
+                let c = curl[IX(i, j)];
+                u_arr[IX(i, j)] += dirY * c * vorticity * dt;
+                v_arr[IX(i, j)] -= dirX * c * vorticity * dt;
+            }
+        }
+    }
+}
+
+function vel_step(u_arr, v_arr, u0, v0, dt) {
+    // Add external forces (mouse) done directly to u_arr, v_arr
+    
+    // Copy current state
+    for(let i=0; i<SIZE; i++) { u0[i] = u_arr[i]; v0[i] = v_arr[i]; }
+    
+    // Self-advection
+    advect(1, u_arr, u0, u0, v0, dt);
+    advect(2, v_arr, v0, u0, v0, dt);
+    
+    // Swirling amplification
+    if (applyVorticity) {
+        compute_vorticity(u_arr, v_arr);
+    }
+    
+    // Viscosity diffusion
+    if (visc > 0) {
+        for(let i=0; i<SIZE; i++) { u0[i] = u_arr[i]; v0[i] = v_arr[i]; }
+        diffuse(1, u_arr, u0, visc, dt);
+        diffuse(2, v_arr, v0, visc, dt);
+    }
+
+    // Mass conservation
+    project(u_arr, v_arr, u0, v0);
+}
+
+function dens_step(x_arr, x0, u_arr, v_arr, dt) {
+    for(let i=0; i<SIZE; i++) x0[i] = x_arr[i];
+    
+    if (diff > 0) {
+        diffuse(0, x_arr, x0, diff, dt);
+        for(let i=0; i<SIZE; i++) x0[i] = x_arr[i];
+    }
+    
+    advect(0, x_arr, x0, u_arr, v_arr, dt);
+}
+</script>
+</body>
+</html>

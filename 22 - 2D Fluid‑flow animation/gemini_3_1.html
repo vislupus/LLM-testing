@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Von Kármán Vortex Street - Fluid Simulation</title>
+    <!-- Load p5.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #050508;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(10, 15, 25, 0.85);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            pointer-events: none; /* Let clicks pass through to canvas */
+            max-width: 320px;
+            backdrop-filter: blur(5px);
+        }
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 1.3rem;
+            color: #00d2ff;
+        }
+        p { margin: 5px 0; font-size: 0.9rem; color: #ccc; line-height: 1.4; }
+        .key {
+            display: inline-block;
+            background: #333;
+            color: #fff;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.8rem;
+        }
+        .highlight { color: #ff5555; font-weight: bold; }
+        .highlight-blue { color: #55aaff; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Fluid Dynamics Simulator</h1>
+        <p>Observe the <b>von Kármán vortex street</b> shedding <span class="highlight">clockwise</span> and <span class="highlight-blue">counter-clockwise</span> vortices behind the obstacle.</p>
+        <hr style="border: 0; border-top: 1px solid #444; margin: 15px 0;">
+        <p><b>Mouse:</b> Click & Drag to move the object.</p>
+        <p><b>Scroll:</b> Change object size.</p>
+        <p><span class="key">A</span> / <span class="key">D</span> : Rotate the object.</p>
+        <p><span class="key">1</span> <span class="key">2</span> <span class="key">3</span> : Change shape (Circle, Bar, Airfoil).</p>
+    </div>
+
+<script>
+/**
+ * GPU-Accelerated Eulerian Fluid Simulator
+ * Simulates a continuous flow from left to right, computing advection, 
+ * divergence, pressure (Jacobi iteration), and gradient subtraction.
+ */
+
+// --- SHADERS ---
+
+const baseVertex = `
+attribute vec3 aPosition;
+attribute vec2 aTexCoord;
+varying vec2 vTexCoord;
+void main() {
+    vTexCoord = aTexCoord;
+    vTexCoord.y = 1.0 - vTexCoord.y; // Standard p5 WebGL Y-flip
+    gl_Position = vec4(aPosition, 1.0);
+}
+`;
+
+const advectShader = `
+precision highp float;
+varying vec2 vTexCoord;
+uniform sampler2D uVelocity;
+uniform sampler2D uObstacle;
+uniform vec2 uTexelSize;
+uniform vec2 uInflow;
+uniform float uTime;
+uniform vec2 uObstacleVel;
+
+void main() {
+    vec2 pos = vTexCoord;
+    float obs = texture2D(uObstacle, pos).r;
+
+    // If inside obstacle, match obstacle's velocity
+    if (obs > 0.5) {
+        gl_FragColor = vec4(uObstacleVel, 0.0, 1.0);
+        return;
+    }
+
+    // Inflow boundary on the left
+    if (pos.x < 0.01) {
+        // Add a tiny perturbation to trigger vortex shedding faster
+        float perturb = sin(uTime * 15.0 + pos.y * 20.0) * 0.1;
+        gl_FragColor = vec4(uInflow.x, uInflow.y + perturb, 0.0, 1.0);
+        return;
+    }
+    // Outflow boundaries (Right, Top, Bottom)
+    if (pos.x > 0.99 || pos.y < 0.01 || pos.y > 0.99) {
+        vec2 outVel = texture2D(uVelocity, pos).xy;
+        gl_FragColor = vec4(outVel * 0.99, 0.0, 1.0); // Slight dampening
+        return;
+    }
+
+    // Semi-Lagrangian Advection
+    vec2 vel = texture2D(uVelocity, pos).xy;
+    vec2 backPos = pos - vel * uTexelSize;
+    vec2 advectedVel = texture2D(uVelocity, backPos).xy;
+
+    gl_FragColor = vec4(advectedVel, 0.0, 1.0);
+}
+`;
+
+const divergenceShader = `
+precision highp float;
+varying vec2 vTexCoord;
+uniform sampler2D uVelocity;
+uniform sampler2D uObstacle;
+uniform vec2 uTexelSize;
+
+void main() {
+    vec2 pos = vTexCoord;
+    
+    float L = texture2D(uVelocity, pos - vec2(uTexelSize.x, 0.0)).x;
+    float R = texture2D(uVelocity, pos + vec2(uTexelSize.x, 0.0)).x;
+    float T = texture2D(uVelocity, pos + vec2(0.0, uTexelSize.y)).y;
+    float B = texture2D(uVelocity, pos - vec2(0.0, uTexelSize.y)).y;
+
+    // Obstacle boundaries reflect zero flux relative to the fluid
+    if (texture2D(uObstacle, pos - vec2(uTexelSize.x, 0.0)).r > 0.5) L = 0.0;
+    if (texture2D(uObstacle, pos + vec2(uTexelSize.x, 0.0)).r > 0.5) R = 0.0;
+    if (texture2D(uObstacle, pos + vec2(0.0, uTexelSize.y)).r > 0.5) T = 0.0;
+    if (texture2D(uObstacle, pos - vec2(0.0, uTexelSize.y)).r > 0.5) B = 0.0;
+
+    float div = 0.5 * ((R - L) + (T - B));
+    gl_FragColor = vec4(div, 0.0, 0.0, 1.0);
+}
+`;
+
+const jacobiShader = `
+precision highp float;
+varying vec2 vTexCoord;
+uniform sampler2D uPressure;
+uniform sampler2D uDivergence;
+uniform sampler2D uObstacle;
+uniform vec2 uTexelSize;
+
+void main() {
+    vec2 pos = vTexCoord;
+
+    float L = texture2D(uPressure, pos - vec2(uTexelSize.x, 0.0)).x;
+    float R = texture2D(uPressure, pos + vec2(uTexelSize.x, 0.0)).x;
+    float T = texture2D(uPressure, pos + vec2(0.0, uTexelSize.y)).x;
+    float B = texture2D(uPressure, pos - vec2(0.0, uTexelSize.y)).x;
+    float C = texture2D(uPressure, pos).x;
+    float div = texture2D(uDivergence, pos).x;
+
+    // Neumann boundary condition: pressure gradient is zero across boundaries
+    if (texture2D(uObstacle, pos - vec2(uTexelSize.x, 0.0)).r > 0.5) L = C;
+    if (texture2D(uObstacle, pos + vec2(uTexelSize.x, 0.0)).r > 0.5) R = C;
+    if (texture2D(uObstacle, pos + vec2(0.0, uTexelSize.y)).r > 0.5) T = C;
+    if (texture2D(uObstacle, pos - vec2(0.0, uTexelSize.y)).r > 0.5) B = C;
+
+    float p = (L + R + T + B - div) * 0.25;
+    gl_FragColor = vec4(p, 0.0, 0.0, 1.0);
+}
+`;
+
+const subtractGradientShader = `
+precision highp float;
+varying vec2 vTexCoord;
+uniform sampler2D uVelocity;
+uniform sampler2D uPressure;
+uniform sampler2D uObstacle;
+uniform vec2 uTexelSize;
+
+void main() {
+    vec2 pos = vTexCoord;
+    float obs = texture2D(uObstacle, pos).r;
+
+    if (obs > 0.5) {
+        gl_FragColor = texture2D(uVelocity, pos);
+        return;
+    }
+
+    float L = texture2D(uPressure, pos - vec2(uTexelSize.x, 0.0)).x;
+    float R = texture2D(uPressure, pos + vec2(uTexelSize.x, 0.0)).x;
+    float T = texture2D(uPressure, pos + vec2(0.0, uTexelSize.y)).x;
+    float B = texture2D(uPressure, pos - vec2(0.0, uTexelSize.y)).x;
+    float C = texture2D(uPressure, pos).x;
+
+    if (texture2D(uObstacle, pos - vec2(uTexelSize.x, 0.0)).r > 0.5) L = C;
+    if (texture2D(uObstacle, pos + vec2(uTexelSize.x, 0.0)).r > 0.5) R = C;
+    if (texture2D(uObstacle, pos + vec2(0.0, uTexelSize.y)).r > 0.5) T = C;
+    if (texture2D(uObstacle, pos - vec2(0.0, uTexelSize.y)).r > 0.5) B = C;
+
+    vec2 vel = texture2D(uVelocity, pos).xy;
+    vel.x -= 0.5 * (R - L);
+    vel.y -= 0.5 * (T - B);
+
+    gl_FragColor = vec4(vel, 0.0, 1.0);
+}
+`;
+
+const renderShader = `
+precision highp float;
+varying vec2 vTexCoord;
+uniform sampler2D uVelocity;
+uniform sampler2D uObstacle;
+uniform vec2 uTexelSize;
+
+void main() {
+    vec2 pos = vTexCoord;
+    float obs = texture2D(uObstacle, pos).r;
+
+    if (obs > 0.5) {
+        gl_FragColor = vec4(0.8, 0.8, 0.8, 1.0); // Obstacle color (White/Gray)
+        return;
+    }
+
+    // Compute Curl (Vorticity)
+    float L = texture2D(uVelocity, pos - vec2(uTexelSize.x, 0.0)).y;
+    float R = texture2D(uVelocity, pos + vec2(uTexelSize.x, 0.0)).y;
+    float T = texture2D(uVelocity, pos + vec2(0.0, uTexelSize.y)).x;
+    float B = texture2D(uVelocity, pos - vec2(0.0, uTexelSize.y)).x;
+    
+    float curl = (R - L) - (T - B);
+    curl *= 2.5; // Amplify for visual effect
+
+    // Compute speed for background brightness
+    vec2 vel = texture2D(uVelocity, pos).xy;
+    float speed = length(vel);
+
+    // Dark background with slight speed highlight
+    vec3 color = vec3(0.05, 0.07, 0.1) * (1.0 + speed * 0.2);
+
+    // Color mapping for vortices
+    if (curl > 0.0) {
+        color += vec3(curl, curl * 0.3, 0.0); // Red/Orange for positive curl
+    } else {
+        color += vec3(0.0, -curl * 0.4, -curl); // Cyan/Blue for negative curl
+    }
+
+    gl_FragColor = vec4(color, 1.0);
+}
+`;
+
+// --- P5.JS SKETCH ---
+
+let simW = 800, simH = 400; // Simulation resolution
+let texelSize;
+
+let sAdvect, sDiverge, sJacobi, sSubGrad, sRender;
+let fboVelA, fboVelB;
+let fboPressureA, fboPressureB;
+let fboDivergence;
+let obsGraphics;
+
+// Obstacle State
+let obsPos, obsVel, obsPosPrev;
+let obsSize = 40;
+let obsAngle = 0;
+let obsType = 0; // 0: Circle, 1: Vertical Bar, 2: Ellipse(Airfoil)
+let isDragging = false;
+
+function setup() {
+    createCanvas(windowWidth, windowHeight, WEBGL);
+    pixelDensity(1);
+
+    texelSize = [1.0 / simW, 1.0 / simH];
+
+    // Compile Shaders
+    sAdvect = createShader(baseVertex, advectShader);
+    sDiverge = createShader(baseVertex, divergenceShader);
+    sJacobi = createShader(baseVertex, jacobiShader);
+    sSubGrad = createShader(baseVertex, subtractGradientShader);
+    sRender = createShader(baseVertex, renderShader);
+
+    // Initialize Framebuffers (Requires Float textures for physics)
+    let fboParams = { width: simW, height: simH, format: FLOAT };
+    fboVelA = createFramebuffer(fboParams);
+    fboVelB = createFramebuffer(fboParams);
+    fboPressureA = createFramebuffer(fboParams);
+    fboPressureB = createFramebuffer(fboParams);
+    fboDivergence = createFramebuffer(fboParams);
+
+    // 2D Canvas for Obstacle drawing
+    obsGraphics = createGraphics(simW, simH);
+    obsGraphics.pixelDensity(1);
+
+    // Initial Object Setup
+    obsPos = createVector(simW * 0.25, simH * 0.5);
+    obsPosPrev = obsPos.copy();
+    obsVel = createVector(0, 0);
+
+    noStroke();
+}
+
+function draw() {
+    // 1. Handle Input & Update Obstacle
+    updateObstacle();
+
+    // 2. ADVECTION PASS
+    fboVelB.begin();
+    clear();
+    shader(sAdvect);
+    sAdvect.setUniform('uVelocity', fboVelA);
+    sAdvect.setUniform('uObstacle', obsGraphics);
+    sAdvect.setUniform('uTexelSize', texelSize);
+    sAdvect.setUniform('uInflow', [3.5, 0.0]); // Constant rightward flow
+    sAdvect.setUniform('uTime', millis() / 1000.0);
+    sAdvect.setUniform('uObstacleVel', [obsVel.x, obsVel.y]);
+    drawQuad(simW, simH);
+    fboVelB.end();
+
+    // 3. DIVERGENCE PASS
+    fboDivergence.begin();
+    clear();
+    shader(sDiverge);
+    sDiverge.setUniform('uVelocity', fboVelB);
+    sDiverge.setUniform('uObstacle', obsGraphics);
+    sDiverge.setUniform('uTexelSize', texelSize);
+    drawQuad(simW, simH);
+    fboDivergence.end();
+
+    // 4. PRESSURE SOLVE PASS (Jacobi Iteration)
+    fboPressureA.begin(); clear(); fboPressureA.end(); // Clear pressure
+
+    for (let i = 0; i < 25; i++) {
+        fboPressureB.begin();
+        clear();
+        shader(sJacobi);
+        sJacobi.setUniform('uPressure', fboPressureA);
+        sJacobi.setUniform('uDivergence', fboDivergence);
+        sJacobi.setUniform('uObstacle', obsGraphics);
+        sJacobi.setUniform('uTexelSize', texelSize);
+        drawQuad(simW, simH);
+        fboPressureB.end();
+
+        // Swap Pointers
+        let temp = fboPressureA;
+        fboPressureA = fboPressureB;
+        fboPressureB = temp;
+    }
+
+    // 5. GRADIENT SUBTRACTION PASS
+    fboVelA.begin();
+    clear();
+    shader(sSubGrad);
+    sSubGrad.setUniform('uVelocity', fboVelB);
+    sSubGrad.setUniform('uPressure', fboPressureA);
+    sSubGrad.setUniform('uObstacle', obsGraphics);
+    sSubGrad.setUniform('uTexelSize', texelSize);
+    drawQuad(simW, simH);
+    fboVelA.end();
+
+    // 6. RENDER TO CANVAS
+    shader(sRender);
+    sRender.setUniform('uVelocity', fboVelA);
+    sRender.setUniform('uObstacle', obsGraphics);
+    sRender.setUniform('uTexelSize', texelSize);
+    
+    // Scale up to window size
+    drawQuad(width, height);
+}
+
+// Draw a fullscreen quad covering the target area
+function drawQuad(w, h) {
+    rect(-w / 2, -h / 2, w, h);
+}
+
+function updateObstacle() {
+    // Map mouse from window to simulation coordinates
+    let mx = map(mouseX, 0, width, 0, simW);
+    let my = map(mouseY, 0, height, 0, simH);
+
+    if (mouseIsPressed && !isDragging && dist(mx, my, obsPos.x, obsPos.y) < obsSize) {
+        isDragging = true;
+    } else if (!mouseIsPressed) {
+        isDragging = false;
+    }
+
+    if (isDragging) {
+        obsPos.x = mx;
+        obsPos.y = my;
+    }
+
+    // Calculate obstacle velocity for fluid interaction
+    obsVel.x = (obsPos.x - obsPosPrev.x) * 0.5; // Scaled to grid units
+    obsVel.y = (obsPos.y - obsPosPrev.y) * 0.5;
+    obsPosPrev = obsPos.copy();
+
+    // Keyboard rotation
+    if (keyIsDown(65) || keyIsDown(LEFT_ARROW)) obsAngle -= 0.05; // A
+    if (keyIsDown(68) || keyIsDown(RIGHT_ARROW)) obsAngle += 0.05; // D
+
+    // Render to offscreen 2D graphics
+    obsGraphics.background(0); // Black = Empty space
+    obsGraphics.fill(255);     // White = Solid obstacle
+    obsGraphics.noStroke();
+    obsGraphics.push();
+    obsGraphics.translate(obsPos.x, obsPos.y);
+    obsGraphics.rotate(obsAngle);
+    
+    if (obsType === 0) {
+        obsGraphics.circle(0, 0, obsSize * 2);
+    } else if (obsType === 1) {
+        obsGraphics.rectMode(CENTER);
+        obsGraphics.rect(0, 0, obsSize * 0.5, obsSize * 3); // Vertical Bar
+    } else if (obsType === 2) {
+        obsGraphics.ellipse(0, 0, obsSize * 3, obsSize * 0.8); // Airfoil / Streamlined
+    }
+    
+    obsGraphics.pop();
+}
+
+// Input Handlers
+function mouseWheel(event) {
+    obsSize -= event.delta * 0.05;
+    obsSize = constrain(obsSize, 10, 80);
+}
+
+function keyPressed() {
+    if (key === '1') obsType = 0;
+    if (key === '2') obsType = 1;
+    if (key === '3') obsType = 2;
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+}
+</script>
+</body>
+</html>

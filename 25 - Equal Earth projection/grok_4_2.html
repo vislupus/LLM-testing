@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Equal Earth Interactive World Map • SVG.js</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/3.2.4/svg.min.js"></script>
+    <style>
+        body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #111; color: #eee; }
+        #container { position: relative; width: 960px; margin: 20px auto; box-shadow: 0 10px 30px rgba(0,0,0,0.6); border-radius: 8px; overflow: hidden; }
+        #map { background: #0a3d62; display: block; }
+        #overlay {
+            position: absolute; top: 15px; left: 15px; background: rgba(0,0,0,0.75); color: #fff; padding: 12px 16px;
+            border-radius: 6px; font-size: 14px; line-height: 1.4; pointer-events: none; min-width: 220px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+        .controls {
+            position: absolute; bottom: 15px; left: 15px; background: rgba(0,0,0,0.75); padding: 10px 14px;
+            border-radius: 6px; display: flex; gap: 10px; align-items: center; font-size: 13px;
+        }
+        button, input { font-family: inherit; }
+        .legend { position: absolute; bottom: 15px; right: 15px; background: rgba(0,0,0,0.75); padding: 8px 12px; border-radius: 6px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <svg id="map" width="960" height="500"></svg>
+        <div id="overlay">Click anywhere on the map to see coordinates<br><span id="coords" style="font-family:monospace;">—</span></div>
+        <div class="controls">
+            <label>Lat: <input id="in-lat" type="number" value="40.7" step="0.01" style="width:70px"></label>
+            <label>Lon: <input id="in-lon" type="number" value="-74" step="0.01" style="width:70px"></label>
+            <button onclick="addMarker()">Add Marker</button>
+            <button onclick="resetView()">Reset View</button>
+        </div>
+        <div class="legend">
+            Equal Earth Projection • Drag to pan • Scroll to zoom • Click for inverse
+        </div>
+    </div>
+
+    <script>
+        // ====================== EQUAL EARTH PROJECTION ======================
+        const A1 = 1.340264;
+        const A2 = -0.081106;
+        const A3 = 0.000893;
+        const A4 = 0.003796;
+        const M = Math.sqrt(3) / 2;
+        const ITERATIONS = 12;
+
+        function equalEarthRaw(lambda, phi) {
+            const l = Math.asin(M * Math.sin(phi));
+            const l2 = l * l;
+            const l6 = l2 * l2 * l2;
+            const denom = M * (A1 + 3 * A2 * l2 + l6 * (7 * A3 + 9 * A4 * l2));
+            return [
+                lambda * Math.cos(l) / denom,
+                l * (A1 + A2 * l2 + l6 * (A3 + A4 * l2))
+            ];
+        }
+
+        equalEarthRaw.invert = function(x, y) {
+            let l = y;
+            let l2 = l * l;
+            let l6 = l2 * l2 * l2;
+            for (let i = 0; i < ITERATIONS; i++) {
+                const fy = l * (A1 + A2 * l2 + l6 * (A3 + A4 * l2)) - y;
+                const fpy = A1 + 3 * A2 * l2 + l6 * (7 * A3 + 9 * A4 * l2);
+                const delta = fy / fpy;
+                l -= delta;
+                l2 = l * l;
+                l6 = l2 * l2 * l2;
+                if (Math.abs(delta) < 1e-12) break;
+            }
+            const cosL = Math.cos(l);
+            const num = A1 + 3 * A2 * l2 + l6 * (7 * A3 + 9 * A4 * l2);
+            return [
+                M * x * num / cosL,                          // lambda
+                Math.asin(Math.sin(l) / M)                    // phi
+            ];
+        };
+
+        // ====================== MAP SETUP ======================
+        const WIDTH = 960;
+        const HEIGHT = 500;
+        const PROJ_SCALE = 177.158;   // D3 default → world width ≈ 960 px
+
+        const draw = SVG('#map');
+        const contentGroup = draw.group();
+
+        function project(lon, lat) {   // degrees → projected screen coords (base)
+            const lambda = lon * Math.PI / 180;
+            const phi = lat * Math.PI / 180;
+            const [rx, ry] = equalEarthRaw(lambda, phi);
+            return {
+                x: rx * PROJ_SCALE + WIDTH / 2,
+                y: ry * PROJ_SCALE + HEIGHT / 2
+            };
+        }
+
+        function unproject(px, py) {   // base projected coords → lat/lon
+            const rx = (px - WIDTH / 2) / PROJ_SCALE;
+            const ry = (py - HEIGHT / 2) / PROJ_SCALE;
+            const [lambda, phi] = equalEarthRaw.invert(rx, ry);
+            return {
+                lon: lambda * 180 / Math.PI,
+                lat: phi * 180 / Math.PI
+            };
+        }
+
+        // ====================== DRAW GRATICULE (clean vector world) ======================
+        function drawGraticule() {
+            // Parallels (latitude lines)
+            for (let lat = -90; lat <= 90; lat += 15) {
+                const points = [];
+                for (let lon = -180; lon <= 180; lon += 3) {   // dense sampling for smoothness
+                    const p = project(lon, lat);
+                    points.push(p.x, p.y);
+                }
+                const color = (lat === 0) ? '#fff' : '#77aaff';
+                const width = (lat === 0) ? 1.8 : 0.7;
+                contentGroup.polyline(points)
+                    .stroke({ color: color, width: width, linecap: 'round' })
+                    .fill('none')
+                    .opacity(0.75);
+            }
+
+            // Meridians (longitude lines)
+            for (let lon = -180; lon <= 180; lon += 15) {
+                const points = [];
+                for (let lat = -90; lat <= 90; lat += 3) {
+                    const p = project(lon, lat);
+                    points.push(p.x, p.y);
+                }
+                const color = (lon === 0 || lon === 180 || lon === -180) ? '#fff' : '#77aaff';
+                const width = (lon % 90 === 0) ? 1.6 : 0.7;
+                contentGroup.polyline(points)
+                    .stroke({ color: color, width: width, linecap: 'round' })
+                    .fill('none')
+                    .opacity(0.75);
+            }
+
+            // Light land tint (rough continents - for visual appeal)
+            // Africa
+            const africa = [[-17,37], [35,37], [52,11], [43,-5], [38,-35], [22,-35], [11,-5], [-17,-35], [-17,37]];
+            drawPolygon(africa, '#2a8c4a');
+            // Eurasia (very rough)
+            const eurasia = [[-10,70], [30,75], [120,65], [140,55], [160,50], [140,35], [70,20], [40,40], [30,60], [-10,70]];
+            drawPolygon(eurasia, '#2a8c4a');
+            // North America
+            const na = [[-170,65], [-130,70], [-80,50], [-55,25], [-80,48], [-120,55], [-170,65]];
+            drawPolygon(na, '#2a8c4a');
+            // South America
+            const sa = [[-80,-10], [-70,-55], [-55,-55], [-40,-20], [-80,-10]];
+            drawPolygon(sa, '#2a8c4a');
+            // Australia
+            const au = [[112,-10], [153,-10], [153,-38], [130,-43], [112,-38], [112,-10]];
+            drawPolygon(au, '#2a8c4a');
+        }
+
+        function drawPolygon(geoPoints, fillColor) {
+            const pts = [];
+            geoPoints.forEach(([lon, lat]) => {
+                const p = project(lon, lat);
+                pts.push(p.x, p.y);
+            });
+            contentGroup.polygon(pts)
+                .fill(fillColor)
+                .stroke({ color: '#1e5f36', width: 1.5 })
+                .opacity(0.85);
+        }
+
+        // ====================== ZOOM / PAN ======================
+        let currentScale = 1;
+        let currentTx = 0;
+        let currentTy = 0;
+        let isDragging = false;
+        let dragStartX = 0, dragStartY = 0, dragStartTx = 0, dragStartTy = 0;
+
+        function updateTransform() {
+            // matrix(scale, 0, 0, scale, tx, ty) → screen = scale·projected + translate
+            contentGroup.matrix(currentScale, 0, 0, currentScale, currentTx, currentTy);
+        }
+
+        function getSvgPoint(clientX, clientY) {
+            const svgNode = draw.node;
+            const pt = svgNode.createSVGPoint();
+            pt.x = clientX;
+            pt.y = clientY;
+            return pt.matrixTransform(svgNode.getScreenCTM().inverse());
+        }
+
+        // Mouse wheel zoom (centered on cursor)
+        draw.on('wheel', function (e) {
+            e.preventDefault();
+            const mouse = getSvgPoint(e.clientX, e.clientY);
+            const factor = e.deltaY < 0 ? 1.15 : 0.87;
+            let newScale = currentScale * factor;
+            newScale = Math.max(0.3, Math.min(40, newScale));
+
+            const projX = (mouse.x - currentTx) / currentScale;
+            const projY = (mouse.y - currentTy) / currentScale;
+
+            currentTx = mouse.x - projX * newScale;
+            currentTy = mouse.y - projY * newScale;
+            currentScale = newScale;
+
+            updateTransform();
+        });
+
+        // Drag pan
+        draw.on('mousedown', function (e) {
+            if (e.button !== 0) return;
+            isDragging = true;
+            const p = getSvgPoint(e.clientX, e.clientY);
+            dragStartX = p.x;
+            dragStartY = p.y;
+            dragStartTx = currentTx;
+            dragStartTy = currentTy;
+            draw.node.style.cursor = 'grabbing';
+        });
+
+        document.addEventListener('mousemove', function (e) {
+            if (!isDragging) return;
+            const p = getSvgPoint(e.clientX, e.clientY);
+            currentTx = dragStartTx + (p.x - dragStartX);
+            currentTy = dragStartTy + (p.y - dragStartY);
+            updateTransform();
+        });
+
+        document.addEventListener('mouseup', function () {
+            if (isDragging) {
+                isDragging = false;
+                draw.node.style.cursor = 'default';
+            }
+        });
+
+        // ====================== INVERSE PROJECTION (click) ======================
+        draw.on('click', function (e) {
+            if (isDragging) return;   // ignore clicks while dragging
+            const mouse = getSvgPoint(e.clientX, e.clientY);
+            const projX = (mouse.x - currentTx) / currentScale;
+            const projY = (mouse.y - currentTy) / currentScale;
+            const geo = unproject(projX, projY);
+
+            // Clamp for display sanity
+            const lon = Math.max(-180, Math.min(180, geo.lon));
+            const lat = Math.max(-90, Math.min(90, geo.lat));
+
+            document.getElementById('coords').innerHTML = 
+                `Lat: <b>${lat.toFixed(4)}°</b><br>` +
+                `Lon: <b>${lon.toFixed(4)}°</b>`;
+        });
+
+        // ====================== FORWARD PROJECTION (markers) ======================
+        function addMarker() {
+            const lat = parseFloat(document.getElementById('in-lat').value);
+            const lon = parseFloat(document.getElementById('in-lon').value);
+            if (isNaN(lat) || isNaN(lon)) return;
+
+            const p = project(lon, lat);
+            const marker = contentGroup.circle(7)
+                .center(p.x, p.y)
+                .fill('#ff3366')
+                .stroke({ color: '#fff', width: 2 })
+                .opacity(0.95);
+
+            // Optional subtle glow
+            marker.filterWith((add) => {
+                add.gaussianBlur(2, 2);
+            });
+        }
+
+        function resetView() {
+            currentScale = 1;
+            currentTx = 0;
+            currentTy = 0;
+            updateTransform();
+            document.getElementById('coords').innerHTML = '—';
+        }
+
+        // ====================== INITIALIZE ======================
+        function init() {
+            drawGraticule();
+
+            // Add a few example markers on load
+            setTimeout(() => {
+                const examples = [
+                    {lat: 40.7128, lon: -74.0060},   // NYC
+                    {lat: 51.5074, lon: -0.1278},    // London
+                    {lat: -33.8688, lon: 151.2093},  // Sydney
+                    {lat: 35.6762, lon: 139.6503}    // Tokyo
+                ];
+                examples.forEach(ex => {
+                    const p = project(ex.lon, ex.lat);
+                    contentGroup.circle(6)
+                        .center(p.x, p.y)
+                        .fill('#ffdd33')
+                        .stroke({color:'#000', width:1.5});
+                });
+            }, 100);
+
+            // Initial view
+            updateTransform();
+
+            // Instructions in console
+            console.log('%cEqual Earth Interactive Map ready! Drag, scroll, click, add markers.', 'color:#0f0; font-size:13px');
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>

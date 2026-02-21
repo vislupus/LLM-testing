@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Genetic Algorithm - Strandbeest Evolution</title>
+    <!-- Babylon.js Core and Dependencies -->
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #111;
+        }
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 320px;
+            background: rgba(30, 30, 35, 0.85);
+            color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            backdrop-filter: blur(4px);
+            pointer-events: auto;
+        }
+        h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            color: #4CAF50;
+            border-bottom: 1px solid #444;
+            padding-bottom: 10px;
+        }
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 10px 0;
+            font-size: 0.95rem;
+        }
+        .stat-value { font-weight: bold; color: #4DA8DA; }
+        .control-group { margin-top: 20px; }
+        label { display: block; margin-bottom: 5px; font-size: 0.85rem; color: #ccc; }
+        input[type="range"] {
+            width: 100%;
+            margin-bottom: 15px;
+            accent-color: #4CAF50;
+        }
+        button {
+            width: 100%;
+            padding: 10px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+            transition: background-color 0.2s;
+        }
+        button:hover { background-color: #45a049; }
+        button.danger { background-color: #d32f2f; }
+        button.danger:hover { background-color: #b71c1c; }
+    </style>
+</head>
+<body>
+
+    <canvas id="renderCanvas"></canvas>
+
+    <div id="ui-container">
+        <h2>Strandbeest Evolution (GA)</h2>
+        
+        <div class="stat-row">
+            <span>Generation:</span>
+            <span class="stat-value" id="stat-gen">0</span>
+        </div>
+        <div class="stat-row">
+            <span>Best Fitness:</span>
+            <span class="stat-value" id="stat-fitness">0.00</span>
+        </div>
+
+        <div class="control-group">
+            <button id="btn-toggle">Pause Evolution</button>
+            <button id="btn-restart" class="danger">Restart GA</button>
+
+            <label for="in-popSize">Population Size: <span id="val-popSize">100</span></label>
+            <input type="range" id="in-popSize" min="20" max="300" step="10" value="100">
+
+            <label for="in-mutRate">Mutation Rate: <span id="val-mutRate">15%</span></label>
+            <input type="range" id="in-mutRate" min="1" max="50" step="1" value="15">
+
+            <label for="in-simSpeed">Simulation Speed: <span id="val-simSpeed">1x</span></label>
+            <input type="range" id="in-simSpeed" min="0.1" max="3" step="0.1" value="1">
+        </div>
+    </div>
+
+<script>
+    // --- 1. KINEMATICS & GENETICS ENGINE ---
+
+    // A Genome represents a 4-bar linkage with an extension (simplified Jansen-style leg)
+    // l1: crank length, l2: coupler length, l3: rocker length
+    // l4: leg extension length, alpha: leg extension angle
+    // ax, ay: fixed pivot position relative to crank center
+    
+    function createRandomGenome() {
+        let g;
+        do {
+            g = {
+                ax: (Math.random() - 0.5) * 4,
+                ay: (Math.random() - 0.5) * 4,
+                l1: Math.random() * 2 + 0.5,
+                l2: Math.random() * 4 + 1.0,
+                l3: Math.random() * 4 + 1.0,
+                l4: Math.random() * 5 + 1.0,
+                alpha: Math.random() * Math.PI * 2,
+                fitness: 0
+            };
+        } while (evaluateFitness(g) === 0); // Reject broken initial links
+        return g;
+    }
+
+    // Mathematical solver for the linkage position given the crank angle (theta)
+    function solveLinkage(g, theta) {
+        // B is crank pin
+        let Bx = g.l1 * Math.cos(theta);
+        let By = g.l1 * Math.sin(theta);
+
+        // Distance from B to pivot A
+        let dx = g.ax - Bx;
+        let dy = g.ay - By;
+        let d = Math.sqrt(dx*dx + dy*dy);
+
+        // Check if linkage is broken (circles don't intersect)
+        if (d > g.l2 + g.l3 || d < Math.abs(g.l2 - g.l3) || d === 0) return null;
+
+        let a = (g.l2*g.l2 - g.l3*g.l3 + d*d) / (2*d);
+        let h2 = g.l2*g.l2 - a*a;
+        if (h2 < 0) return null; 
+        let h = Math.sqrt(h2);
+
+        let P2x = Bx + a * (dx) / d;
+        let P2y = By + a * (dy) / d;
+
+        // C is rocker-coupler joint. We pick one stable intersection (+)
+        let Cx = P2x + h * (dy) / d;
+        let Cy = P2y - h * (dx) / d;
+
+        // D is the foot (extension from BC)
+        let phi = Math.atan2(Cy - By, Cx - Bx);
+        let Dx = Bx + g.l4 * Math.cos(phi + g.alpha);
+        let Dy = By + g.l4 * Math.sin(phi + g.alpha);
+
+        return { O: {x:0, y:0}, A: {x:g.ax, y:g.ay}, B: {x:Bx, y:By}, C: {x:Cx, y:Cy}, D: {x:Dx, y:Dy} };
+    }
+
+    // Evaluate how well a genome walks forward
+    function evaluateFitness(g) {
+        const steps = 60;
+        let p1 = [], p2 = [];
+
+        // Simulate a full rotation
+        for (let i = 0; i <= steps; i++) {
+            let theta = (i / steps) * Math.PI * 2;
+            let f1 = solveLinkage(g, theta);
+            let f2 = solveLinkage(g, theta + Math.PI); // Opposite leg
+            if (!f1 || !f2) return 0; // If jams, fitness is 0
+            p1.push(f1.D); p2.push(f2.D);
+        }
+
+        let distanceMoved = 0;
+        let bodyHeights = [];
+
+        for (let i = 0; i < steps; i++) {
+            // Leg with the lowest Y is touching the ground
+            let y1 = p1[i].y;
+            let y2 = p2[i].y;
+            
+            let activeFoot = (y1 < y2) ? p1[i] : p2[i];
+            let activeNext = (y1 < y2) ? p1[i+1] : p2[i+1];
+            
+            bodyHeights.push(-activeFoot.y);
+            
+            // Forward movement is opposite of foot movement relative to body
+            let dx = activeNext.x - activeFoot.x;
+            distanceMoved -= dx; 
+        }
+
+        let meanHeight = bodyHeights.reduce((a,b)=>a+b,0)/steps;
+        let variance = bodyHeights.reduce((a,b)=>a+Math.pow(b-meanHeight, 2),0)/steps;
+        
+        let yMin = Math.min(...p1.map(p=>p.y));
+        let yMax = Math.max(...p1.map(p=>p.y));
+        let clearance = yMax - yMin;
+
+        // Penalize dragging and bouncing
+        if (clearance < 0.5) distanceMoved *= 0.1;
+        let fitness = distanceMoved - Math.sqrt(variance) * 2;
+        
+        // Size constraint penalty (encourages compact efficiency)
+        let size = g.l1 + g.l2 + g.l3 + g.l4;
+        if (size > 15) fitness -= (size - 15);
+
+        return Math.max(0, fitness);
+    }
+
+    // --- 2. GENETIC ALGORITHM LOGIC ---
+
+    let population = [];
+    let generation = 0;
+    let isEvolving = true;
+    let bestGenome = null;
+
+    let gaParams = {
+        popSize: 100,
+        mutRate: 0.15,
+        simSpeed: 1.0
+    };
+
+    function initPopulation() {
+        population = [];
+        for (let i = 0; i < gaParams.popSize; i++) {
+            population.push(createRandomGenome());
+        }
+        generation = 0;
+        bestGenome = null;
+    }
+
+    function crossover(p1, p2) {
+        return {
+            ax: Math.random() < 0.5 ? p1.ax : p2.ax,
+            ay: Math.random() < 0.5 ? p1.ay : p2.ay,
+            l1: Math.random() < 0.5 ? p1.l1 : p2.l1,
+            l2: Math.random() < 0.5 ? p1.l2 : p2.l2,
+            l3: Math.random() < 0.5 ? p1.l3 : p2.l3,
+            l4: Math.random() < 0.5 ? p1.l4 : p2.l4,
+            alpha: Math.random() < 0.5 ? p1.alpha : p2.alpha
+        };
+    }
+
+    function mutate(g) {
+        let child = { ...g };
+        let mutStrength = 0.5;
+        if (Math.random() < gaParams.mutRate) child.ax += (Math.random()-0.5) * mutStrength;
+        if (Math.random() < gaParams.mutRate) child.ay += (Math.random()-0.5) * mutStrength;
+        if (Math.random() < gaParams.mutRate) child.l1 = Math.max(0.1, child.l1 + (Math.random()-0.5) * mutStrength);
+        if (Math.random() < gaParams.mutRate) child.l2 = Math.max(0.1, child.l2 + (Math.random()-0.5) * mutStrength);
+        if (Math.random() < gaParams.mutRate) child.l3 = Math.max(0.1, child.l3 + (Math.random()-0.5) * mutStrength);
+        if (Math.random() < gaParams.mutRate) child.l4 = Math.max(0.1, child.l4 + (Math.random()-0.5) * mutStrength);
+        if (Math.random() < gaParams.mutRate) child.alpha += (Math.random()-0.5) * mutStrength;
+        return child;
+    }
+
+    function stepGA() {
+        if (!isEvolving) return;
+
+        // Evaluate all
+        for (let i = 0; i < population.length; i++) {
+            population[i].fitness = evaluateFitness(population[i]);
+        }
+
+        // Sort by fitness descending
+        population.sort((a, b) => b.fitness - a.fitness);
+
+        if (!bestGenome || population[0].fitness > bestGenome.fitness) {
+            bestGenome = { ...population[0] };
+        }
+
+        // Update UI
+        document.getElementById("stat-gen").innerText = generation;
+        document.getElementById("stat-fitness").innerText = bestGenome.fitness.toFixed(2);
+
+        // Next Generation Creation
+        let nextGen = [];
+        // Elitism: Keep top 10%
+        let elitismCount = Math.floor(gaParams.popSize * 0.1);
+        for (let i = 0; i < elitismCount; i++) nextGen.push(population[i]);
+
+        // Breeding
+        while (nextGen.length < gaParams.popSize) {
+            // Tournament selection
+            let parent1 = tournamentSelect();
+            let parent2 = tournamentSelect();
+            let child = crossover(parent1, parent2);
+            child = mutate(child);
+            
+            // Reject completely broken offspring instantly
+            if (evaluateFitness(child) > 0) {
+                nextGen.push(child);
+            }
+        }
+
+        population = nextGen;
+        generation++;
+        
+        // Pass best genome to 3D view
+        if (rig3D && bestGenome) rig3D.setGenome(bestGenome);
+    }
+
+    function tournamentSelect() {
+        let best = population[Math.floor(Math.random() * population.length)];
+        for (let i = 0; i < 3; i++) {
+            let competitor = population[Math.floor(Math.random() * Math.random() * population.length)]; // bias towards top
+            if (competitor.fitness > best.fitness) best = competitor;
+        }
+        return best;
+    }
+
+
+    // --- 3. BABYLON.JS 3D VISUALIZATION ---
+
+    let canvas = document.getElementById("renderCanvas");
+    let engine = new BABYLON.Engine(canvas, true);
+    let scene, rig3D;
+
+    function alignCylinder(cyl, p1, p2) {
+        let v1 = new BABYLON.Vector3(p1.x, p1.y, p1.z);
+        let v2 = new BABYLON.Vector3(p2.x, p2.y, p2.z);
+        cyl.position = BABYLON.Vector3.Center(v1, v2);
+        
+        let dist = BABYLON.Vector3.Distance(v1, v2);
+        cyl.scaling.y = dist;
+        
+        // Find angle in XY plane
+        let angle = Math.atan2(v2.y - v1.y, v2.x - v1.x);
+        cyl.rotation.z = angle - Math.PI/2;
+    }
+
+    class CreatureRig {
+        constructor(scene) {
+            this.scene = scene;
+            this.genome = null;
+            this.theta = 0;
+            this.bodyX = 0;
+            this.plantedFootWorldX = 0;
+            this.plantedFootIndex = -1;
+            
+            // Materials
+            this.matBody = new BABYLON.StandardMaterial("mb", scene);
+            this.matBody.diffuseColor = new BABYLON.Color3(0.2, 0.6, 0.8);
+            
+            this.matLink1 = new BABYLON.StandardMaterial("ml1", scene);
+            this.matLink1.diffuseColor = new BABYLON.Color3(0.8, 0.3, 0.3);
+            
+            this.matLink2 = new BABYLON.StandardMaterial("ml2", scene);
+            this.matLink2.diffuseColor = new BABYLON.Color3(0.8, 0.8, 0.8);
+
+            // Create main body
+            this.bodyMesh = BABYLON.MeshBuilder.CreateBox("body", {width: 6, height: 1, depth: 4}, scene);
+            this.bodyMesh.material = this.matBody;
+
+            // Leg configs (Z offsets and phase shifts)
+            this.legConfigs = [
+                { z: 2.2, phase: 0 },
+                { z: 1.1, phase: Math.PI },
+                { z: -1.1, phase: Math.PI },
+                { z: -2.2, phase: 0 }
+            ];
+
+            this.legs = [];
+            for(let i=0; i<4; i++) {
+                this.legs.push({
+                    crank: this.createLink(this.matLink1, 0.3),
+                    rocker: this.createLink(this.matLink2, 0.2),
+                    couplerMain: this.createLink(this.matLink2, 0.25),
+                    couplerExt: this.createLink(this.matLink1, 0.25),
+                    couplerBase: this.createLink(this.matLink2, 0.15) // connecting B to D for solid look
+                });
+            }
+        }
+
+        createLink(mat, diameter) {
+            let cyl = BABYLON.MeshBuilder.CreateCylinder("link", {height: 1, diameter: diameter}, this.scene);
+            cyl.material = mat;
+            return cyl;
+        }
+
+        setGenome(g) {
+            this.genome = g;
+        }
+
+        update(dt) {
+            if (!this.genome) return;
+
+            // Advance walking phase
+            this.theta -= dt * 2.5 * gaParams.simSpeed; 
+
+            let legPoints = [];
+            for (let i = 0; i < 4; i++) {
+                let pts = solveLinkage(this.genome, this.theta + this.legConfigs[i].phase);
+                if (!pts) return; // Wait for valid genome
+                // Add Z dimension
+                let z = this.legConfigs[i].z;
+                Object.keys(pts).forEach(k => pts[k].z = z);
+                legPoints.push(pts);
+            }
+
+            // Find lowest foot to act as pivot
+            let lowestIdx = 0;
+            let lowestY = legPoints[0].D.y;
+            for(let i=1; i<4; i++) {
+                if(legPoints[i].D.y < lowestY) {
+                    lowestY = legPoints[i].D.y;
+                    lowestIdx = i;
+                }
+            }
+
+            // Foot planting logic to move body forward smoothly
+            if (this.plantedFootIndex !== lowestIdx) {
+                this.plantedFootIndex = lowestIdx;
+                this.plantedFootWorldX = this.bodyX + legPoints[lowestIdx].D.x;
+            }
+
+            this.bodyX = this.plantedFootWorldX - legPoints[lowestIdx].D.x;
+            
+            this.bodyMesh.position.x = this.bodyX;
+            this.bodyMesh.position.y = -lowestY + 0.5; // Lift slightly above ground
+
+            // Update mesh transforms relative to body
+            for (let i = 0; i < 4; i++) {
+                let p = legPoints[i];
+                let bx = this.bodyX;
+                let by = this.bodyMesh.position.y;
+                let z = this.legConfigs[i].z;
+
+                let O = {x: bx + p.O.x, y: by + p.O.y, z: z};
+                let A = {x: bx + p.A.x, y: by + p.A.y, z: z};
+                let B = {x: bx + p.B.x, y: by + p.B.y, z: z};
+                let C = {x: bx + p.C.x, y: by + p.C.y, z: z};
+                let D = {x: bx + p.D.x, y: by + p.D.y, z: z};
+
+                alignCylinder(this.legs[i].crank, O, B);
+                alignCylinder(this.legs[i].rocker, A, C);
+                alignCylinder(this.legs[i].couplerMain, B, C);
+                alignCylinder(this.legs[i].couplerExt, C, D);
+                alignCylinder(this.legs[i].couplerBase, B, D);
+            }
+        }
+    }
+
+    function createScene() {
+        let scene = new BABYLON.Scene(engine);
+        scene.clearColor = new BABYLON.Color4(0.1, 0.1, 0.12, 1);
+
+        // Camera
+        let camera = new BABYLON.ArcRotateCamera("cam", Math.PI / 4, Math.PI / 3, 30, BABYLON.Vector3.Zero(), scene);
+        camera.attachControl(canvas, true);
+        camera.lowerRadiusLimit = 10;
+        camera.upperRadiusLimit = 100;
+
+        // Lights
+        let hemiLight = new BABYLON.HemisphericLight("hemiLight", new BABYLON.Vector3(0, 1, 0), scene);
+        hemiLight.intensity = 0.6;
+        
+        let dirLight = new BABYLON.DirectionalLight("dirLight", new BABYLON.Vector3(-1, -2, -1), scene);
+        dirLight.position = new BABYLON.Vector3(20, 40, 20);
+        dirLight.intensity = 0.8;
+
+        // Ground with Procedural Grid Texture
+        let ground = BABYLON.MeshBuilder.CreateGround("ground", {width: 1000, height: 1000}, scene);
+        let matGround = new BABYLON.StandardMaterial("matGround", scene);
+        
+        let dt = new BABYLON.DynamicTexture("grid", 512, scene, true);
+        let ctx = dt.getContext();
+        ctx.fillStyle = "#222222"; ctx.fillRect(0,0,512,512);
+        ctx.strokeStyle = "#333333"; ctx.lineWidth = 4;
+        for(let i=0; i<512; i+=64) {
+            ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 512); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(512, i); ctx.stroke();
+        }
+        dt.update();
+        dt.uScale = 50;
+        dt.vScale = 50;
+        
+        matGround.diffuseTexture = dt;
+        matGround.specularColor = new BABYLON.Color3(0,0,0);
+        ground.material = matGround;
+        ground.position.y = 0;
+
+        rig3D = new CreatureRig(scene);
+
+        // Shadows
+        let shadowGen = new BABYLON.ShadowGenerator(1024, dirLight);
+        shadowGen.useBlurExponentialShadowMap = true;
+        shadowGen.blurKernel = 32;
+        shadowGen.addShadowCaster(rig3D.bodyMesh);
+        rig3D.legs.forEach(l => {
+            shadowGen.addShadowCaster(l.crank);
+            shadowGen.addShadowCaster(l.rocker);
+            shadowGen.addShadowCaster(l.couplerMain);
+            shadowGen.addShadowCaster(l.couplerExt);
+        });
+        ground.receiveShadows = true;
+
+        // Render Loop Logic
+        scene.onBeforeRenderObservable.add(() => {
+            let dt = engine.getDeltaTime() / 1000;
+            rig3D.update(dt);
+            
+            // Smoothly track camera to body
+            camera.target.x = BABYLON.Scalar.Lerp(camera.target.x, rig3D.bodyX, 0.1);
+        });
+
+        return scene;
+    }
+
+    // --- 4. INITIALIZATION & UI BINDINGS ---
+
+    scene = createScene();
+    initPopulation();
+
+    // Run GA separately from render loop to not lock FPS, but fast enough to evolve
+    setInterval(stepGA, 50); 
+
+    engine.runRenderLoop(() => {
+        scene.render();
+    });
+
+    window.addEventListener("resize", () => {
+        engine.resize();
+    });
+
+    // UI Listeners
+    document.getElementById("btn-toggle").addEventListener("click", (e) => {
+        isEvolving = !isEvolving;
+        e.target.innerText = isEvolving ? "Pause Evolution" : "Resume Evolution";
+    });
+
+    document.getElementById("btn-restart").addEventListener("click", () => {
+        initPopulation();
+    });
+
+    document.getElementById("in-popSize").addEventListener("input", (e) => {
+        gaParams.popSize = parseInt(e.target.value);
+        document.getElementById("val-popSize").innerText = gaParams.popSize;
+    });
+
+    document.getElementById("in-mutRate").addEventListener("input", (e) => {
+        gaParams.mutRate = parseInt(e.target.value) / 100;
+        document.getElementById("val-mutRate").innerText = e.target.value + "%";
+    });
+
+    document.getElementById("in-simSpeed").addEventListener("input", (e) => {
+        gaParams.simSpeed = parseFloat(e.target.value);
+        document.getElementById("val-simSpeed").innerText = e.target.value + "x";
+    });
+
+</script>
+</body>
+</html>

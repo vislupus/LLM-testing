@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diffusion-Limited Aggregation (DLA)</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #111;
+            color: #eee;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+
+        #canvas-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Two canvases: one for the frozen tree, one for moving particles */
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #walkerCanvas {
+            pointer-events: none; /* Let clicks pass through */
+        }
+
+        #ui-panel {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            background: rgba(20, 20, 25, 0.85);
+            backdrop-filter: blur(8px);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            width: 280px;
+            z-index: 10;
+        }
+
+        h2 {
+            margin: 0 0 15px 0;
+            font-size: 1.2rem;
+            color: #00d2ff;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        .control-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+
+        .control-value {
+            color: #fff;
+            font-weight: bold;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: #00d2ff;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background: linear-gradient(45deg, #00d2ff, #3a7bd5);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: opacity 0.2s, transform 0.1s;
+        }
+
+        button:hover { opacity: 0.9; }
+        button:active { transform: scale(0.98); }
+
+        #status {
+            text-align: center;
+            margin-top: 15px;
+            font-weight: bold;
+            color: #00ff88;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container">
+        <!-- treeCanvas holds the static structure (drawn once per particle) -->
+        <canvas id="treeCanvas"></canvas>
+        <!-- walkerCanvas holds the moving dots (cleared and redrawn every frame) -->
+        <canvas id="walkerCanvas"></canvas>
+    </div>
+
+    <div id="ui-panel">
+        <h2>DLA Simulation</h2>
+        
+        <div class="control-group">
+            <div class="control-header">
+                <span>Active Particles</span>
+                <span id="val-count" class="control-value">300</span>
+            </div>
+            <input type="range" id="p-count" min="10" max="1000" value="300">
+        </div>
+
+        <div class="control-group">
+            <div class="control-header">
+                <span>Movement Speed</span>
+                <span id="val-speed" class="control-value">2.0</span>
+            </div>
+            <input type="range" id="p-speed" min="0.5" max="5.0" step="0.1" value="2.0">
+        </div>
+
+        <div class="control-group">
+            <div class="control-header">
+                <span>Inward Bias</span>
+                <span id="val-bias" class="control-value">0.15</span>
+            </div>
+            <input type="range" id="p-bias" min="0" max="1.0" step="0.01" value="0.15">
+        </div>
+
+        <div class="control-group">
+            <div class="control-header">
+                <span>Simulation Speed</span>
+                <span id="val-sim" class="control-value">10x</span>
+            </div>
+            <input type="range" id="p-sim" min="1" max="30" value="10">
+        </div>
+
+        <button id="btn-reset">Restart Simulation</button>
+        <div id="status">Growing...</div>
+    </div>
+
+    <script>
+        // --- Setup and Canvas Initialization ---
+        const treeCanvas = document.getElementById('treeCanvas');
+        const walkerCanvas = document.getElementById('walkerCanvas');
+        const tCtx = treeCanvas.getContext('2d');
+        const wCtx = walkerCanvas.getContext('2d');
+
+        let width, height, cx, cy;
+        let isFinished = false;
+
+        // --- Physics & Simulation Parameters ---
+        const PARTICLE_RADIUS = 1.5;
+        const DIAMETER = PARTICLE_RADIUS * 2;
+        const DIAMETER_SQ = DIAMETER * DIAMETER;
+        
+        let targetWalkers = 300;
+        let walkSpeed = 2.0;
+        let biasStrength = 0.15;
+        let simSteps = 10;
+        
+        let maxRadius = 0;   // Furthest particle from center
+        let limitRadius = 0; // When to stop simulation
+
+        // --- Data Structures ---
+        let walkers = [];
+        
+        // Spatial Hash Grid for O(1) collision detection
+        let grid = [];
+        let cols, rows;
+        const CELL_SIZE = DIAMETER;
+
+        // UI Elements
+        const elCount = document.getElementById('p-count');
+        const elSpeed = document.getElementById('p-speed');
+        const elBias = document.getElementById('p-bias');
+        const elSim = document.getElementById('p-sim');
+        const statusText = document.getElementById('status');
+
+        // Bind UI
+        elCount.oninput = (e) => { targetWalkers = +e.target.value; document.getElementById('val-count').innerText = targetWalkers; };
+        elSpeed.oninput = (e) => { walkSpeed = +e.target.value; document.getElementById('val-speed').innerText = walkSpeed.toFixed(1); };
+        elBias.oninput = (e) => { biasStrength = +e.target.value; document.getElementById('val-bias').innerText = biasStrength.toFixed(2); };
+        elSim.oninput = (e) => { simSteps = +e.target.value; document.getElementById('val-sim').innerText = simSteps + 'x'; };
+        document.getElementById('btn-reset').onclick = initSimulation;
+
+        // --- Core Functions ---
+
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            
+            treeCanvas.width = width;
+            treeCanvas.height = height;
+            walkerCanvas.width = width;
+            walkerCanvas.height = height;
+            
+            cx = width / 2;
+            cy = height / 2;
+            limitRadius = Math.min(width, height) / 2 - 50;
+
+            cols = Math.ceil(width / CELL_SIZE);
+            rows = Math.ceil(height / CELL_SIZE);
+        }
+
+        function initSimulation() {
+            resize();
+            isFinished = false;
+            maxRadius = 0;
+            walkers = [];
+            statusText.innerText = "Growing...";
+            statusText.style.color = "#00ff88";
+
+            // Clear canvases
+            tCtx.fillStyle = '#0a0a0f';
+            tCtx.fillRect(0, 0, width, height);
+            wCtx.clearRect(0, 0, width, height);
+
+            // Initialize Grid
+            grid = new Array(cols * rows).fill(null);
+
+            // Place seed in the center
+            stickParticle(cx, cy);
+
+            // Spawn initial walkers
+            for (let i = 0; i < targetWalkers; i++) {
+                spawnWalker();
+            }
+        }
+
+        function spawnWalker() {
+            // Spawn on a circle slightly outside the current max radius
+            let spawnRadius = maxRadius + 20;
+            let angle = Math.random() * Math.PI * 2;
+            walkers.push({
+                x: cx + Math.cos(angle) * spawnRadius,
+                y: cy + Math.sin(angle) * spawnRadius
+            });
+        }
+
+        function getGridIndex(x, y) {
+            let c = Math.floor(x / CELL_SIZE);
+            let r = Math.floor(y / CELL_SIZE);
+            if (c < 0 || c >= cols || r < 0 || r >= rows) return -1;
+            return c + r * cols;
+        }
+
+        function checkCollision(x, y) {
+            let c = Math.floor(x / CELL_SIZE);
+            let r = Math.floor(y / CELL_SIZE);
+
+            // Check the 9 surrounding cells
+            for (let i = -1; i <= 1; i++) {
+                for (let j = -1; j <= 1; j++) {
+                    let nc = c + i;
+                    let nr = r + j;
+                    if (nc >= 0 && nc < cols && nr >= 0 && nr < rows) {
+                        let idx = nc + nr * cols;
+                        let neighbor = grid[idx];
+                        if (neighbor) {
+                            let dx = neighbor.x - x;
+                            let dy = neighbor.y - y;
+                            if (dx * dx + dy * dy <= DIAMETER_SQ) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        function stickParticle(x, y) {
+            // Add to grid
+            let idx = getGridIndex(x, y);
+            if (idx !== -1) {
+                grid[idx] = { x, y };
+            }
+
+            // Update max radius
+            let dx = x - cx;
+            let dy = y - cy;
+            let dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > maxRadius) {
+                maxRadius = dist;
+            }
+
+            // Check termination
+            if (maxRadius >= limitRadius) {
+                isFinished = true;
+                statusText.innerText = "Finished!";
+                statusText.style.color = "#ff3366";
+            }
+
+            // Draw to static tree canvas
+            // Color based on distance from center (creates a beautiful gradient)
+            let hue = (dist / limitRadius) * 360;
+            tCtx.fillStyle = `hsl(${hue}, 100%, 60%)`;
+            tCtx.beginPath();
+            tCtx.arc(x, y, PARTICLE_RADIUS, 0, Math.PI * 2);
+            tCtx.fill();
+        }
+
+        // --- Main Update Loop ---
+        function update() {
+            if (isFinished) return;
+
+            // Run multiple physics steps per frame to speed up visuals
+            for (let step = 0; step < simSteps; step++) {
+                
+                // Keep walker count at target
+                while (walkers.length < targetWalkers) {
+                    spawnWalker();
+                }
+
+                for (let i = walkers.length - 1; i >= 0; i--) {
+                    let w = walkers[i];
+
+                    // Random Brownian motion
+                    w.x += (Math.random() - 0.5) * 2 * walkSpeed;
+                    w.y += (Math.random() - 0.5) * 2 * walkSpeed;
+
+                    // Inward Bias
+                    let dx = cx - w.x;
+                    let dy = cy - w.y;
+                    let distSq = dx * dx + dy * dy;
+                    let dist = Math.sqrt(distSq);
+                    
+                    if (dist > 0) {
+                        w.x += (dx / dist) * biasStrength;
+                        w.y += (dy / dist) * biasStrength;
+                    }
+
+                    // Check bounds - if wandered too far, delete to respawn
+                    if (dist > maxRadius + 60) {
+                        walkers.splice(i, 1);
+                        continue;
+                    }
+
+                    // Check collision
+                    if (checkCollision(w.x, w.y)) {
+                        stickParticle(w.x, w.y);
+                        walkers.splice(i, 1); // Remove from moving walkers
+                        
+                        if (isFinished) break;
+                    }
+                }
+                if (isFinished) break;
+            }
+        }
+
+        function drawWalkers() {
+            wCtx.clearRect(0, 0, width, height);
+            
+            if (isFinished) return;
+
+            wCtx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+            wCtx.beginPath();
+            for (let i = 0; i < walkers.length; i++) {
+                let w = walkers[i];
+                wCtx.moveTo(w.x, w.y);
+                wCtx.arc(w.x, w.y, PARTICLE_RADIUS, 0, Math.PI * 2);
+            }
+            wCtx.fill();
+        }
+
+        function loop() {
+            update();
+            drawWalkers();
+            requestAnimationFrame(loop);
+        }
+
+        // Start
+        window.addEventListener('resize', () => {
+            if(isFinished) initSimulation();
+        });
+        
+        initSimulation();
+        requestAnimationFrame(loop);
+
+    </script>
+</body>
+</html>

@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Heat Diffusion Simulation (GPU Accelerated)</title>
+    <!-- Load p5.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
+        }
+        
+        #canvas-container {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 320px;
+            background: rgba(15, 15, 20, 0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            color: #eee;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+            z-index: 10;
+        }
+
+        h2 {
+            margin: 0 0 15px 0;
+            font-size: 1.2rem;
+            color: #ff5722;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            margin-bottom: 5px;
+            color: #bbb;
+        }
+
+        select, input[type="range"], button {
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        select {
+            background: #222;
+            color: #fff;
+            border: 1px solid #444;
+            padding: 6px;
+            border-radius: 4px;
+            font-family: inherit;
+        }
+
+        input[type="range"] {
+            accent-color: #ff5722;
+            cursor: pointer;
+        }
+
+        button {
+            background: #ff5722;
+            color: white;
+            border: none;
+            padding: 10px;
+            margin-top: 10px;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        button:hover { background: #e64a19; }
+        button:active { transform: scale(0.98); }
+
+        #clear-walls { background: #444; }
+        #clear-walls:hover { background: #555; }
+        
+        .instructions {
+            margin-top: 15px;
+            font-size: 0.75rem;
+            color: #888;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-panel">
+        <h2>Thermal Dynamics</h2>
+        
+        <div class="control-group">
+            <label>Brush Mode</label>
+            <select id="brush-mode">
+                <option value="heat">🔥 Add Heat Source</option>
+                <option value="cool">❄️ Remove Heat (Cool)</option>
+                <option value="wall">🧱 Draw Insulator (Block heat)</option>
+                <option value="conductor">✨ Draw Conductor (Allow heat)</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label><span>Brush Size</span> <span id="val-size">5%</span></label>
+            <input type="range" id="brush-size" min="0.01" max="0.2" step="0.01" value="0.05">
+        </div>
+
+        <div class="control-group">
+            <label><span>Simulation Speed</span> <span id="val-speed">15x</span></label>
+            <input type="range" id="sim-speed" min="1" max="40" step="1" value="15">
+        </div>
+
+        <div class="control-group">
+            <label>Boundary Condition</label>
+            <select id="boundary-mode">
+                <option value="0">Reflective (Insulated Edges)</option>
+                <option value="1">Absolute Zero (Cooling Edges)</option>
+            </select>
+        </div>
+
+        <button id="reset-heat">Reset Temperature</button>
+        <button id="clear-walls">Reset Materials</button>
+
+        <div class="instructions">
+            <strong>Click & Drag</strong> on the screen to interact.<br>
+            Using implicit finite-difference calculations processed on the GPU via WebGL Framebuffers.
+        </div>
+    </div>
+
+<script>
+// --- SHADERS ---
+
+// Standard Vertex Shader
+const vertShader = `
+precision highp float;
+attribute vec3 aPosition;
+attribute vec2 aTexCoord;
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+varying vec2 vTexCoord;
+
+void main() {
+    vTexCoord = aTexCoord;
+    gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aPosition, 1.0);
+}
+`;
+
+// Finite Difference Heat Equation Solver (Fragment Shader)
+const diffuseFragShader = `
+precision highp float;
+varying vec2 vTexCoord;
+
+uniform sampler2D u_temp;      // Temperature map
+uniform sampler2D u_mat;       // Material map (alpha = thermal conductivity)
+uniform vec2 u_res;            // Screen resolution
+uniform float u_dt;            // Time step
+uniform vec2 u_mouse;          // Mouse position
+uniform float u_mouse_action;  // 1.0 = heat, -1.0 = cool, 0.0 = nothing
+uniform float u_brush_size;    // Brush radius
+uniform int u_boundary_mode;   // 0 = Insulated, 1 = Fixed zero temp
+
+void main() {
+    vec2 dx = vec2(1.0 / u_res.x, 0.0);
+    vec2 dy = vec2(0.0, 1.0 / u_res.y);
+    vec2 uv = vTexCoord;
+
+    // Neighbor coordinates
+    vec2 uvL = uv - dx;
+    vec2 uvR = uv + dx;
+    vec2 uvT = uv - dy;
+    vec2 uvB = uv + dy;
+
+    float tC = texture2D(u_temp, uv).r;
+    float tL, tR, tT, tB;
+
+    // Boundary Conditions
+    if (u_boundary_mode == 0) { 
+        // Neumann (Insulated): sample self if out of bounds
+        tL = uvL.x < 0.0 ? tC : texture2D(u_temp, uvL).r;
+        tR = uvR.x > 1.0 ? tC : texture2D(u_temp, uvR).r;
+        tT = uvT.y < 0.0 ? tC : texture2D(u_temp, uvT).r;
+        tB = uvB.y > 1.0 ? tC : texture2D(u_temp, uvB).r;
+    } else { 
+        // Dirichlet (Fixed 0): return 0.0 if out of bounds
+        tL = uvL.x < 0.0 ? 0.0 : texture2D(u_temp, uvL).r;
+        tR = uvR.x > 1.0 ? 0.0 : texture2D(u_temp, uvR).r;
+        tT = uvT.y < 0.0 ? 0.0 : texture2D(u_temp, uvT).r;
+        tB = uvB.y > 1.0 ? 0.0 : texture2D(u_temp, uvB).r;
+    }
+
+    // Material thermal conductivity (mapped from the red channel)
+    float alpha = texture2D(u_mat, uv).r;
+
+    // Discrete Laplacian Operator
+    float laplacian = tL + tR + tT + tB - 4.0 * tC;
+
+    // Heat Equation: T_new = T_current + dt * alpha * Laplacian(T)
+    float tNew = tC + u_dt * alpha * laplacian;
+
+    // Mouse Interaction
+    if (u_mouse_action != 0.0) {
+        vec2 dUV = uv - u_mouse;
+        dUV.x *= u_res.x / u_res.y; // Correct aspect ratio
+        if (length(dUV) < u_brush_size) {
+            tNew += u_mouse_action * 0.08; // Rate of heating/cooling
+        }
+    }
+
+    // Clamp temperature to prevent runaway values
+    tNew = clamp(tNew, 0.0, 1.0);
+    
+    // Output temperature to red channel
+    gl_FragColor = vec4(tNew, 0.0, 0.0, 1.0);
+}
+`;
+
+// Visualization Shader (Maps temperature to colors & draws materials)
+const renderFragShader = `
+precision highp float;
+varying vec2 vTexCoord;
+
+uniform sampler2D u_temp;
+uniform sampler2D u_mat;
+
+// Heatmap palette generator
+vec3 getHeatmap(float t) {
+    t = clamp(t, 0.0, 1.0);
+    // Dark Blue -> Blue -> Cyan -> Yellow -> Orange -> White
+    if(t < 0.2) return mix(vec3(0.01, 0.01, 0.1), vec3(0.0, 0.1, 0.8), t / 0.2);
+    if(t < 0.4) return mix(vec3(0.0, 0.1, 0.8), vec3(0.0, 0.8, 0.8), (t - 0.2) / 0.2);
+    if(t < 0.6) return mix(vec3(0.0, 0.8, 0.8), vec3(1.0, 1.0, 0.0), (t - 0.4) / 0.2);
+    if(t < 0.8) return mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.3, 0.0), (t - 0.6) / 0.2);
+    return mix(vec3(1.0, 0.3, 0.0), vec3(1.0, 1.0, 1.0), (t - 0.8) / 0.2);
+}
+
+void main() {
+    vec2 uv = vTexCoord;
+    float t = texture2D(u_temp, uv).r;
+    float alpha = texture2D(u_mat, uv).r; // Conductivity
+    
+    vec3 col = getHeatmap(t);
+
+    // Render insulators (walls) as dark grey blocks
+    if (alpha < 0.1) {
+        col = vec3(0.15); // Solid wall
+    } else if (alpha < 0.9) {
+        // Blend partial conductivity
+        col = mix(vec3(0.15), col, alpha);
+    }
+
+    gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// --- P5.JS SKETCH ---
+
+let diffuseShader, renderShader;
+let fboA, fboB; // Ping-pong framebuffers for temperature
+let activeFBO = 0;
+let matGraphics; // 2D graphics layer storing thermal conductivity
+
+// UI State
+let brushMode = 'heat';
+let brushSize = 0.05;
+let simSpeed = 15;
+let boundaryMode = 0;
+let mouseOverUI = false;
+
+function setup() {
+    let canvas = createCanvas(windowWidth, windowHeight, WEBGL);
+    canvas.parent('canvas-container');
+    pixelDensity(1); // Crucial for performance, prevents 4x pixel overhead on retina displays
+
+    // Track if mouse is interacting with UI
+    const uiPanel = document.getElementById('ui-panel');
+    uiPanel.addEventListener('mouseenter', () => mouseOverUI = true);
+    uiPanel.addEventListener('mouseleave', () => mouseOverUI = false);
+    uiPanel.addEventListener('touchstart', () => mouseOverUI = true);
+    uiPanel.addEventListener('touchend', () => mouseOverUI = false);
+
+    // Bind UI elements
+    document.getElementById('brush-mode').onchange = (e) => brushMode = e.target.value;
+    document.getElementById('brush-size').oninput = (e) => { brushSize = parseFloat(e.target.value); document.getElementById('val-size').innerText = Math.round(brushSize*100) + '%'; };
+    document.getElementById('sim-speed').oninput = (e) => { simSpeed = parseInt(e.target.value); document.getElementById('val-speed').innerText = simSpeed + 'x'; };
+    document.getElementById('boundary-mode').onchange = (e) => boundaryMode = parseInt(e.target.value);
+    document.getElementById('reset-heat').onclick = resetHeat;
+    document.getElementById('clear-walls').onclick = resetMaterials;
+
+    // Compile Shaders
+    diffuseShader = createShader(vertShader, diffuseFragShader);
+    renderShader = createShader(vertShader, renderFragShader);
+
+    // Initialize high-precision Floating Point buffers for accurate math
+    fboA = createFramebuffer({ format: FLOAT });
+    fboB = createFramebuffer({ format: FLOAT });
+    
+    // Initialize 2D canvas for materials (White = Conductor, Black = Insulator)
+    matGraphics = createGraphics(width, height);
+    resetMaterials();
+    resetHeat();
+}
+
+function draw() {
+    // 1. Handle Material Drawing (Walls / Conductors)
+    if (mouseIsPressed && !mouseOverUI) {
+        if (brushMode === 'wall' || brushMode === 'conductor') {
+            matGraphics.fill(brushMode === 'wall' ? 0 : 255);
+            matGraphics.noStroke();
+            matGraphics.circle(mouseX, mouseY, brushSize * width * 2);
+        }
+    }
+
+    // 2. Determine Heat Action for Shader
+    let mouseAction = 0.0;
+    if (mouseIsPressed && !mouseOverUI) {
+        if (brushMode === 'heat') mouseAction = 1.0;
+        if (brushMode === 'cool') mouseAction = -1.0;
+    }
+
+    // 3. Diffusion Calculation (Substepping for speed/stability)
+    for (let i = 0; i < simSpeed; i++) {
+        let srcFBO = activeFBO === 0 ? fboA : fboB;
+        let dstFBO = activeFBO === 0 ? fboB : fboA;
+
+        dstFBO.begin();
+        clear();
+        shader(diffuseShader);
+        diffuseShader.setUniform('u_temp', srcFBO);
+        diffuseShader.setUniform('u_mat', matGraphics);
+        diffuseShader.setUniform('u_res', [width, height]);
+        diffuseShader.setUniform('u_dt', 0.2); // Physics safe limit
+        // Map mouse: p5 WebGL Y-axis is inverted relative to canvas top-left
+        diffuseShader.setUniform('u_mouse', [mouseX / width, 1.0 - mouseY / height]);
+        
+        // Only apply mouse interaction on the first substep frame to avoid super-fast over-heating
+        diffuseShader.setUniform('u_mouse_action', i === 0 ? mouseAction : 0.0);
+        diffuseShader.setUniform('u_brush_size', brushSize);
+        diffuseShader.setUniform('u_boundary_mode', boundaryMode);
+
+        rect(-width / 2, -height / 2, width, height); // Draw full screen quad
+        dstFBO.end();
+
+        activeFBO = 1 - activeFBO; // Swap
+    }
+
+    // 4. Render Final View to Canvas
+    let finalFBO = activeFBO === 0 ? fboA : fboB;
+    
+    shader(renderShader);
+    renderShader.setUniform('u_temp', finalFBO);
+    renderShader.setUniform('u_mat', matGraphics);
+    rect(-width / 2, -height / 2, width, height);
+}
+
+function resetHeat() {
+    fboA.begin(); clear(); fboA.end();
+    fboB.begin(); clear(); fboB.end();
+    
+    // Inject a starting hotspot
+    let initialHotspot = createGraphics(width, height);
+    initialHotspot.background(0);
+    initialHotspot.noStroke();
+    let grad = initialHotspot.drawingContext.createRadialGradient(width/2, height/2, 0, width/2, height/2, 100);
+    grad.addColorStop(0, 'rgba(255, 0, 0, 1)'); // Red translates to value 1.0 in shader
+    grad.addColorStop(1, 'rgba(0, 0, 0, 1)');
+    initialHotspot.drawingContext.fillStyle = grad;
+    initialHotspot.circle(width/2, height/2, 200);
+
+    // Apply to FBO
+    fboA.begin();
+    imageMode(CENTER);
+    image(initialHotspot, 0, 0, width, height);
+    fboA.end();
+    initialHotspot.remove();
+}
+
+function resetMaterials() {
+    matGraphics.background(255); // Full conductivity everywhere
+    
+    // Draw an initial interesting labyrinth structure
+    matGraphics.fill(0);
+    matGraphics.noStroke();
+    let w = width; let h = height;
+    
+    matGraphics.rect(w * 0.25, h * 0.2, w * 0.02, h * 0.6);
+    matGraphics.rect(w * 0.75, h * 0.2, w * 0.02, h * 0.6);
+    matGraphics.rect(w * 0.45, h * 0.0, w * 0.02, h * 0.4);
+    matGraphics.rect(w * 0.45, h * 0.6, w * 0.02, h * 0.4);
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    matGraphics.resizeCanvas(windowWidth, windowHeight);
+    fboA.resize(windowWidth, windowHeight);
+    fboB.resize(windowWidth, windowHeight);
+    resetMaterials();
+    resetHeat();
+}
+</script>
+</body>
+</html>
