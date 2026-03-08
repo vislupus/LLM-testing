@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Galaxy Formation Simulation</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: rgb(220, 220, 220);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #1d2433;
+    }
+    #ui {
+      position: fixed;
+      top: 14px;
+      left: 14px;
+      z-index: 10;
+      background: rgba(255,255,255,0.72);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 14px;
+      padding: 12px 14px;
+      width: min(360px, calc(100vw - 28px));
+      box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+      user-select: none;
+    }
+    #ui h1 {
+      margin: 0 0 6px;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    #ui p {
+      margin: 4px 0;
+      font-size: 12px;
+      line-height: 1.35;
+      color: #334155;
+    }
+    #stats {
+      margin: 8px 0 10px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px 10px;
+      font-size: 12px;
+    }
+    .stat {
+      background: rgba(255,255,255,0.58);
+      border-radius: 10px;
+      padding: 7px 8px;
+    }
+    .label { font-size: 11px; color: #475569; }
+    .value { font-size: 13px; font-weight: 700; color: #0f172a; }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    button {
+      appearance: none;
+      border: none;
+      border-radius: 10px;
+      padding: 9px 12px;
+      font-weight: 600;
+      background: #0f172a;
+      color: white;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: #e2e8f0;
+      color: #111827;
+    }
+    .footer {
+      margin-top: 8px;
+      opacity: 0.9;
+      font-size: 11px;
+    }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <h1>Protogalaxy Collapse Lab</h1>
+    <p>
+      10,000 particles evolve under mutual gravity, an invisible dark-matter halo,
+      and a central massive core. The system starts as a rotating cloud and self-organizes
+      into a spiral-like galaxy while mergers conserve mass and momentum.
+    </p>
+    <div id="stats">
+      <div class="stat"><div class="label">Particles</div><div class="value" id="statParticles">10,000</div></div>
+      <div class="stat"><div class="label">Merged</div><div class="value" id="statMerged">0</div></div>
+      <div class="stat"><div class="label">Time</div><div class="value" id="statTime">0.0 Myr</div></div>
+      <div class="stat"><div class="label">Mean Radius</div><div class="value" id="statRadius">0</div></div>
+      <div class="stat"><div class="label">Max Speed</div><div class="value" id="statSpeed">0</div></div>
+      <div class="stat"><div class="label">Mode</div><div class="value" id="statMode">Collapsing cloud</div></div>
+    </div>
+    <div class="controls">
+      <button id="resetBtn">Reset Galaxy</button>
+      <button id="pauseBtn" class="secondary">Pause</button>
+    </div>
+    <div class="footer">Keys: <strong>R</strong> reset, <strong>Space</strong> pause/resume</div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+  <script>
+    // ================================
+    // Galaxy formation simulation setup
+    // ================================
+    const PARTICLE_COUNT = 10000;
+    const G = 0.34;               // N-body gravity strength in simulation units
+    const CORE_MASS = 420000;     // Central compact object's mass
+    const HALO_STRENGTH = 6200;   // Dark matter halo contribution to outer support
+    const HALO_SCALE = 240;       // Halo softening scale
+    const SOFTENING = 14;         // Prevents singularities in force calculations
+    const THETA = 0.72;           // Barnes-Hut opening angle
+    const DT = 0.24;              // Time step
+    const MERGE_CELL = 8;         // Spatial hash size for merge tests
+    const FADE_ALPHA = 10;        // Trail persistence on 220 background
+
+    let particles = [];
+    let paused = false;
+    let simTime = 0;
+    let mergedCount = 0;
+    let maxDisplayRadius = 360;
+    let modeLabel = 'Collapsing cloud';
+
+    let statParticles, statMerged, statTime, statRadius, statSpeed, statMode;
+    let center;
+
+    // =====================================
+    // Particle and spatial tree definitions
+    // =====================================
+    class Particle {
+      constructor(x, y, mass, vx, vy, brightnessBias = 0) {
+        this.pos = createVector(x, y);
+        this.vel = createVector(vx, vy);
+        this.acc = createVector(0, 0);
+        this.mass = mass;
+        this.radius = max(1.1, pow(mass, 0.34) * 0.92);
+        this.brightnessBias = brightnessBias;
+        this.alive = true;
+      }
+
+      updateAppearance() {
+        this.radius = max(1.1, pow(this.mass, 0.34) * 0.92);
+      }
+
+      applyCoreAndHalo() {
+        const dx = -this.pos.x;
+        const dy = -this.pos.y;
+        const r2 = dx * dx + dy * dy + SOFTENING * SOFTENING;
+        const r = Math.sqrt(r2);
+
+        // Compact central core / black hole: dominates the inner region.
+        const coreFactor = G * CORE_MASS / (r2 * r);
+        this.acc.x += dx * coreFactor;
+        this.acc.y += dy * coreFactor;
+
+        // Invisible dark-matter halo: supports the outer disk and keeps it bounded.
+        const haloFactor = HALO_STRENGTH / (Math.sqrt(r2 + HALO_SCALE * HALO_SCALE) * r);
+        this.acc.x += dx * haloFactor;
+        this.acc.y += dy * haloFactor;
+      }
+
+      integrate() {
+        this.vel.x += this.acc.x * DT;
+        this.vel.y += this.acc.y * DT;
+
+        // Mild numerical damping stabilizes the outermost particles without hiding the dynamics.
+        this.vel.mult(0.9996);
+
+        this.pos.x += this.vel.x * DT;
+        this.pos.y += this.vel.y * DT;
+        this.acc.set(0, 0);
+      }
+
+      draw() {
+        const speed = this.vel.mag();
+        const luminance = constrain(45 + this.brightnessBias + this.mass * 9 + speed * 25, 40, 255);
+        const alpha = constrain(36 + this.mass * 14 + speed * 14, 40, 180);
+        fill(luminance * 0.52, luminance * 0.58, luminance * 0.78, alpha);
+        circle(center.x + this.pos.x, center.y + this.pos.y, this.radius * 2.0);
+
+        if (this.mass > 4.5) {
+          fill(255, 255, 255, min(140, alpha + 15));
+          circle(center.x + this.pos.x, center.y + this.pos.y, this.radius * 0.9);
+        }
+      }
+    }
+
+    class QuadNode {
+      constructor(x, y, size, depth = 0) {
+        this.x = x;
+        this.y = y;
+        this.size = size;
+        this.depth = depth;
+        this.children = null;
+        this.points = [];
+        this.mass = 0;
+        this.comX = 0;
+        this.comY = 0;
+      }
+
+      contains(p) {
+        return (
+          p.pos.x >= this.x && p.pos.x < this.x + this.size &&
+          p.pos.y >= this.y && p.pos.y < this.y + this.size
+        );
+      }
+
+      subdivide() {
+        const h = this.size * 0.5;
+        const d = this.depth + 1;
+        this.children = [
+          new QuadNode(this.x, this.y, h, d),
+          new QuadNode(this.x + h, this.y, h, d),
+          new QuadNode(this.x, this.y + h, h, d),
+          new QuadNode(this.x + h, this.y + h, h, d)
+        ];
+      }
+
+      insert(p) {
+        if (!this.contains(p)) return false;
+
+        if (!this.children && (this.points.length < 4 || this.depth > 11)) {
+          this.points.push(p);
+          return true;
+        }
+
+        if (!this.children) {
+          this.subdivide();
+          const old = this.points;
+          this.points = [];
+          for (let i = 0; i < old.length; i++) this._insertIntoChildren(old[i]);
+        }
+        return this._insertIntoChildren(p);
+      }
+
+      _insertIntoChildren(p) {
+        for (let i = 0; i < 4; i++) {
+          if (this.children[i].insert(p)) return true;
+        }
+        return false;
+      }
+
+      finalize() {
+        if (!this.children) {
+          if (this.points.length === 0) {
+            this.mass = 0;
+            this.comX = 0;
+            this.comY = 0;
+            return;
+          }
+          let total = 0;
+          let sx = 0;
+          let sy = 0;
+          for (let i = 0; i < this.points.length; i++) {
+            const p = this.points[i];
+            total += p.mass;
+            sx += p.pos.x * p.mass;
+            sy += p.pos.y * p.mass;
+          }
+          this.mass = total;
+          this.comX = sx / total;
+          this.comY = sy / total;
+          return;
+        }
+
+        let total = 0;
+        let sx = 0;
+        let sy = 0;
+        for (let i = 0; i < 4; i++) {
+          const child = this.children[i];
+          child.finalize();
+          if (child.mass > 0) {
+            total += child.mass;
+            sx += child.comX * child.mass;
+            sy += child.comY * child.mass;
+          }
+        }
+        this.mass = total;
+        if (total > 0) {
+          this.comX = sx / total;
+          this.comY = sy / total;
+        }
+      }
+
+      applyForce(target) {
+        if (this.mass === 0) return;
+
+        if (!this.children) {
+          for (let i = 0; i < this.points.length; i++) {
+            const p = this.points[i];
+            if (p === target || !p.alive) continue;
+            const dx = p.pos.x - target.pos.x;
+            const dy = p.pos.y - target.pos.y;
+            const distSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
+            const dist = Math.sqrt(distSq);
+            const factor = G * p.mass / (distSq * dist);
+            target.acc.x += dx * factor;
+            target.acc.y += dy * factor;
+          }
+          return;
+        }
+
+        const dx = this.comX - target.pos.x;
+        const dy = this.comY - target.pos.y;
+        const distSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
+        const dist = Math.sqrt(distSq);
+
+        if ((this.size / dist) < THETA) {
+          const factor = G * this.mass / (distSq * dist);
+          target.acc.x += dx * factor;
+          target.acc.y += dy * factor;
+          return;
+        }
+
+        for (let i = 0; i < 4; i++) this.children[i].applyForce(target);
+      }
+    }
+
+    // ====================================
+    // p5.js lifecycle and simulation loop
+    // ====================================
+    function setup() {
+      createCanvas(windowWidth, windowHeight);
+      pixelDensity(1);
+      noStroke();
+      center = createVector(width * 0.56, height * 0.53);
+
+      statParticles = document.getElementById('statParticles');
+      statMerged = document.getElementById('statMerged');
+      statTime = document.getElementById('statTime');
+      statRadius = document.getElementById('statRadius');
+      statSpeed = document.getElementById('statSpeed');
+      statMode = document.getElementById('statMode');
+
+      document.getElementById('resetBtn').addEventListener('click', initGalaxy);
+      document.getElementById('pauseBtn').addEventListener('click', togglePause);
+
+      initGalaxy();
+    }
+
+    function initGalaxy() {
+      particles = [];
+      simTime = 0;
+      mergedCount = 0;
+      modeLabel = 'Collapsing cloud';
+      background(220);
+
+      // The cloud begins slightly clumpy so gravity and differential rotation stretch it into arms.
+      const cloudRadius = min(width, height) * 0.28;
+      const majorScale = cloudRadius * 1.08;
+      const minorScale = cloudRadius * 0.72;
+      const clumpCount = 6;
+      const clumps = [];
+      for (let i = 0; i < clumpCount; i++) {
+        const a = (TWO_PI * i) / clumpCount + random(-0.18, 0.18);
+        const r = random(cloudRadius * 0.15, cloudRadius * 0.45);
+        clumps.push(createVector(cos(a) * r, sin(a) * r));
+      }
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        let pos;
+        if (random() < 0.68) {
+          // Broad rotating cloud.
+          const theta = random(TWO_PI);
+          const rr = cloudRadius * pow(random(), 1.55);
+          pos = createVector(cos(theta) * rr * random(0.88, 1.12), sin(theta) * rr * random(0.7, 1.18));
+          pos.x *= majorScale / cloudRadius;
+          pos.y *= minorScale / cloudRadius;
+        } else {
+          // Denser knots that later shear into spiral structure.
+          const c = random(clumps);
+          pos = p5.Vector.add(c, createVector(randomGaussian() * cloudRadius * 0.08, randomGaussian() * cloudRadius * 0.08));
+        }
+
+        const r = max(8, pos.mag());
+        const tangent = createVector(-pos.y, pos.x).normalize();
+
+        // Differential rotation with under-support so the cloud still collapses inward.
+        const enclosedCore = CORE_MASS * 0.25 + HALO_STRENGTH * r * 2.2;
+        const circular = sqrt((G * enclosedCore) / (r + 6));
+        const swirl = circular * random(0.72, 1.08);
+        const inward = createVector(pos.x, pos.y).normalize().mult(random(-0.42, -0.06));
+        const turbulence = p5.Vector.random2D().mult(random(0.02, 0.24));
+        const vel = tangent.mult(swirl).add(inward).add(turbulence);
+
+        const mass = random() < 0.045 ? random(2.2, 4.6) : random(0.7, 1.8);
+        particles.push(new Particle(pos.x, pos.y, mass, vel.x, vel.y, random(-10, 18)));
+      }
+
+      updateStats();
+    }
+
+    function draw() {
+      noStroke();
+      fill(220, 220, 220, FADE_ALPHA);
+      rect(0, 0, width, height);
+
+      if (!paused) {
+        stepSimulation();
+      }
+
+      drawGalaxy();
+      updateStats();
+    }
+
+    function stepSimulation() {
+      simTime += DT;
+      if (simTime > 1300) modeLabel = 'Settling spiral';
+      else if (simTime > 400) modeLabel = 'Disk forming';
+
+      // Build quadtree over a square simulation domain centered on the galaxy.
+      const half = max(width, height) * 0.6;
+      const tree = new QuadNode(-half, -half, half * 2);
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        if (p.alive) tree.insert(p);
+      }
+      tree.finalize();
+
+      // Compute accelerations, integrate, then handle local mergers.
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        if (!p.alive) continue;
+        tree.applyForce(p);
+        p.applyCoreAndHalo();
+      }
+
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        if (!p.alive) continue;
+        p.integrate();
+      }
+
+      if (frameCount % 2 === 0) resolveMerges();
+    }
+
+    function resolveMerges() {
+      const grid = new Map();
+
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        if (!p.alive) continue;
+        const gx = floor(p.pos.x / MERGE_CELL);
+        const gy = floor(p.pos.y / MERGE_CELL);
+        const key = gx + ',' + gy;
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(i);
+      }
+
+      const neighborOffsets = [
+        [0, 0], [1, 0], [0, 1], [1, 1], [-1, 1]
+      ];
+
+      for (const [key, indices] of grid.entries()) {
+        const parts = key.split(',');
+        const gx = parseInt(parts[0], 10);
+        const gy = parseInt(parts[1], 10);
+
+        for (let n = 0; n < neighborOffsets.length; n++) {
+          const ox = neighborOffsets[n][0];
+          const oy = neighborOffsets[n][1];
+          const other = grid.get((gx + ox) + ',' + (gy + oy));
+          if (!other) continue;
+
+          for (let a = 0; a < indices.length; a++) {
+            const i = indices[a];
+            const p = particles[i];
+            if (!p || !p.alive) continue;
+
+            const startB = (ox === 0 && oy === 0) ? a + 1 : 0;
+            for (let b = startB; b < other.length; b++) {
+              const j = other[b];
+              const q = particles[j];
+              if (!q || !q.alive) continue;
+
+              const dx = q.pos.x - p.pos.x;
+              const dy = q.pos.y - p.pos.y;
+              const rr = (p.radius + q.radius) * 0.72;
+              const distSq = dx * dx + dy * dy;
+              if (distSq > rr * rr) continue;
+
+              const dvx = q.vel.x - p.vel.x;
+              const dvy = q.vel.y - p.vel.y;
+              const relSpeedSq = dvx * dvx + dvy * dvy;
+              const localEscape = 0.9 + 0.25 * (p.mass + q.mass);
+              if (relSpeedSq > localEscape * localEscape) continue;
+
+              mergeParticles(p.mass >= q.mass ? p : q, p.mass >= q.mass ? q : p);
+            }
+          }
+        }
+      }
+
+      if (mergedCount > 0) {
+        particles = particles.filter(p => p.alive);
+      }
+    }
+
+    function mergeParticles(big, small) {
+      if (!big.alive || !small.alive) return;
+      const totalMass = big.mass + small.mass;
+      if (totalMass <= 0) return;
+
+      big.pos.x = (big.pos.x * big.mass + small.pos.x * small.mass) / totalMass;
+      big.pos.y = (big.pos.y * big.mass + small.pos.y * small.mass) / totalMass;
+      big.vel.x = (big.vel.x * big.mass + small.vel.x * small.mass) / totalMass;
+      big.vel.y = (big.vel.y * big.mass + small.vel.y * small.mass) / totalMass;
+      big.mass = totalMass;
+      big.brightnessBias += 10;
+      big.updateAppearance();
+      small.alive = false;
+      mergedCount++;
+    }
+
+    function drawGalaxy() {
+      // Dark matter halo suggestion as a soft vignette-like disk.
+      fill(180, 192, 220, 9);
+      circle(center.x, center.y, maxDisplayRadius * 2.8);
+
+      // Draw all particles as simple circles with varying sizes and brightness.
+      let meanRadius = 0;
+      let maxSpeed = 0;
+      let maxR = 0;
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        if (!p.alive) continue;
+        const r = p.pos.mag();
+        meanRadius += r;
+        if (r > maxR) maxR = r;
+        const speed = p.vel.mag();
+        if (speed > maxSpeed) maxSpeed = speed;
+        p.draw();
+      }
+      maxDisplayRadius = lerp(maxDisplayRadius, max(260, maxR * 1.08), 0.08);
+
+      // Central massive core / black hole.
+      fill(26, 28, 36, 220);
+      circle(center.x, center.y, 16);
+      fill(70, 92, 160, 24);
+      circle(center.x, center.y, 52);
+      fill(255, 255, 255, 70);
+      circle(center.x + 2, center.y - 2, 4);
+
+      statRadius.dataset.value = particles.length ? (meanRadius / particles.length).toFixed(1) : '0';
+      statSpeed.dataset.value = maxSpeed.toFixed(2);
+    }
+
+    function updateStats() {
+      statParticles.textContent = particles.length.toLocaleString();
+      statMerged.textContent = mergedCount.toLocaleString();
+      statTime.textContent = (simTime * 0.35).toFixed(1) + ' Myr';
+      statRadius.textContent = (statRadius.dataset.value || '0') + ' px';
+      statSpeed.textContent = (statSpeed.dataset.value || '0') + ' u/t';
+      statMode.textContent = modeLabel;
+    }
+
+    function togglePause() {
+      paused = !paused;
+      document.getElementById('pauseBtn').textContent = paused ? 'Resume' : 'Pause';
+    }
+
+    function keyPressed() {
+      if (key === 'r' || key === 'R') initGalaxy();
+      if (keyCode === 32) {
+        togglePause();
+        return false;
+      }
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+      center.set(width * 0.56, height * 0.53);
+      background(220);
+    }
+  </script>
+</body>
+</html>

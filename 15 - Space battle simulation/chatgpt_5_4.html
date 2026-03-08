@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Babylon.js Space Battle</title>
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #02030a; font-family: Inter, Segoe UI, Arial, sans-serif; }
+    #renderCanvas { width: 100%; height: 100%; touch-action: none; display: block; }
+    #hud {
+      position: absolute; inset: 0; pointer-events: none; color: #eef4ff;
+      background: radial-gradient(circle at top, rgba(255,255,255,0.03), transparent 42%);
+    }
+    .panel {
+      position: absolute; pointer-events: auto; backdrop-filter: blur(10px);
+      background: rgba(7, 12, 22, 0.54); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 16px; box-shadow: 0 20px 40px rgba(0,0,0,0.35);
+    }
+    #info { top: 18px; left: 18px; padding: 14px 16px; min-width: 250px; }
+    #info h1 { margin: 0 0 8px; font-size: 18px; font-weight: 700; letter-spacing: 0.3px; }
+    #info .row { display: flex; justify-content: space-between; gap: 16px; margin: 6px 0; font-size: 13px; }
+    #info .tag { opacity: 0.78; }
+    #info .value { font-weight: 700; }
+    #legend { right: 18px; top: 18px; padding: 12px 14px; max-width: 260px; }
+    #legend h2 { margin: 0 0 6px; font-size: 15px; }
+    #legend p { margin: 4px 0; font-size: 12px; line-height: 1.45; color: #dce6ff; opacity: 0.92; }
+    #legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 99px; margin-right: 6px; }
+    #endScreen {
+      position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+      background: rgba(3, 5, 12, 0.62); pointer-events: auto;
+    }
+    #endCard { width: min(92vw, 420px); text-align: center; padding: 28px; }
+    #endCard h2 { margin: 0 0 10px; font-size: 30px; }
+    #endCard p { margin: 0 0 18px; opacity: 0.9; line-height: 1.5; }
+    button {
+      appearance: none; border: 0; border-radius: 12px; padding: 12px 18px; cursor: pointer;
+      color: white; font-weight: 700; background: linear-gradient(135deg, #4b8dff, #7f53ff);
+      box-shadow: 0 10px 24px rgba(73, 109, 255, 0.35);
+    }
+    .blue { color: #88cfff; }
+    .red { color: #ff9c9c; }
+  </style>
+</head>
+<body>
+  <canvas id="renderCanvas"></canvas>
+  <div id="hud">
+    <div id="info" class="panel">
+      <h1>Fleet Clash: Twin Armadas</h1>
+      <div class="row"><span class="tag">Blue fleet</span><span class="value blue" id="blueCount">10 ships</span></div>
+      <div class="row"><span class="tag">Red fleet</span><span class="value red" id="redCount">10 ships</span></div>
+      <div class="row"><span class="tag">Projectiles</span><span class="value" id="shotCount">0</span></div>
+      <div class="row"><span class="tag">Elapsed</span><span class="value" id="timeCount">0.0s</span></div>
+    </div>
+    <div id="legend" class="panel">
+      <h2>Scene details</h2>
+      <p><span class="swatch" style="background:#68bbff"></span>Blue fleet fires bright blue plasma bolts.</p>
+      <p><span class="swatch" style="background:#ff6168"></span>Red fleet fires bright red plasma bolts.</p>
+      <p>Flagships launch two shots at once every 3 seconds. Escort ships fire one shot every 3 seconds.</p>
+      <p>Ships maneuver in full 3D, health bars hover above hulls, and nearby explosions can trigger chain-reaction detonations.</p>
+      <p>Drag to orbit, wheel to zoom, right-drag to pan.</p>
+    </div>
+    <div id="endScreen">
+      <div id="endCard" class="panel">
+        <h2 id="endTitle">Victory</h2>
+        <p id="endText"></p>
+        <button id="restartBtn">Restart Battle</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script>
+  (() => {
+    const canvas = document.getElementById('renderCanvas');
+    const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true, disableWebGL2Support: false });
+    const ui = {
+      blueCount: document.getElementById('blueCount'),
+      redCount: document.getElementById('redCount'),
+      shotCount: document.getElementById('shotCount'),
+      timeCount: document.getElementById('timeCount'),
+      endScreen: document.getElementById('endScreen'),
+      endTitle: document.getElementById('endTitle'),
+      endText: document.getElementById('endText'),
+      restartBtn: document.getElementById('restartBtn')
+    };
+
+    const CONFIG = {
+      fieldRadius: 82,
+      shipSpacing: 7,
+      fireInterval: 3,
+      projectileSpeed: 40,
+      escortHealth: 100,
+      flagshipHealth: 260,
+      escortDamage: 20,
+      flagshipDamage: 26,
+      chainReactionFactor: 1.15,
+      battleHeight: 22
+    };
+
+    let scene, camera;
+    let ships = [];
+    let projectiles = [];
+    let explosions = [];
+    let starTwinkles = [];
+    let battleEnded = false;
+    let elapsed = 0;
+
+    function rand(min, max) { return min + Math.random() * (max - min); }
+    function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+    function randomVector() { return new BABYLON.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)); }
+
+    function createScene() {
+      scene = new BABYLON.Scene(engine);
+      scene.clearColor = new BABYLON.Color4(0.01, 0.015, 0.04, 1);
+      scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
+      scene.fogDensity = 0.0016;
+      scene.fogColor = new BABYLON.Color3(0.01, 0.015, 0.04);
+
+      camera = new BABYLON.ArcRotateCamera('cam', -Math.PI / 2, 1.08, 170, BABYLON.Vector3.Zero(), scene);
+      camera.lowerRadiusLimit = 60;
+      camera.upperRadiusLimit = 250;
+      camera.wheelDeltaPercentage = 0.01;
+      camera.panningSensibility = 60;
+      camera.attachControl(canvas, true);
+
+      const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0.25, 1, 0.1), scene);
+      hemi.intensity = 0.55;
+      hemi.groundColor = new BABYLON.Color3(0.02, 0.03, 0.05);
+
+      const sun = new BABYLON.DirectionalLight('sun', new BABYLON.Vector3(-0.2, -1, 0.35), scene);
+      sun.position = new BABYLON.Vector3(40, 100, -80);
+      sun.intensity = 1.1;
+
+      createSpaceBackdrop();
+      createFleets();
+
+      scene.onBeforeRenderObservable.add(() => {
+        const dt = Math.min(engine.getDeltaTime() / 1000, 0.033);
+        elapsed += dt;
+        updateStarTwinkles(elapsed);
+        if (!battleEnded) {
+          updateShips(dt, elapsed);
+          updateProjectiles(dt);
+          updateExplosions(dt);
+          updateUI();
+          checkBattleEnd();
+        } else {
+          updateExplosions(dt);
+          updateProjectiles(dt);
+          updateStarTwinkles(elapsed);
+        }
+      });
+
+      return scene;
+    }
+
+    function createSpaceBackdrop() {
+      const sky = BABYLON.MeshBuilder.CreateSphere('sky', { diameter: 900, sideOrientation: BABYLON.Mesh.BACKSIDE }, scene);
+      const texSize = 2048;
+      const nebulaTex = new BABYLON.DynamicTexture('nebula', { width: texSize, height: texSize }, scene, false);
+      const ctx = nebulaTex.getContext();
+      const g = ctx.createRadialGradient(texSize * 0.36, texSize * 0.4, 30, texSize * 0.36, texSize * 0.4, texSize * 0.65);
+      g.addColorStop(0, '#1d1548');
+      g.addColorStop(0.4, '#0f163b');
+      g.addColorStop(1, '#03050d');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, texSize, texSize);
+
+      for (let i = 0; i < 9; i++) {
+        const cx = rand(0, texSize);
+        const cy = rand(0, texSize);
+        const r = rand(120, 320);
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+        const hue = pick([[105,140,255], [80,190,255], [186,102,255], [255,97,160], [95,255,223]]);
+        grad.addColorStop(0, `rgba(${hue[0]}, ${hue[1]}, ${hue[2]}, 0.22)`);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+
+      for (let i = 0; i < 2400; i++) {
+        const x = rand(0, texSize);
+        const y = rand(0, texSize);
+        const s = Math.random() < 0.92 ? rand(0.7, 1.8) : rand(2, 4.2);
+        const a = rand(0.35, 1);
+        ctx.fillStyle = `rgba(255,255,255,${a})`;
+        ctx.beginPath();
+        ctx.arc(x, y, s, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      nebulaTex.update();
+
+      const skyMat = new BABYLON.StandardMaterial('skyMat', scene);
+      skyMat.disableLighting = true;
+      skyMat.backFaceCulling = false;
+      skyMat.diffuseTexture = nebulaTex;
+      skyMat.emissiveTexture = nebulaTex;
+      sky.material = skyMat;
+
+      // Extra twinkling stars near the battlefield for parallax.
+      const starMat = new BABYLON.StandardMaterial('starMat', scene);
+      starMat.disableLighting = true;
+      starMat.emissiveColor = new BABYLON.Color3(0.95, 0.97, 1);
+      for (let i = 0; i < 180; i++) {
+        const star = BABYLON.MeshBuilder.CreateSphere('star' + i, { diameter: rand(0.08, 0.22), segments: 4 }, scene);
+        const dir = randomVector();
+        dir.normalize();
+        star.position = dir.scale(rand(120, 240));
+        star.material = starMat;
+        star.isPickable = false;
+        starTwinkles.push({ mesh: star, base: rand(0.25, 0.85), speed: rand(0.8, 2.5), phase: rand(0, Math.PI * 2) });
+      }
+    }
+
+    function updateStarTwinkles(t) {
+      for (const s of starTwinkles) {
+        const scale = s.base + Math.sin(t * s.speed + s.phase) * 0.18;
+        s.mesh.scaling.setAll(Math.max(0.15, scale));
+      }
+    }
+
+    function teamPalette(team) {
+      if (team === 'blue') {
+        return {
+          hull: new BABYLON.Color3(0.22, 0.38, 0.64),
+          trim: new BABYLON.Color3(0.68, 0.86, 1.0),
+          glow: new BABYLON.Color3(0.34, 0.78, 1.0),
+          projectile: new BABYLON.Color3(0.32, 0.78, 1.0),
+          engine: new BABYLON.Color3(0.35, 0.88, 1.0)
+        };
+      }
+      return {
+        hull: new BABYLON.Color3(0.56, 0.18, 0.2),
+        trim: new BABYLON.Color3(1.0, 0.82, 0.82),
+        glow: new BABYLON.Color3(1.0, 0.34, 0.38),
+        projectile: new BABYLON.Color3(1.0, 0.28, 0.32),
+        engine: new BABYLON.Color3(1.0, 0.45, 0.22)
+      };
+    }
+
+    function makeMaterial(name, diffuse, emissive, specular = 0.25) {
+      const mat = new BABYLON.StandardMaterial(name, scene);
+      mat.diffuseColor = diffuse.clone();
+      mat.emissiveColor = emissive ? emissive.clone() : diffuse.scale(0.18);
+      mat.specularColor = new BABYLON.Color3(specular, specular, specular);
+      return mat;
+    }
+
+    function createShip(team, isFlagship, position, index) {
+      const palette = teamPalette(team);
+      const root = new BABYLON.TransformNode(team + '_ship_' + index, scene);
+      root.position.copyFrom(position);
+      root.rotationQuaternion = BABYLON.Quaternion.Identity();
+      const scale = isFlagship ? 1.95 : 1.1;
+      root.scaling = new BABYLON.Vector3(scale, scale, scale);
+
+      const hullMat = makeMaterial(`${team}_hull_${index}`, palette.hull, palette.hull.scale(0.12), 0.18);
+      const trimMat = makeMaterial(`${team}_trim_${index}`, palette.trim.scale(0.75), palette.glow.scale(0.12), 0.08);
+      const engineMat = makeMaterial(`${team}_engine_${index}`, palette.engine.scale(0.55), palette.engine, 0);
+      const darkMat = makeMaterial(`${team}_dark_${index}`, new BABYLON.Color3(0.1, 0.12, 0.16), new BABYLON.Color3(0.02, 0.02, 0.03), 0.02);
+
+      const body = BABYLON.MeshBuilder.CreateBox(`body_${index}`, { width: isFlagship ? 4.2 : 3.1, height: isFlagship ? 0.9 : 0.62, depth: isFlagship ? 9.8 : 6.2 }, scene);
+      body.parent = root; body.material = hullMat;
+
+      const nose = BABYLON.MeshBuilder.CreateCylinder(`nose_${index}`, { height: isFlagship ? 2.6 : 1.7, diameterTop: 0.1, diameterBottom: isFlagship ? 2.0 : 1.25, tessellation: 4 }, scene);
+      nose.rotation.x = Math.PI / 2; nose.position.z = isFlagship ? 6.1 : 3.95; nose.parent = root; nose.material = trimMat;
+
+      const bridge = BABYLON.MeshBuilder.CreateBox(`bridge_${index}`, { width: isFlagship ? 1.5 : 1.05, height: isFlagship ? 1.25 : 0.85, depth: isFlagship ? 2.2 : 1.3 }, scene);
+      bridge.position.y = isFlagship ? 0.92 : 0.65; bridge.position.z = isFlagship ? 0.2 : 0.1; bridge.parent = root; bridge.material = trimMat;
+
+      const fin = BABYLON.MeshBuilder.CreateBox(`fin_${index}`, { width: 0.35, height: isFlagship ? 2.1 : 1.2, depth: isFlagship ? 2.5 : 1.5 }, scene);
+      fin.position.y = isFlagship ? 1.55 : 1.0; fin.position.z = isFlagship ? -1.4 : -0.8; fin.parent = root; fin.material = darkMat;
+
+      const wingSpread = isFlagship ? 3.35 : 2.05;
+      const wingDepth = isFlagship ? 4.6 : 2.7;
+      for (const side of [-1, 1]) {
+        const wing = BABYLON.MeshBuilder.CreateBox(`wing_${index}_${side}`, { width: isFlagship ? 2.8 : 1.6, height: 0.18, depth: wingDepth }, scene);
+        wing.position.x = side * wingSpread;
+        wing.position.y = isFlagship ? -0.08 : -0.04;
+        wing.position.z = isFlagship ? -0.15 : -0.1;
+        wing.rotation.z = side * 0.22;
+        wing.parent = root;
+        wing.material = hullMat;
+
+        const pod = BABYLON.MeshBuilder.CreateCylinder(`pod_${index}_${side}`, { height: isFlagship ? 2.2 : 1.3, diameter: isFlagship ? 0.6 : 0.42, tessellation: 10 }, scene);
+        pod.rotation.z = Math.PI / 2;
+        pod.position.x = side * (wingSpread + (isFlagship ? 1.55 : 0.9));
+        pod.position.y = -0.14;
+        pod.position.z = isFlagship ? -2.0 : -1.3;
+        pod.parent = root;
+        pod.material = darkMat;
+
+        if (isFlagship) {
+          const turret = BABYLON.MeshBuilder.CreateBox(`turret_${index}_${side}`, { width: 0.35, height: 0.35, depth: 1.2 }, scene);
+          turret.position.x = side * 1.3;
+          turret.position.y = 0.55;
+          turret.position.z = 2.0;
+          turret.parent = root;
+          turret.material = trimMat;
+        }
+      }
+
+      const engineLight = new BABYLON.PointLight(`thruster_${index}`, new BABYLON.Vector3(0, 0, isFlagship ? -5.7 : -3.7), scene);
+      engineLight.parent = root;
+      engineLight.diffuse = palette.engine.clone();
+      engineLight.specular = palette.engine.clone();
+      engineLight.intensity = isFlagship ? 22 : 12;
+      engineLight.range = isFlagship ? 18 : 12;
+
+      const thrusterGlow = BABYLON.MeshBuilder.CreateSphere(`thrusterGlow_${index}`, { diameter: isFlagship ? 1.1 : 0.72, segments: 10 }, scene);
+      thrusterGlow.parent = root;
+      thrusterGlow.position.z = isFlagship ? -5.4 : -3.55;
+      thrusterGlow.position.y = -0.02;
+      thrusterGlow.material = engineMat;
+
+      const ship = {
+        id: `${team}_${index}`,
+        team,
+        isFlagship,
+        node: root,
+        body,
+        thrusterGlow,
+        engineLight,
+        maxHealth: isFlagship ? CONFIG.flagshipHealth : CONFIG.escortHealth,
+        health: isFlagship ? CONFIG.flagshipHealth : CONFIG.escortHealth,
+        damage: isFlagship ? CONFIG.flagshipDamage : CONFIG.escortDamage,
+        fireCooldown: rand(0, CONFIG.fireInterval),
+        moveSpeed: isFlagship ? 8.5 : 10.5,
+        accel: isFlagship ? 7.5 : 9.5,
+        velocity: BABYLON.Vector3.Zero(),
+        alive: true,
+        size: isFlagship ? 5.8 : 3.5,
+        aiPhase: rand(0, Math.PI * 2),
+        separationSeed: rand(0, Math.PI * 2),
+        hp: null
+      };
+      ship.hp = createHealthBar(ship);
+      return ship;
+    }
+
+    function createHealthBar(ship) {
+      const holder = BABYLON.MeshBuilder.CreatePlane(`hpHolder_${ship.id}`, { width: ship.isFlagship ? 4.6 : 3.0, height: 0.38 }, scene);
+      holder.parent = ship.node;
+      holder.position = new BABYLON.Vector3(0, ship.isFlagship ? 4.2 : 3.1, 0);
+      holder.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_ALL;
+      const bgMat = new BABYLON.StandardMaterial(`hpBgMat_${ship.id}`, scene);
+      bgMat.disableLighting = true;
+      bgMat.emissiveColor = new BABYLON.Color3(0.04, 0.05, 0.06);
+      bgMat.alpha = 0.95;
+      holder.material = bgMat;
+
+      const fill = BABYLON.MeshBuilder.CreatePlane(`hpFill_${ship.id}`, { width: ship.isFlagship ? 4.38 : 2.8, height: 0.24 }, scene);
+      fill.parent = holder;
+      fill.position.z = -0.01;
+      const fillMat = new BABYLON.StandardMaterial(`hpFillMat_${ship.id}`, scene);
+      fillMat.disableLighting = true;
+      fillMat.emissiveColor = new BABYLON.Color3(0.25, 1, 0.45);
+      fill.material = fillMat;
+      return { holder, bg: holder, fill, fillMat, width: ship.isFlagship ? 4.38 : 2.8 };
+    }
+
+    function updateHealthBar(ship) {
+      const ratio = clamp(ship.health / ship.maxHealth, 0, 1);
+      ship.hp.fill.scaling.x = ratio;
+      ship.hp.fill.position.x = -(ship.hp.width * (1 - ratio)) / 2;
+      ship.hp.fillMat.emissiveColor = BABYLON.Color3.Lerp(new BABYLON.Color3(1, 0.18, 0.2), new BABYLON.Color3(0.22, 0.95, 0.4), ratio);
+      ship.hp.holder.setEnabled(ship.alive);
+    }
+
+    function formationPositions(team) {
+      const side = team === 'blue' ? -1 : 1;
+      return [
+        new BABYLON.Vector3(side * 45, 0, 0),
+        new BABYLON.Vector3(side * 56, 5, -9),
+        new BABYLON.Vector3(side * 56, -6, 9),
+        new BABYLON.Vector3(side * 63, 10, 0),
+        new BABYLON.Vector3(side * 63, -11, 0),
+        new BABYLON.Vector3(side * 70, 7, -14),
+        new BABYLON.Vector3(side * 70, -8, 14),
+        new BABYLON.Vector3(side * 74, 13, 10),
+        new BABYLON.Vector3(side * 74, -14, -10),
+        new BABYLON.Vector3(side * 66, 0, 18)
+      ];
+    }
+
+    function createFleets() {
+      ships = [];
+      const bluePositions = formationPositions('blue');
+      const redPositions = formationPositions('red');
+      for (let i = 0; i < 10; i++) {
+        const blue = createShip('blue', i === 0, bluePositions[i], i);
+        const red = createShip('red', i === 0, redPositions[i], i);
+        ships.push(blue, red);
+      }
+      for (const ship of ships) {
+        ship.node.lookAt(ship.team === 'blue' ? new BABYLON.Vector3(40, 0, 0) : new BABYLON.Vector3(-40, 0, 0));
+        ship.node.rotate(BABYLON.Axis.Y, Math.PI, BABYLON.Space.LOCAL);
+        updateHealthBar(ship);
+      }
+    }
+
+    function aliveShips(team) {
+      return ships.filter(s => s.alive && (!team || s.team === team));
+    }
+
+    function nearestEnemy(ship) {
+      let best = null;
+      let bestD = Infinity;
+      for (const other of ships) {
+        if (!other.alive || other.team === ship.team) continue;
+        const d = BABYLON.Vector3.DistanceSquared(ship.node.position, other.node.position);
+        if (d < bestD) { bestD = d; best = other; }
+      }
+      return best;
+    }
+
+    function steerShip(ship, dt, t) {
+      if (!ship.alive) return;
+      const target = nearestEnemy(ship);
+      if (!target) return;
+
+      const pos = ship.node.position;
+      const toTarget = target.node.position.subtract(pos);
+      const distance = Math.max(0.001, toTarget.length());
+      const dirToTarget = toTarget.scale(1 / distance);
+
+      const swirl = BABYLON.Vector3.Cross(dirToTarget, BABYLON.Axis.Y);
+      if (swirl.lengthSquared() < 0.001) swirl.copyFromFloats(1, 0, 0);
+      swirl.normalize();
+      const vertical = new BABYLON.Vector3(0, Math.sin(t * 0.8 + ship.aiPhase) * 0.45, 0);
+      const strafe = swirl.scale(Math.sin(t * 0.65 + ship.aiPhase) * (ship.isFlagship ? 0.8 : 1.2));
+      let desired = dirToTarget.add(strafe).add(vertical);
+
+      // Keep ships in the combat arena.
+      const centerPull = pos.scale(-1 / Math.max(CONFIG.fieldRadius, pos.length()));
+      if (pos.length() > CONFIG.fieldRadius) desired = desired.add(centerPull.scale(2.8));
+      if (Math.abs(pos.y) > CONFIG.battleHeight) desired.y += (-Math.sign(pos.y) * 0.9);
+
+      // Separation from nearby ships.
+      let avoid = BABYLON.Vector3.Zero();
+      for (const other of ships) {
+        if (!other.alive || other === ship) continue;
+        const delta = pos.subtract(other.node.position);
+        const d2 = delta.lengthSquared();
+        const minD = (ship.size + other.size) * 0.75;
+        if (d2 > 0.001 && d2 < minD * minD) {
+          avoid = avoid.add(delta.normalize().scale((minD / Math.sqrt(d2)) * 2.4));
+        }
+      }
+      desired = desired.add(avoid);
+      desired.normalize();
+
+      const desiredVelocity = desired.scale(ship.moveSpeed * (distance < 20 ? 0.8 : 1));
+      ship.velocity = BABYLON.Vector3.Lerp(ship.velocity, desiredVelocity, clamp(ship.accel * dt * 0.35, 0, 1));
+      pos.addInPlace(ship.velocity.scale(dt));
+
+      const lookAhead = pos.add(ship.velocity.scale(0.8));
+      const upDrift = new BABYLON.Vector3(0, 1, 0).add(new BABYLON.Vector3(Math.sin(t + ship.aiPhase) * 0.05, 0, Math.cos(t + ship.aiPhase) * 0.05));
+      ship.node.lookAt(lookAhead, 0, 0, 0, BABYLON.Space.WORLD);
+      ship.node.rotate(BABYLON.Axis.Y, Math.PI, BABYLON.Space.LOCAL);
+
+      // Thruster animation.
+      const speedRatio = clamp(ship.velocity.length() / ship.moveSpeed, 0.35, 1.3);
+      const pulse = 0.9 + Math.sin(t * 12 + ship.aiPhase) * 0.14;
+      ship.thrusterGlow.scaling.setAll(speedRatio * pulse);
+      ship.engineLight.intensity = (ship.isFlagship ? 22 : 12) * (0.7 + speedRatio * 0.65 + Math.sin(t * 10 + ship.aiPhase) * 0.05);
+    }
+
+    function maybeFire(ship, dt) {
+      if (!ship.alive) return;
+      ship.fireCooldown -= dt;
+      if (ship.fireCooldown > 0) return;
+      const target = nearestEnemy(ship);
+      if (!target) return;
+
+      const muzzleBase = ship.node.position.add(ship.node.getDirection(BABYLON.Axis.Z).scale(ship.isFlagship ? 7.2 : 4.6));
+      const toTarget = target.node.position.subtract(muzzleBase);
+      const dist = toTarget.length();
+      if (dist > 78) return;
+      const direction = toTarget.normalize();
+      const forward = ship.node.getDirection(BABYLON.Axis.Z).normalize();
+      if (BABYLON.Vector3.Dot(forward, direction) < 0.65) return;
+
+      const right = ship.node.getDirection(BABYLON.Axis.X).normalize();
+      const offsets = ship.isFlagship ? [-1.0, 1.0] : [0];
+      for (const off of offsets) {
+        const start = muzzleBase.add(right.scale(off));
+        spawnProjectile(ship, start, direction);
+      }
+      ship.fireCooldown = CONFIG.fireInterval;
+    }
+
+    function spawnProjectile(owner, start, direction) {
+      const color = teamPalette(owner.team).projectile;
+      const mesh = BABYLON.MeshBuilder.CreateSphere(`bolt_${owner.id}_${performance.now()}`, { diameter: owner.isFlagship ? 0.62 : 0.42, segments: 8 }, scene);
+      mesh.position.copyFrom(start);
+      const mat = new BABYLON.StandardMaterial(`boltMat_${owner.id}_${Math.random()}`, scene);
+      mat.disableLighting = true;
+      mat.emissiveColor = color.clone();
+      mat.diffuseColor = color.scale(0.5);
+      mesh.material = mat;
+      const light = new BABYLON.PointLight(`boltLight_${owner.id}_${Math.random()}`, start.clone(), scene);
+      light.diffuse = color.clone();
+      light.intensity = owner.isFlagship ? 10 : 6;
+      light.range = owner.isFlagship ? 12 : 8;
+      const trail = new BABYLON.TrailMesh(`trail_${owner.id}_${Math.random()}`, mesh, scene, owner.isFlagship ? 0.45 : 0.28, 22, true);
+      const trailMat = new BABYLON.StandardMaterial(`trailMat_${owner.id}_${Math.random()}`, scene);
+      trailMat.emissiveColor = color.scale(0.75);
+      trailMat.diffuseColor = color.scale(0.2);
+      trailMat.alpha = 0.68;
+      trail.material = trailMat;
+      projectiles.push({
+        owner,
+        team: owner.team,
+        mesh,
+        trail,
+        light,
+        velocity: direction.scale(CONFIG.projectileSpeed + (owner.isFlagship ? 4 : 0)).add(owner.velocity.scale(0.2)),
+        life: 5.5,
+        damage: owner.damage,
+        radius: owner.isFlagship ? 1.25 : 0.9
+      });
+    }
+
+    function updateShips(dt, t) {
+      for (const ship of ships) {
+        if (!ship.alive) continue;
+        steerShip(ship, dt, t);
+        maybeFire(ship, dt);
+        updateHealthBar(ship);
+      }
+    }
+
+    function updateProjectiles(dt) {
+      for (let i = projectiles.length - 1; i >= 0; i--) {
+        const p = projectiles[i];
+        p.life -= dt;
+        if (p.life <= 0) { disposeProjectile(p); projectiles.splice(i, 1); continue; }
+        const step = p.velocity.scale(dt);
+        p.mesh.position.addInPlace(step);
+        p.light.position.copyFrom(p.mesh.position);
+
+        for (const ship of ships) {
+          if (!ship.alive || ship.team === p.team) continue;
+          const hitRadius = ship.size * 0.62 + p.radius;
+          if (BABYLON.Vector3.DistanceSquared(ship.node.position, p.mesh.position) <= hitRadius * hitRadius) {
+            damageShip(ship, p.damage, p.mesh.position.clone(), p.team);
+            createImpactBurst(p.mesh.position.clone(), teamPalette(p.team).projectile);
+            disposeProjectile(p);
+            projectiles.splice(i, 1);
+            break;
+          }
+        }
+      }
+    }
+
+    function createImpactBurst(position, color) {
+      const flash = BABYLON.MeshBuilder.CreateSphere('impactFlash', { diameter: 0.8, segments: 8 }, scene);
+      flash.position.copyFrom(position);
+      const mat = new BABYLON.StandardMaterial('impactFlashMat' + Math.random(), scene);
+      mat.disableLighting = true;
+      mat.emissiveColor = color.clone();
+      mat.alpha = 0.95;
+      flash.material = mat;
+      explosions.push({
+        type: 'impact',
+        time: 0,
+        duration: 0.22,
+        flash,
+        mat,
+        debris: []
+      });
+    }
+
+    function disposeProjectile(p) {
+      p.trail.dispose();
+      p.light.dispose();
+      p.mesh.dispose();
+    }
+
+    function damageShip(ship, amount, hitPos, attackingTeam) {
+      if (!ship.alive) return;
+      ship.health -= amount;
+      updateHealthBar(ship);
+      const pulseColor = attackingTeam === 'blue' ? new BABYLON.Color3(0.35, 0.88, 1.0) : new BABYLON.Color3(1.0, 0.36, 0.32);
+      ship.body.material.emissiveColor = pulseColor.scale(0.4);
+      if (ship.health <= 0) {
+        explodeShip(ship, hitPos);
+      }
+    }
+
+    function explodeShip(ship, epicenter = null) {
+      if (!ship.alive) return;
+      ship.alive = false;
+      ship.hp.holder.setEnabled(false);
+      const pos = epicenter ? epicenter.clone() : ship.node.position.clone();
+      ship.node.setEnabled(false);
+      ship.engineLight.setEnabled(false);
+
+      const fire = BABYLON.MeshBuilder.CreateSphere(`fire_${ship.id}`, { diameter: ship.isFlagship ? 3 : 2, segments: 12 }, scene);
+      fire.position.copyFrom(pos);
+      const fireMat = new BABYLON.StandardMaterial(`fireMat_${ship.id}`, scene);
+      fireMat.disableLighting = true;
+      fireMat.emissiveColor = new BABYLON.Color3(1.0, 0.55, 0.15);
+      fireMat.alpha = 0.95;
+      fire.material = fireMat;
+
+      const core = BABYLON.MeshBuilder.CreateSphere(`core_${ship.id}`, { diameter: ship.isFlagship ? 2.1 : 1.2, segments: 10 }, scene);
+      core.position.copyFrom(pos);
+      const coreMat = new BABYLON.StandardMaterial(`coreMat_${ship.id}`, scene);
+      coreMat.disableLighting = true;
+      coreMat.emissiveColor = new BABYLON.Color3(1.0, 0.95, 0.72);
+      coreMat.alpha = 1;
+      core.material = coreMat;
+
+      const shockwaves = [];
+      for (let i = 0; i < 3; i++) {
+        const torus = BABYLON.MeshBuilder.CreateTorus(`shock_${ship.id}_${i}`, { thickness: 0.12, diameter: 1.3 + i * 0.4, tessellation: 30 }, scene);
+        torus.position.copyFrom(pos);
+        if (i === 1) torus.rotation.x = Math.PI / 2;
+        if (i === 2) torus.rotation.z = Math.PI / 2;
+        const mat = new BABYLON.StandardMaterial(`shockMat_${ship.id}_${i}`, scene);
+        mat.disableLighting = true;
+        mat.emissiveColor = new BABYLON.Color3(1.0, 0.72, 0.18);
+        mat.alpha = 0.9;
+        torus.material = mat;
+        shockwaves.push({ mesh: torus, mat, base: 1.0 + i * 0.25 });
+      }
+
+      const flashLight = new BABYLON.PointLight(`flash_${ship.id}`, pos.clone(), scene);
+      flashLight.diffuse = new BABYLON.Color3(1.0, 0.55, 0.2);
+      flashLight.intensity = ship.isFlagship ? 52 : 34;
+      flashLight.range = ship.isFlagship ? 35 : 24;
+
+      const sparks = [];
+      for (let i = 0; i < (ship.isFlagship ? 22 : 14); i++) {
+        const spark = BABYLON.MeshBuilder.CreateSphere(`spark_${ship.id}_${i}`, { diameter: rand(0.12, 0.26), segments: 4 }, scene);
+        spark.position.copyFrom(pos);
+        const mat = new BABYLON.StandardMaterial(`sparkMat_${ship.id}_${i}`, scene);
+        mat.disableLighting = true;
+        mat.emissiveColor = i % 3 === 0 ? new BABYLON.Color3(1, 0.95, 0.8) : new BABYLON.Color3(1, 0.45, 0.1);
+        spark.material = mat;
+        sparks.push({ mesh: spark, mat, vel: randomVector().normalize().scale(rand(8, 20)), spin: randomVector().scale(rand(1, 3)) });
+      }
+
+      const debris = [];
+      const debrisColor = teamPalette(ship.team).trim.scale(0.7);
+      for (let i = 0; i < (ship.isFlagship ? 18 : 10); i++) {
+        const d = BABYLON.MeshBuilder.CreateBox(`debris_${ship.id}_${i}`, { width: rand(0.12, 0.65), height: rand(0.12, 0.45), depth: rand(0.18, 0.95) }, scene);
+        d.position.copyFrom(pos);
+        const mat = new BABYLON.StandardMaterial(`debrisMat_${ship.id}_${i}`, scene);
+        mat.diffuseColor = debrisColor.clone();
+        mat.emissiveColor = debrisColor.scale(0.18);
+        mat.specularColor = new BABYLON.Color3(0.06, 0.06, 0.06);
+        d.material = mat;
+        debris.push({ mesh: d, mat, vel: randomVector().normalize().scale(rand(4, 15)), rot: randomVector().scale(rand(0.8, 3.5)) });
+      }
+
+      explosions.push({
+        type: 'ship',
+        ship,
+        pos,
+        time: 0,
+        duration: ship.isFlagship ? 2.4 : 1.7,
+        fire,
+        fireMat,
+        core,
+        coreMat,
+        shockwaves,
+        flashLight,
+        sparks,
+        debris
+      });
+
+      // Chain reaction: ships within roughly one ship-width also detonate.
+      for (const other of ships) {
+        if (!other.alive) continue;
+        const threshold = Math.max(ship.size, other.size) * CONFIG.chainReactionFactor;
+        if (BABYLON.Vector3.Distance(other.node.position, pos) <= threshold) {
+          explodeShip(other, other.node.position);
+        }
+      }
+    }
+
+    function updateExplosions(dt) {
+      for (let i = explosions.length - 1; i >= 0; i--) {
+        const ex = explosions[i];
+        ex.time += dt;
+        const t = ex.time / ex.duration;
+
+        if (ex.type === 'impact') {
+          ex.flash.scaling.setAll(1 + t * 4.5);
+          ex.mat.alpha = 1 - t;
+          if (t >= 1) {
+            ex.flash.dispose();
+            explosions.splice(i, 1);
+          }
+          continue;
+        }
+
+        ex.fire.scaling.setAll(1 + t * (ex.ship.isFlagship ? 9 : 6));
+        ex.fireMat.alpha = Math.max(0, 0.75 - t * 0.75);
+        ex.fireMat.emissiveColor = BABYLON.Color3.Lerp(new BABYLON.Color3(1.0, 0.6, 0.15), new BABYLON.Color3(0.5, 0.12, 0.05), t);
+
+        ex.core.scaling.setAll(1 + t * 3.5);
+        ex.coreMat.alpha = Math.max(0, 1 - t * 1.25);
+        ex.flashLight.intensity = Math.max(0, (ex.ship.isFlagship ? 52 : 34) * (1 - t * 1.15));
+
+        for (const shock of ex.shockwaves) {
+          shock.mesh.scaling.setAll(shock.base + t * (ex.ship.isFlagship ? 16 : 10));
+          shock.mat.alpha = Math.max(0, 0.75 - t * 0.85);
+        }
+        for (const spark of ex.sparks) {
+          spark.vel.scaleInPlace(0.985);
+          spark.mesh.position.addInPlace(spark.vel.scale(dt));
+          spark.mesh.rotation.x += spark.spin.x * dt;
+          spark.mesh.rotation.y += spark.spin.y * dt;
+          spark.mesh.rotation.z += spark.spin.z * dt;
+          spark.mat.alpha = Math.max(0, 1 - t * 1.45);
+          spark.mesh.scaling.setAll(Math.max(0.12, 1 - t * 0.8));
+        }
+        for (const d of ex.debris) {
+          d.vel.scaleInPlace(0.992);
+          d.mesh.position.addInPlace(d.vel.scale(dt));
+          d.mesh.rotation.x += d.rot.x * dt;
+          d.mesh.rotation.y += d.rot.y * dt;
+          d.mesh.rotation.z += d.rot.z * dt;
+          d.mat.alpha = Math.max(0, 1 - t * 0.85);
+        }
+
+        if (t >= 1) {
+          ex.fire.dispose(); ex.core.dispose(); ex.flashLight.dispose();
+          for (const shock of ex.shockwaves) shock.mesh.dispose();
+          for (const spark of ex.sparks) spark.mesh.dispose();
+          for (const d of ex.debris) d.mesh.dispose();
+          explosions.splice(i, 1);
+        }
+      }
+    }
+
+    function updateUI() {
+      const blue = aliveShips('blue').length;
+      const red = aliveShips('red').length;
+      ui.blueCount.textContent = `${blue} ship${blue === 1 ? '' : 's'}`;
+      ui.redCount.textContent = `${red} ship${red === 1 ? '' : 's'}`;
+      ui.shotCount.textContent = String(projectiles.length);
+      ui.timeCount.textContent = `${elapsed.toFixed(1)}s`;
+    }
+
+    function checkBattleEnd() {
+      const blueAlive = aliveShips('blue');
+      const redAlive = aliveShips('red');
+      if (blueAlive.length && redAlive.length) return;
+      battleEnded = true;
+      ui.endScreen.style.display = 'flex';
+      if (blueAlive.length > 0) {
+        ui.endTitle.textContent = 'Blue fleet victorious';
+        ui.endTitle.className = 'blue';
+        ui.endText.textContent = 'The blue flagship and escorts remain in control of the battlefield.';
+      } else if (redAlive.length > 0) {
+        ui.endTitle.textContent = 'Red fleet victorious';
+        ui.endTitle.className = 'red';
+        ui.endText.textContent = 'The red armada survives the chain reactions and secures the stars.';
+      } else {
+        ui.endTitle.textContent = 'Mutual annihilation';
+        ui.endTitle.className = '';
+        ui.endText.textContent = 'A cascading detonation consumed both fleets at once.';
+      }
+    }
+
+    function disposeBattle() {
+      if (scene) {
+        scene.dispose();
+      }
+      ships = [];
+      projectiles = [];
+      explosions = [];
+      starTwinkles = [];
+      battleEnded = false;
+      elapsed = 0;
+      ui.endScreen.style.display = 'none';
+      ui.endTitle.className = '';
+    }
+
+    function startBattle() {
+      disposeBattle();
+      createScene();
+    }
+
+    ui.restartBtn.addEventListener('click', startBattle);
+
+    startBattle();
+
+    engine.runRenderLoop(() => {
+      if (scene) scene.render();
+    });
+    window.addEventListener('resize', () => engine.resize());
+  })();
+  </script>
+</body>
+</html>

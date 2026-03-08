@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chaotic Three-Body Transfer</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: rgb(220,220,220);
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      color: #162033;
+    }
+    #hud {
+      position: fixed;
+      left: 16px;
+      top: 16px;
+      max-width: min(420px, calc(100vw - 32px));
+      background: rgba(255,255,255,0.72);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(20, 35, 60, 0.12);
+      border-radius: 16px;
+      padding: 14px 16px;
+      box-shadow: 0 10px 30px rgba(20, 35, 60, 0.10);
+      pointer-events: none;
+    }
+    #hud h1 {
+      margin: 0 0 6px 0;
+      font-size: 18px;
+      line-height: 1.1;
+      letter-spacing: 0.01em;
+    }
+    #hud p {
+      margin: 6px 0;
+      font-size: 13px;
+      line-height: 1.42;
+      color: #31425d;
+    }
+    #legend {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 6px 10px;
+      align-items: center;
+      font-size: 12px;
+      color: #30445f;
+    }
+    .swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08);
+    }
+    #corner {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      background: rgba(255,255,255,0.68);
+      border: 1px solid rgba(20, 35, 60, 0.12);
+      border-radius: 14px;
+      padding: 10px 12px;
+      box-shadow: 0 10px 30px rgba(20, 35, 60, 0.08);
+      font-size: 12px;
+      color: #334763;
+      pointer-events: none;
+      text-align: right;
+      line-height: 1.45;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <h1>Chaotic Sun–Earth–Jupiter Transfer</h1>
+    <p id="status">Preparing simulation…</p>
+    <p>
+      Newtonian gravity drives a deliberately non-stable but bounded three-body system.
+      The spacecraft starts on Earth, drops into a fast solar loop, then performs a transfer burn toward Jupiter.
+    </p>
+    <div id="legend">
+      <div class="swatch" style="background:#f7b733"></div><div>Sun + trail</div>
+      <div class="swatch" style="background:#4aa8ff"></div><div>Earth + trail</div>
+      <div class="swatch" style="background:#cf8750"></div><div>Jupiter + trail</div>
+      <div class="swatch" style="background:#4a6bff"></div><div>Spacecraft trajectory</div>
+    </div>
+  </div>
+
+  <div id="corner">
+    R — reset simulation<br />
+    Trails are persistent and redrawn every frame<br />
+    Background is fixed at 220 with no strokes
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script>
+    // ------------------------------------------------------------
+    // Chaotic three-body gravitational simulation with a staged
+    // Earth -> solar loop -> Jupiter transfer.
+    // Everything below is plain p5.js + vanilla JavaScript.
+    // ------------------------------------------------------------
+
+    const SIM = {
+      G: 0.45610463312961885,
+      eps2: 28.508190480017,       // small softening keeps close passes numerically stable
+      dt: 0.05,
+      substeps: 8,
+      launchStep: 200,
+      loopThreshold: Math.PI * 2 * 0.95,
+      captureDistance: 18,
+      trailStride: 4,
+      maxTrail: 2400
+    };
+
+    let bodies = [];
+    let spacecraft = null;
+    let simStep = 0;
+    let cameraState = { x: 0, y: 0, scale: 1 };
+    let statusEl;
+
+    function baseBodies() {
+      // Parameters were tuned so the system stays bounded for long runs,
+      // but the orbits precess and perturb one another instead of repeating
+      // the neat real-solar-system pattern.
+      return [
+        {
+          name: "Sun",
+          mass: 49606.68986575391,
+          x: 0,
+          y: 0,
+          vx: 0.07854929492369925,
+          vy: 0.5184613605457665,
+          radius: 15,
+          color: [247, 183, 51],
+          trailColor: [247, 183, 51, 72],
+          trail: [],
+          glow: 2.1
+        },
+        {
+          name: "Earth",
+          mass: 521.5339648350089,
+          x: -123.5298719261915,
+          y: -20.521183682085358,
+          vx: -1.6382036605577484,
+          vy: 14.254530275963527,
+          radius: 7.2,
+          color: [74, 168, 255],
+          trailColor: [74, 168, 255, 68],
+          trail: [],
+          glow: 1.45
+        },
+        {
+          name: "Jupiter",
+          mass: 4081.8717041721575,
+          x: 322.38707204671476,
+          y: -13.22439444699198,
+          vx: -0.7452933072458399,
+          vy: -8.122100843534085,
+          radius: 11.6,
+          color: [207, 135, 80],
+          trailColor: [207, 135, 80, 76],
+          trail: [],
+          glow: 1.75
+        }
+      ];
+    }
+
+    function resetSimulation() {
+      bodies = baseBodies();
+      simStep = 0;
+      spacecraft = {
+        phase: "docked",
+        x: bodies[1].x,
+        y: bodies[1].y,
+        vx: bodies[1].vx,
+        vy: bodies[1].vy,
+        trail: [],
+        color: [74, 107, 255],
+        arrived: false,
+        loopAngle: 0,
+        prevAngle: 0
+      };
+      cameraState = { x: 70, y: 0, scale: 1 };
+      for (const body of bodies) {
+        body.trail = [];
+      }
+      updateStatus();
+    }
+
+    function setup() {
+      createCanvas(windowWidth, windowHeight);
+      pixelDensity(1);
+      noStroke();
+      textFont("Inter, Arial, sans-serif");
+      statusEl = document.getElementById("status");
+      resetSimulation();
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+    }
+
+    function draw() {
+      background(220);
+
+      for (let i = 0; i < SIM.substeps; i++) {
+        physicsStep();
+      }
+
+      updateCamera();
+      drawTrails();
+      drawBodies();
+      drawSpacecraft();
+      drawOverlayText();
+      updateStatus();
+    }
+
+    function physicsStep() {
+      if (simStep === SIM.launchStep) {
+        launchSpacecraft();
+      }
+
+      integrateBodies();
+
+      if (spacecraft.phase === "docked") {
+        // Keep the craft visibly parked on Earth before launch.
+        const earth = bodies[1];
+        const sun = bodies[0];
+        const dx = earth.x - sun.x;
+        const dy = earth.y - sun.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const ux = dx / d;
+        const uy = dy / d;
+        spacecraft.x = earth.x + ux * 9;
+        spacecraft.y = earth.y + uy * 9;
+        spacecraft.vx = earth.vx;
+        spacecraft.vy = earth.vy;
+      } else {
+        updateSpacecraft();
+      }
+
+      if (simStep % SIM.trailStride === 0) {
+        for (const body of bodies) {
+          body.trail.push({ x: body.x, y: body.y });
+          if (body.trail.length > SIM.maxTrail) body.trail.shift();
+        }
+        spacecraft.trail.push({ x: spacecraft.x, y: spacecraft.y, phase: spacecraft.phase });
+        if (spacecraft.trail.length > SIM.maxTrail) spacecraft.trail.shift();
+      }
+
+      simStep++;
+    }
+
+    function launchSpacecraft() {
+      const earth = bodies[1];
+      const sun = bodies[0];
+      const rx = earth.x - sun.x;
+      const ry = earth.y - sun.y;
+      const rr = Math.hypot(rx, ry) || 1;
+      const radx = rx / rr;
+      const rady = ry / rr;
+
+      const tvx = earth.vx - sun.vx;
+      const tvy = earth.vy - sun.vy;
+      const tmag = Math.hypot(tvx, tvy) || 1;
+      const tanx = tvx / tmag;
+      const tany = tvy / tmag;
+
+      // Burn 1: a modest retrograde + inward push.
+      // This drops the craft into a lower, faster heliocentric orbit,
+      // giving the clear loop around the Sun.
+      const burn1Prograde = -1.0;
+      const burn1Radial = -1.0;
+
+      spacecraft.phase = "solar-loop";
+      spacecraft.x = earth.x + radx * 8;
+      spacecraft.y = earth.y + rady * 8;
+      spacecraft.vx = earth.vx + tanx * burn1Prograde + radx * burn1Radial;
+      spacecraft.vy = earth.vy + tany * burn1Prograde + rady * burn1Radial;
+      spacecraft.prevAngle = Math.atan2(spacecraft.y - sun.y, spacecraft.x - sun.x);
+      spacecraft.loopAngle = 0;
+    }
+
+    function updateSpacecraft() {
+      const sun = bodies[0];
+      const jupiter = bodies[2];
+
+      if (spacecraft.phase === "solar-loop") {
+        const ang = Math.atan2(spacecraft.y - sun.y, spacecraft.x - sun.x);
+        let delta = ang - spacecraft.prevAngle;
+        if (delta > Math.PI) delta -= Math.PI * 2;
+        if (delta < -Math.PI) delta += Math.PI * 2;
+        spacecraft.loopAngle += delta;
+        spacecraft.prevAngle = ang;
+
+        if (Math.abs(spacecraft.loopAngle) >= SIM.loopThreshold) {
+          applyTransferBurn();
+          spacecraft.phase = "transfer";
+        }
+      }
+
+      // Leapfrog integration for the spacecraft in the gravity field
+      // of the three massive bodies.
+      const a1 = gravitationalAccelAt(spacecraft.x, spacecraft.y);
+      spacecraft.vx += 0.5 * a1.x * SIM.dt;
+      spacecraft.vy += 0.5 * a1.y * SIM.dt;
+      spacecraft.x += spacecraft.vx * SIM.dt;
+      spacecraft.y += spacecraft.vy * SIM.dt;
+      const a2 = gravitationalAccelAt(spacecraft.x, spacecraft.y);
+      spacecraft.vx += 0.5 * a2.x * SIM.dt;
+      spacecraft.vy += 0.5 * a2.y * SIM.dt;
+
+      const dJ = Math.hypot(spacecraft.x - jupiter.x, spacecraft.y - jupiter.y);
+
+      if (!spacecraft.arrived && dJ < SIM.captureDistance) {
+        // Small braking burn relative to Jupiter when we arrive,
+        // so the finish reads clearly instead of just slingshotting away.
+        spacecraft.vx = jupiter.vx + (spacecraft.vx - jupiter.vx) * 0.38;
+        spacecraft.vy = jupiter.vy + (spacecraft.vy - jupiter.vy) * 0.38;
+        spacecraft.arrived = true;
+        spacecraft.phase = "arrived";
+      }
+    }
+
+    function applyTransferBurn() {
+      const sun = bodies[0];
+      const jupiter = bodies[2];
+
+      const rx = spacecraft.x - sun.x;
+      const ry = spacecraft.y - sun.y;
+      const rr = Math.hypot(rx, ry) || 1;
+      const radx = rx / rr;
+      const rady = ry / rr;
+
+      let tanx = -rady;
+      let tany = radx;
+
+      // Match the tangent orientation to the current motion.
+      if (tanx * spacecraft.vx + tany * spacecraft.vy < 0) {
+        tanx *= -1;
+        tany *= -1;
+      }
+
+      const tx = jupiter.x - spacecraft.x;
+      const ty = jupiter.y - spacecraft.y;
+      const td = Math.hypot(tx, ty) || 1;
+      const toJx = tx / td;
+      const toJy = ty / td;
+
+      // Burn 2: tuned correction that is still physically plausible:
+      // a mix of tangential adjustment, slight outward push, and a
+      // direct intercept component aimed toward Jupiter's current position.
+      const burn2Prograde = -1.0;
+      const burn2Radial = 0.5;
+      const burn2TowardJupiter = 4.0;
+
+      spacecraft.vx += tanx * burn2Prograde + radx * burn2Radial + toJx * burn2TowardJupiter;
+      spacecraft.vy += tany * burn2Prograde + rady * burn2Radial + toJy * burn2TowardJupiter;
+    }
+
+    function integrateBodies() {
+      const acc1 = bodyAccelerations();
+
+      for (let i = 0; i < bodies.length; i++) {
+        const b = bodies[i];
+        b.vx += 0.5 * acc1[i].x * SIM.dt;
+        b.vy += 0.5 * acc1[i].y * SIM.dt;
+        b.x += b.vx * SIM.dt;
+        b.y += b.vy * SIM.dt;
+      }
+
+      const acc2 = bodyAccelerations();
+
+      for (let i = 0; i < bodies.length; i++) {
+        const b = bodies[i];
+        b.vx += 0.5 * acc2[i].x * SIM.dt;
+        b.vy += 0.5 * acc2[i].y * SIM.dt;
+      }
+    }
+
+    function bodyAccelerations() {
+      const acc = bodies.map(() => ({ x: 0, y: 0 }));
+
+      for (let i = 0; i < bodies.length; i++) {
+        for (let j = i + 1; j < bodies.length; j++) {
+          const a = bodies[i];
+          const b = bodies[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const d2 = dx * dx + dy * dy;
+          const r2 = d2 + SIM.eps2;
+          const r = Math.sqrt(r2);
+          const factor = SIM.G / (r2 * r);
+
+          acc[i].x += factor * b.mass * dx;
+          acc[i].y += factor * b.mass * dy;
+          acc[j].x -= factor * a.mass * dx;
+          acc[j].y -= factor * a.mass * dy;
+        }
+      }
+
+      return acc;
+    }
+
+    function gravitationalAccelAt(x, y) {
+      let ax = 0;
+      let ay = 0;
+
+      for (const b of bodies) {
+        const dx = b.x - x;
+        const dy = b.y - y;
+        const d2 = dx * dx + dy * dy;
+        const r2 = d2 + SIM.eps2;
+        const r = Math.sqrt(r2);
+        const factor = SIM.G * b.mass / (r2 * r);
+        ax += factor * dx;
+        ay += factor * dy;
+      }
+
+      return { x: ax, y: ay };
+    }
+
+    function updateCamera() {
+      const targets = bodies.map(b => ({ x: b.x, y: b.y }));
+      if (spacecraft.phase !== "docked" || simStep < SIM.launchStep + 40) {
+        targets.push({ x: spacecraft.x, y: spacecraft.y });
+      }
+
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const p of targets) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+
+      const targetX = (minX + maxX) * 0.5;
+      const targetY = (minY + maxY) * 0.5;
+
+      const worldW = Math.max(310, maxX - minX + 170);
+      const worldH = Math.max(240, maxY - minY + 170);
+      const targetScale = Math.min((width * 0.88) / worldW, (height * 0.82) / worldH);
+
+      cameraState.x = lerp(cameraState.x, targetX, 0.08);
+      cameraState.y = lerp(cameraState.y, targetY, 0.08);
+      cameraState.scale = lerp(cameraState.scale, targetScale, 0.13);
+    }
+
+    function worldToScreen(x, y) {
+      return {
+        x: width * 0.5 + (x - cameraState.x) * cameraState.scale,
+        y: height * 0.5 + (y - cameraState.y) * cameraState.scale
+      };
+    }
+
+    function drawTrails() {
+      for (const body of bodies) {
+        const c = body.trailColor;
+        fill(c[0], c[1], c[2], c[3]);
+        const trailSize = Math.max(1.7, body.radius * 0.18 * cameraState.scale);
+        for (let i = 0; i < body.trail.length; i++) {
+          const p = worldToScreen(body.trail[i].x, body.trail[i].y);
+          circle(p.x, p.y, trailSize);
+        }
+      }
+
+      if (spacecraft.trail.length > 1) {
+        for (let i = 0; i < spacecraft.trail.length; i++) {
+          const p = worldToScreen(spacecraft.trail[i].x, spacecraft.trail[i].y);
+          const alpha = spacecraft.trail[i].phase === "transfer" ? 70 : 54;
+          fill(74, 107, 255, alpha);
+          circle(p.x, p.y, Math.max(1.25, 1.7 * cameraState.scale));
+        }
+      }
+    }
+
+    function drawBodies() {
+      for (const body of bodies) {
+        const p = worldToScreen(body.x, body.y);
+        const baseSize = Math.max(8, body.radius * cameraState.scale);
+
+        // Soft glow
+        fill(body.color[0], body.color[1], body.color[2], 30);
+        circle(p.x, p.y, baseSize * 4.5 * body.glow);
+        fill(body.color[0], body.color[1], body.color[2], 55);
+        circle(p.x, p.y, baseSize * 2.6 * body.glow);
+
+        // Core
+        fill(body.color[0], body.color[1], body.color[2], 240);
+        circle(p.x, p.y, baseSize * 2.0);
+
+        // Highlight
+        fill(255, 255, 255, body.name === "Sun" ? 115 : 92);
+        circle(p.x - baseSize * 0.24, p.y - baseSize * 0.24, baseSize * 0.7);
+
+        // Label
+        fill(24, 34, 49, 180);
+        textSize(12);
+        textAlign(CENTER, BOTTOM);
+        text(body.name, p.x, p.y - baseSize * 1.6);
+      }
+    }
+
+    function drawSpacecraft() {
+      const p = worldToScreen(spacecraft.x, spacecraft.y);
+
+      if (spacecraft.phase === "docked") {
+        fill(74, 107, 255, 220);
+        circle(p.x, p.y, Math.max(6, 5.5 * cameraState.scale));
+        return;
+      }
+
+      const ang = Math.atan2(spacecraft.vy, spacecraft.vx);
+      const shipScale = Math.max(8, 10 * cameraState.scale);
+
+      push();
+      translate(p.x, p.y);
+      rotate(ang);
+
+      fill(74, 107, 255, 42);
+      ellipse(0, 0, shipScale * 3.6, shipScale * 2.2);
+
+      // Engine glow
+      fill(124, 178, 255, 180);
+      triangle(-shipScale * 0.75, 0, -shipScale * 1.55, -shipScale * 0.38, -shipScale * 1.55, shipScale * 0.38);
+
+      // Hull
+      fill(32, 58, 167, 245);
+      triangle(shipScale * 1.15, 0, -shipScale * 0.85, -shipScale * 0.65, -shipScale * 0.85, shipScale * 0.65);
+
+      fill(196, 222, 255, 220);
+      circle(shipScale * 0.28, 0, shipScale * 0.42);
+
+      pop();
+
+      fill(29, 43, 62, 190);
+      textAlign(CENTER, TOP);
+      textSize(12);
+      text("Spacecraft", p.x, p.y + max(12, 12 * cameraState.scale));
+    }
+
+    function drawOverlayText() {
+      const phaseLabel =
+        spacecraft.phase === "docked" ? "Docked on Earth" :
+        spacecraft.phase === "solar-loop" ? "Burn complete: solar loop underway" :
+        spacecraft.phase === "transfer" ? "Second burn: Jupiter transfer" :
+        "Jupiter arrival burn complete";
+
+      const bounds = getBodyBounds();
+      const infoX = width * 0.5;
+      const infoY = height - 34;
+
+      fill(255, 255, 255, 150);
+      const pillW = Math.min(width - 40, 410);
+      rectMode(CENTER);
+      rect(infoX, infoY, pillW, 26, 999);
+      rectMode(CORNER);
+
+      fill(28, 40, 57, 210);
+      textSize(13);
+      textAlign(CENTER, CENTER);
+      text(
+        phaseLabel + "  •  span " + nf(bounds.span, 1, 1) + " world units",
+        infoX,
+        infoY
+      );
+    }
+
+    function getBodyBounds() {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const b of bodies) {
+        minX = Math.min(minX, b.x);
+        maxX = Math.max(maxX, b.x);
+        minY = Math.min(minY, b.y);
+        maxY = Math.max(maxY, b.y);
+      }
+      return { span: Math.max(maxX - minX, maxY - minY) };
+    }
+
+    function updateStatus() {
+      if (!statusEl) return;
+
+      const phaseText =
+        spacecraft.phase === "docked" ? "Spacecraft parked on Earth" :
+        spacecraft.phase === "solar-loop" ? "Spacecraft is completing its solar loop" :
+        spacecraft.phase === "transfer" ? "Transfer burn executed — intercepting Jupiter" :
+        "Spacecraft has reached Jupiter";
+
+      const earth = bodies[1];
+      const jupiter = bodies[2];
+      const craftToJupiter = Math.hypot(spacecraft.x - jupiter.x, spacecraft.y - jupiter.y);
+
+      statusEl.innerHTML =
+        "<strong>" + phaseText + "</strong><br>" +
+        "Simulation step: " + simStep +
+        " &nbsp;•&nbsp; Earth–Sun distance: " + Math.hypot(earth.x - bodies[0].x, earth.y - bodies[0].y).toFixed(1) +
+        " &nbsp;•&nbsp; Craft–Jupiter distance: " + craftToJupiter.toFixed(1);
+    }
+
+    function keyPressed() {
+      if (key === "r" || key === "R") {
+        resetSimulation();
+      }
+    }
+  </script>
+</body>
+</html>

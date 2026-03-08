@@ -25,6 +25,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **5/10** |
 | **Gemini 3**          | **4/10** |
+| **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **2/10** |
@@ -52,6 +53,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
+| **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **1/10** |
@@ -79,6 +81,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
+| **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **3/10** |
@@ -106,6 +109,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **6/10** |
+| **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **5/10** |
@@ -133,6 +137,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **5/10** |
+| **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **3/10** |
@@ -160,6 +165,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **4/10** |
+| **ChatGPT 5.4**       | **1/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **3/10** |
@@ -187,6 +193,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **3/10** |
+| **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **ChatGPT 5**         | **3/10** |
@@ -214,6 +221,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **3/10** |
+| **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **3/10** |
@@ -241,6 +249,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **5/10** |
+| **ChatGPT 5.4**       | **10/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **6/10** |
@@ -268,6 +277,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **8/10** |
+| **ChatGPT 5.4**       | **10/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **ChatGPT 5**         | **7/10** |
@@ -295,6 +305,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **7/10** |
+| **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **7/10** |
 | **ChatGPT 5**         | **3/10** |
@@ -322,6 +333,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
+| **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **3/10** |
@@ -349,6 +361,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **5/10** |
+| **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **ChatGPT 5**         | **3/10** |
@@ -376,6 +389,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **6/10** |
+| **ChatGPT 5.4**       | **3/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **2/10** |
@@ -403,6 +417,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **9/10** |
+| **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **7/10** |
 | **ChatGPT 5**         | **1/10** |
@@ -430,6 +445,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **5/10** |
+| **ChatGPT 5.4**       | **9/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **1/10** |
@@ -457,6 +473,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
+| **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **6/10** |
@@ -484,6 +501,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **8/10** |
+| **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **4/10** |
@@ -511,6 +529,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **7/10** |
+| **ChatGPT 5.4**       | **9/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **3/10** |
@@ -538,6 +557,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
+| **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **1/10** |
 | **ChatGPT 5**         | **4/10** |
@@ -565,6 +585,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **5/10** |
+| **ChatGPT 5.4**       | **10/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **3/10** |
@@ -592,6 +613,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **7/10** |
+| **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **4/10** |
@@ -619,6 +641,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **6/10** |
+| **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **5/10** |
@@ -646,6 +669,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **6/10** |
+| **ChatGPT 5.4**       | **9/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **4/10** |
@@ -673,6 +697,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **3/10** |
+| **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **2/10** |
 | **ChatGPT 5**         | **2/10** |
@@ -700,6 +725,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **5/10** |
+| **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **1/10** |
@@ -727,6 +753,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
+| **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **1/10** |
@@ -754,6 +781,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **0/10** |
+| **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **ChatGPT 5**         | **0/10** |
@@ -781,6 +809,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **0/10** |
+| **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **9/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **ChatGPT 5**         | **0/10** |
@@ -808,6 +837,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **0/10** |
+| **ChatGPT 5.4**       | **2/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **ChatGPT 5**         | **0/10** |
@@ -835,6 +865,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **0/10** |
+| **ChatGPT 5.4**       | **4/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **ChatGPT 5**         | **0/10** |
