@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>p5.js Interactive Fluid Simulation</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.1/p5.js"></script>
+</head>
+<body>
+    <script>
+    // ===================================================================================
+    // p5.js Interactive Fluid Simulation
+    //
+    // A real-time 2D fluid simulation demonstrating a von Kármán vortex street.
+    // Based on the "Real-Time Fluid Dynamics for Games" paper by Jos Stam.
+    //
+    // --- CONTROLS ---
+    // - Drag Mouse:      Move the obstacle.
+    // - Mouse Wheel:     Resize the obstacle.
+    // - SHIFT + Wheel:   Rotate the obstacle.
+    // - 'C' Key:         Cycle obstacle shape (Circle -> Ellipse -> Rectangle).
+    // - 'V' Key:         Toggle between Density and Vorticity visualization.
+    // - 'R' Key:         Reset the simulation.
+    //
+    // ===================================================================================
+
+    // --- Simulation Settings ---
+    let N = 128; // Grid resolution (higher is slower but more detailed)
+    let iter = 8; // Solver iterations (higher is more accurate but slower)
+    let SCALE;   // Scale factor to draw grid cells on canvas
+    let dt = 0.1; // Time step
+    let viscosity = 0.00001;
+    let diffusion = 0;
+
+    let fluid;
+    let obstacle;
+    let showVorticity = false;
+
+    // --- Helper function for 1D array indexing ---
+    function IX(x, y) {
+        x = constrain(x, 0, N - 1);
+        y = constrain(y, 0, N - 1);
+        return x + y * N;
+    }
+
+    // ===================================================================================
+    // FLUID SOLVER CLASS
+    // ===================================================================================
+    class Fluid {
+        constructor(dt, diffusion, viscosity, size) {
+            this.size = size;
+            this.dt = dt;
+            this.diff = diffusion;
+            this.visc = viscosity;
+
+            // Current state
+            this.density = new Float32Array(size * size).fill(0);
+            this.Vx = new Float32Array(size * size).fill(0);
+            this.Vy = new Float32Array(size * size).fill(0);
+
+            // Previous state
+            this.density0 = new Float32Array(size * size).fill(0);
+            this.Vx0 = new Float32Array(size * size).fill(0);
+            this.Vy0 = new Float32Array(size * size).fill(0);
+        }
+
+        reset() {
+            this.density.fill(0);
+            this.Vx.fill(0);
+            this.Vy.fill(0);
+            this.density0.fill(0);
+            this.Vx0.fill(0);
+            this.Vy0.fill(0);
+        }
+
+        step() {
+            let N = this.size;
+            let visc = this.visc;
+            let diff = this.diff;
+            let dt = this.dt;
+            let Vx = this.Vx;
+            let Vy = this.Vy;
+            let Vx0 = this.Vx0;
+            let Vy0 = this.Vy0;
+            let s = this.density0;
+            let density = this.density;
+
+            diffuse(1, Vx0, Vx, visc, dt, iter, N);
+            diffuse(2, Vy0, Vy, visc, dt, iter, N);
+
+            project(Vx0, Vy0, Vx, Vy, iter, N);
+
+            advect(1, Vx, Vx0, Vx0, Vy0, dt, N);
+            advect(2, Vy, Vy0, Vx0, Vy0, dt, N);
+
+            project(Vx, Vy, Vx0, Vy0, iter, N);
+
+            diffuse(0, s, density, diff, dt, iter, N);
+            advect(0, density, s, Vx, Vy, dt, N);
+        }
+
+        addDensity(x, y, amount) {
+            this.density[IX(x, y)] += amount;
+        }
+
+        addVelocity(x, y, amountX, amountY) {
+            let index = IX(x, y);
+            this.Vx[index] += amountX;
+            this.Vy[index] += amountY;
+        }
+    }
+
+
+    // --- Core Solver Functions (ported from Stam's C code) ---
+
+    function set_bnd(b, x, N) {
+        for (let i = 1; i < N - 1; i++) {
+            x[IX(i, 0)] = b == 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
+            x[IX(i, N - 1)] = b == 2 ? -x[IX(i, N - 2)] : x[IX(i, N - 2)];
+        }
+        for (let j = 1; j < N - 1; j++) {
+            x[IX(0, j)] = b == 1 ? -x[IX(1, j)] : x[IX(1, j)];
+            x[IX(N - 1, j)] = b == 1 ? -x[IX(N - 2, j)] : x[IX(N - 2, j)];
+        }
+
+        x[IX(0, 0)] = 0.5 * (x[IX(1, 0)] + x[IX(0, 1)]);
+        x[IX(0, N - 1)] = 0.5 * (x[IX(1, N - 1)] + x[IX(0, N - 2)]);
+        x[IX(N - 1, 0)] = 0.5 * (x[IX(N - 2, 0)] + x[IX(N - 1, 1)]);
+        x[IX(N - 1, N - 1)] = 0.5 * (x[IX(N - 2, N - 1)] + x[IX(N - 1, N - 2)]);
+    }
+
+    function lin_solve(b, x, x0, a, c, iter, N) {
+        let cRecip = 1.0 / c;
+        for (let k = 0; k < iter; k++) {
+            for (let j = 1; j < N - 1; j++) {
+                for (let i = 1; i < N - 1; i++) {
+                    x[IX(i, j)] =
+                        (x0[IX(i, j)] +
+                            a * (x[IX(i + 1, j)] +
+                                x[IX(i - 1, j)] +
+                                x[IX(i, j + 1)] +
+                                x[IX(i, j - 1)])) *
+                        cRecip;
+                }
+            }
+            set_bnd(b, x, N);
+        }
+    }
+
+    function diffuse(b, x, x0, diff, dt, iter, N) {
+        let a = dt * diff * (N - 2) * (N - 2);
+        lin_solve(b, x, x0, a, 1 + 6 * a, iter, N);
+    }
+
+    function advect(b, d, d0, velocX, velocY, dt, N) {
+        let i0, i1, j0, j1;
+        let dtx = dt * (N - 2);
+        let dty = dt * (N - 2);
+        let s0, s1, t0, t1;
+        let tmp1, tmp2, x, y;
+
+        let Nfloat = N - 2;
+        let ifloat, jfloat;
+        let i, j;
+
+        for (j = 1, jfloat = 1; j < N - 1; j++, jfloat++) {
+            for (i = 1, ifloat = 1; i < N - 1; i++, ifloat++) {
+                tmp1 = dtx * velocX[IX(i, j)];
+                tmp2 = dty * velocY[IX(i, j)];
+                x = ifloat - tmp1;
+                y = jfloat - tmp2;
+
+                if (x < 0.5) x = 0.5;
+                if (x > Nfloat + 0.5) x = Nfloat + 0.5;
+                i0 = Math.floor(x);
+                i1 = i0 + 1.0;
+                if (y < 0.5) y = 0.5;
+                if (y > Nfloat + 0.5) y = Nfloat + 0.5;
+                j0 = Math.floor(y);
+                j1 = j0 + 1.0;
+
+                s1 = x - i0;
+                s0 = 1.0 - s1;
+                t1 = y - j0;
+                t0 = 1.0 - t1;
+
+                let i0i = i0;
+                let i1i = i1;
+                let j0i = j0;
+                let j1i = j1;
+
+                d[IX(i, j)] =
+                    s0 * (t0 * d0[IX(i0i, j0i)] + t1 * d0[IX(i0i, j1i)]) +
+                    s1 * (t0 * d0[IX(i1i, j0i)] + t1 * d0[IX(i1i, j1i)]);
+            }
+        }
+        set_bnd(b, d, N);
+    }
+
+    function project(velocX, velocY, p, div, iter, N) {
+        for (let j = 1; j < N - 1; j++) {
+            for (let i = 1; i < N - 1; i++) {
+                div[IX(i, j)] = -0.5 * (
+                    velocX[IX(i + 1, j)] -
+                    velocX[IX(i - 1, j)] +
+                    velocY[IX(i, j + 1)] -
+                    velocY[IX(i, j - 1)]
+                ) / N;
+                p[IX(i, j)] = 0;
+            }
+        }
+        set_bnd(0, div, N);
+        set_bnd(0, p, N);
+        lin_solve(0, p, div, 1, 6, iter, N);
+
+        for (let j = 1; j < N - 1; j++) {
+            for (let i = 1; i < N - 1; i++) {
+                velocX[IX(i, j)] -= 0.5 * (p[IX(i + 1, j)] - p[IX(i - 1, j)]) * N;
+                velocY[IX(i, j)] -= 0.5 * (p[IX(i, j + 1)] - p[IX(i, j - 1)]) * N;
+            }
+        }
+        set_bnd(1, velocX, N);
+        set_bnd(2, velocY, N);
+    }
+
+
+    // ===================================================================================
+    // p5.js SKETCH
+    // ===================================================================================
+    function setup() {
+        createCanvas(windowWidth, windowHeight);
+        SCALE = Math.min(width / N, height / N);
+        
+        fluid = new Fluid(dt, diffusion, viscosity, N);
+
+        obstacle = {
+            x: width / 2,
+            y: height / 2,
+            w: 40,
+            h: 40,
+            angle: 0,
+            shape: 'circle', // 'circle', 'ellipse', 'rectangle'
+            isDragging: false,
+        };
+        
+        colorMode(HSB, 360, 100, 100);
+        noStroke();
+    }
+
+    function draw() {
+        // --- 1. Add Inflow ---
+        // A constant stream of fluid entering from the left.
+        const inflowX = Math.floor(N * 0.1);
+        for (let y = Math.floor(N * 0.4); y < Math.floor(N * 0.6); y++) {
+            fluid.addDensity(inflowX, y, 100);
+            fluid.addVelocity(inflowX, y, 1.2, 0);
+        }
+
+        // --- 2. Handle Obstacle Boundary ---
+        handleObstacle();
+
+        // --- 3. Step the Simulation ---
+        fluid.step();
+        
+        // --- 4. Render the fluid ---
+        if (showVorticity) {
+            renderVorticity();
+        } else {
+            renderDensity();
+        }
+
+        // --- 5. Render the Obstacle ---
+        renderObstacle();
+        
+        // --- 6. Display Instructions ---
+        displayInstructions();
+    }
+    
+    function renderDensity() {
+        background(0); // Clear background for density view
+        for (let i = 0; i < N; i++) {
+            for (let j = 0; j < N; j++) {
+                let x = i * SCALE;
+                let y = j * SCALE;
+                let d = fluid.density[IX(i, j)];
+                if (d > 0.01) {
+                    fill(255, constrain(d, 0, 100));
+                    square(x, y, SCALE);
+                }
+            }
+        }
+    }
+
+    function renderVorticity() {
+        background(50); // Use a grey background for vorticity
+        for (let i = 1; i < N - 1; i++) {
+            for (let j = 1; j < N - 1; j++) {
+                // Calculate curl (vorticity) using finite differences
+                let dvx_dy = (fluid.Vx[IX(i, j + 1)] - fluid.Vx[IX(i, j - 1)]) * 0.5;
+                let dvy_dx = (fluid.Vy[IX(i + 1, j)] - fluid.Vy[IX(i - 1, j)]) * 0.5;
+                let vorticity = dvy_dx - dvx_dy;
+
+                let x = i * SCALE;
+                let y = j * SCALE;
+                
+                // Map vorticity to color: blue for counter-clockwise, red for clockwise
+                if (abs(vorticity) > 0.01) {
+                    let hue = vorticity > 0 ? 240 : 0; // Blue or Red
+                    let brightness = constrain(map(abs(vorticity), 0, 0.2, 20, 100), 20, 100);
+                    fill(hue, 80, brightness);
+                    square(x, y, SCALE);
+                }
+            }
+        }
+    }
+    
+    function renderObstacle() {
+        push();
+        translate(obstacle.x, obstacle.y);
+        rotate(obstacle.angle);
+        stroke(0, 0, 100); // White outline
+        strokeWeight(2);
+        fill(0, 0, 20); // Dark fill
+
+        if (obstacle.shape === 'circle' || obstacle.shape === 'ellipse') {
+            ellipse(0, 0, obstacle.w, obstacle.h);
+        } else if (obstacle.shape === 'rectangle') {
+            rectMode(CENTER);
+            rect(0, 0, obstacle.w, obstacle.h);
+        }
+        pop();
+    }
+    
+    function handleObstacle() {
+        const ox_grid = obstacle.x / SCALE;
+        const oy_grid = obstacle.y / SCALE;
+        const ow_grid = obstacle.w / SCALE;
+        const oh_grid = obstacle.h / SCALE;
+
+        // Iterate through a bounding box around the obstacle
+        const startX = floor(max(1, ox_grid - ow_grid));
+        const endX = ceil(min(N - 2, ox_grid + ow_grid));
+        const startY = floor(max(1, oy_grid - oh_grid));
+        const endY = ceil(min(N - 2, oy_grid + oh_grid));
+
+        for (let i = startX; i < endX; i++) {
+            for (let j = startY; j < endY; j++) {
+                let isInside = false;
+
+                // --- Point-in-shape collision detection ---
+                if (obstacle.shape === 'circle') {
+                    if (dist(i, j, ox_grid, oy_grid) < ow_grid / 2) {
+                        isInside = true;
+                    }
+                } else {
+                    // For ellipse and rotated rectangle, transform point to obstacle's local coords
+                    let dx = i - ox_grid;
+                    let dy = j - oy_grid;
+                    let rotatedX = dx * cos(-obstacle.angle) - dy * sin(-obstacle.angle);
+                    let rotatedY = dx * sin(-obstacle.angle) + dy * cos(-obstacle.angle);
+                    
+                    if (obstacle.shape === 'ellipse') {
+                        if ((rotatedX * rotatedX) / (ow_grid * ow_grid / 4) + (rotatedY * rotatedY) / (oh_grid * oh_grid / 4) < 1) {
+                           isInside = true;
+                        }
+                    } else if (obstacle.shape === 'rectangle') {
+                        if (abs(rotatedX) < ow_grid / 2 && abs(rotatedY) < oh_grid / 2) {
+                           isInside = true;
+                        }
+                    }
+                }
+                
+                // If the grid point is inside the obstacle, zero out its velocity
+                if (isInside) {
+                    const idx = IX(i, j);
+                    fluid.Vx[idx] = 0;
+                    fluid.Vy[idx] = 0;
+                }
+            }
+        }
+    }
+    
+    function displayInstructions() {
+        push();
+        fill(255);
+        textSize(16);
+        textAlign(LEFT, TOP);
+        text(
+`Drag: Move | Wheel: Resize | SHIFT+Wheel: Rotate
+'C': Change Shape (${obstacle.shape}) | 'V': View (${showVorticity ? 'Vorticity' : 'Density'}) | 'R': Reset`, 
+        10, 10);
+        pop();
+    }
+
+
+    // ===================================================================================
+    // --- User Interaction Handlers ---
+    // ===================================================================================
+    
+    function mousePressed() {
+        if (dist(mouseX, mouseY, obstacle.x, obstacle.y) < max(obstacle.w, obstacle.h) / 2 + 20) {
+            obstacle.isDragging = true;
+        }
+    }
+    
+    function mouseReleased() {
+        obstacle.isDragging = false;
+    }
+
+    function mouseDragged() {
+        if (obstacle.isDragging) {
+            obstacle.x = mouseX;
+            obstacle.y = mouseY;
+        }
+    }
+
+    function mouseWheel(event) {
+        if (keyIsDown(SHIFT)) {
+            // Rotate obstacle
+            obstacle.angle += event.delta > 0 ? 0.1 : -0.1;
+        } else {
+            // Resize obstacle
+            const resizeAmount = event.delta > 0 ? -5 : 5;
+            obstacle.w = max(10, obstacle.w + resizeAmount);
+            if (obstacle.shape !== 'circle') {
+                obstacle.h = max(10, obstacle.h + resizeAmount);
+            } else {
+                obstacle.h = obstacle.w; // Keep circle circular
+            }
+        }
+        return false; // Prevent page scrolling
+    }
+    
+    function keyPressed() {
+        if (key === 'c' || key === 'C') {
+            if (obstacle.shape === 'circle') {
+                obstacle.shape = 'ellipse';
+                obstacle.h = obstacle.w * 0.5; // Start as an ellipse
+            } else if (obstacle.shape === 'ellipse') {
+                obstacle.shape = 'rectangle';
+            } else {
+                obstacle.shape = 'circle';
+                obstacle.h = obstacle.w; // Ensure it's a circle
+            }
+        }
+        if (key === 'v' || key === 'V') {
+            showVorticity = !showVorticity;
+        }
+        if (key === 'r' || key === 'R') {
+            fluid.reset();
+        }
+    }
+    
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+      SCALE = Math.min(width / N, height / N);
+    }
+
+    </script>
+</body>
+</html>

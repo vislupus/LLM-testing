@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Galaxy Formation Simulation</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{overflow:hidden;background:#000;font-family:'Segoe UI',system-ui,sans-serif}
+canvas{display:block}
+#hud{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:10;
+  background:rgba(18,18,38,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid rgba(255,255,255,.08);border-radius:11px;padding:8px 26px;
+  color:#fff;font-size:13px;font-weight:700;letter-spacing:.5px;text-align:center}
+#hud small{font-weight:400;font-size:9.5px;color:rgba(255,255,255,.3);display:block;margin-top:2px}
+#pan{position:fixed;top:66px;right:12px;z-index:10;
+  background:rgba(18,18,38,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px 15px;width:220px;
+  color:rgba(255,255,255,.72);font-size:11px}
+#pan h3{font-size:11.5px;font-weight:700;margin-bottom:10px;color:#9ab;text-align:center;letter-spacing:.8px}
+.sg{margin-bottom:9px}
+.sg label{display:flex;justify-content:space-between;font-size:10px;margin-bottom:3px}
+.sg b{color:#5ce;font-weight:700;font-variant-numeric:tabular-nums}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:2px;
+  background:rgba(255,255,255,.1);outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+  width:13px;height:13px;border-radius:50%;background:#5ce;cursor:pointer;box-shadow:0 0 4px rgba(92,238,238,.3)}
+input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;background:#5ce;cursor:pointer;border:none}
+.br{display:flex;gap:5px;margin:6px 0}
+.bt{flex:1;background:rgba(92,238,238,.08);color:#5ce;border:1px solid rgba(92,238,238,.18);
+  border-radius:5px;padding:5px;font-size:10px;cursor:pointer;transition:all .2s;text-align:center}
+.bt:hover{background:rgba(92,238,238,.2)}
+.bt.on{background:rgba(92,238,238,.28);border-color:#5ce}
+#st{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);line-height:1.85;font-size:10px}
+#st i{color:#5ce;font-style:normal;font-weight:700}
+#ft{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);
+  color:rgba(255,255,255,.18);font-size:9px;pointer-events:none;z-index:10;text-align:center}
+</style>
+</head>
+<body>
+<div id="hud">🌌 Galaxy Formation Simulation<small>10 000 stars · Barnes-Hut gravity · Dark matter halo · Central black hole</small></div>
+<div id="pan">
+  <h3>⚙ CONTROLS</h3>
+  <div class="sg"><label><span>Zoom</span><b id="vz">1.00</b></label>
+    <input type="range" id="sz" min="1" max="200" value="30"></div>
+  <div class="sg"><label><span>Sim Speed</span><b id="vs">20</b></label>
+    <input type="range" id="ss" min="1" max="45" value="20"></div>
+  <div class="sg"><label><span>Trail Fade</span><b id="vf">18</b></label>
+    <input type="range" id="sf" min="2" max="60" value="18"></div>
+  <div class="sg"><label><span>Winding Seed</span><b id="vw">3</b></label>
+    <input type="range" id="sw" min="1" max="6" value="3" step="1"></div>
+  <div class="br"><button class="bt on" id="bt1">Trails</button><button class="bt" id="bt2">↻ Reset</button></div>
+  <div id="st">
+    ⏱ Frame <i id="sf0">0</i> &nbsp; T+<i id="sT0">0.0</i>s<br>
+    ★ Particles <i id="sN">10 000</i><br>
+    🌀 Arms <i id="sA">3</i>
+  </div>
+</div>
+<div id="ft">Scroll to zoom · Drag to pan</div>
+
+<script>
+/* ═══════════════════════════════════════════════
+   CONSTANTS & CONFIG
+   ═══════════════════════════════════════════════ */
+var N       = 10000;
+var G       = 0.01;       // gravitational constant
+var SUB     = 20;         // physics sub-steps per draw frame
+var DT      = 0.025;      // simulation time-step
+var RMAX    = 400;        // cloud radius
+var RMIN    = 15;         // inner hole radius
+var SOFT_SQ = 100;        // gravitational softening²  (ε=10)
+var BH_MASS = 200000;     // central black-hole mass
+var DM_MASS = 60000;      // dark-matter halo M∞
+var DM_SCALE= 200;        // halo scale radius
+var THETA   = 0.7;        // Barnes-Hut opening angle
+var ARMS    = 3;          // spiral-arm seed count
+
+/* ═══════════════════════════════════════════════
+   QUAD-TREE  (Barnes-Hut)
+   ═══════════════════════════════════════════════ */
+function QT(x,y,w,h,d){
+  this.b={x:x,y:y,w:w,h:h};
+  this.d=d;
+  this.m=0; this.cm=p5.Vector.zero();
+  this.ps=[]; this.ch=null; this.leaf=true;
+}
+
+QT.prototype._sub=function(){
+  this.leaf=false;
+  var x=this.b.x,y=this.b.y,hw=this.b.w/2,hh=this.b.h/2,d=this.d+1;
+  this.ch=[new QT(x,y,hw,hh,d),new QT(x+hw,y,hw,hh,d),
+            new QT(x,y+hh,hw,hh,d),new QT(x+hw,y+hh,hw,hh,d)];
+  var old=this.ps; this.ps=null;
+  for(var i=0;i<old.length;i++) this._ins(old[i]);
+};
+
+QT.prototype._ins=function(p){
+  if(this.ch){
+    for(var i=0;i<4;i++)
+      if(p.x>=this.ch[i].b.x&&p.x<this.ch[i].b.x+this.ch[i].b.w&&
+         p.y>=this.ch[i].b.y&&p.y<this.ch[i].b.y+this.ch[i].b.h){this.ch[i]._ins(p);break;}
+  } else if(this.ps){
+    this.ps.push(p);
+    if(this.ps.length>4&&this.d<12) this._sub();
+  } else { this.ps=[p]; }
+  this.m+=p.mass;
+  this.cm.x=(this.cm.x*(this.m-p.mass)+p.x*p.mass)/this.m;
+  this.cm.y=(this.cm.y*(this.m-p.mass)+p.y*p.mass)/this.m;
+};
+
+QT.prototype.force=function(px,py,ax,ay){
+  if(this.m<.001) return;
+  var dx=this.cm.x-px, dy=this.cm.y-py;
+  var d2=dx*dx+dy*dy+SOFT_SQ;
+  if(this.leaf&&this.ps){
+    for(var i=0;i<this.ps.length;i++){
+      var p=this.ps[i];
+      if(p.x===px&&p.y===py) continue;
+      var ex=p.x-px, ey=p.y-py;
+      var e2=ex*ex+ey*ey+SOFT_SQ;
+      var inv=1/Math.sqrt(e2);
+      var f=G*p.mass*inv*inv*inv;
+      ax[0]+=f*ex; ay[0]+=f*ey;
+    }
+    return;
+  }
+  if(!this.ch){
+    if(d2>.01){
+      var inv=1/Math.sqrt(d2);
+      var f=G*this.m*inv*inv*inv;
+      ax[0]+=f*dx; ay[0]+=f*dy;
+    }
+    return;
+  }
+  var s=Math.max(this.b.w,this.b.h);
+  if(s*s/d2<THETA*THETA){
+    var inv=1/Math.sqrt(d2);
+    var f=G*this.m*inv*inv*inv;
+    ax[0]+=f*dx; ay[0]+=f*dy;
+  } else {
+    for(var i=0;i<4;i++) this.ch[i].force(px,py,ax,ay);
+  }
+};
+
+/* ═══════════════════════════════════════════════
+   GLOBALS
+   ═══════════════════════════════════════════════ */
+var stars, tree, offscr, frame, showTrails, trailFade, userZoom;
+var cam={x:0,y:0,z:1};
+var drag=false, dp={x:0,y:0};
+
+/* ═══════════════════════════════════════════════
+   ENCLOSED MASS & CIRCULAR VELOCITY
+   ═══════════════════════════════════════════════ */
+function encMass(r){
+  var s=N*Math.pow(Math.max(.01,r/RMAX),.3);
+  var h=DM_MASS*r/Math.sqrt(r*r+DM_SCALE*DM_SCALE);
+  return BH_MASS+s+h;
+}
+function vCirc(r){ return Math.sqrt(Math.max(.01,G*encMass(r)/Math.sqrt(r*r+SOFT_SQ))); }
+
+/* ═══════════════════════════════════════════════
+   p5.js SKETCH
+   ═══════════════════════════════════════════════ */
+var sk=function(p){
+
+/* ── setup ── */
+p.setup=function(){
+  p.createCanvas(p.windowWidth,p.windowHeight);
+  stars=new Array(N);
+  for(var i=0;i<N;i++) stars[i]={pos:p.createVector(),vel:p.createVector(),mass:0};
+  tree=null; frame=0; showTrails=true; trailFade=18; userZoom=1;
+  offscr=p.createGraphics(p.width,p.height);
+  offscr.colorMode(p.RGB,255);
+  offscr.noStroke();
+  initStars();
+  wireUI();
+};
+
+p.windowResized=function(){
+  p.resizeCanvas(p.windowWidth,p.windowHeight);
+  offscr.remove();
+  offscr=p.createGraphics(p.width,p.height);
+  offscr.colorMode(p.RGB,255);
+  offscr.noStroke();
+};
+
+/* ── coordinate helpers ── */
+function tx(x){ return p.width/2+(x-cam.x)*cam.z; }
+function ty(y){ return p.height/2+(y-cam.y)*cam.z; }
+
+/* ═══════════════════════════════════════════════
+   STAR INITIALISATION
+   ═══════════════════════════════════════════════ */
+function initStars(){
+  for(var i=0;i<N;i++){
+    var ang=p.random(p.TWO_PI);
+    var u=p.random();
+    var r=RMIN+(RMAX-RMIN)*Math.pow(u,1/.7);
+    /* add logarithmic-spiral density enhancement */
+    var armMod=Math.cos(ARMS*(ang-Math.log(r/RMIN+.1)*.45))*.5+.5;
+    if(p.random()>armMod*.5+.25){ i--; continue; }
+    stars[i].pos.set(r*Math.cos(ang), r*Math.sin(ang));
+    stars[i].mass=p.random(.4,3.2);
+    var vc=vCirc(r);
+    /* radial velocity — mostly inward to initiate collapse */
+    var vr=p.random(-.04,.10)*vc;
+    /* tangential velocity — slightly sub-Keplerian */
+    var vt=vc*(.87+p.random()*.1);
+    /* small random perturbation seeds spiral arms */
+    var vp=p.random(-.08,.08)*vc;
+    stars[i].vel.set(vr*Math.cos(ang)-vt*Math.sin(ang)+vp*Math.sin(ang),
+                     vr*Math.sin(ang)+vt*Math.cos(ang)-vp*Math.cos(ang));
+  }
+  resetOffscreen();
+  frame=0;
+}
+
+function resetOffscreen(){
+  offscr.background(220);
+  /* faint radial brightness gradient */
+  offscr.noStroke();
+  for(var k=0;k<6;k++){
+    var a=p.map(k,0,6,18,4);
+    offscr.fill(248-k*2,248-k*2,248-k*3,a);
+    offscr.ellipse(p.width/2,p.height/2,(60+k*80)*cam.z,(60+k*80)*cam.z);
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   PHYSICS STEP
+   ═══════════════════════════════════════════════ */
+function step(){
+  /* build Barnes-Hut tree */
+  tree=new QT(-RMAX*1.6,-RMAX*1.6,RMAX*3.2,RMAX*3.2,0);
+  for(var i=0;i<N;i++) tree._ins(stars[i]);
+
+  /* kick (half) */
+  for(var i=0;i<N;i++){
+    var s=stars[i];
+    var ax=[0],ay=[0];
+    tree.force(s.pos.x,s.pos.y,ax,ay);
+    /* dark-matter halo force */
+    var dr=Math.sqrt(s.pos.x*s.pos.x+s.pos.y*s.pos.y+DM_SCALE*DM_SCALE);
+    var hf=G*DM_MASS/(dr*dr);
+    var dr2=Math.sqrt(s.pos.x*s.pos.x+s.pos.y*s.pos.y+SOFT_SQ);
+    var hi=hf/Math.max(dr2,.01);
+    ax[0]+=hi*s.pos.x; ay[0]+=hi*s.pos.y;
+    s.vel.x+=ax[0]*DT*.5; s.vel.y+=ay[0]*DT*.5;
+  }
+
+  /* drift */
+  for(var i=0;i<N;i++) stars[i].pos.add(p5.Vector.mult(stars[i].vel,DT));
+
+  /* kick (half) */
+  for(var i=0;i<N;i++){
+    var s=stars[i];
+    var ax=[0],ay=[0];
+    tree.force(s.pos.x,s.pos.y,ax,ay);
+    var dr=Math.sqrt(s.pos.x*s.pos.x+s.pos.y*s.pos.y+DM_SCALE*DM_SCALE);
+    var hf=G*DM_MASS/(dr*dr);
+    var dr2=Math.sqrt(s.pos.x*s.pos.x+s.pos.y*s.pos.y+SOFT_SQ);
+    var hi=hf/Math.max(dr2,.01);
+    ax[0]+=hi*s.pos.x; ay[0]+=hi*s.pos.y;
+    s.vel.x+=ax[0]*DT*.5; s.vel.y+=ay[0]*DT*.5;
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   DRAWING
+   ═══════════════════════════════════════════════ */
+function drawAccDisk(r){
+  var c=offscr;
+  c.noStroke();
+  for(var i=20;i>=0;i--){
+    var f=i/20; var rr=r*(.12+f*.88);
+    c.fill(210+f*45,185+f*45,145+f*75,p.map(i,20,0,0,28));
+    c.ellipse(p.width/2,p.height/2,rr*2.3*cam.z,rr*1.5*cam.z);
+  }
+}
+
+function drawCoreGlow(r){
+  var c=offscr, cx=p.width/2, cy=p.height/2;
+  c.noStroke();
+  for(var i=5;i>=1;i--){
+    c.fill(255,252,248,p.map(i,5,1,10,55));
+    c.ellipse(cx,cy,r*i*2*cam.z,r*i*2*cam.z);
+  }
+  c.fill(255,255,255,130);
+  c.ellipse(cx,cy,r*.55*cam.z,r*.55*cam.z);
+}
+
+function updTrails(){
+  if(!showTrails) return;
+  offscr.noStroke();
+  offscr.fill(220,220,220,trailFade);
+  offscr.rect(0,0,p.width,p.height);
+
+  drawAccDisk(28);
+  drawCoreGlow(10);
+
+  /* particle trails (all 10 000 — 1 px dots) */
+  for(var i=0;i<N;i++){
+    var s=stars[i];
+    var sx=tx(s.pos.x), sy=ty(s.pos.y);
+    if(sx<-10||sx>p.width+10||sy<-10||sy>p.height+10) continue;
+    var d=s.pos.mag();
+    var mf=s.mass/3.2;
+    var df=p.constrain(1-d/RMAX*.85,0,1);
+    var br=(mf*.55+df*.65);
+    var ir=Math.min(255,(115+140*br)|0);
+    var ig=Math.min(255,(125+130*br)|0);
+    var ib=Math.min(255,(165+90*br)|0);
+    var ia=(65+155*br*Math.max(mf,.25))|0;
+    offscr.fill(ir,ig,ib,ia);
+    offscr.ellipse(sx,sy,1.1,1.1);
+  }
+}
+
+function drawBright(){
+  /* current-frame bright particles (subset for performance) */
+  p.noStroke();
+  for(var i=0;i<N;i+=3){
+    var s=stars[i];
+    var sx=tx(s.pos.x), sy=ty(s.pos.y);
+    if(sx<-5||sx>p.width+5||sy<-5||sy>p.height+5) continue;
+    var d=s.pos.mag();
+    var mf=s.mass/3.2;
+    var df=p.constrain(1-d/RMAX*.85,0,1);
+    var br=(mf*.55+df*.65);
+    if(br<.2) continue;
+    var r=Math.min(255,(145+110*br)|0);
+    var g=Math.min(255,(155+100*br)|0);
+    var b=Math.min(255,(200+55*br)|0);
+    p.fill(r,g,b,(110+145*br)|0);
+    var sz=(.6+1.4*br)*cam.z;
+    p.ellipse(sx,sy,Math.max(sz,1),Math.max(sz,1));
+  }
+
+  /* inner bright glow (top ~500 stars) */
+  p.noStroke();
+  var sorted=[];
+  for(var i=0;i<N;i++) sorted.push({i:i,d:stars[i].pos.mag()});
+  sorted.sort(function(a,b){return a.d-b.d;});
+  for(var j=0;j<Math.min(500,N);j++){
+    var s=stars[sorted[j].i];
+    var sx=tx(s.pos.x), sy=ty(s.pos.y);
+    if(sx<-5||sx>p.width+5||sy<-5||sy>p.height+5) continue;
+    var mf=s.mass/3.2;
+    p.fill(255,255,255,(25*mf)|0);
+    p.ellipse(sx,sy,2*cam.z,2*cam.z);
+  }
+}
+
+/* ── main draw ── */
+p.draw=function(){
+  /* physics */
+  for(var s=0;s<SUB;s++){ step(); frame++; }
+
+  /* smooth zoom */
+  cam.z+=(userZoom-cam.z)*.055;
+
+  /* trails to offscreen */
+  updTrails();
+
+  /* composite */
+  p.background(220);
+  p.image(offscr,0,0);
+
+  /* bright current-frame overlay */
+  drawBright();
+
+  /* HUD stats */
+  if(frame%25===0){
+    document.getElementById('sf0').textContent=frame;
+    document.getElementById('sT0').textContent=(frame*DT).toFixed(1);
+    document.getElementById('sN').textContent=N.toLocaleString();
+    document.getElementById('sA').textContent=ARMS;
+  }
+};
+
+/* ═══════════════════════════════════════════════
+   UI WIRING
+   ═══════════════════════════════════════════════ */
+function wireUI(){
+  document.getElementById('sz').oninput=function(){
+    userZoom=Math.pow(10,(this.value-1)/33-1);
+    document.getElementById('vz').textContent=userZoom.toFixed(2);};
+  document.getElementById('ss').oninput=function(){
+    SUB=+this.value; document.getElementById('vs').textContent=SUB;};
+  document.getElementById('sf').oninput=function(){
+    trailFade=+this.value; document.getElementById('vf').textContent=trailFade;};
+  document.getElementById('sw').oninput=function(){
+    ARMS=+this.value; document.getElementById('vw').textContent=ARMS;};
+  document.getElementById('bt1').onclick=function(){
+    showTrails=!showTrails; this.classList.toggle('on',showTrails);
+    if(showTrails) resetOffscreen();};
+  document.getElementById('bt2').onclick=function(){
+    initStars(); userZoom=1; cam.x=0; cam.y=0; cam.z=1;
+    document.getElementById('sz').value=30;
+    document.getElementById('vz').textContent='1.00';};
+}
+
+/* ═══════════════════════════════════════════════
+   INPUT
+   ═══════════════════════════════════════════════ */
+function inPanel(){
+  var r=document.getElementById('pan').getBoundingClientRect();
+  return p.mouseX>=r.left&&p.mouseX<=r.right&&p.mouseY>=r.top&&p.mouseY<=r.bottom;
+}
+
+p.mouseWheel=function(e){
+  if(inPanel()) return;
+  var mx=(p.mouseX-p.width/2)/cam.z+cam.x;
+  var my=(p.mouseY-p.height/2)/cam.z+cam.y;
+  userZoom*=e.delta>0?.92:1.08;
+  userZoom=Math.max(.03,Math.min(6,userZoom));
+  cam.x=mx-(p.mouseX-p.width/2)/userZoom;
+  cam.y=my-(p.mouseY-p.height/2)/userZoom;
+  document.getElementById('sz').value=Math.round((Math.log10(userZoom)+1)*33+1);
+  document.getElementById('vz').textContent=userZoom.toFixed(2);
+  return false;
+};
+p.mousePressed=function(){
+  if(inPanel()) return;
+  drag=true; dp.x=p.mouseX; dp.y=p.mouseY;
+};
+p.mouseReleased=function(){drag=false;};
+p.mouseDragged=function(){
+  if(!drag) return;
+  cam.x-=(p.mouseX-dp.x)/cam.z;
+  cam.y-=(p.mouseY-dp.y)/cam.z;
+  dp.x=p.mouseX; dp.y=p.mouseY;
+};
+p.touchStarted=function(){
+  if(p.touches.length===1&&!inPanel()){
+    drag=true; dp.x=p.mouseX; dp.y=p.mouseY;}};
+p.touchMoved=function(){
+  if(drag&&p.touches.length===1){
+    cam.x-=(p.mouseX-dp.x)/cam.z;
+    cam.y-=(p.mouseY-dp.y)/cam.z;
+    dp.x=p.mouseX; dp.y=p.mouseY;}};
+p.touchEnded=function(){drag=false;};
+
+}; /* end sketch */
+new p5(sk);
+</script>
+</body>
+</html>

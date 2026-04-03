@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Osogovo 3D Terrain Diorama</title>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+        #c { width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+        #hud {
+            position: absolute; top: 12px; left: 12px; color: #fff;
+            font: 13px/1.6 'Segoe UI', system-ui, sans-serif;
+            background: rgba(0,0,0,.55); padding: 12px 18px;
+            border-radius: 10px; pointer-events: none; user-select: none;
+            backdrop-filter: blur(4px);
+        }
+        #hud h2 { font-size: 16px; margin-bottom: 2px; }
+        #hud .dim { opacity: .55; font-size: 11px; }
+    </style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="hud">
+    <h2>⛰️ Osogovo Mountain Range</h2>
+    <div class="dim">
+        Drag to rotate · Scroll to zoom · Right-drag to pan
+    </div>
+</div>
+
+<script>
+/* ====================================================================
+   Osogovo 3-D Terrain Diorama
+   – Height-map mesh as the "lid" of a box pedestal
+   – Walls & floor close the box underneath
+   – Three labelled peak markers with camera-facing billboards
+   ==================================================================== */
+
+(async function () {
+
+    /* ── references ─────────────────────────────────────────────── */
+    const canvas = document.getElementById('c');
+    const engine = new BABYLON.Engine(canvas, true, { stencil: true });
+
+    /* ── scene ──────────────────────────────────────────────────── */
+    const scene  = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0.53, 0.75, 0.93, 1);
+
+    /* ── camera ─────────────────────────────────────────────────── */
+    const camera = new BABYLON.ArcRotateCamera(
+        'cam', -Math.PI / 2, Math.PI / 3.2, 220,
+        BABYLON.Vector3.Zero(), scene
+    );
+    camera.attachControl(canvas, true);
+    camera.lowerRadiusLimit = 40;
+    camera.upperRadiusLimit = 500;
+    camera.wheelPrecision   = 0.8;
+    camera.minZ             = 1;
+
+    /* ── lights ─────────────────────────────────────────────────── */
+    const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0, 1, 0), scene);
+    hemi.intensity    = 0.55;
+    hemi.groundColor  = new BABYLON.Color3(0.25, 0.22, 0.18);
+
+    const sun = new BABYLON.DirectionalLight('sun', new BABYLON.Vector3(-1, -2.5, -1.5).normalize(), scene);
+    sun.intensity     = 1.3;
+    sun.position      = new BABYLON.Vector3(150, 350, 200);
+
+    const shGen = new BABYLON.ShadowGenerator(2048, sun);
+    shGen.useBlurExponentialShadowMap = true;
+    shGen.blurKernel = 16;
+
+    const fill = new BABYLON.PointLight('fill', new BABYLON.Vector3(-180, 100, -120), scene);
+    fill.intensity = 0.25;
+
+    /* ── materials ──────────────────────────────────────────────── */
+    const wallMat = new BABYLON.StandardMaterial('wallMat', scene);
+    wallMat.diffuseColor  = new BABYLON.Color3(0.40, 0.36, 0.30);
+    wallMat.specularColor = new BABYLON.Color3(0.10, 0.10, 0.10);
+
+    const baseMat = new BABYLON.StandardMaterial('baseMat', scene);
+    baseMat.diffuseColor  = new BABYLON.Color3(0.26, 0.23, 0.19);
+    baseMat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
+
+    /* ── helper: empty material when textures fail ──────────────── */
+    function fallbackMat() {
+        const m = new BABYLON.StandardMaterial('fb', scene);
+        m.diffuseColor  = new BABYLON.Color3(0.50, 0.48, 0.42);
+        m.wireframe = true;
+        return m;
+    }
+
+    /* ==============================================================
+       1.  TERRAIN  (height-map ground)
+       ============================================================== */
+    const SUBS   = 128;                       // mesh subdivisions
+    const HM_URL = 'Osogovo Height Map (Merged).png';
+    const TX_URL = 'Osogovo_map.jpg';
+
+    let terrainMesh = null;
+    let terrainReady = false;
+
+    function loadTerrain() {
+        return new Promise(function (resolve) {
+            terrainMesh = BABYLON.MeshBuilder.CreateGroundFromHeightMap(
+                'terrain', HM_URL,
+                {
+                    width:         100,
+                    height:        100,
+                    subdivisions:  SUBS,
+                    minHeight:     0,
+                    maxHeight:     35,
+                    onReady: function (m) {
+                        // diffuse texture
+                        var tex = new BABYLON.StandardMaterial('tMat', scene);
+                        tex.diffuseTexture = new BABYLON.Texture(TX_URL, scene);
+                        tex.specularColor  = new BABYLON.Color3(0.07, 0.07, 0.07);
+                        tex.diffuseTexture.uScale = 1;
+                        tex.diffuseTexture.vScale = 1;
+                        m.material = tex;
+
+                        shGen.addShadowCaster(m);
+                        m.receiveShadows = true;
+
+                        terrainReady = true;
+                        resolve(m);
+                    },
+                    alphaFilter: 0
+                },
+                scene
+            );
+
+            // set a placeholder while loading
+            terrainMesh.material = fallbackMat();
+        });
+    }
+
+    /* ==============================================================
+       2.  PEDESTAL  (walls + floor)
+       ============================================================== */
+    function buildPedestal(mesh) {
+        var vd = BABYLON.VertexData.ExtractFromMesh(mesh);
+        var pos = vd.positions;
+
+        // bounding-box of the height-map mesh
+        var yMin =  Infinity, yMax = -Infinity;
+        var xMin =  Infinity, xMax = -Infinity;
+        var zMin =  Infinity, zMax = -Infinity;
+        for (var i = 0; i < pos.length; i += 3) {
+            if (pos[i]   < xMin) xMin = pos[i];
+            if (pos[i]   > xMax) xMax = pos[i];
+            if (pos[i+1] < yMin) yMin = pos[i+1];
+            if (pos[i+1] > yMax) yMax = pos[i+1];
+            if (pos[i+2] < zMin) zMin = pos[i+2];
+            if (pos[i+2] > zMax) zMax = pos[i+2];
+        }
+
+        var pad    = 0.3;                     // slight overhang
+        var wallH  = Math.abs(yMin) + 12;     // wall depth below terrain
+        var cx     = (xMin + xMax) * 0.5;
+        var cz     = (zMin + zMax) * 0.5;
+        var sx     = (xMax - xMin) + pad * 2;
+        var sz     = (zMax - zMin) + pad * 2;
+        var wallY  = yMin - wallH * 0.5;
+        var floorY = yMin - wallH;
+
+        // ── thin flat box for the base ──
+        var floor = BABYLON.MeshBuilder.CreateBox('floor', {
+            width: sx, height: 0.6, depth: sz
+        }, scene);
+        floor.position.y = floorY - 0.3;
+        floor.material   = baseMat;
+        shGen.addShadowCaster(floor);
+        floor.receiveShadows = true;
+
+        // ── four side walls (planes) ──
+        function makeWall(name, w, h, px, py, pz, ry) {
+            var w2 = BABYLON.MeshBuilder.CreatePlane(name, { width: w, height: h, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
+            w2.position    = new BABYLON.Vector3(px, py, pz);
+            w2.rotation.y  = ry || 0;
+            w2.material    = wallMat;
+            shGen.addShadowCaster(w2);
+            w2.receiveShadows = true;
+            return w2;
+        }
+
+        makeWall('wallN', sx, wallH, cx,  wallY, zMin - pad,  0);
+        makeWall('wallS', sx, wallH, cx,  wallY, zMax + pad,  0);
+        makeWall('wallE', sz, wallH, xMax + pad, wallY, cz,   Math.PI / 2);
+        makeWall('wallW', sz, wallH, xMin - pad, wallY, cz,   Math.PI / 2);
+
+        // ── optional rim (decorative border) ──
+        var rim = BABYLON.MeshBuilder.CreateTorus('rim', {
+            diameter: Math.max(sx, sz) * 0.92,
+            thickness: 0.45,
+            tessellation: 64
+        }, scene);
+        rim.scaling.x   = 1;
+        rim.scaling.z   = sz / sx;
+        rim.position.y  = yMin + 0.15;
+        rim.material    = wallMat;
+    }
+
+    /* ==============================================================
+       3.  PEAK  DETECTION  &  MARKERS
+       ============================================================== */
+
+    /** Return {pos,indices} so we can sample vertex Y quickly. */
+    function peaksFromMesh(mesh, count, minSep) {
+        var vd  = BABYLON.VertexData.ExtractFromMesh(mesh);
+        var p   = vd.positions;
+        var nV  = p.length / 3;
+        var step = Math.max(1, Math.floor(nV / 12000));  // sample ≤ 12 k verts
+
+        var found = [];
+
+        for (var vi = 0; vi < nV; vi += step) {
+            var yi = vi * 3 + 1;
+            var y  = p[yi];
+            var x  = p[vi * 3];
+            var z  = p[vi * 3 + 2];
+
+            // check distance to already-found peaks
+            var tooClose = false;
+            for (var k = 0; k < found.length; k++) {
+                var dx = x - found[k].x, dz = z - found[k].z;
+                if (dx * dx + dz * dz < minSep * minSep) { tooClose = true; break; }
+            }
+            if (tooClose) continue;
+
+            // if room, push; else try to replace the lowest
+            if (found.length < count) {
+                found.push({ x: x, y: y, z: z, vi: vi });
+                found.sort(function (a, b) { return a.y - b.y; });
+            } else if (y > found[0].y) {
+                // verify the replacement isn't too close to *other* peaks
+                var ok = true;
+                for (var k2 = 1; k2 < found.length; k2++) {
+                    var dx2 = x - found[k2].x, dz2 = z - found[k2].z;
+                    if (dx2 * dx2 + dz2 * dz2 < minSep * minSep) { ok = false; break; }
+                }
+                if (ok) found[0] = { x: x, y: y, z: z, vi: vi };
+            }
+        }
+        return found.sort(function (a, b) { return b.y - a.y; });
+    }
+
+    function placeMarker(pos, label) {
+        var g = new BABYLON.TransformNode(label, scene);
+
+        /* pillar */
+        var pillar = BABYLON.MeshBuilder.CreateCylinder(label + '_pillar', {
+            height: 4.5, diameterTop: 0.3, diameterBottom: 0.6, tessellation: 10
+        }, scene);
+        pillar.position.y = 2.25;
+        pillar.parent     = g;
+
+        var pm = new BABYLON.StandardMaterial(label + '_pm', scene);
+        pm.diffuseColor  = new BABYLON.Color3(0.85, 0.12, 0.08);
+        pm.emissiveColor = new BABYLON.Color3(0.30, 0.04, 0.02);
+        pm.specularColor = BABYLON.Color3.White();
+        pillar.material  = pm;
+
+        /* sphere cap */
+        var sph = BABYLON.MeshBuilder.CreateSphere(label + '_sph', { diameter: 2.6 }, scene);
+        sph.position.y = 5.0;
+        sph.parent     = g;
+        var sm = new BABYLON.StandardMaterial(label + '_sm', scene);
+        sm.diffuseColor    = new BABYLON.Color3(1, 0.20, 0.05);
+        sm.emissiveColor   = new BABYLON.Color3(0.50, 0.08, 0.02);
+        sm.specularColor   = BABYLON.Color3.White();
+        sm.specularPower   = 64;
+        sph.material       = sm;
+
+        /* billboard group (faces camera) */
+        var bb = new BABYLON.TransformNode(label + '_bb', scene);
+        bb.parent        = g;
+        bb.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+        bb.position.y    = 7.5;
+
+        /* flat label card */
+        var lbl = BABYLON.MeshBuilder.CreatePlane(label + '_lbl', { width: 14, height: 4.2 }, scene);
+        lbl.parent = bb;
+        var dt     = new BABYLON.DynamicTexture(label + '_dt', { width: 512, height: 150 }, scene, false);
+        dt.hasAlpha = true;
+
+        var ctx = dt.getContext();
+        ctx.clearRect(0, 0, 512, 150);
+
+        // rounded-rect background
+        ctx.fillStyle = 'rgba(0,0,0,0.72)';
+        roundRect(ctx, 8, 8, 496, 134, 18);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font      = 'bold 40px Arial, Helvetica, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, 256, 58);
+
+        ctx.font      = '24px Arial, Helvetica, sans-serif';
+        ctx.fillStyle = '#cccccc';
+        ctx.fillText('▲ ' + pos.y.toFixed(1) + ' m', 256, 105);
+
+        dt.update();
+
+        var lm = new BABYLON.StandardMaterial(label + '_lm', scene);
+        lm.diffuseTexture        = dt;
+        lm.emissiveColor         = new BABYLON.Color3(0.7, 0.7, 0.7);
+        lm.specularColor         = BABYLON.Color3.Black();
+        lm.backFaceCulling       = false;
+        lm.useAlphaFromDiffuseTexture = true;
+        lbl.material             = lm;
+
+        // place on terrain surface
+        g.position = new BABYLON.Vector3(pos.x, pos.y, pos.z);
+        return g;
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+        ctx.lineTo(x + w, y + h - r);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        ctx.lineTo(x + r, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+    }
+
+    /* ==============================================================
+       4.  POST-PROCESSING  GLOW
+       ============================================================== */
+    var gl = new BABYLON.GlowLayer('glow', scene, {
+        mainTextureFixedSize: 512,
+        blurKernelSize: 48
+    });
+    gl.intensity = 0.45;
+
+    /* ==============================================================
+       5.  LOAD  &  RUN
+       ============================================================== */
+    try {
+        var tm = await loadTerrain();
+
+        // camera target = terrain centre
+        var vd2 = BABYLON.VertexData.ExtractFromMesh(tm);
+        var pp  = vd2.positions;
+        var cx2 = 0, cy2 = 0, cz2 = 0;
+        for (var j = 0; j < pp.length; j += 3) { cx2 += pp[j]; cy2 += pp[j+1]; cz2 += pp[j+2]; }
+        var cnt = pp.length / 3;
+        camera.target = new BABYLON.Vector3(cx2 / cnt, cy2 / cnt + 6, cz2 / cnt);
+
+        // build pedestal
+        buildPedestal(tm);
+
+        // find & mark the three highest distinct peaks
+        var peaks = peaksFromMesh(tm, 3, 10);
+        var names = ['Peak A', 'Peak B', 'Peak C'];
+        for (var pi = 0; pi < peaks.length; pi++) {
+            placeMarker(peaks[pi], names[pi]);
+        }
+
+        console.log('Peaks found:', peaks.map(function (p) { return p.y.toFixed(1) + ' m'; }));
+    } catch (e) {
+        console.error('Scene build error:', e);
+    }
+
+    /* ── render loop ────────────────────────────────────────────── */
+    engine.runRenderLoop(function () { scene.render(); });
+
+    /* ── resize ─────────────────────────────────────────────────── */
+    window.addEventListener('resize', function () { engine.resize(); });
+
+})();
+</script>
+</body>
+</html>

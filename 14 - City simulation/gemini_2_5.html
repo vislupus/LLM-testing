@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Growing City Simulation - Babylon.js</title>
+    
+    <!-- CSS for styling the page and UI controls -->
+    <style>
+        html, body {
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+
+        #uiContainer {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            background-color: rgba(40, 40, 50, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            color: white;
+            z-index: 10;
+            width: 280px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        }
+
+        .ui-element {
+            margin-bottom: 12px;
+        }
+        
+        .ui-element:last-child {
+            margin-bottom: 0;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+        }
+
+        h2 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+            padding-bottom: 10px;
+        }
+
+        .value-display {
+            float: right;
+            font-weight: normal;
+        }
+    </style>
+
+    <!-- Babylon.js Libraries from CDN -->
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    
+</head>
+<body>
+    
+    <!-- The canvas where the 3D scene will be rendered -->
+    <canvas id="renderCanvas"></canvas>
+
+    <!-- The UI panel for controlling the simulation -->
+    <div id="uiContainer">
+        <h2>City Controls</h2>
+        <div class="ui-element">
+            <label for="citySizeSlider">City Size <span class="value-display" id="citySizeValue">50</span></label>
+            <input type="range" id="citySizeSlider" min="10" max="90" value="50">
+        </div>
+        <div class="ui-element">
+            <label for="trafficSlider">Traffic Intensity <span class="value-display" id="trafficValue">30</span></label>
+            <input type="range" id="trafficSlider" min="0" max="200" value="30">
+        </div>
+        <div class="ui-element">
+            <label for="speedSlider">Development Speed <span class="value-display" id="speedValue">5</span></label>
+            <input type="range" id="speedSlider" min="1" max="10" value="5">
+        </div>
+    </div>
+
+    <!-- The main JavaScript for the simulation -->
+    <script>
+        const canvas = document.getElementById('renderCanvas');
+        const engine = new BABYLON.Engine(canvas, true);
+
+        // --- Simulation Parameters ---
+        let citySize = 50;
+        let trafficIntensity = 30;
+        let developmentSpeed = 5;
+
+        // Grid constants
+        const GRID_SIZE = 40; // The number of plots in one dimension
+        const PLOT_SIZE = 5;  // The 3D size of one plot
+        const ROAD_WIDTH = PLOT_SIZE;
+        const ROAD_HEIGHT = 0.1;
+
+        // Simulation state
+        let cityGrid = [];
+        let roadNodes = new Map();
+        let buildings = [];
+        let vehicles = [];
+        let cityUpdateTimeout = null;
+
+        // --- Scene Setup ---
+        const createScene = function () {
+            const scene = new BABYLON.Scene(engine);
+            scene.clearColor = new BABYLON.Color3.FromHexString("#5c95c1");
+
+            // --- Camera ---
+            const camera = new BABYLON.ArcRotateCamera("camera", -Math.PI / 2, Math.PI / 2.5, 200, BABYLON.Vector3.Zero(), scene);
+            camera.attachControl(canvas, true);
+            camera.lowerRadiusLimit = 50;
+            camera.upperRadiusLimit = 500;
+            camera.wheelDeltaPercentage = 0.01;
+
+            // --- Lighting ---
+            const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+            light.intensity = 0.8;
+            light.specular = BABYLON.Color3.Black();
+
+            const dirLight = new BABYLON.DirectionalLight("dirLight", new BABYLON.Vector3(-0.5, -1, -0.5), scene);
+            dirLight.position = new BABYLON.Vector3(20, 150, 20);
+            dirLight.intensity = 0.6;
+
+            // --- Ground ---
+            const ground = BABYLON.MeshBuilder.CreateGround("ground", { width: GRID_SIZE * PLOT_SIZE, height: GRID_SIZE * PLOT_SIZE }, scene);
+            const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+            groundMat.diffuseColor = new BABYLON.Color3.FromHexString("#556B2F"); // Dark olive green
+            ground.material = groundMat;
+
+            // Enable shadows
+            const shadowGenerator = new BABYLON.ShadowGenerator(1024, dirLight);
+            shadowGenerator.useBlurExponentialShadowMap = true;
+            ground.receiveShadows = true;
+
+            // --- Materials ---
+            const roadMat = new BABYLON.StandardMaterial("roadMat", scene);
+            roadMat.diffuseColor = new BABYLON.Color3(0.2, 0.2, 0.25);
+
+            const buildingMaterials = [
+                new BABYLON.StandardMaterial("bmat1", scene), new BABYLON.StandardMaterial("bmat2", scene),
+                new BABYLON.StandardMaterial("bmat3", scene), new BABYLON.StandardMaterial("bmat4", scene),
+            ];
+            buildingMaterials[0].diffuseColor = new BABYLON.Color3.FromHexString("#c2c2c2"); // Light Grey
+            buildingMaterials[1].diffuseColor = new BABYLON.Color3.FromHexString("#a9a9a9"); // Dark Grey
+            buildingMaterials[2].diffuseColor = new BABYLON.Color3.FromHexString("#f5deb3"); // Wheat
+            buildingMaterials[3].diffuseColor = new BABYLON.Color3.FromHexString("#d2b48c"); // Tan
+
+            // --- City Generation Logic ---
+            function clearCity() {
+                buildings.forEach(b => b.dispose());
+                buildings = [];
+                roadNodes.forEach(node => {
+                    if (node.mesh) node.mesh.dispose();
+                });
+                roadNodes.clear();
+                cityGrid = [];
+            }
+
+            function buildCity() {
+                clearCity();
+                const cityCenter = GRID_SIZE / 2;
+
+                // Create Grid and Roads
+                for (let z = 0; z < GRID_SIZE; z++) {
+                    cityGrid[z] = [];
+                    for (let x = 0; x < GRID_SIZE; x++) {
+                        let isRoad = false;
+                        if (x % 8 === 0 || z % 8 === 0) { // Main roads every 8 plots
+                            isRoad = true;
+                        } else if ((x % 4 === 0 || z % 4 === 0) && Math.random() < 0.5) { // Smaller roads
+                            isRoad = true;
+                        }
+                        
+                        cityGrid[z][x] = { type: isRoad ? 'road' : 'empty' };
+                        
+                        if (isRoad) {
+                            const key = `${x},${z}`;
+                            roadNodes.set(key, { x, z, neighbors: [] });
+                        }
+                    }
+                }
+                
+                // Determine road connections and draw roads
+                roadNodes.forEach((node, key) => {
+                    const { x, z } = node;
+                    const neighbors = [ [x, z-1], [x, z+1], [x-1, z], [x+1, z] ];
+                    neighbors.forEach(n => {
+                        if (roadNodes.has(`${n[0]},${n[1]}`)) {
+                            node.neighbors.push(roadNodes.get(`${n[0]},${n[1]}`));
+                        }
+                    });
+
+                    const roadMesh = BABYLON.MeshBuilder.CreateBox(`road_${key}`, {
+                        width: ROAD_WIDTH,
+                        height: ROAD_HEIGHT,
+                        depth: ROAD_WIDTH
+                    }, scene);
+                    roadMesh.position = new BABYLON.Vector3(
+                        (x - cityCenter) * PLOT_SIZE,
+                        ROAD_HEIGHT / 2,
+                        (z - cityCenter) * PLOT_SIZE
+                    );
+                    roadMesh.material = roadMat;
+                    roadMesh.receiveShadows = true;
+                    node.mesh = roadMesh;
+                });
+
+                // Build Buildings
+                const buildingChance = citySize / 100.0;
+                for (let z = 0; z < GRID_SIZE; z++) {
+                    for (let x = 0; x < GRID_SIZE; x++) {
+                        if (cityGrid[z][x].type === 'empty' && Math.random() < buildingChance) {
+                            createBuilding(x, z, shadowGenerator);
+                        }
+                    }
+                }
+                updateVehicleCount();
+            }
+
+            function createBuilding(x, z, shadowGenerator) {
+                const cityCenter = GRID_SIZE / 2;
+                const maxHeight = 10 + Math.random() * 50;
+                const building = BABYLON.MeshBuilder.CreateBox(`building_${x}_${z}`, {
+                    width: PLOT_SIZE * 0.8,
+                    depth: PLOT_SIZE * 0.8,
+                    height: maxHeight
+                }, scene);
+                
+                building.position = new BABYLON.Vector3(
+                    (x - cityCenter) * PLOT_SIZE,
+                    -maxHeight / 2, // Start below ground to hide base
+                    (z - cityCenter) * PLOT_SIZE
+                );
+
+                building.material = buildingMaterials[Math.floor(Math.random() * buildingMaterials.length)];
+                shadowGenerator.addShadowCaster(building);
+                buildings.push(building);
+
+                // Growth Animation
+                const growthAnim = new BABYLON.Animation(
+                    "growth", "position.y", 60,
+                    BABYLON.Animation.ANIMATIONTYPE_FLOAT,
+                    BABYLON.Animation.ANIMATIONLOOPMODE_CONSTANT
+                );
+                
+                const speedFactor = 10 / developmentSpeed;
+                const animTime = 1 + Math.random(); // in seconds
+                
+                const keys = [];
+                keys.push({ frame: 0, value: -maxHeight / 2 });
+                keys.push({ frame: 60 * animTime * speedFactor, value: maxHeight / 2 });
+                growthAnim.setKeys(keys);
+
+                // Use a random delay to make growth appear more organic
+                setTimeout(() => {
+                    scene.beginDirectAnimation(building, [growthAnim], 0, 60 * animTime * speedFactor, false);
+                }, Math.random() * 2000 * speedFactor);
+            }
+            
+            // --- Traffic Simulation ---
+            function spawnVehicle() {
+                if (roadNodes.size === 0) return;
+
+                const vehicleMesh = BABYLON.MeshBuilder.CreateBox("vehicle", {
+                    width: 1.5,
+                    height: 1,
+                    depth: 2.5
+                }, scene);
+                vehicleMesh.material = new BABYLON.StandardMaterial("vmat", scene);
+                vehicleMesh.material.diffuseColor = BABYLON.Color3.Random();
+                shadowGenerator.addShadowCaster(vehicleMesh);
+
+                const vehicle = {
+                    mesh: vehicleMesh,
+                    speed: 0.1 + Math.random() * 0.1,
+                    currentNode: null,
+                    targetNode: null,
+                    lastNode: null,
+                    progress: 0
+                };
+                
+                resetVehicle(vehicle);
+                vehicles.push(vehicle);
+            }
+
+            function resetVehicle(vehicle) {
+                const roadKeys = Array.from(roadNodes.keys());
+                const startKey = roadKeys[Math.floor(Math.random() * roadKeys.length)];
+                vehicle.currentNode = roadNodes.get(startKey);
+                vehicle.lastNode = vehicle.currentNode;
+                pickNextTarget(vehicle);
+
+                const cityCenter = GRID_SIZE / 2;
+                vehicle.mesh.position = new BABYLON.Vector3(
+                    (vehicle.currentNode.x - cityCenter) * PLOT_SIZE,
+                    ROAD_HEIGHT + 0.5,
+                    (vehicle.currentNode.z - cityCenter) * PLOT_SIZE
+                );
+            }
+
+            function pickNextTarget(vehicle) {
+                if (!vehicle.currentNode || vehicle.currentNode.neighbors.length === 0) {
+                    resetVehicle(vehicle);
+                    return;
+                }
+
+                // Try to go straight
+                if (vehicle.lastNode && vehicle.currentNode) {
+                    const dx = vehicle.currentNode.x - vehicle.lastNode.x;
+                    const dz = vehicle.currentNode.z - vehicle.lastNode.z;
+                    const straightNodeKey = `${vehicle.currentNode.x + dx},${vehicle.currentNode.z + dz}`;
+                    if (roadNodes.has(straightNodeKey) && Math.random() < 0.8) { // 80% chance to go straight
+                        vehicle.targetNode = roadNodes.get(straightNodeKey);
+                    }
+                }
+                
+                // If not going straight, pick a random neighbor (that isn't the previous one)
+                if (!vehicle.targetNode) {
+                    const validNeighbors = vehicle.currentNode.neighbors.filter(n => n !== vehicle.lastNode);
+                    if (validNeighbors.length > 0) {
+                        vehicle.targetNode = validNeighbors[Math.floor(Math.random() * validNeighbors.length)];
+                    } else {
+                        // Trapped, just go back
+                        vehicle.targetNode = vehicle.lastNode;
+                    }
+                }
+
+                vehicle.lastNode = vehicle.currentNode;
+                vehicle.progress = 0;
+            }
+
+            function updateVehicleCount() {
+                const diff = trafficIntensity - vehicles.length;
+                if (diff > 0) {
+                    for (let i = 0; i < diff; i++) {
+                        spawnVehicle();
+                    }
+                } else if (diff < 0) {
+                    for (let i = 0; i < -diff; i++) {
+                        const v = vehicles.pop();
+                        if (v) v.mesh.dispose();
+                    }
+                }
+            }
+
+            function moveVehicles() {
+                const cityCenter = GRID_SIZE / 2;
+                vehicles.forEach(v => {
+                    if (!v.currentNode || !v.targetNode) return;
+                    
+                    v.progress += v.speed * (engine.getDeltaTime() / 100);
+                    
+                    const startPos = new BABYLON.Vector3(
+                        (v.currentNode.x - cityCenter) * PLOT_SIZE,
+                        ROAD_HEIGHT + 0.5,
+                        (v.currentNode.z - cityCenter) * PLOT_SIZE
+                    );
+                    const endPos = new BABYLON.Vector3(
+                        (v.targetNode.x - cityCenter) * PLOT_SIZE,
+                        ROAD_HEIGHT + 0.5,
+                        (v.targetNode.z - cityCenter) * PLOT_SIZE
+                    );
+
+                    v.mesh.position = BABYLON.Vector3.Lerp(startPos, endPos, v.progress);
+                    
+                    // Rotate vehicle to face target
+                    const direction = endPos.subtract(startPos).normalize();
+                    if (direction.length() > 0.1) {
+                         v.mesh.rotation.y = Math.atan2(direction.x, direction.z);
+                    }
+
+                    if (v.progress >= 1) {
+                        v.currentNode = v.targetNode;
+                        pickNextTarget(v);
+                    }
+                });
+            }
+
+            // --- Initial Build & Game Loop ---
+            buildCity();
+
+            scene.onBeforeRenderObservable.add(() => {
+                moveVehicles();
+            });
+
+            // Expose functions to be called by UI
+            scene.resetAndBuild = buildCity;
+            scene.updateVehicles = updateVehicleCount;
+            
+            return scene;
+        };
+
+        const scene = createScene();
+
+        // --- Render Loop ---
+        engine.runRenderLoop(function () {
+            scene.render();
+        });
+
+        window.addEventListener('resize', function () {
+            engine.resize();
+        });
+
+        // --- UI Event Listeners ---
+        const citySizeSlider = document.getElementById('citySizeSlider');
+        const citySizeValue = document.getElementById('citySizeValue');
+        const trafficSlider = document.getElementById('trafficSlider');
+        const trafficValue = document.getElementById('trafficValue');
+        const speedSlider = document.getElementById('speedSlider');
+        const speedValue = document.getElementById('speedValue');
+
+        function scheduleCityUpdate() {
+            clearTimeout(cityUpdateTimeout);
+            cityUpdateTimeout = setTimeout(() => {
+                scene.resetAndBuild();
+            }, 500); // Debounce to avoid rebuilding on every tiny slider move
+        }
+
+        citySizeSlider.oninput = function() {
+            citySize = parseInt(this.value);
+            citySizeValue.textContent = citySize;
+            scheduleCityUpdate();
+        };
+
+        trafficSlider.oninput = function() {
+            trafficIntensity = parseInt(this.value);
+            trafficValue.textContent = trafficIntensity;
+            scene.updateVehicles();
+        };
+
+        speedSlider.oninput = function() {
+            developmentSpeed = parseInt(this.value);
+            speedValue.textContent = developmentSpeed;
+            // No need to rebuild, next build will use new speed. 
+            // We could optionally re-run animations, but this is simpler.
+        };
+
+    </script>
+
+</body>
+</html>

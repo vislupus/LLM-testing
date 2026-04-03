@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sofia Climate Dashboard</title>
+    <!-- Chart.js library from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --panel-bg: #2c2c2c;
+            --text-color: #e0e0e0;
+            --header-color: #ffffff;
+            --border-color: #444444;
+            --accent-blue: #3498db;
+            --accent-red: #e74c3c;
+            --accent-yellow: #f1c40f;
+            --font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            font-family: var(--font-family);
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1, h2 {
+            color: var(--header-color);
+            font-weight: 300;
+            text-align: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+            margin-top: 0;
+        }
+
+        .dashboard-container {
+            width: 100%;
+            max-width: 1400px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        #loading-message {
+            text-align: center;
+            font-size: 1.2em;
+            padding: 50px;
+        }
+        
+        .hidden { display: none; }
+
+        .controls, .summary {
+            background-color: var(--panel-bg);
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+        }
+        
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            gap: 30px;
+        }
+        
+        .slider-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .slider-group label {
+            margin-bottom: 10px;
+            font-size: 1em;
+        }
+        
+        .slider-group input[type="range"] {
+            width: 250px;
+        }
+
+        .summary {
+            text-align: center;
+            font-size: 1.1em;
+            line-height: 1.6;
+        }
+        .summary span {
+            font-weight: bold;
+            color: var(--accent-yellow);
+        }
+
+        .chart-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 20px;
+        }
+
+        .chart-container {
+            background-color: var(--panel-bg);
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid var(--border-color);
+            min-height: 350px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="dashboard-container">
+        <h1>Sofia Climate Dashboard (1952-2021)</h1>
+        
+        <div id="loading-message">
+            <h2>Loading and processing data...</h2>
+            <p>This may take a few moments. If it fails, please ensure you are running this from a local web server.</p>
+        </div>
+
+        <div id="dashboard-content" class="hidden">
+            <div class="controls">
+                <div class="slider-group">
+                    <label for="startYear">Start Year: <span id="startYearValue">1952</span></label>
+                    <input type="range" id="startYear" min="1952" max="2021" value="1952">
+                </div>
+                <div class="slider-group">
+                    <label for="endYear">End Year: <span id="endYearValue">2021</span></label>
+                    <input type="range" id="endYear" min="1952" max="2021" value="2021">
+                </div>
+            </div>
+
+            <div class="summary">
+                Overall Mean Temperature: <span id="overallMean"></span>°C | 
+                Estimated Warming Trend: <span id="warmingTrend"></span>°C / Decade
+            </div>
+            
+            <div class="chart-grid">
+                <div class="chart-container">
+                    <canvas id="yearlyMeanChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <canvas id="yearlyExtremesChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <canvas id="monthlyMeanChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <canvas id="hotColdDaysChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const CSV_PATH = 'temperature_Sofia_2809794_1952-01-01 - 2021-11-28.csv';
+
+        // --- DOM Elements ---
+        const startYearSlider = document.getElementById('startYear');
+        const endYearSlider = document.getElementById('endYear');
+        const startYearValue = document.getElementById('startYearValue');
+        const endYearValue = document.getElementById('endYearValue');
+
+        const overallMeanEl = document.getElementById('overallMean');
+        const warmingTrendEl = document.getElementById('warmingTrend');
+
+        // --- Global State ---
+        let fullData = [];
+        let chartInstances = {};
+
+        // --- Chart.js Global Config ---
+        Chart.defaults.color = 'rgba(224, 224, 224, 0.8)';
+        Chart.defaults.borderColor = 'rgba(68, 68, 68, 0.8)';
+
+        // --- Data Loading and Processing ---
+        async function loadAndProcessData() {
+            try {
+                const response = await fetch(CSV_PATH);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}. Could not fetch CSV. Make sure you are running a local web server.`);
+                }
+                const csvText = await response.text();
+                const rows = csvText.split('\n').slice(1); // Skip header
+
+                fullData = rows.map(rowStr => {
+                    const row = rowStr.split(',');
+                    // Assuming columns are fixed: DATE, TAVG, TMIN, TMAX
+                    const date = row[0];
+                    const tavg = parseFloat(row[1]) / 10;
+                    const tmin = parseFloat(row[2]) / 10;
+                    const tmax = parseFloat(row[3]) / 10;
+
+                    if (!date || isNaN(tavg)) {
+                        return null;
+                    }
+
+                    const dateObj = new Date(date);
+                    return {
+                        date: dateObj,
+                        year: dateObj.getFullYear(),
+                        month: dateObj.getMonth(), // 0-11
+                        tavg,
+                        tmin,
+                        tmax,
+                    };
+                }).filter(d => d !== null); // Filter out invalid rows
+
+                initializeDashboard();
+
+            } catch (error) {
+                console.error("Failed to load or process data:", error);
+                document.getElementById('loading-message').innerHTML = `<h2>Error</h2><p>${error.message}</p>`;
+            }
+        }
+        
+        // --- Metric Calculation ---
+        function calculateMetrics(startYear, endYear) {
+            const filteredData = fullData.filter(d => d.year >= startYear && d.year <= endYear);
+
+            // --- Yearly Aggregates ---
+            const yearlyData = {};
+            for (const d of filteredData) {
+                if (!yearlyData[d.year]) {
+                    yearlyData[d.year] = {
+                        tavgSum: 0,
+                        tavgCount: 0,
+                        tmax: -Infinity,
+                        tmin: Infinity,
+                        hotDays: 0,
+                        coldDays: 0,
+                    };
+                }
+                const yearEntry = yearlyData[d.year];
+                if (!isNaN(d.tavg)) {
+                    yearEntry.tavgSum += d.tavg;
+                    yearEntry.tavgCount++;
+                }
+                if (!isNaN(d.tmax)) {
+                    yearEntry.tmax = Math.max(yearEntry.tmax, d.tmax);
+                    if (d.tmax >= 30) yearEntry.hotDays++;
+                }
+                if (!isNaN(d.tmin)) {
+                    yearEntry.tmin = Math.min(yearEntry.tmin, d.tmin);
+                    if (d.tmin <= -10) yearEntry.coldDays++;
+                }
+            }
+
+            const years = Object.keys(yearlyData).map(Number).sort();
+            const yearlyMeans = years.map(y => yearlyData[y].tavgSum / yearlyData[y].tavgCount);
+            const yearlyMaxes = years.map(y => yearlyData[y].tmax);
+            const yearlyMins = years.map(y => yearlyData[y].tmin);
+            const hotDays = years.map(y => yearlyData[y].hotDays);
+            const coldDays = years.map(y => yearlyData[y].coldDays);
+
+            // --- Monthly Aggregates ---
+            const monthlyData = Array.from({ length: 12 }, () => ({ sum: 0, count: 0 }));
+            for (const d of filteredData) {
+                if (!isNaN(d.tavg)) {
+                    monthlyData[d.month].sum += d.tavg;
+                    monthlyData[d.month].count++;
+                }
+            }
+            const monthlyMeans = monthlyData.map(m => m.count > 0 ? m.sum / m.count : 0);
+
+            // --- Summary Statistics ---
+            const totalTavgSum = filteredData.reduce((acc, d) => acc + (isNaN(d.tavg) ? 0 : d.tavg), 0);
+            const totalTavgCount = filteredData.filter(d => !isNaN(d.tavg)).length;
+            const overallMean = totalTavgCount > 0 ? totalTavgSum / totalTavgCount : 0;
+            
+            // --- Warming Trend (Linear Regression) ---
+            const trend = calculateLinearRegression(years, yearlyMeans);
+
+            return {
+                years,
+                yearlyMeans,
+                yearlyMaxes,
+                yearlyMins,
+                hotDays,
+                coldDays,
+                monthlyMeans,
+                overallMean,
+                warmingTrend: trend.slope,
+            };
+        }
+        
+        function calculateLinearRegression(x, y) {
+            const n = x.length;
+            if (n === 0) return { slope: 0, intercept: 0 };
+            
+            const sumX = x.reduce((a, b) => a + b, 0);
+            const sumY = y.reduce((a, b) => a + b, 0);
+            const sumXY = x.map((xi, i) => xi * y[i]).reduce((a, b) => a + b, 0);
+            const sumX2 = x.map(xi => xi * xi).reduce((a, b) => a + b, 0);
+
+            const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+            const intercept = (sumY - slope * sumX) / n;
+            
+            return { slope, intercept };
+        }
+
+
+        // --- Charting ---
+        function initCharts() {
+            const commonOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                plugins: {
+                    legend: { position: 'top' },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += context.parsed.y.toFixed(2);
+                                    if(context.dataset.yAxisID !== 'yDays') label += '°C';
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                }
+            };
+            
+            chartInstances.yearlyMean = new Chart(document.getElementById('yearlyMeanChart'), {
+                type: 'line',
+                data: { labels: [], datasets: [] },
+                options: { ...commonOptions, plugins: { ...commonOptions.plugins, title: { display: true, text: 'Annual Mean Temperature' }}}
+            });
+
+            chartInstances.yearlyExtremes = new Chart(document.getElementById('yearlyExtremesChart'), {
+                type: 'line',
+                data: { labels: [], datasets: [] },
+                options: { ...commonOptions, plugins: { ...commonOptions.plugins, title: { display: true, text: 'Annual Temperature Extremes' }}}
+            });
+            
+            chartInstances.monthlyMean = new Chart(document.getElementById('monthlyMeanChart'), {
+                type: 'line',
+                data: {
+                    labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+                    datasets: []
+                },
+                options: { ...commonOptions, plugins: { ...commonOptions.plugins, title: { display: true, text: 'Average Monthly Temperature' }}}
+            });
+            
+            chartInstances.hotColdDays = new Chart(document.getElementById('hotColdDaysChart'), {
+                type: 'bar',
+                data: { labels: [], datasets: [] },
+                options: { ...commonOptions,
+                    scales: { y: { beginAtZero: true, id: 'yDays', title: {display: true, text: 'Number of Days'} } },
+                    plugins: { ...commonOptions.plugins, title: { display: true, text: 'Number of Very Hot/Cold Days per Year' }}
+                }
+            });
+        }
+
+        function updateCharts(metrics) {
+            // Yearly Mean Chart
+            chartInstances.yearlyMean.data.labels = metrics.years;
+            chartInstances.yearlyMean.data.datasets = [{
+                label: 'Mean Temperature (°C)',
+                data: metrics.yearlyMeans,
+                borderColor: 'rgba(241, 196, 15, 0.8)',
+                backgroundColor: 'rgba(241, 196, 15, 0.2)',
+                tension: 0.1,
+                fill: true
+            }];
+            chartInstances.yearlyMean.update();
+
+            // Yearly Extremes Chart
+            chartInstances.yearlyExtremes.data.labels = metrics.years;
+            chartInstances.yearlyExtremes.data.datasets = [
+                {
+                    label: 'Highest Max Temperature (°C)',
+                    data: metrics.yearlyMaxes,
+                    borderColor: 'rgba(231, 76, 60, 0.8)',
+                    backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                    tension: 0.1
+                },
+                {
+                    label: 'Lowest Min Temperature (°C)',
+                    data: metrics.yearlyMins,
+                    borderColor: 'rgba(52, 152, 219, 0.8)',
+                    backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                    tension: 0.1
+                }
+            ];
+            chartInstances.yearlyExtremes.update();
+
+            // Monthly Mean Chart
+            chartInstances.monthlyMean.data.datasets = [{
+                label: 'Mean Temperature (°C)',
+                data: metrics.monthlyMeans,
+                borderColor: 'rgba(26, 188, 156, 0.8)',
+                backgroundColor: 'rgba(26, 188, 156, 0.2)',
+                tension: 0.1,
+                fill: true
+            }];
+            chartInstances.monthlyMean.update();
+
+            // Hot/Cold Days Chart
+            chartInstances.hotColdDays.data.labels = metrics.years;
+            chartInstances.hotColdDays.data.datasets = [
+                {
+                    label: 'Hot Days (TMAX ≥ 30°C)',
+                    data: metrics.hotDays,
+                    backgroundColor: 'rgba(231, 76, 60, 0.7)',
+                    yAxisID: 'yDays'
+                },
+                {
+                    label: 'Cold Days (TMIN ≤ -10°C)',
+                    data: metrics.coldDays,
+                    backgroundColor: 'rgba(52, 152, 219, 0.7)',
+                     yAxisID: 'yDays'
+                }
+            ];
+            chartInstances.hotColdDays.update();
+        }
+
+        // --- Dashboard Initialization and Updates ---
+        function initializeDashboard() {
+            document.getElementById('loading-message').classList.add('hidden');
+            document.getElementById('dashboard-content').classList.remove('hidden');
+
+            const minYear = fullData[0].year;
+            const maxYear = fullData[fullData.length - 1].year;
+            
+            startYearSlider.min = minYear;
+            startYearSlider.max = maxYear;
+            startYearSlider.value = minYear;
+            startYearValue.textContent = minYear;
+            
+            endYearSlider.min = minYear;
+            endYearSlider.max = maxYear;
+            endYearSlider.value = maxYear;
+            endYearValue.textContent = maxYear;
+
+            initCharts();
+            updateDashboard();
+
+            startYearSlider.addEventListener('input', handleSliderInput);
+            endYearSlider.addEventListener('input', handleSliderInput);
+        }
+
+        function handleSliderInput() {
+            let start = parseInt(startYearSlider.value);
+            let end = parseInt(endYearSlider.value);
+
+            if (start > end) {
+                if (this === startYearSlider) {
+                    endYearSlider.value = start;
+                    end = start;
+                } else {
+                    startYearSlider.value = end;
+                    start = end;
+                }
+            }
+            
+            startYearValue.textContent = start;
+            endYearValue.textContent = end;
+            
+            updateDashboard();
+        }
+        
+        function updateDashboard() {
+            const startYear = parseInt(startYearSlider.value);
+            const endYear = parseInt(endYearSlider.value);
+
+            const metrics = calculateMetrics(startYear, endYear);
+            
+            updateCharts(metrics);
+
+            overallMeanEl.textContent = metrics.overallMean.toFixed(2);
+            warmingTrendEl.textContent = (metrics.warmingTrend * 10).toFixed(3);
+        }
+
+        // --- Start the application ---
+        loadAndProcessData();
+    });
+    </script>
+</body>
+</html>

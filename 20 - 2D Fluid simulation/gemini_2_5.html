@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Fluid Simulation - p5.js</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #111;
+            font-family: 'Arial', sans-serif;
+            color: white;
+        }
+        #infoPanel {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 15px;
+            border-radius: 8px;
+            max-width: 320px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        #infoPanel h3 {
+            margin-top: 0;
+            border-bottom: 1px solid #555;
+            padding-bottom: 8px;
+        }
+        #infoPanel code {
+            background: #333;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        .slider-group {
+            margin-top: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input[type="range"] {
+            width: 100%;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.1/p5.js"></script>
+</head>
+<body>
+    <div id="infoPanel">
+        <h3>Fluid Simulation Controls</h3>
+        <ul>
+            <li><b>Click & Drag:</b> Add fluid and force</li>
+            <li><b>Key <code>C</code>:</b> Inject new random color</li>
+            <li><b>Key <code>V</code>:</b> Toggle Vorticity (<span id="vorticityStatus">ON</span>)</li>
+            <li><b>Key <code>R</code>:</b> Reset simulation</li>
+        </ul>
+        <div class="slider-group">
+            <label for="viscSlider">Viscosity: <span id="viscValue">0.0001</span></label>
+            <input type="range" id="viscSlider" min="0" max="0.0005" step="0.00001" value="0.0001">
+        </div>
+        <div class="slider-group">
+            <label for="dtSlider">Time Step: <span id="dtValue">0.1</span></label>
+            <input type="range" id="dtSlider" min="0.05" max="0.5" step="0.01" value="0.1">
+        </div>
+    </div>
+    <script>
+    // --- Fluid Simulation Code based on "Real-Time Fluid Dynamics for Games" by Jos Stam ---
+
+    let fluid;
+    let useVorticity = true;
+    let currentColor;
+
+    function IX(x, y, N) {
+        return x + y * N;
+    }
+
+    class Fluid {
+        constructor(dt, diffusion, viscosity, resolution) {
+            this.size = resolution;
+            this.dt = dt;
+            this.diff = diffusion;
+            this.visc = viscosity;
+
+            this.N = resolution;
+
+            // Previous and current velocity fields
+            this.vx = new Float32Array(this.N * this.N).fill(0);
+            this.vy = new Float32Array(this.N * this.N).fill(0);
+            this.vx0 = new Float32Array(this.N * this.N).fill(0);
+            this.vy0 = new Float32Array(this.N * this.N).fill(0);
+            
+            // Curl field for vorticity confinement
+            this.curl = new Float32Array(this.N * this.N).fill(0);
+            
+            // Density fields for RGB colors
+            this.density = new Float32Array(this.N * this.N).fill(0);
+            this.density0 = new Float32Array(this.N * this.N).fill(0);
+            this.r = new Float32Array(this.N * this.N).fill(0);
+            this.r0 = new Float32Array(this.N * this.N).fill(0);
+            this.g = new Float32Array(this.N * this.N).fill(0);
+            this.g0 = new Float32Array(this.N * this.N).fill(0);
+            this.b = new Float32Array(this.N * this.N).fill(0);
+            this.b0 = new Float32Array(this.N * this.N).fill(0);
+        }
+
+        reset() {
+            this.vx.fill(0); this.vy.fill(0); this.vx0.fill(0); this.vy0.fill(0);
+            this.density.fill(0); this.density0.fill(0);
+            this.r.fill(0); this.g.fill(0); this.b.fill(0);
+            this.r0.fill(0); this.g0.fill(0); this.b0.fill(0);
+        }
+        
+        step() {
+            if (useVorticity) this.vorticityConfinement(this.vx0, this.vy0);
+            
+            this.swapVel();
+            this.diffuse(1, this.vx0, this.vx, this.visc, this.dt);
+            this.diffuse(2, this.vy0, this.vy, this.visc, this.dt);
+
+            this.project(this.vx0, this.vy0, this.vx, this.vy);
+
+            this.swapVel();
+            this.advect(1, this.vx, this.vx0, this.vx0, this.vy0, this.dt);
+            this.advect(2, this.vy, this.vy0, this.vx0, this.vy0, this.dt);
+
+            this.project(this.vx, this.vy, this.vx0, this.vy0);
+
+            // Advect and diffuse density/color
+            this.swapDensity();
+            this.diffuse(0, this.density0, this.density, this.diff, this.dt);
+            this.diffuse(0, this.r0, this.r, this.diff, this.dt);
+            this.diffuse(0, this.g0, this.g, this.diff, this.dt);
+            this.diffuse(0, this.b0, this.b, this.diff, this.dt);
+            
+            this.swapDensity();
+            this.advect(0, this.density, this.density0, this.vx, this.vy, this.dt);
+            this.advect(0, this.r, this.r0, this.vx, this.vy, this.dt);
+            this.advect(0, this.g, this.g0, this.vx, this.vy, this.dt);
+            this.advect(0, this.b, this.b0, this.vx, this.vy, this.dt);
+        }
+
+        addDensity(x, y, amount, r, g, b) {
+            let index = IX(x, y, this.N);
+            this.density[index] += amount;
+            this.r[index] += r * amount;
+            this.g[index] += g * amount;
+            this.b[index] += b * amount;
+        }
+
+        addVelocity(x, y, amountX, amountY) {
+            let index = IX(x, y, this.N);
+            this.vx[index] += amountX;
+            this.vy[index] += amountY;
+        }
+        
+        swapVel() { [this.vx0, this.vx] = [this.vx, this.vx0]; [this.vy0, this.vy] = [this.vy, this.vy0]; }
+        swapDensity() { 
+            [this.density0, this.density] = [this.density, this.density0];
+            [this.r0, this.r] = [this.r, this.r0];
+            [this.g0, this.g] = [this.g, this.g0];
+            [this.b0, this.b] = [this.b, this.b0];
+        }
+
+        // --- Solver Methods ---
+
+        set_bnd(b, x) {
+            for (let i = 1; i < this.N - 1; i++) {
+                x[IX(i, 0, this.N)] = b == 2 ? -x[IX(i, 1, this.N)] : x[IX(i, 1, this.N)];
+                x[IX(i, this.N - 1, this.N)] = b == 2 ? -x[IX(i, this.N - 2, this.N)] : x[IX(i, this.N - 2, this.N)];
+            }
+            for (let j = 1; j < this.N - 1; j++) {
+                x[IX(0, j, this.N)] = b == 1 ? -x[IX(1, j, this.N)] : x[IX(1, j, this.N)];
+                x[IX(this.N - 1, j, this.N)] = b == 1 ? -x[IX(this.N - 2, j, this.N)] : x[IX(this.N - 2, j, this.N)];
+            }
+            x[IX(0, 0, this.N)] = 0.5 * (x[IX(1, 0, this.N)] + x[IX(0, 1, this.N)]);
+            x[IX(0, this.N - 1, this.N)] = 0.5 * (x[IX(1, this.N - 1, this.N)] + x[IX(0, this.N - 2, this.N)]);
+            x[IX(this.N - 1, 0, this.N)] = 0.5 * (x[IX(this.N - 2, 0, this.N)] + x[IX(this.N - 1, 1, this.N)]);
+            x[IX(this.N - 1, this.N - 1, this.N)] = 0.5 * (x[IX(this.N - 2, this.N - 1, this.N)] + x[IX(this.N - 1, this.N - 2, this.N)]);
+        }
+
+        lin_solve(b, x, x0, a, c) {
+            let cRecip = 1.0 / c;
+            for (let k = 0; k < 20; k++) {
+                for (let j = 1; j < this.N - 1; j++) {
+                    for (let i = 1; i < this.N - 1; i++) {
+                        x[IX(i, j, this.N)] =
+                            (x0[IX(i, j, this.N)] + a * (x[IX(i + 1, j, this.N)] + x[IX(i - 1, j, this.N)] + x[IX(i, j + 1, this.N)] + x[IX(i, j - 1, this.N)])) * cRecip;
+                    }
+                }
+                this.set_bnd(b, x);
+            }
+        }
+
+        diffuse(b, x, x0, diff, dt) {
+            let a = dt * diff * (this.N - 2) * (this.N - 2);
+            this.lin_solve(b, x, x0, a, 1 + 6 * a);
+        }
+
+        advect(b, d, d0, velocX, velocY, dt) {
+            let i0, i1, j0, j1;
+            let dtx = dt * (this.N - 2);
+            let dty = dt * (this.N - 2);
+            let s0, s1, t0, t1;
+            let tmp1, tmp2, x, y;
+
+            for (let j = 1; j < this.N - 1; j++) {
+                for (let i = 1; i < this.N - 1; i++) {
+                    tmp1 = dtx * velocX[IX(i, j, this.N)];
+                    tmp2 = dty * velocY[IX(i, j, this.N)];
+                    x = i - tmp1;
+                    y = j - tmp2;
+
+                    if (x < 0.5) x = 0.5;
+                    if (x > this.N - 1.5) x = this.N - 1.5;
+                    i0 = Math.floor(x);
+                    i1 = i0 + 1.0;
+                    if (y < 0.5) y = 0.5;
+                    if (y > this.N - 1.5) y = this.N - 1.5;
+                    j0 = Math.floor(y);
+                    j1 = j0 + 1.0;
+
+                    s1 = x - i0; s0 = 1.0 - s1;
+                    t1 = y - j0; t0 = 1.0 - t1;
+
+                    d[IX(i, j, this.N)] =
+                        s0 * (t0 * d0[IX(i0, j0, this.N)] + t1 * d0[IX(i0, j1, this.N)]) +
+                        s1 * (t0 * d0[IX(i1, j0, this.N)] + t1 * d0[IX(i1, j1, this.N)]);
+                }
+            }
+            this.set_bnd(b, d);
+        }
+
+        project(velocX, velocY, p, div) {
+            for (let j = 1; j < this.N - 1; j++) {
+                for (let i = 1; i < this.N - 1; i++) {
+                    div[IX(i, j, this.N)] = -0.5 * (
+                        velocX[IX(i + 1, j, this.N)] - velocX[IX(i - 1, j, this.N)] +
+                        velocY[IX(i, j + 1, this.N)] - velocY[IX(i, j - 1, this.N)]
+                    ) / this.N;
+                    p[IX(i, j, this.N)] = 0;
+                }
+            }
+            this.set_bnd(0, div);
+            this.set_bnd(0, p);
+            this.lin_solve(0, p, div, 1, 6);
+
+            for (let j = 1; j < this.N - 1; j++) {
+                for (let i = 1; i < this.N - 1; i++) {
+                    velocX[IX(i, j, this.N)] -= 0.5 * (p[IX(i + 1, j, this.N)] - p[IX(i - 1, j, this.N)]) * this.N;
+                    velocY[IX(i, j, this.N)] -= 0.5 * (p[IX(i, j + 1, this.N)] - p[IX(i, j - 1, this.N)]) * this.N;
+                }
+            }
+            this.set_bnd(1, velocX);
+            this.set_bnd(2, velocY);
+        }
+        
+        vorticityConfinement(vx, vy) {
+            let N = this.N;
+            for(let j = 1; j < N - 1; j++) {
+                for(let i = 1; i < N - 1; i++) {
+                    let curl_x = vx[IX(i, j + 1, N)] - vx[IX(i, j - 1, N)];
+                    let curl_y = vy[IX(i + 1, j, N)] - vy[IX(i - 1, j, N)];
+                    this.curl[IX(i, j, N)] = curl_y - curl_x;
+                }
+            }
+            
+            let VORT_EPSILON = 2.4;
+            for(let j = 2; j < N - 2; j++) {
+                for(let i = 2; i < N - 2; i++) {
+                    let index = IX(i, j, N);
+
+                    let grad_x = abs(this.curl[IX(i + 1, j, N)]) - abs(this.curl[IX(i - 1, j, N)]);
+                    let grad_y = abs(this.curl[IX(i, j + 1, N)]) - abs(this.curl[IX(i, j - 1, N)]);
+                    
+                    let length = sqrt(grad_x * grad_x + grad_y * grad_y) + 0.000001;
+                    grad_x /= length;
+                    grad_y /= length;
+
+                    let v_curl = this.curl[index];
+                    vx[index] = VORT_EPSILON * grad_y * -v_curl;
+                    vy[index] = VORT_EPSILON * grad_x * v_curl;
+                }
+            }
+        }
+
+        render() {
+            let scale = width / this.N;
+            loadPixels();
+            for (let i = 0; i < this.N; i++) {
+                for (let j = 0; j < this.N; j++) {
+                    let idx = IX(i, j, this.N);
+                    let d = this.density[idx];
+                    let r = this.r[idx];
+                    let g = this.g[idx];
+                    let b = this.b[idx];
+                    
+                    for (let x = 0; x < scale; x++) {
+                        for (let y = 0; y < scale; y++) {
+                            let pixelIndex = 4 * ((j * scale + y) * width + (i * scale + x));
+                            pixels[pixelIndex] = min(255, r * 255);
+                            pixels[pixelIndex + 1] = min(255, g * 255);
+                            pixels[pixelIndex + 2] = min(255, b * 255);
+                            pixels[pixelIndex + 3] = min(255, d * 255);
+                        }
+                    }
+                }
+            }
+            updatePixels();
+        }
+    }
+
+    // --- p5.js Sketch ---
+    function setup() {
+        // Grid resolution (higher is more detailed but slower)
+        let resolution = 128;
+        createCanvas(800, 600);
+        pixelDensity(1);
+
+        fluid = new Fluid(0.1, 0, 0.0001, resolution);
+        newColor();
+        
+        // --- UI Setup ---
+        const viscSlider = document.getElementById('viscSlider');
+        const dtSlider = document.getElementById('dtSlider');
+        const viscValue = document.getElementById('viscValue');
+        const dtValue = document.getElementById('dtValue');
+        
+        viscSlider.oninput = () => {
+            fluid.visc = parseFloat(viscSlider.value);
+            viscValue.textContent = fluid.visc.toExponential(1);
+        };
+        dtSlider.oninput = () => {
+            fluid.dt = parseFloat(dtSlider.value);
+            dtValue.textContent = fluid.dt.toFixed(2);
+        };
+    }
+
+    function draw() {
+        background(0);
+
+        if (mouseIsPressed) {
+            let scale = fluid.N / width;
+            let mx = floor(mouseX * scale);
+            let my = floor(mouseY * scale);
+
+            if (mx > 0 && mx < fluid.N-1 && my > 0 && my < fluid.N-1) {
+                let amountX = (mouseX - pmouseX) * 1.5;
+                let amountY = (mouseY - pmouseY) * 1.5;
+
+                fluid.addVelocity(mx, my, amountX, amountY);
+                fluid.addDensity(mx, my, 150, currentColor.r, currentColor.g, currentColor.b);
+            }
+        }
+
+        fluid.step();
+        fluid.render();
+    }
+    
+    function newColor() {
+        currentColor = {
+            r: random(0.5, 1),
+            g: random(0.5, 1),
+            b: random(0.5, 1)
+        };
+        // Ensure color is bright
+        let mag = sqrt(currentColor.r*currentColor.r + currentColor.g*currentColor.g + currentColor.b*currentColor.b);
+        currentColor.r /= mag;
+        currentColor.g /= mag;
+        currentColor.b /= mag;
+    }
+    
+    function keyPressed() {
+        if (key === 'r' || key === 'R') {
+            fluid.reset();
+        }
+        if (key === 'v' || key === 'V') {
+            useVorticity = !useVorticity;
+            document.getElementById('vorticityStatus').textContent = useVorticity ? "ON" : "OFF";
+        }
+        if (key === 'c' || key === 'C') {
+            newColor();
+        }
+    }
+    </script>
+</body>
+</html>

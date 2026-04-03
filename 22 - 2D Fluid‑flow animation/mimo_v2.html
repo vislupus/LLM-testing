@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>von Kármán Vortex Street – Interactive CFD</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{overflow:hidden;background:#080c14}
+canvas{display:block}
+#ui{position:fixed;top:12px;left:12px;color:#b0bec5;font:12px/1.7 'Courier New',monospace;
+background:rgba(8,12,20,.9);padding:13px 16px;border-radius:10px;border:1px solid rgba(80,130,200,.2);
+user-select:none;pointer-events:none;z-index:10;max-width:310px}
+#ui h1{font-size:14px;color:#e0e8f0;margin-bottom:4px;letter-spacing:.3px}
+</style>
+</head>
+<body>
+<div id="ui"></div>
+<script>
+/* ============================================================
+   von Kármán Vortex Street – Navier–Stokes Fluid Simulation
+   Grid-based 2-D incompressible flow with interactive obstacle.
+   ============================================================ */
+
+'use strict';
+
+// ── Tunables ──────────────────────────────────────────────────
+const NX = 200, NY = 100, CELL = 5;          // grid resolution & cell px
+const INLET_U = 0.05;                         // inflow speed (lattice units)
+const VISCOSITY = 1e-4;                       // kinematic viscosity  →  Re ≈ 130
+const PRESS_ITERS = 80;                       // Jacobi iterations for pressure
+const ADVECT_ITERS = 2;                       // diffusion sub-steps
+
+// ── Obstacle state ────────────────────────────────────────────
+const obs = {
+  type: 0, types: ['circle','ellipse','rect'],
+  x: NX * 0.25, y: NY * 0.50,
+  r: 8, rx: 10, ry: 6, w: 16, h: 12,
+  ang: 0
+};
+
+// ── Interaction state ─────────────────────────────────────────
+let dragMode = null;           // null | 'move' | 'resize' | 'rotate'
+let offX = 0, offY = 0;
+let showVec = false, mode = 0; // speed / vorticity
+
+// ── Fluid arrays (Float32 for perf) ───────────────────────────
+const N = (NX + 2) * (NY + 2);
+const u   = new Float32Array(N);     // x-velocity
+const v   = new Float32Array(N);     // y-velocity
+const u0  = new Float32Array(N);
+const v0  = new Float32Array(N);
+const p   = new Float32Array(N);     // pressure
+const d   = new Float32Array(N);     // dye density
+const d0  = new Float32Array(N);
+const mask = new Uint8Array(N);      // 1 = inside obstacle
+
+// ── Flow-tracer particles ─────────────────────────────────────
+const N_PARTICLES = 350;
+const ppos = new Float32Array(N_PARTICLES * 2);
+let simFrame = 0;
+
+// ── Index helper ──────────────────────────────────────────────
+function idx(i, j) { return j * (NX + 2) + i; }
+
+// ══════════════════════════════════════════════════════════════
+//  OBSTACLE  GEOMETRY
+// ══════════════════════════════════════════════════════════════
+
+function pointInObstacle(gx, gy) {
+  const c = Math.cos(obs.ang), s = Math.sin(obs.ang);
+  const dx = gx - obs.x, dy = gy - obs.y;
+  const lx =  dx * c + dy * s;        // local x
+  const ly = -dx * s + dy * c;        // local y
+
+  switch (obs.type) {
+    case 0: return lx * lx + ly * ly <= obs.r * obs.r;
+    case 1: return (lx / obs.rx) ** 2 + (ly / obs.ry) ** 2 <= 1;
+    case 2: return Math.abs(lx) <= obs.w / 2 && Math.abs(ly) <= obs.h / 2;
+  }
+  return false;
+}
+
+function rebuildMask() {
+  mask.fill(0);
+  for (let j = 1; j <= NY; j++)
+    for (let i = 1; i <= NX; i++)
+      if (pointInObstacle(i, j)) mask[idx(i, j)] = 1;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  CORE  FLUID  SOLVER  (Stable Fluids, Jos Stam 1999)
+// ══════════════════════════════════════════════════════════════
+
+/* Bilinearly sample a staggered field at continuous (x,y). */
+function sampleField(fld, x, y) {
+  if (x < 0.5) x = 0.5;  if (x > NX + 0.5) x = NX + 0.5;
+  if (y < 0.5) y = 0.5;  if (y > NY + 0.5) y = NY + 0.5;
+  const i0 = x | 0, j0 = y | 0, i1 = i0 + 1, j1 = j0 + 1;
+  const sx = x - i0, sy = y - j0;
+  return (1 - sx) * ((1 - sy) * fld[idx(i0, j0)] + sy * fld[idx(i0, j1)])
+       +      sx  * ((1 - sy) * fld[idx(i1, j0)] + sy * fld[idx(i1, j1)]);
+}
+
+/* Semi-Lagrangian advection (trace backwards). */
+function advect(fld, out, cu, cv, dt) {
+  for (let j = 1; j <= NY; j++) {
+    for (let i = 1; i <= NX; i++) {
+      const k = idx(i, j);
+      if (mask[k]) { out[k] = 0; continue; }
+      out[k] = sampleField(fld,
+        i - dt * cu[k] * NX,
+        j - dt * cv[k] * NY);
+    }
+  }
+}
+
+/* 5-point discrete Laplacian, with solid-cell masking. */
+function laplacian(fld, i, j) {
+  let sum = 0, cnt = 0;
+  const k = idx(i, j);
+  if (!mask[idx(i - 1, j)]) { sum += fld[idx(i - 1, j)]; cnt++; }
+  if (!mask[idx(i + 1, j)]) { sum += fld[idx(i + 1, j)]; cnt++; }
+  if (!mask[idx(i, j - 1)]) { sum += fld[idx(i, j - 1)]; cnt++; }
+  if (!mask[idx(i, j + 1)]) { sum += fld[idx(i, j + 1)]; cnt++; }
+  return cnt > 0 ? sum - cnt * fld[k] : 0;
+}
+
+/* Implicit Jacobi diffusion of a velocity component. */
+function diffuse(fld, out, visc, dt) {
+  const a = dt * visc * NX * NY;
+  out.set(fld);
+  for (let iter = 0; iter < ADVECT_ITERS; iter++) {
+    for (let j = 1; j <= NY; j++)
+      for (let i = 1; i <= NX; i++) {
+        const k = idx(i, j);
+        out[k] = mask[k] ? 0 : (fld[k] + a * laplacian(out, i, j)) / (1 + 4 * a);
+      }
+  }
+}
+
+/* Divergence → Jacobi solve for pressure → subtract gradient. */
+function project() {
+  const div = new Float32Array(N);
+  p.fill(0);
+
+  for (let j = 1; j <= NY; j++)
+    for (let i = 1; i <= NX; i++) {
+      const k = idx(i, j);
+      if (mask[k]) continue;
+      const fl = mask[idx(i - 1, j)] ? 0 : 1;
+      const fr = mask[idx(i + 1, j)] ? 0 : 1;
+      const fb = mask[idx(i, j - 1)] ? 0 : 1;
+      const ft = mask[idx(i, j + 1)] ? 0 : 1;
+      div[k] = -0.5 * (fr * u[idx(i + 1, j)] - fl * u[idx(i - 1, j)]
+                      + ft * v[idx(i, j + 1)] - fb * v[idx(i, j - 1)]);
+    }
+
+  for (let iter = 0; iter < PRESS_ITERS; iter++) {
+    for (let j = 1; j <= NY; j++)
+      for (let i = 1; i <= NX; i++) {
+        const k = idx(i, j);
+        if (mask[k]) { p[k] = 0; continue; }
+        let w = 0, s = 0;
+        if (!mask[idx(i - 1, j)]) { s += p[idx(i - 1, j)]; w++; }
+        if (!mask[idx(i + 1, j)]) { s += p[idx(i + 1, j)]; w++; }
+        if (!mask[idx(i, j - 1)]) { s += p[idx(i, j - 1)]; w++; }
+        if (!mask[idx(i, j + 1)]) { s += p[idx(i, j + 1)]; w++; }
+        p[k] = w > 0 ? (div[k] + s) / w : 0;
+      }
+  }
+
+  for (let j = 1; j <= NY; j++)
+    for (let i = 1; i <= NX; i++) {
+      const k = idx(i, j);
+      if (mask[k]) { u[k] = v[k] = 0; continue; }
+      const pl = mask[idx(i - 1, j)] ? p[k] : p[idx(i - 1, j)];
+      const pr = mask[idx(i + 1, j)] ? p[k] : p[idx(i + 1, j)];
+      const pb = mask[idx(i, j - 1)] ? p[k] : p[idx(i, j - 1)];
+      const pt = mask[idx(i, j + 1)] ? p[k] : p[idx(i, j + 1)];
+      u[k] -= 0.5 * (pr - pl);
+      v[k] -= 0.5 * (pt - pb);
+    }
+}
+
+/* Enforce all boundary conditions. */
+function setBoundaries() {
+  // Inlet (left) – constant plug flow
+  for (let j = 0; j <= NY + 1; j++) u[idx(0, j)] = INLET_U;
+
+  // Outflow (right) – zero-gradient
+  for (let j = 0; j <= NY + 1; j++) u[idx(NX + 1, j)] = u[idx(NX, j)];
+
+  // Top & bottom walls – no-slip
+  for (let i = 0; i <= NX + 1; i++) {
+    u[idx(i, 0)]      =  u[idx(i, 1)];     v[idx(i, 0)]      = -v[idx(i, 1)];
+    u[idx(i, NY + 1)]  =  u[idx(i, NY)];   v[idx(i, NY + 1)]  = -v[idx(i, NY)];
+  }
+
+  // Obstacle interior → zero velocity
+  for (let k = 0; k < N; k++) if (mask[k]) u[k] = v[k] = 0;
+}
+
+/* Compute vorticity ω = ∂v/∂x − ∂u/∂y for cell (i,j). */
+function vort(i, j) {
+  if (i < 1 || i > NX || j < 1 || j > NY) return 0;
+  return 0.5 * (v[idx(i + 1, j)] - v[idx(i - 1, j)]
+              - u[idx(i, j + 1)] + u[idx(i, j - 1)]);
+}
+
+/* Advance one full time-step. */
+function step() {
+  if (dragMode) rebuildMask();       // update mask if obstacle moved
+
+  const dt = 1;
+  diffuse(u, u0, VISCOSITY, dt);     // diffuse x-vel
+  diffuse(v, v0, VISCOSITY, dt);     // diffuse y-vel
+  advect(u, u0, u0, v0, dt);         // advect x-vel
+  advect(v, v0, u0, v0, dt);         // advect y-vel
+  project();                          // pressure → incompressibility
+  advect(d, d0, u, v, dt);           // advect dye
+  d.set(d0);
+  setBoundaries();
+
+  // Constant dye influx at inlet
+  for (let j = NY * 0.28 | 0; j <= NY * 0.72 | 0; j++) d[idx(1, j)] = 1;
+
+  // Steady inlet velocity
+  for (let j = 1; j <= NY; j++) u[idx(1, j)] = INLET_U;
+
+  simFrame++;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  VISUALISATION
+// ══════════════════════════════════════════════════════════════
+
+/* Map normalised scalar → colour (navy → cyan → green → yellow → red). */
+function spec(t) {
+  t = Math.max(0, Math.min(1, t));
+  if (t < 0.25) {
+    const s = t * 4;
+    return [ lerp(12, 15, s), lerp(18, 80, s), lerp(55, 185, s) ];
+  }
+  if (t < 0.50) {
+    const s = (t - 0.25) * 4;
+    return [ lerp(15, 40, s), lerp(80, 210, s), lerp(185, 100, s) ];
+  }
+  if (t < 0.75) {
+    const s = (t - 0.50) * 4;
+    return [ lerp(40, 230, s), lerp(210, 200, s), lerp(100, 45, s) ];
+  }
+  const s = (t - 0.75) * 4;
+  return [ lerp(230, 255, s), lerp(200, 50, s), lerp(45, 40, s) ];
+}
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function render() {
+  // dark background around the grid
+  background(8, 12, 20);
+  noStroke();
+
+  // ── colour the fluid cells ──
+  for (let j = 1; j <= NY; j++) {
+    for (let i = 1; i <= NX; i++) {
+      const k = idx(i, j);
+      let r, g, b;
+
+      if (mode === 0) {                                // speed colouring
+        const spd = Math.sqrt(u[k] ** 2 + v[k] ** 2);
+        [r, g, b] = spec(Math.pow(spd / (INLET_U * 2.4), 0.50));
+        const dv = d[k];
+        r = r * 0.55 + dv * 215;
+        g = g * 0.55 + dv * 225;
+        b = b * 0.55 + dv * 240;
+      } else {                                          // vorticity colouring
+        const vt = vort(i, j);
+        const t  = Math.tanh(vt * 22);
+        r = t > 0 ? lerp(28, 255, t)   : lerp(28, 15, -t);
+        g = t > 0 ? lerp(30, 70, t)    : lerp(30, 60, -t);
+        b = t > 0 ? lerp(45, 50, t)    : lerp(45, 230, -t);
+      }
+
+      fill(r, g, b);
+      rect((i - 1) * CELL, (j - 1) * CELL, CELL, CELL);
+    }
+  }
+
+  // ── optional velocity arrows ──
+  if (showVec) {
+    stroke(255, 255, 255, 45);
+    strokeWeight(0.6);
+    const step = 7;
+    for (let j = 1; j <= NY; j += step)
+      for (let i = 1; i <= NX; i += step) {
+        const k = idx(i, j);
+        if (mask[k]) continue;
+        const cx = (i - 0.5) * CELL, cy = (j - 0.5) * CELL;
+        const sc = 55;
+        line(cx, cy, cx + u[k] * sc, cy + v[k] * sc);
+      }
+    noStroke();
+  }
+
+  // ── flow-tracer particles ──
+  fill(255, 255, 255, 55);
+  noStroke();
+  for (let n = 0; n < N_PARTICLES; n++) {
+    const k  = n * 2;
+    let px   = ppos[k], py = ppos[k + 1];
+    const gi = Math.max(1, Math.min(NX, px | 0));
+    const gj = Math.max(1, Math.min(NY, py | 0));
+    if (!mask[idx(gi, gj)]) {
+      px += sampleField(u, px, py) * NX;
+      py += sampleField(v, px, py) * NY;
+    }
+    if (px < 1 || px > NX || py < 1 || py > NY) {
+      px = 1 + Math.random() * 5;
+      py = 2 + Math.random() * (NY - 4);
+    }
+    ppos[k] = px;  ppos[k + 1] = py;
+    ellipse((px - 1) * CELL, (py - 1) * CELL, 2.5, 2.5);
+  }
+
+  // ── obstacle ──
+  push();
+  translate((obs.x - 1) * CELL, (obs.y - 1) * CELL);
+  rotate(obs.ang);
+
+  // shadow
+  fill(0, 0, 0, 45);
+  switch (obs.type) {
+    case 0: ellipse(2, 2, obs.r * 2 * CELL, obs.r * 2 * CELL); break;
+    case 1: ellipse(2, 2, obs.rx * 2 * CELL, obs.ry * 2 * CELL); break;
+    case 2: rect(-obs.w / 2 * CELL + 2, -obs.h / 2 * CELL + 2, obs.w * CELL, obs.h * CELL); break;
+  }
+
+  // solid body
+  fill(32, 36, 44);
+  switch (obs.type) {
+    case 0: ellipse(0, 0, obs.r * 2 * CELL, obs.r * 2 * CELL); break;
+    case 1: ellipse(0, 0, obs.rx * 2 * CELL, obs.ry * 2 * CELL); break;
+    case 2: rect(-obs.w / 2 * CELL, -obs.h / 2 * CELL, obs.w * CELL, obs.h * CELL); break;
+  }
+
+  // outline
+  noFill(); stroke(110, 125, 150); strokeWeight(1.3);
+  switch (obs.type) {
+    case 0: ellipse(0, 0, obs.r * 2 * CELL, obs.r * 2 * CELL); break;
+    case 1: ellipse(0, 0, obs.rx * 2 * CELL, obs.ry * 2 * CELL); break;
+    case 2: rect(-obs.w / 2 * CELL, -obs.h / 2 * CELL, obs.w * CELL, obs.h * CELL); break;
+  }
+
+  // rotation indicator line + arrowhead
+  if (obs.ang !== 0) {
+    stroke(70, 150, 255, 110); strokeWeight(1.5);
+    const rl = Math.min(obs.r, obs.rx, obs.w / 2) * CELL + 8;
+    line(0, 0, rl, 0);
+    fill(70, 150, 255, 110); noStroke();
+    triangle(rl, 0, rl - 6, -3, rl - 6, 3);
+  } else {
+    stroke(70, 150, 255, 55); strokeWeight(1);
+    line(0, 0, 14, 0);
+    fill(70, 150, 255, 80); noStroke();
+    ellipse(14, 0, 4, 4);
+  }
+  pop();
+
+  // ── animated flow arrow at inlet ──
+  noStroke();
+  const pulse = 0.5 + 0.5 * Math.sin(simFrame * 0.07);
+  for (let j = NY * 0.30 | 0; j <= NY * 0.70 | 0; j++) {
+    fill(100, 200, 255, 12 + pulse * 10);
+    rect(0, (j - 1) * CELL, CELL * 1.8, CELL);
+  }
+
+  // ── thin grid lines ──
+  stroke(255, 255, 255, 5);
+  strokeWeight(0.3);
+  for (let i = 0; i <= NX; i++) line(i * CELL, 0, i * CELL, NY * CELL);
+  for (let j = 0; j <= NY; j++) line(0, j * CELL, NX * CELL, j * CELL);
+  noStroke();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  INTERACTION
+// ══════════════════════════════════════════════════════════════
+
+function handleInteraction() {
+  if (!mouseIsPressed) { dragMode = null; return; }
+  const gx = mouseX / CELL + 1, gy = mouseY / CELL + 1;
+
+  if (!dragMode) {
+    const dx = gx - obs.x, dy = gy - obs.y;
+    const d  = Math.sqrt(dx * dx + dy * dy);
+    let hitR;
+    switch (obs.type) {
+      case 0: hitR = obs.r; break;
+      case 1: hitR = Math.max(obs.rx, obs.ry); break;
+      case 2: hitR = Math.max(obs.w, obs.h) / 2; break;
+    }
+
+    if (d < hitR + 6) {
+      if (d > hitR - 3) {
+        dragMode = keyIsDown(SHIFT) ? 'rotate' : 'resize';
+      } else {
+        dragMode = 'move';
+        offX = obs.x - gx;  offY = obs.y - gy;
+      }
+      rebuildMask();
+    }
+  }
+
+  if (dragMode === 'move') {
+    obs.x = constrain(gx + offX, 10, NX - 10);
+    obs.y = constrain(gy + offY, 8,  NY - 8);
+  }
+  if (dragMode === 'rotate') {
+    obs.ang = Math.atan2(gy - obs.y, gx - obs.x);
+  }
+  if (dragMode === 'resize') {
+    const amt = 0.15;
+    switch (obs.type) {
+      case 0: obs.r  = constrain(obs.r  + amt, 3, 22); break;
+      case 1: obs.rx = constrain(obs.rx + amt, 3, 25);
+              obs.ry = constrain(obs.ry + amt, 3, 18); break;
+      case 2: obs.w  = constrain(obs.w  + amt * 2, 6, 40);
+              obs.h  = constrain(obs.h  + amt * 2, 6, 26); break;
+    }
+  }
+}
+
+function mouseWheel(event) {
+  const gx = mouseX / CELL + 1, gy = mouseY / CELL + 1;
+  const dx = gx - obs.x, dy = gy - obs.y;
+  const d  = Math.sqrt(dx * dx + dy * dy);
+  let hitR;
+  switch (obs.type) {
+    case 0: hitR = obs.r; break;
+    case 1: hitR = Math.max(obs.rx, obs.ry); break;
+    case 2: hitR = Math.max(obs.w, obs.h) / 2; break;
+  }
+  if (d > hitR + 10) return;
+
+  const amt = event.delta > 0 ? -0.6 : 0.6;
+  switch (obs.type) {
+    case 0: obs.r  = constrain(obs.r  + amt, 3, 22); break;
+    case 1: obs.rx = constrain(obs.rx + amt, 3, 25);
+            obs.ry = constrain(obs.ry + amt, 3, 18); break;
+    case 2: obs.w  = constrain(obs.w  + amt * 2, 6, 40);
+            obs.h  = constrain(obs.h  + amt * 2, 6, 26); break;
+  }
+  return false;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  KEYBOARD  &  UI
+// ══════════════════════════════════════════════════════════════
+
+function keyPressed() {
+  if (keyCode === TAB)     { obs.type = (obs.type + 1) % obs.types.length; return false; }
+  if (key === 'r' || key === 'R') {
+    u.fill(0); v.fill(0); d.fill(0); p.fill(0); obs.ang = 0;
+    for (let j = 1; j <= NY; j++) u[idx(1, j)] = INLET_U;
+  }
+  if (key === 'v' || key === 'V') showVec = !showVec;
+  if (key === 'q' || key === 'Q') obs.ang -= Math.PI / 12;
+  if (key === 'e' || key === 'E') obs.ang += Math.PI / 12;
+
+  if (!keyIsDown(SHIFT) && !keyIsDown(CONTROL)) {
+    const step = 0.5;
+    if (keyCode === UP_ARROW || key === '+' || key === '=') {
+      if (obs.type === 0) obs.r  = constrain(obs.r  + step, 3, 22);
+      if (obs.type === 1) { obs.rx = constrain(obs.rx + step, 3, 25); obs.ry = constrain(obs.ry + step, 3, 18); }
+      if (obs.type === 2) { obs.w  = constrain(obs.w  + step, 6, 40); obs.h  = constrain(obs.h  + step, 6, 26); }
+    }
+    if (keyCode === DOWN_ARROW || key === '-' || key === '_') {
+      if (obs.type === 0) obs.r  = constrain(obs.r  - step, 3, 22);
+      if (obs.type === 1) { obs.rx = constrain(obs.rx - step, 3, 25); obs.ry = constrain(obs.ry - step, 3, 18); }
+      if (obs.type === 2) { obs.w  = constrain(obs.w  - step, 6, 40); obs.h  = constrain(obs.h  - step, 6, 26); }
+    }
+  }
+}
+
+function buildUI() {
+  const d = document.getElementById('ui');
+  d.innerHTML = `
+    <h1>🌊 von Kármán Vortex Street</h1>
+    <div style="opacity:.55;margin-bottom:6px;font-size:11px">
+      Interactive Navier–Stokes Fluid Simulation
+    </div>
+    <div style="border-top:1px solid rgba(80,130,200,.15);padding-top:6px">
+      <b style="color:#90caf9">Obstacle</b> &nbsp;
+      <span style="color:#ffcc80;font-size:12px">${obs.types[obs.type].toUpperCase()}</span>
+      &nbsp;  Re ≈ ${(INLET_U * obs.r * 2 / VISCOSITY).toFixed(0)}
+    </div>
+    <div style="border-top:1px solid rgba(80,130,200,.15);margin-top:6px;padding-top:6px;font-size:11px;opacity:.65">
+      <b>Drag</b> body → move &nbsp;·&nbsp;
+      <b>Edge-drag</b> → resize<br>
+      <b>Shift + edge</b> → rotate 360°<br>
+      <b>Scroll</b> near object → resize<br><br>
+      <b>Tab</b> shape &nbsp;·&nbsp;
+      <b>Q / E</b> rotate &nbsp;·&nbsp;
+      <b>+/−</b> scale &nbsp;·&nbsp;
+      <b>R</b> reset<br>
+      <b>V</b> velocity vectors &nbsp;·&nbsp;
+      Click far field → colour mode
+    </div>
+  `;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  P5.JS  LIFECYCLE
+// ══════════════════════════════════════════════════════════════
+
+function setup() {
+  createCanvas(NX * CELL, NY * CELL);
+  window.addEventListener('resize', () =>
+    resizeCanvas(NX * CELL, NY * CELL));
+
+  rebuildMask();
+  for (let j = 1; j <= NY; j++) u[idx(1, j)] = INLET_U;
+
+  for (let n = 0; n < N_PARTICLES; n++) {
+    ppos[n * 2]     = 1 + Math.random() * NX;
+    ppos[n * 2 + 1] = 2 + Math.random() * (NY - 4);
+  }
+  buildUI();
+}
+
+function draw() {
+  handleInteraction();
+  step();
+  render();
+
+  // FPS counter
+  fill(255, 255, 255, 35);
+  noStroke();
+  textFont('Courier New');
+  textSize(11);
+  textAlign(RIGHT, BOTTOM);
+  text('fps ' + frameRate().toFixed(0), width - 6, height - 4);
+}
+
+// Click on empty area → toggle colour mode
+function mouseClicked() {
+  const gx = mouseX / CELL + 1, gy = mouseY / CELL + 1;
+  const dx = gx - obs.x, dy = gy - obs.y;
+  if (Math.sqrt(dx * dx + dy * dy) > Math.max(obs.r, obs.rx, obs.w / 2) + 20)
+    mode = 1 - mode;
+}
+</script>
+</body>
+</html>

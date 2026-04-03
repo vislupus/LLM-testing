@@ -25,6 +25,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **5/10** |
 | **Gemini 3**          | **4/10** |
+| **Gemini 2.5**        | **4/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **3/10** |
@@ -40,9 +41,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **4/10** |
 | **Deepseek 3.2**      | **5/10** |
+| **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **6/10** |
 | **Qwen 3.5**          | **5/10** |
+| **MiMo-V2**           | **5/10** |
 
 ---
 
@@ -53,6 +56,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
@@ -68,9 +72,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **2/10** |
 | **Deepseek 3.2**      | **3/10** |
+| **Мinimax m2.7**      | **2/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **2/10** |
 | **Qwen 3.5**          | **4/10** |
+| **MiMo-V2**           | **3/10** |
 
 ---
 
@@ -81,6 +87,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
+| **Gemini 2.5**        | **4/10** |
 | **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **4/10** |
@@ -96,9 +103,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **6/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **5/10** |
+| **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **4/10** |
+| **MiMo-V2**           | **4/10** |
 
 ---
 
@@ -109,6 +118,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **6/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **6/10** |
@@ -124,9 +134,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **6/10** |
+| **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **6/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **4/10** |
 
 ---
 
@@ -137,6 +149,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **5/10** |
+| **Gemini 2.5**        | **4/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **6/10** |
@@ -152,9 +165,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **4/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **4/10** |
+| **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **3/10** |
 | **Qwen 3.5**          | **4/10** |
+| **MiMo-V2**           | **4/10** |
 
 ---
 
@@ -165,6 +180,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **4/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **1/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **5/10** |
@@ -180,9 +196,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **4/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **5/10** |
+| **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **3/10** |
+| **MiMo-V2**           | **1/10** |
 
 ---
 
@@ -193,6 +211,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **3/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **8/10** |
@@ -208,9 +227,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **10/10** |
+| **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **9/10** |
 | **Qwen 3.5**          | **7/10** |
+| **MiMo-V2**           | **3/10** |
 
 ---
 
@@ -221,6 +242,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **3/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **4/10** |
@@ -236,9 +258,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **4/10** |
+| **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **6/10** |
 | **Qwen 3.5**          | **3/10** |
+| **MiMo-V2**           | **2/10** |
 
 ---
 
@@ -249,6 +273,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **5/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **10/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **6/10** |
@@ -264,9 +289,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **7/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **7/10** |
 | **Qwen 3.5**          | **6/10** |
+| **MiMo-V2**           | **8/10** |
 
 ---
 
@@ -277,6 +304,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **8/10** |
+| **Gemini 2.5**        | **6/10** |
 | **ChatGPT 5.4**       | **10/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **8/10** |
@@ -292,9 +320,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **6/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **10/10** |
+| **Мinimax m2.7**      | **9/10** |
 | **Мinimax m2.5**      | **5/10** |
 | **Мinimax m2.1**      | **3/10** |
 | **Qwen 3.5**          | **6/10** |
+| **MiMo-V2**           | **6/10** |
 
 ---
 
@@ -305,6 +335,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **7/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **7/10** |
@@ -320,9 +351,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **3/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **7/10** |
+| **Мinimax m2.7**      | **6/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **1/10** |
 
 ---
 
@@ -333,6 +366,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
+| **Gemini 2.5**        | **2/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **4/10** |
@@ -348,9 +382,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **4/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **5/10** |
+| **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **1/10** |
 
 ---
 
@@ -361,6 +397,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **5/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **8/10** |
@@ -376,9 +413,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **2/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **3/10** |
 
 ---
 
@@ -389,6 +428,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **6/10** |
+| **Gemini 2.5**        | **3/10** |
 | **ChatGPT 5.4**       | **3/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **6/10** |
@@ -404,9 +444,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **7/10** |
+| **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **1/10** |
 
 ---
 
@@ -417,6 +459,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **9/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **7/10** |
@@ -432,9 +475,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **4/10** |
+| **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **1/10** |
 
 ---
 
@@ -445,6 +490,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **5/10** |
+| **Gemini 2.5**        | **3/10** |
 | **ChatGPT 5.4**       | **9/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **6/10** |
@@ -460,9 +506,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **8/10** |
 
 ---
 
@@ -473,6 +521,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
+| **Gemini 2.5**        | **2/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **6/10** |
@@ -488,9 +537,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **6/10** |
 | **Kimi K2 Turbo**     | **3/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **2/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **5/10** |
 | **Qwen 3.5**          | **3/10** |
+| **MiMo-V2**           | **4/10** |
 
 ---
 
@@ -501,6 +552,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **8/10** |
+| **Gemini 2.5**        | **4/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **3/10** |
@@ -516,9 +568,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **3/10** |
 | **Kimi K2 Turbo**     | **1/10** |
 | **Deepseek 3.2**      | **3/10** |
+| **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **2/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **1/10** |
 
 ---
 
@@ -529,6 +583,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **7/10** |
+| **Gemini 2.5**        | **4/10** |
 | **ChatGPT 5.4**       | **9/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **5/10** |
@@ -544,9 +599,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **7/10** |
 | **Kimi K2 Turbo**     | **3/10** |
 | **Deepseek 3.2**      | **4/10** |
+| **Мinimax m2.7**      | **4/10** |
 | **Мinimax m2.5**      | **8/10** |
 | **Мinimax m2.1**      | **9/10** |
 | **Qwen 3.5**          | **5/10** |
+| **MiMo-V2**           | **3/10** |
 
 ---
 
@@ -557,6 +614,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **1/10** |
@@ -572,9 +630,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **1/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **1/10** |
 
 ---
 
@@ -585,6 +645,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **5/10** |
+| **Gemini 2.5**        | **3/10** |
 | **ChatGPT 5.4**       | **10/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
@@ -600,9 +661,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **9/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **1/10** |
 
 ---
 
@@ -613,6 +676,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **7/10** |
+| **Gemini 2.5**        | **2/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **4/10** |
@@ -628,9 +692,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **3/10** |
+| **MiMo-V2**           | **3/10** |
 
 ---
 
@@ -641,6 +707,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **6/10** |
+| **Gemini 2.5**        | **4/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
@@ -656,9 +723,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **7/10** |
 | **Kimi K2 Turbo**     | **1/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **6/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **7/10** |
 | **Qwen 3.5**          | **2/10** |
+| **MiMo-V2**           | **1/10** |
 
 ---
 
@@ -669,6 +738,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **6/10** |
+| **Gemini 2.5**        | **3/10** |
 | **ChatGPT 5.4**       | **9/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
@@ -684,9 +754,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **7/10** |
 | **Kimi K2 Turbo**     | **4/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **9/10** |
 | **Мinimax m2.5**      | **5/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **3/10** |
+| **MiMo-V2**           | **3/10** |
 
 ---
 
@@ -697,6 +769,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **3/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **2/10** |
@@ -712,9 +785,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **2/10** |
 | **Deepseek 3.2**      | **3/10** |
+| **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **5/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **2/10** |
+| **MiMo-V2**           | **6/10** |
 
 ---
 
@@ -725,6 +800,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **5/10** |
+| **Gemini 2.5**        | **3/10** |
 | **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
@@ -740,9 +816,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **6/10** |
 | **Kimi K2 Turbo**     | **1/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **4/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **6/10** |
 | **Qwen 3.5**          | **6/10** |
+| **MiMo-V2**           | **3/10** |
 
 ---
 
@@ -753,6 +831,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
+| **Gemini 2.5**        | **3/10** |
 | **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
@@ -768,9 +847,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **2/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **1/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **1/10** |
 
 ---
 
@@ -781,6 +862,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **0/10** |
+| **Gemini 2.5**        | **5/10** |
 | **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **0/10** |
@@ -796,9 +878,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **7/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **0/10** |
+| **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **0/10** |
 | **Qwen 3.5**          | **5/10** |
+| **MiMo-V2**           | **0/10** |
 
 ---
 
@@ -809,6 +893,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **0/10** |
+| **Gemini 2.5**        | **0/10** |
 | **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **9/10** |
 | **ChatGPT 5.1**       | **0/10** |
@@ -824,9 +909,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **1/10** |
+| **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **0/10** |
 | **Qwen 3.5**          | **5/10** |
+| **MiMo-V2**           | **0/10** |
 
 ---
 
@@ -837,6 +924,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **0/10** |
+| **Gemini 2.5**        | **1/10** |
 | **ChatGPT 5.4**       | **2/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **0/10** |
@@ -852,9 +940,11 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **0/10** |
+| **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **0/10** |
 | **Qwen 3.5**          | **1/10** |
+| **MiMo-V2**           | **0/10** |
 
 ---
 
@@ -865,6 +955,7 @@ Testing different LLMs to do software tasks
 | --------------------- | -------- |
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **0/10** |
+| **Gemini 2.5**        | **5/10** |
 | **ChatGPT 5.4**       | **4/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **0/10** |
@@ -880,6 +971,8 @@ Testing different LLMs to do software tasks
 | **Kimi K2.5**         | **3/10** |
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 3.2**      | **0/10** |
+| **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **0/10** |
 | **Qwen 3.5**          | **3/10** |
+| **MiMo-V2**           | **0/10** |

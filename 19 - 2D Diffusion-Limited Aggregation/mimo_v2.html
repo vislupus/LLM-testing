@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diffusion-Limited Aggregation</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{overflow:hidden;background:#000;font-family:'Segoe UI',system-ui,sans-serif}
+canvas{display:block;cursor:crosshair}
+#hud{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:10;
+  background:rgba(8,8,22,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid rgba(255,255,255,.08);border-radius:11px;padding:8px 26px;
+  color:#fff;font-size:13px;font-weight:700;letter-spacing:.5px;text-align:center}
+#hud small{font-weight:400;font-size:9.5px;color:rgba(255,255,255,.3);display:block;margin-top:2px}
+#pan{position:fixed;top:66px;right:12px;z-index:10;
+  background:rgba(8,8,22,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px 15px;width:215px;
+  color:rgba(255,255,255,.72);font-size:11px}
+#pan h3{font-size:11.5px;font-weight:700;margin-bottom:10px;color:#9ab;text-align:center;letter-spacing:.8px}
+.sg{margin-bottom:9px}
+.sg label{display:flex;justify-content:space-between;font-size:10px;margin-bottom:3px}
+.sg b{color:#5ce;font-weight:700;font-variant-numeric:tabular-nums}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:2px;
+  background:rgba(255,255,255,.1);outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+  width:13px;height:13px;border-radius:50%;background:#5ce;cursor:pointer;box-shadow:0 0 4px rgba(92,238,238,.3)}
+input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;background:#5ce;cursor:pointer;border:none}
+.br{display:flex;gap:5px;margin:6px 0}
+.bt{flex:1;background:rgba(92,238,238,.08);color:#5ce;border:1px solid rgba(92,238,238,.18);
+  border-radius:5px;padding:5px;font-size:10px;cursor:pointer;transition:all .2s;text-align:center}
+.bt:hover{background:rgba(92,238,238,.2)}
+.bt.on{background:rgba(92,238,238,.28);border-color:#5ce}
+#st{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);line-height:1.85;font-size:10px}
+#st i{color:#5ce;font-style:normal;font-weight:700}
+#ft{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);
+  color:rgba(255,255,255,.18);font-size:9px;pointer-events:none;z-index:10;text-align:center}
+</style>
+</head>
+<body>
+<div id="hud">🟠 Diffusion-Limited Aggregation<small>Random walk · Inward bias · Merging · Bloom</small></div>
+<div id="pan">
+  <h3>⚙ CONTROLS</h3>
+  <div class="sg"><label><span>Speed</span><b id="vSpd">8</b></label>
+    <input type="range" id="sSpd" min="1" max="30" value="8"></div>
+  <div class="sg"><label><span>Walkers</span><b id="vN">100</b></label>
+    <input type="range" id="sN" min="10" max="800" step="10" value="100"></div>
+  <div class="sg"><label><span>Inward Bias</span><b id="vB">30%</b></label>
+    <input type="range" id="sB" min="0" max="95" value="30"></div>
+  <div class="sg"><label><span>Edge Limit</span><b id="vE">50 px</b></label>
+    <input type="range" id="sE" min="20" max="200" step="5" value="50"></div>
+  <div class="br"><button class="bt on" id="bP">⏸ Pause</button><button class="bt" id="bR">↻ Reset</button></div>
+  <div id="st">
+    ★ Cluster <i id="sC">1</i> px<br>
+    🔵 Walkers <i id="sW">100</i><br>
+    🌀 Radius <i id="sR">0</i> px<br>
+    📐 Stop at <i id="sS">—</i> px
+  </div>
+</div>
+<div id="ft">Click canvas to seed cluster · Drag to restart</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ── canvas ── */
+var canvas=document.createElement('canvas');
+var ctx=canvas.getContext('2d');
+document.body.appendChild(canvas);
+
+/* ── state ── */
+var W,H,bw,bh,bmp;
+var cluster=[],clusterSet=new Set();
+var walkersX,walkersY;
+var clusterPixels=0,maxR=0,seedX,seedY;
+var simSpeed=8,numWalkers=100,biasPct=30,edgeLimit=50;
+var paused=false,stopped=false,frame=0,subseed=1;
+var bgImg=null,bgDirty=true;
+
+/* ── pre-computed ── */
+var clusterH,clusterS,clusterL,clusterA;
+var preH=[],preS=[],preL=[];
+var MAX_PARTICLES=180000;
+
+/* ── RNG (mulberry32) ── */
+function mb32(a){return function(){a|=0;a=a+0x6D2B79F5|0;
+  var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;
+  return((t^t>>>14)>>>0)/4294967296;};}
+
+/* ═══════════════════════════════
+   PALETTE
+   ═══════════════════════════════ */
+function precomputeColors(n){
+  preH=new Float32Array(n); preS=new Float32Array(n); preL=new Float32Array(n);
+  for(var i=0;i<n;i++){
+    var f=i/Math.max(n-1,1);
+    var h=18+f*295; var s=78+f*18; var l=22+f*56;
+    preH[i]=h/360; preS[i]=s/100; preL[i]=l/100;
+  }
+}
+
+function hsl2r(h,s,l){
+  if(s<.001)return[l,l,l];
+  var q=l<.5?l*(1+s):l+s-l*s, p=2*l-q;
+  function h2r(t){if(t<0)t+=1;if(t>1)t-=1;
+    if(t<1/6)return p+(q-p)*6*t;if(t<.5)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p;}
+  return[h2r(h+1/3),h2r(h),h2r(h-1/3)];
+}
+
+/* ═══════════════════════════════
+   INIT
+   ═══════════════════════════════ */
+function resize(){
+  W=canvas.width=window.innerWidth;
+  H=canvas.height=window.innerHeight;
+  bw=W+120; bh=H+120;
+  bmp=new Uint8Array(bw*bh);
+  bgDirty=true;
+}
+
+function buildPalette(){
+  clusterH=new Float32Array(MAX_PARTICLES);
+  clusterS=new Float32Array(MAX_PARTICLES);
+  clusterL=new Float32Array(MAX_PARTICLES);
+  clusterA=new Float32Array(MAX_PARTICLES);
+  precomputeColors(5000);
+  for(var i=0;i<MAX_PARTICLES;i++){
+    var t=i/(MAX_PARTICLES-1);
+    var idx=Math.min(Math.floor(t*4999),4998);
+    var f=t*4999-idx;
+    clusterH[i]=preH[idx]+(preH[idx+1]-preH[idx])*f;
+    clusterS[i]=preS[idx]+(preS[idx+1]-preS[idx])*f;
+    clusterL[i]=preL[idx]+(preL[idx+1]-preL[idx])*f;
+    clusterA[i]=.35+t*.6;
+  }
+}
+
+function resetSim(){
+  for(var i=0;i<bw*bh;i++) bmp[i]=0;
+  cluster.length=0; clusterSet.clear();
+  clusterPixels=0; maxR=0; stopped=false; frame=0; subseed=1;
+
+  seedX=W>>1; seedY=H>>1;
+  var sdx=seedX+60, sdy=seedY+60;
+  bmp[sdy*bw+sdx]=1; cluster.push([sdx,sdy]); clusterSet.add(sdy*bw+sdx); clusterPixels=1;
+
+  /* extra seed points for initial density */
+  var rng=mb32(42);
+  for(var k=0;k<14;k++){
+    var a2=rng()*Math.PI*2, r2=3+rng()*9;
+    var ix=Math.round(sdx+r2*Math.cos(a2)), iy=Math.round(sdy+r2*Math.sin(a2));
+    if(ix>=0&&ix<bw&&iy>=0&&iy<bh){
+      var key=iy*bw+ix;
+      if(!bmp[key]){bmp[key]=1;cluster.push([ix,iy]);clusterSet.add(key);clusterPixels++;}
+    }
+  }
+
+  walkersX=new Float32Array(numWalkers);
+  walkersY=new Float32Array(numWalkers);
+  spawnAll();
+  bgDirty=true; buildBg();
+  updateHUD();
+}
+
+/* ═══════════════════════════════
+   WALKERS
+   ═══════════════════════════════ */
+function spawnAtEdge(idx){
+  var rng=mb32(Date.now()+(idx*13771+subseed*31337)&0xFFFFFFF);
+  subseed=(subseed+7919)&0xFFFFFFF;
+  for(var att=0;att<60;att++){
+    var a=rng()*Math.PI*2;
+    var inner=Math.max(8,Math.min(maxR*.25,25));
+    var outer=inner+15+maxR*.35;
+    var r=inner+rng()*(outer-inner);
+    var x=(seedX+60)+r*Math.cos(a), y=(seedY+60)+r*Math.sin(a);
+    var bx=Math.round(x), by=Math.round(y);
+    if(bx>=1&&bx<bw-1&&by>=1&&by<bh-1&&!bmp[by*bw+bx]){
+      walkersX[idx]=x; walkersY[idx]=y; return;
+    }
+  }
+  var a=rng()*Math.PI*2;
+  var r=maxR+15+rng()*20;
+  walkersX[idx]=(seedX+60)+r*Math.cos(a);
+  walkersY[idx]=(seedY+60)+r*Math.sin(a);
+}
+
+function spawnAll(){ for(var i=0;i<numWalkers;i++) spawnAtEdge(i); }
+
+/* ═══════════════════════════════
+   STEP
+   ═══════════════════════════════ */
+function step(){
+  var bias=biasPct/100, spd=simSpeed, md=maxR;
+  for(var i=0;i<numWalkers;i++){
+    var wx=walkersX[i], wy=walkersY[i];
+    var bx=Math.round(wx), by=Math.round(wy);
+
+    /* in cluster? */
+    if(bx>=0&&bx<bw&&by>=0&&by<bh){
+      var k=by*bw+bx;
+      if(bmp[k]){
+        addCluster(bx,by); spawnAtEdge(i); continue;
+      }
+    }
+
+    /* moves */
+    for(var s=0;s<spd;s++){
+      bx=Math.round(wx); by=Math.round(wy);
+      if(bx<2||bx>=bw-2||by<2||by>=bh-2){spawnAtEdge(i);wx=walkersX[i];wy=walkersY[i];break;}
+
+      /* check current cell */
+      if(bmp[by*bw+bx]){addCluster(bx,by);spawnAtEdge(i);break;}
+
+      /* direction: cluster center + noise */
+      var cx=wx-(seedX+60), cy=wy-(seedY+60);
+      var dist=Math.sqrt(cx*cx+cy*cy);
+      var dx=0,dy=0;
+
+      if(dist>.5){
+        /* inward bias */
+        var px=-cx/dist, py=-cy/dist;
+        /* perpendicular for tangential component */
+        var tx=-py, ty=px;
+        var n=((wx*7.31+wy*13.73+s*3.71+frame*.001)*43758.5453)%1;
+        var n2=((wx*11.17+wy*7.23+s*2.93+frame*.001)*23421.631)%1;
+        dx=px*bias+tx*(n-.5)*(1-bias)*1.4;
+        dy=py*bias+ty*(n2-.5)*(1-bias)*1.4;
+      } else {
+        var n=((wx*17.31+wy*11.73+s*5.71)*43758.5453)%1;
+        dx=(n-.5)*2; dy=(((n*3.71)%1)-.5)*2;
+      }
+
+      /* normalise + add noise */
+      var l=Math.sqrt(dx*dx+dy*dy);
+      if(l>.001){var sc=1/l; dx*=sc; dy*=sc;}
+      var nn=((wx*23.1+wy*17.9+s*3.11+frame*.001)*37476.139)%1;
+      var nn2=((wx*19.7+wy*29.3+s*7.13+frame*.001)*51351.231)%1;
+      dx+=(nn-.5)*.3; dy+=(nn2-.5)*.3;
+      l=Math.sqrt(dx*dx+dy*dy);
+      if(l>.001){dx/=l; dy/=l;}
+
+      wx+=dx; wy+=dy;
+      bx=Math.round(wx); by=Math.round(wy);
+
+      /* bounds */
+      if(bx<2||bx>=bw-2||by<2||by>=bh-2){spawnAtEdge(i);wx=walkersX[i];wy=walkersY[i];break;}
+
+      /* hit cluster? */
+      if(bmp[by*bw+bx]){addCluster(bx,by);spawnAtEdge(i);break;}
+    }
+
+    /* stuck check */
+    if(Math.abs(walkersX[i]-wx)<.01&&Math.abs(walkersY[i]-wy)<.01){spawnAtEdge(i);}
+    else{walkersX[i]=wx; walkersY[i]=wy;}
+  }
+
+  /* stopping condition */
+  if(!stopped){
+    var sl=Math.min(W,H)/2-edgeLimit;
+    if(md>=sl){stopped=true;paused=true;document.getElementById('bP').textContent='▶ Resume';document.getElementById('bP').classList.remove('on');buildBg();}
+  }
+
+  frame++;
+  if(frame%6===0) updateHUD();
+}
+
+function addCluster(x,y){
+  var k=y*bw+x;
+  if(!bmp[k]){
+    bmp[k]=1; cluster.push([x,y]); clusterSet.add(k); clusterPixels++;
+    var dx=x-(seedX+60), dy=y-(seedY+60);
+    var d=Math.sqrt(dx*dx+dy*dy);
+    if(d>maxR){maxR=d;bgDirty=true;}
+  }
+}
+
+/* ═══════════════════════════════
+   BACKGROUND (cached)
+   ═══════════════════════════════ */
+function buildBg(){
+  if(!bgImg) bgImg=ctx.createImageData(W,H);
+  var d=bgImg.data, cx=W/2, cy=H/2, md=Math.min(W,H)/2;
+  for(var y=0;y<H;y++){
+    for(var x=0;x<W;x++){
+      var i=(y*W+x)*4;
+      var gx=x-cx, gy=y-cy;
+      var gd=Math.sqrt(gx*gx+gy*gy)/md;
+      var br=Math.max(0,1-gd*.6)*.18+.004;
+      d[i]=(br*16)|0; d[i+1]=(br*16)|0; d[i+2]=(br*28)|0; d[i+3]=255;
+    }
+  }
+}
+
+/* ═══════════════════════════════
+   RENDER
+   ═══════════════════════════════ */
+function render(){
+  /* background */
+  if(bgImg) ctx.putImageData(bgImg,0,0);
+  else{ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);}
+
+  /* cluster */
+  renderCluster();
+
+  /* walkers */
+  renderWalkers();
+}
+
+function renderCluster(){
+  var id=ctx.getImageData(0,0,W,H);
+  var px=id.data, n=cluster.length, ox=60, oy=60;
+
+  /* bloom pre-pass: draw faint glow around each cluster pixel */
+  for(var p=0;p<n;p+=4){
+    var pos=cluster[p], cx=pos[0]-ox, cy=pos[1]-oy;
+    if(cx<1||cx>=W-1||cy<1||cy>=H-1) continue;
+    var t=p/Math.max(n-1,1);
+    var hi=Math.min(Math.floor(t*4999),4998);
+    var ff=t*4999-hi;
+    var h=preH[hi]+(preH[hi+1]-preH[hi])*ff;
+    var s=preS[hi]+(preS[hi+1]-preS[hi])*ff;
+    var l=preL[hi]+(preL[hi+1]-preL[hi])*ff;
+    var rgb=hsl2r(h,s,l);
+    /* gamma */
+    var pr=Math.pow(Math.max(0,rgb[0]),.45);
+    var pg=Math.pow(Math.max(0,rgb[1]),.45);
+    var pb=Math.pow(Math.max(0,rgb[2]),.45);
+    /* glow neighbors */
+    var alpha=.025;
+    for(var dy=-1;dy<=1;dy++){
+      for(var dx=-1;dx<=1;dx++){
+        if(dx===0&&dy===0) continue;
+        var ni=((cy+dy)*W+(cx+dx))*4;
+        px[ni]  =Math.min(255,(px[ni]  +pr*255*alpha)|0);
+        px[ni+1]=Math.min(255,(px[ni+1]+pg*255*alpha)|0);
+        px[ni+2]=Math.min(255,(px[ni+2]+pb*255*alpha)|0);
+      }
+    }
+  }
+
+  /* solid cluster pixels */
+  for(var p=0;p<n;p++){
+    var pos=cluster[p], cx=pos[0]-ox, cy=pos[1]-oy;
+    if(cx<0||cx>=W||cy<0||cy>=H) continue;
+    var t=p/Math.max(n-1,1);
+    var hi=Math.min(Math.floor(t*4999),4998);
+    var ff=t*4999-hi;
+    var h=preH[hi]+(preH[hi+1]-preH[hi])*ff;
+    var s=preS[hi]+(preS[hi+1]-preS[hi])*ff;
+    var l=preL[hi]+(preL[hi+1]-preL[hi])*ff;
+    var rgb=hsl2r(h,s,l);
+    var pr=Math.pow(Math.max(0,rgb[0]),.45);
+    var pg=Math.pow(Math.max(0,rgb[1]),.45);
+    var pb=Math.pow(Math.max(0,rgb[2]),.45);
+    var i=(cy*W+cx)*4;
+    px[i]  =(pr*255)|0;
+    px[i+1]=(pg*255)|0;
+    px[i+2]=(pb*255)|0;
+    px[i+3]=255;
+  }
+
+  ctx.putImageData(id,0,0);
+}
+
+function renderWalkers(){
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+
+  /* glow layer */
+  ctx.fillStyle='rgba(90,175,255,0.035)';
+  for(var i=0;i<numWalkers;i++){
+    var wx=walkersX[i]-60, wy=walkersY[i]-60;
+    if(wx>-8&&wx<W+8&&wy>-8&&wy<H+8){
+      ctx.beginPath(); ctx.arc(wx,wy,6,0,6.2832); ctx.fill();
+    }
+  }
+
+  /* bright core */
+  ctx.fillStyle='rgba(170,220,255,0.42)';
+  for(var i=0;i<numWalkers;i++){
+    var wx=walkersX[i]-60, wy=walkersY[i]-60;
+    if(wx>-5&&wx<W+5&&wy>-5&&wy<H+5){
+      ctx.beginPath(); ctx.arc(wx,wy,2.5,0,6.2832); ctx.fill();
+    }
+  }
+
+  /* hot center */
+  ctx.fillStyle='rgba(255,255,255,0.7)';
+  for(var i=0;i<numWalkers;i++){
+    var wx=walkersX[i]-60, wy=walkersY[i]-60;
+    if(wx>-4&&wx<W+4&&wy>-4&&wy<H+4){
+      ctx.beginPath(); ctx.arc(wx,wy,1.2,0,6.2832); ctx.fill();
+    }
+  }
+
+  ctx.restore();
+}
+
+/* ═══════════════════════════════
+   HUD
+   ═══════════════════════════════ */
+function updateHUD(){
+  document.getElementById('sC').textContent=clusterPixels.toLocaleString();
+  document.getElementById('sW').textContent=numWalkers;
+  document.getElementById('sR').textContent=Math.round(maxR);
+  var sl=Math.round(Math.min(W,H)/2-edgeLimit);
+  document.getElementById('sS').textContent=stopped?'DONE! ('+sl+')':sl;
+}
+
+/* ═══════════════════════════════
+   MAIN LOOP
+   ═══════════════════════════════ */
+function loop(){
+  if(!paused) step();
+  render();
+  requestAnimationFrame(loop);
+}
+
+/* ═══════════════════════════════
+   UI
+   ═══════════════════════════════ */
+function wireUI(){
+  document.getElementById('sSpd').oninput=function(){
+    simSpeed=+this.value; document.getElementById('vSpd').textContent=simSpeed;};
+
+  document.getElementById('sN').oninput=function(){
+    var nv=+this.value, oldX=walkersX, oldY=walkersY;
+    numWalkers=nv; document.getElementById('vN').textContent=nv;
+    walkersX=new Float32Array(nv); walkersY=new Float32Array(nv);
+    var copy=Math.min(nv,oldX.length);
+    for(var i=0;i<copy;i++){walkersX[i]=oldX[i];walkersY[i]=oldY[i];}
+    for(var i=copy;i<nv;i++) spawnAtEdge(i);
+    updateHUD();};
+
+  document.getElementById('sB').oninput=function(){
+    biasPct=+this.value; document.getElementById('vB').textContent=biasPct+'%';};
+
+  document.getElementById('sE').oninput=function(){
+    edgeLimit=+this.value; document.getElementById('vE').textContent=edgeLimit+' px';
+    if(!stopped){var sl=Math.min(W,H)/2-edgeLimit;
+      if(maxR>=sl){stopped=true;paused=true;document.getElementById('bP').textContent='▶ Resume';document.getElementById('bP').classList.remove('on');buildBg();}
+    }
+    updateHUD();};
+
+  document.getElementById('bP').onclick=function(){
+    paused=!paused;
+    if(stopped&&paused){stopped=false;}
+    this.textContent=paused?'▶ Resume':'⏸ Pause';
+    this.classList.toggle('on',!paused);
+    if(!paused&&stopped) stopped=false;};
+
+  document.getElementById('bR').onclick=function(){
+    document.getElementById('bP').textContent='⏸ Pause';
+    document.getElementById('bP').classList.add('on');
+    paused=false; resetSim();};
+
+  canvas.addEventListener('click',function(e){
+    var x=Math.round(e.clientX)+60, y=Math.round(e.clientY)+60;
+    if(x>=1&&x<bw-1&&y>=1&&y<bh-1&&!bmp[y*bw+x]){
+      bmp[y*bw+x]=1; cluster.push([x,y]); clusterSet.add(y*bw+x); clusterPixels++;
+      var dx=x-(seedX+60), dy=y-(seedY+60);
+      if(Math.sqrt(dx*dx+dy*dy)>maxR){maxR=Math.sqrt(dx*dx+dy*dy);bgDirty=true;}
+      if(bgDirty){buildBg();bgDirty=false;}
+      updateHUD();
+    }
+  });
+
+  window.addEventListener('resize',function(){resize();resetSim();});
+}
+
+/* ═══════════════════════════════
+   BOOT
+   ═══════════════════════════════ */
+resize();
+buildPalette();
+resetSim();
+wireUI();
+loop();
+
+})();
+</script>
+</body>
+</html>
