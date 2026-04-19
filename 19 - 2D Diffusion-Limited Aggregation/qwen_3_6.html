@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DLA Simulation</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0b10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      color: #d0d0d0;
+      overflow: hidden;
+    }
+    #canvas {
+      border: 1px solid #2a2a3a;
+      border-radius: 4px;
+      box-shadow: 0 0 30px rgba(100, 140, 255, 0.08);
+    }
+    #controls {
+      position: absolute; top: 15px; left: 15px;
+      background: rgba(15, 16, 25, 0.92);
+      border: 1px solid #2a2a3a;
+      border-radius: 10px; padding: 14px;
+      width: 260px;
+      backdrop-filter: blur(6px);
+    }
+    #controls h3 { margin-bottom: 10px; color: #8ab4ff; font-size: 14px; letter-spacing: 0.5px; }
+    .ctrl { margin-bottom: 8px; }
+    .ctrl label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 3px; color: #999; }
+    .ctrl input[type="range"] { width: 100%; height: 4px; -webkit-appearance: none; appearance: none; background: #2a2a3a; border-radius: 2px; outline: none; }
+    .ctrl input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; background: #8ab4ff; border-radius: 50%; cursor: pointer; }
+    .ctrl input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; background: #8ab4ff; border-radius: 50%; cursor: pointer; border: none; }
+    .ctrl .val { color: #8ab4ff; font-weight: bold; }
+    #stats { margin-top: 10px; padding-top: 8px; border-top: 1px solid #222; font-size: 11px; color: #666; line-height: 1.5; }
+    #stats span { color: #aaa; font-weight: bold; }
+    .btn-row { display: flex; gap: 6px; margin-top: 10px; }
+    .btn {
+      flex: 1; padding: 7px 10px; background: #252636; border: 1px solid #333;
+      border-radius: 5px; color: #ccc; font-size: 12px; cursor: pointer; transition: all 0.15s;
+    }
+    .btn:hover { background: #353650; border-color: #8ab4ff; color: #fff; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="controls">
+    <h3>⚙️ DLA Controls</h3>
+    <div class="ctrl">
+      <label>Spawn Count <span class="val" id="v-spawn">5</span></label>
+      <input type="range" id="spawn-count" min="1" max="30" value="5">
+    </div>
+    <div class="ctrl">
+      <label>Speed <span class="val" id="v-speed">2</span></label>
+      <input type="range" id="speed" min="1" max="10" value="2">
+    </div>
+    <div class="ctrl">
+      <label>Inward Bias <span class="val" id="v-bias">0.15</span></label>
+      <input type="range" id="bias" min="0" max="50" value="15">
+    </div>
+    <div class="ctrl">
+      <label>Edge Margin <span class="val" id="v-margin">50</span>px</label>
+      <input type="range" id="margin" min="30" max="100" value="50">
+    </div>
+    <div class="btn-row">
+      <button class="btn" onclick="resetSim()">🔄 Reset</button>
+      <button class="btn" onclick="togglePause()">⏸️ Pause</button>
+    </div>
+    <div id="stats">
+      Fixed particles: <span id="stat-count">0</span><br>
+      Active walkers: <span id="stat-active">0</span><br>
+      Cluster radius: <span id="stat-radius">0</span>px<br>
+      Status: <span id="stat-status">Running</span>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Responsive canvas
+    function resizeCanvas() {
+      const maxW = window.innerWidth - 40;
+      const maxH = window.innerHeight - 40;
+      canvas.width = Math.min(750, maxW);
+      canvas.height = Math.min(600, maxH);
+    }
+    resizeCanvas();
+    window.addEventListener('resize', () => { resizeCanvas(); resetSim(); });
+
+    // Config
+    let config = {
+      spawnCount: 5,
+      speed: 2,
+      bias: 0.15,
+      margin: 50
+    };
+
+    // Grid for fast collision detection
+    let grid = {};
+    const GRID_SIZE = 3;
+    
+    // State
+    let fixedParticles = [];
+    let walkers = [];
+    let paused = false;
+    let finished = false;
+    let centerX, centerY, spawnRadius;
+    
+    // Offscreen buffer for fixed particles (massive speedup)
+    let buffer = document.createElement('canvas');
+    let bCtx = buffer.getContext('2d');
+
+    function gridKey(x, y) {
+      return `${Math.floor(x / GRID_SIZE)},${Math.floor(y / GRID_SIZE)}`;
+    }
+
+    function addFixed(x, y) {
+      fixedParticles.push({ x, y });
+      const k = gridKey(x, y);
+      if (!grid[k]) grid[k] = [];
+      grid[k].push({ x, y });
+      
+      // Also mark neighbors for slightly thicker feel
+      const dirs = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
+      for (const [dx, dy] of dirs) {
+        const nk = gridKey(x + dx * GRID_SIZE, y + dy * GRID_SIZE);
+        if (!grid[nk]) grid[nk] = [];
+        grid[nk].push({ x, x: y, y: y + dy * GRID_SIZE });
+      }
+      
+      // Draw to buffer
+      bCtx.fillStyle = `hsl(${210 + Math.random() * 30}, 60%, ${55 + Math.random() * 25}%)`;
+      bCtx.fillRect(x, y, 2.5, 2.5);
+    }
+
+    function isAdjacent(x, y) {
+      const gx = Math.floor(x / GRID_SIZE);
+      const gy = Math.floor(y / GRID_SIZE);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const k = `${gx + dx},${gy + dy}`;
+          if (grid[k]) return true;
+        }
+      }
+      return false;
+    }
+
+    function spawnWalker() {
+      const angle = Math.random() * Math.PI * 2;
+      const r = spawnRadius;
+      return {
+        x: centerX + Math.cos(angle) * r,
+        y: centerY + Math.sin(angle) * r,
+        angle: Math.random() * Math.PI * 2,
+        speed: config.speed * (0.8 + Math.random() * 0.4)
+      };
+    }
+
+    function updateWalker(w) {
+      // Random walk with bias toward center
+      const dx = centerX - w.x;
+      const dy = centerY - w.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      
+      // Bias direction
+      const biasX = dx / dist * config.bias;
+      const biasY = dy / dist * config.bias;
+      
+      // Random direction change
+      w.angle += (Math.random() - 0.5) * 1.8;
+      
+      // Add bias to angle
+      const targetAngle = Math.atan2(dy, dx);
+      const angleDiff = targetAngle - w.angle;
+      w.angle += Math.sin(angleDiff) * config.bias * 0.3;
+      
+      // Move
+      w.x += (Math.cos(w.angle) + biasX) * w.speed;
+      w.y += (Math.sin(w.angle) + biasY) * w.speed;
+      
+      // Check collision
+      if (isAdjacent(w.x, w.y)) {
+        addFixed(Math.round(w.x), Math.round(w.y));
+        return false; // died/stuck
+      }
+      
+      // Check bounds
+      const maxDist = spawnRadius + 20;
+      const d2 = (w.x - centerX) ** 2 + (w.y - centerY) ** 2;
+      if (d2 > maxDist * maxDist) {
+        // Respawn closer
+        const angle = Math.atan2(w.y - centerY, w.x - centerX);
+        w.x = centerX + Math.cos(angle) * (spawnRadius * 0.9);
+        w.y = centerY + Math.sin(angle) * (spawnRadius * 0.9);
+      }
+      
+      // Check margin stop condition
+      const distFromCenter = Math.sqrt(d2);
+      if (distFromCenter + config.margin > Math.min(canvas.width, canvas.height) / 2 - 20) {
+        finished = true;
+      }
+      
+      return true;
+    }
+
+    function draw() {
+      // Main background
+      ctx.fillStyle = '#0a0b10';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw buffer
+      ctx.drawImage(buffer, 0, 0);
+      
+      // Draw walkers
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+      for (const w of walkers) {
+        ctx.fillRect(w.x, w.y, 2, 2);
+      }
+      
+      // Update stats
+      document.getElementById('stat-count').textContent = fixedParticles.length;
+      document.getElementById('stat-active').textContent = walkers.length;
+      document.getElementById('stat-radius').textContent = Math.round(spawnRadius);
+      document.getElementById('stat-status').textContent = finished ? 'Finished' : 'Running';
+    }
+
+    function update() {
+      if (paused || finished) return;
+      
+      // Update walkers
+      walkers = walkers.filter(updateWalker);
+      
+      // Spawn new walkers
+      while (walkers.length < config.spawnCount) {
+        walkers.push(spawnWalker());
+      }
+      
+      // Expand spawn radius as cluster grows
+      let maxR = 0;
+      for (const p of fixedParticles) {
+        const r = Math.sqrt((p.x - centerX) ** 2 + (p.y - centerY) ** 2);
+        if (r > maxR) maxR = r;
+      }
+      spawnRadius = Math.max(spawnRadius, maxR + 15);
+    }
+
+    function resetSim() {
+      fixedParticles = [];
+      walkers = [];
+      grid = {};
+      finished = false;
+      paused = false;
+      
+      centerX = canvas.width / 2;
+      centerY = canvas.height / 2;
+      spawnRadius = 20;
+      
+      buffer.width = canvas.width;
+      buffer.height = canvas.height;
+      bCtx.fillStyle = '#0a0b10';
+      bCtx.fillRect(0, 0, buffer.width, buffer.height);
+      
+      // Seed particle at center
+      addFixed(Math.round(centerX), Math.round(centerY));
+      
+      // Initial walkers
+      for (let i = 0; i < config.spawnCount; i++) {
+        walkers.push(spawnWalker());
+      }
+    }
+
+    function togglePause() {
+      paused = !paused;
+    }
+
+    // Control bindings
+    document.getElementById('spawn-count').addEventListener('input', (e) => {
+      config.spawnCount = parseInt(e.target.value);
+      document.getElementById('v-spawn').textContent = config.spawnCount;
+    });
+    document.getElementById('speed').addEventListener('input', (e) => {
+      config.speed = parseInt(e.target.value);
+      document.getElementById('v-speed').textContent = config.speed;
+      walkers.forEach(w => w.speed = config.speed * (0.8 + Math.random() * 0.4));
+      document.getElementById('v-speed').textContent = config.speed;
+    });
+    document.getElementById('bias').addEventListener('input', (e) => {
+      config.bias = parseInt(e.target.value) / 100;
+      document.getElementById('v-bias').textContent = config.bias.toFixed(2);
+    });
+    document.getElementById('margin').addEventListener('input', (e) => {
+      config.margin = parseInt(e.target.value);
+      document.getElementById('v-margin').textContent = config.margin;
+    });
+
+    // Main loop
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    resetSim();
+    loop();
+  </script>
+</body>
+</html>

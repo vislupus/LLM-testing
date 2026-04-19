@@ -32,9 +32,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **2/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **3/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **3/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **4/10** |
 | **Glm 4.6**           | **3/10** |
@@ -44,8 +46,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **6/10** |
+| **Qwen 3.6**          | **7/10** |
 | **Qwen 3.5**          | **5/10** |
 | **MiMo-V2**           | **5/10** |
+| **Trinity**           | **4/10** |
 
 ---
 
@@ -63,9 +67,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **1/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **2/10** |
 | **Claude Opus 4.1**   | **2/10** |
+| **Glm 5.1**           | **6/10** |
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **2/10** |
@@ -75,8 +81,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **2/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **2/10** |
+| **Qwen 3.6**          | **4/10** |
 | **Qwen 3.5**          | **4/10** |
 | **MiMo-V2**           | **3/10** |
+| **Trinity**           | **3/10** |
 
 ---
 
@@ -94,9 +102,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Claude Opus 4.1**   | **6/10** |
+| **Glm 5.1**           | **4/10** |
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **0/10** |
@@ -106,8 +116,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **4/10** |
 | **MiMo-V2**           | **4/10** |
+| **Trinity**           | **4/10** |
 
 ---
 
@@ -125,9 +137,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **5/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **1/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Claude Opus 4.1**   | **2/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **2/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **0/10** |
@@ -137,8 +151,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **6/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **4/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -156,9 +172,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **4/10** |
+| **Glm 5.1**           | **6/10** |
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **0/10** |
@@ -168,8 +186,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **3/10** |
+| **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **4/10** |
 | **MiMo-V2**           | **4/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -187,9 +207,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **1/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **4/10** |
+| **Glm 5.1**           | **7/10** |
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **3/10** |
@@ -199,8 +221,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **1/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -218,9 +242,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **5/10** |
 | **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Claude Opus 4.1**   | **4/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **7/10** |
 | **Glm 4.6**           | **3/10** |
@@ -230,8 +256,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **9/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **7/10** |
 | **MiMo-V2**           | **3/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -249,9 +277,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **8/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Claude Opus 4.1**   | **6/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **2/10** |
@@ -261,8 +291,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **6/10** |
+| **Qwen 3.6**          | **5/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **2/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -280,9 +312,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **6/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **4/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Claude Opus 4.1**   | **6/10** |
+| **Glm 5.1**           | **7/10** |
 | **Glm 5**             | **8/10** |
 | **Glm 4.7**           | **6/10** |
 | **Glm 4.6**           | **0/10** |
@@ -292,8 +326,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **7/10** |
+| **Qwen 3.6**          | **4/10** |
 | **Qwen 3.5**          | **6/10** |
 | **MiMo-V2**           | **8/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -311,9 +347,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **7/10** |
 | **Grok 4.2**          | **7/10** |
 | **Grok 4.1**          | **4/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **10/10** |
 | **Claude Opus 4.1**   | **8/10** |
+| **Glm 5.1**           | **6/10** |
 | **Glm 5**             | **5/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **0/10** |
@@ -323,8 +361,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **9/10** |
 | **Мinimax m2.5**      | **5/10** |
 | **Мinimax m2.1**      | **3/10** |
+| **Qwen 3.6**          | **7/10** |
 | **Qwen 3.5**          | **6/10** |
 | **MiMo-V2**           | **6/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -342,9 +382,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Claude Opus 4.1**   | **1/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **1/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **8/10** |
@@ -354,8 +396,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **6/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -373,9 +417,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **3/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **1/10** |
+| **Glm 5.1**           | **6/10** |
 | **Glm 5**             | **1/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **3/10** |
@@ -385,8 +431,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -404,9 +452,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **6/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **1/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **2/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **0/10** |
@@ -416,8 +466,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **2/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **3/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -435,9 +487,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **2/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **3/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **8/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Claude Opus 4.1**   | **1/10** |
+| **Glm 5.1**           | **5/10** |
 | **Glm 5**             | **5/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **5/10** |
@@ -447,8 +501,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -466,9 +522,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **1/10** |
 | **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **1/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **0/10** |
@@ -478,8 +536,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -497,9 +557,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **1/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Claude Opus 4.1**   | **1/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **5/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **0/10** |
@@ -509,8 +571,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **8/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -528,9 +592,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **6/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **5/10** |
+| **Glm 5.1**           | **4/10** |
 | **Glm 5**             | **7/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **4/10** |
@@ -540,8 +606,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **2/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **5/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **4/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -559,9 +627,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **4/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **4/10** |
 | **Claude Opus 4.1**   | **3/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **2/10** |
@@ -571,8 +641,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **2/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -590,9 +662,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **5/10** |
 | **Grok 4.1**          | **3/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **10/10** |
 | **Claude Opus 4.1**   | **1/10** |
+| **Glm 5.1**           | **5/10** |
 | **Glm 5**             | **7/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **4/10** |
@@ -602,8 +676,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **4/10** |
 | **Мinimax m2.5**      | **8/10** |
 | **Мinimax m2.1**      | **9/10** |
+| **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **5/10** |
 | **MiMo-V2**           | **3/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -621,9 +697,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **4/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **4/10** |
 | **Claude Opus 4.1**   | **2/10** |
+| **Glm 5.1**           | **4/10** |
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **6/10** |
@@ -633,8 +711,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -652,9 +732,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **4/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Claude Opus 4.1**   | **6/10** |
+| **Glm 5.1**           | **6/10** |
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **2/10** |
@@ -664,8 +746,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **9/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -683,9 +767,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **4/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Claude Opus 4.1**   | **5/10** |
+| **Glm 5.1**           | **5/10** |
 | **Glm 5**             | **1/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **4/10** |
@@ -695,8 +781,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **3/10** |
+| **Trinity**           | **3/10** |
 
 ---
 
@@ -714,9 +802,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **5/10** |
 | **Grok 4.2**          | **5/10** |
 | **Grok 4.1**          | **2/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Claude Opus 4.1**   | **4/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **8/10** |
 | **Glm 4.7**           | **4/10** |
 | **Glm 4.6**           | **8/10** |
@@ -726,8 +816,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **6/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **7/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **2/10** |
 | **MiMo-V2**           | **1/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -745,9 +837,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **4/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Claude Opus 4.1**   | **7/10** |
+| **Glm 5.1**           | **3/10** |
 | **Glm 5**             | **2/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **8/10** |
@@ -757,8 +851,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **9/10** |
 | **Мinimax m2.5**      | **5/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **5/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **3/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -776,9 +872,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **2/10** |
 | **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **2/10** |
+| **Glm 5.1**           | **5/10** |
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **2/10** |
@@ -788,8 +886,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **5/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **2/10** |
 | **Qwen 3.5**          | **2/10** |
 | **MiMo-V2**           | **6/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -807,9 +907,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **1/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Claude Opus 4.1**   | **4/10** |
+| **Glm 5.1**           | **5/10** |
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **5/10** |
@@ -819,8 +921,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **4/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **6/10** |
+| **Qwen 3.6**          | **6/10** |
 | **Qwen 3.5**          | **6/10** |
 | **MiMo-V2**           | **3/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -838,9 +942,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **1/10** |
 | **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **4/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **4/10** |
+| **Glm 5.1**           | **4/10** |
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **1/10** |
@@ -850,8 +956,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6**          | **2/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -869,9 +977,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **0/10** |
 | **Grok 4.2**          | **7/10** |
 | **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
+| **Glm 5.1**           | **7/10** |
 | **Glm 5**             | **7/10** |
 | **Glm 4.7**           | **4/10** |
 | **Glm 4.6**           | **4/10** |
@@ -881,8 +991,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.6**          | **7/10** |
 | **Qwen 3.5**          | **5/10** |
 | **MiMo-V2**           | **0/10** |
+| **Trinity**           | **0/10** |
 
 ---
 
@@ -900,9 +1012,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **0/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
+| **Glm 5.1**           | **6/10** |
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **6/10** |
 | **Glm 4.6**           | **3/10** |
@@ -912,8 +1026,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **5/10** |
 | **MiMo-V2**           | **0/10** |
+| **Trinity**           | **1/10** |
 
 ---
 
@@ -931,9 +1047,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **0/10** |
 | **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **2/10** |
@@ -943,8 +1061,10 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.6**          | **5/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **0/10** |
+| **Trinity**           | **0/10** |
 
 ---
 
@@ -962,9 +1082,11 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **0/10** |
 | **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **0/10** |
+| **Claude Opus 4.7**   | **0/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
+| **Glm 5.1**           | **4/10** |
 | **Glm 5**             | **5/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **2/10** |
@@ -974,5 +1096,7 @@ Testing different LLMs to do software tasks
 | **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.6**          | **6/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **0/10** |
+| **Trinity**           | **0/10** |

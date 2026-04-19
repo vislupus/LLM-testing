@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galaxy Formation Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #dcdcdc; /* 220 base color */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+<script>
+// --- Configuration ---
+const NUM_PARTICLES = 10000;
+const G = 0.4;                 // Gravitational constant
+const THETA = 0.5;             // Barnes-Hut approximation threshold
+const SOFTENING = 4.0;         // Softening length to prevent singularities
+const DT = 0.5;                // Time step
+const DARK_MATTER_V = 1.8;     // Dark matter halo circular velocity parameter (isothermal sphere)
+const CENTRAL_MASS = 5000;     // Supermassive black hole mass
+const MERGE_FACTOR = 1.0;      // Multiplier for merge radius
+const DRAG = 0.9998;           // Very subtle drag to simulate gas cooling/collapse
+const RADIAL_DRAG = 0.9995;    // Extra drag on radial velocity to encourage circularization
+
+let particles = [];
+let qtree;
+let cx, cy;
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    cx = width / 2;
+    cy = height / 2;
+    
+    // Initialize Protogalactic Cloud
+    for (let i = 0; i < NUM_PARTICLES; i++) {
+        // Distribute in a sphere (2D projection: circle with radial density gradient)
+        let angle = random(TWO_PI);
+        // Use sqrt for uniform area distribution, then bias towards center
+        let r = random(random(width * 0.4))); 
+        
+        let x = cx + r * cos(angle);
+        let y = cy + r * sin(angle);
+        
+        // Initial Mass (log-normal-ish distribution for variety)
+        let mass = pow(10, random(-0.5, 1.5)); 
+        
+        // Initial Velocity (slight bulk rotation + thermal random motion)
+        let rotSpeed = 0.15 * sqrt(r / 100); // Differential rotation
+        let vx = -rotSpeed * sin(angle) + random(-0.1, 0.1);
+        let vy = rotSpeed * cos(angle) + random(-0.1, 0.1);
+        
+        particles.push(new Particle(x, y, vx, vy, mass));
+    }
+}
+
+function draw() {
+    // Motion trails with base color 220
+    background(220, 220, 220, 25);
+    
+    noStroke();
+    
+    // 1. Build Quadtree
+    let boundary = new Rectangle(cx, cy, width, height);
+    qtree = new QuadTree(boundary, 4);
+    for (let p of particles) {
+        if (!p.dead) {
+            qtree.insert(p);
+        }
+    }
+    
+    // 2. Calculate Forces & Update
+    let nextParticles = [];
+    
+    for (let i = 0; i < particles.length; i++) {
+        let p = particles[i];
+        if (p.dead) continue;
+        
+        // A. Central Black Hole Gravity
+        let dxC = cx - p.x;
+        let dyC = cy - p.y;
+        let distC = sqrt(dxC * dxC + dyC * dyC + SOFTENING * SOFTENING);
+        let forceC = G * CENTRAL_MASS * p.mass / (distC * distC);
+        let ax = forceC * dxC / distC / p.mass;
+        let ay = forceC * dyC / distC / p.mass;
+        
+        // B. Dark Matter Halo (Isothermal Sphere: F = V_c^2 / r * m)
+        // Produces flat rotation curve
+        if (distC > SOFTENING) {
+            let forceH = DARK_MATTER_V * DARK_MATTER_V * p.mass / distC;
+            ax += forceH * dxC / distC / p.mass;
+            ay += forceH * dyC / distC / p.mass;
+        }
+        
+        // C. Particle-Particle Gravity (Barnes-Hut)
+        let range = new Rectangle(p.x, p.y, width, height); // Using full range to traverse tree
+        let barnesHutForce = calculateTreeForce(p, qtree.root);
+        ax += barnesHutForce.x;
+        ay += barnesHutForce.y;
+        
+        // D. Apply Cooling / Drag (simulates gas dissipation allowing collapse)
+        // Decompose velocity to radial and tangential
+        let vr = ((p.vx * dxC) + (p.vy * dyC)) / distC; 
+        let radialDragFactor = 1.0 - (1.0 - RADIAL_DRAG) * constrain(1.0 - distC / (width/2), 0, 1); // More radial drag near center
+        
+        let vxNew = (p.vx - vr * dxC / distC) * DRAG + (vr * dxC / distC) * radialDragFactor;
+        let vyNew = (p.vy - vr * dyC / distC) * DRAG + (vr * dyC / distC) * radialDragFactor;
+        
+        // Update Velocity & Position
+        p.vx = vxNew + ax * DT;
+        p.vy = vyNew + ay * DT;
+        p.x += p.vx * DT;
+        p.y += p.vy * DT;
+        
+        // Merging check (only check nearby particles to save performance)
+        // Query small range around particle
+        let mergeRange = new Rectangle(p.x, p.y, p.r * 2 * MERGE_FACTOR + 2, p.r * 2 * MERGE_FACTOR + 2);
+        let nearby = qtree.query(mergeRange);
+        
+        for (let j = 0; j < nearby.length; j++) {
+            let other = nearby[j];
+            if (other === p || other.dead) continue;
+            
+            let dx = other.x - p.x;
+            let dy = other.y - p.y;
+            let dist = sqrt(dx * dx + dy * dy);
+            let mergeDist = (p.r + other.r) * MERGE_FACTOR;
+            
+            if (dist < mergeDist) {
+                // Merge: Conserve momentum and mass
+                let totalMass = p.mass + other.mass;
+                p.vx = (p.vx * p.mass + other.vx * other.mass) / totalMass;
+                p.vy = (p.vy * p.mass + other.vy * other.mass) / totalMass;
+                p.mass = totalMass;
+                // Conserve area/volume relation (r^3)
+                p.r = pow(pow(p.r, 3) + pow(other.r, 3), 1.0/3.0);
+                other.dead = true; // Mark for removal
+            }
+        }
+        
+        if (!p.dead) {
+            nextParticles.push(p);
+            p.render();
+        }
+    }
+    
+    particles = nextParticles; // Update list (removes dead merged particles)
+    
+    // Draw Central Core
+    fill(255, 220, 150, 200);
+    ellipse(cx, cy, 10, 10);
+    fill(255, 220, 150, 50);
+    ellipse(cx, cy, 25, 25);
+}
+
+// --- Barnes-Hut Recursive Force Calculation ---
+function calculateTreeForce(p, node) {
+    if (node == null) return createVector(0, 0);
+    
+    let fx = 0;
+    let fy = 0;
+    
+    // If leaf node or single particle
+    if (!node.divided) {
+        for (let i = 0; i < node.points.length; i++) {
+            let other = node.points[i];
+            if (other === p) continue;
+            
+            let dx = other.x - p.x;
+            let dy = other.y - p.y;
+            let dSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
+            let d = sqrt(dSq);
+            
+            let force = G * other.mass / dSq;
+            fx += force * dx / d;
+            fy += force * dy / d;
+        }
+        return createVector(fx, fy);
+    }
+    
+    // Internal node
+    let dx = node.comX - p.x;
+    let dy = node.comY - p.y;
+    let dSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
+    let d = sqrt(dSq);
+    
+    // Barnes-Hut condition: node width / distance < theta
+    let s = node.boundary.w;
+    if (s / d < THETA) {
+        // Treat as single body
+        let force = G * node.totalMass / dSq;
+        fx += force * dx / d;
+        fy += force * dy / d;
+        return createVector(fx, fy);
+    } else {
+        // Recurse into children
+        let f = createVector(0, 0);
+        f.add(calculateTreeForce(p, node.northeast));
+        f.add(calculateTreeForce(p, node.northwest));
+        f.add(calculateTreeForce(p, node.southwest));
+        f.add(calculateTreeForce(p, node.southeast));
+        return f;
+    }
+}
+
+// --- Particle Class ---
+class Particle {
+    constructor(x, y, vx, vy, mass) {
+        this.x = x;
+        this.y = y;
+        this.vx = vx;
+        this.vy = vy;
+        this.mass = mass;
+        this.dead = false;
+        // Radius based on mass (assuming constant density spheres)
+        this.r = pow(mass, 1.0/3.0) * 0.6;
+    }
+    
+    render() {
+        // Brightness based on density/mass/velocity
+        // Faster/closer to center = brighter (visualize kinetic energy/density)
+        let dCenter = dist(this.x, this.y, cx, cy);
+        let b = map(dCenter, 0, width/2, 255, 100);
+        b = constrain(b, 100, 255);
+        
+        // Slight color shift (bluer outer, whiter inner)
+        let bl = map(dCenter, 0, width/2, 200, 255);
+        fill(b, b, bl, 220);
+        
+        let size = this.r * 2;
+        if (size < 1.5) size = 1.5; // Minimum visible size
+        ellipse(this.x, this.y, size, size);
+    }
+}
+
+// --- Quadtree Data Structures ---
+class Rectangle {
+    constructor(x, y, w, h) {
+        this.x = x; // Center x
+        this.y = y; // Center y
+        this.w = w; // Width
+        this.h = h; // Height
+    }
+    contains(point) {
+        return (point.x >= this.x - this.w/2 &&
+                point.x < this.x + this.w/2 &&
+                point.y >= this.y - this.h/2 &&
+                point.y < this.y + this.h/2);
+    }
+    intersects(range) {
+        return !(range.x - range.w/2 > this.x + this.w/2 ||
+                 range.x + range.w/2 < this.x - this.w/2 ||
+                 range.y - range.h/2 > this.y + this.h/2 ||
+                 range.y + range.h/2 < this.y - this.h/2);
+    }
+}
+
+class QuadTree {
+    constructor(boundary, capacity) {
+        this.boundary = boundary;
+        this.capacity = capacity;
+        this.points = [];
+        this.divided = false;
+        this.totalMass = 0;
+        this.comX = 0;
+        this.comY = 0;
+    }
+    
+    subdivide() {
+        let x = this.boundary.x;
+        let y = this.boundary.y;
+        let w = this.boundary.w / 2;
+        let h = this.boundary.h / 2;
+        let ne = new Rectangle(x + w/2, y - h/2, w, h);
+        let nw = new Rectangle(x - w/2, y - h/2, w, h);
+        let se = new Rectangle(x + w/2, y + h/2, w, h);
+        let sw = new Rectangle(x - w/2, y + h/2, w, h);
+        this.northeast = new QuadTree(ne, this.capacity);
+        this.northwest = new QuadTree(nw, this.capacity);
+        this.southeast = new QuadTree(se, this.capacity);
+        this.southwest = new QuadTree(sw, this.capacity);
+        this.divided = true;
+    }
+    
+    insert(point) {
+        if (!this.boundary.contains(point)) return false;
+        
+        // Update Center of Mass and Total Mass
+        let newMass = this.totalMass + point.mass;
+        this.comX = (this.comX * this.totalMass + point.x * point.mass) / newMass;
+        this.comY = (this.comY * this.totalMass + point.y * point.mass) / newMass;
+        this.totalMass = newMass;
+        
+        if (this.points.length < this.capacity) {
+            this.points.push(point);
+            return true;
+        } else {
+            if (!this.divided) this.subdivide();
+            return (this.northeast.insert(point) ||
+                    this.northwest.insert(point) ||
+                    this.southeast.insert(point) ||
+                    this.southwest.insert(point));
+        }
+    }
+    
+    query(range, found) {
+        if (!found) found = [];
+        if (!this.boundary.intersects(range)) return found;
+        
+        for (let p of this.points) {
+            if (range.contains(p)) found.push(p);
+        }
+        if (this.divided) {
+            this.northwest.query(range, found);
+            this.northeast.query(range, found);
+            this.southwest.query(range, found);
+            this.southeast.query(range, found);
+        }
+        return found;
+    }
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    cx = width / 2;
+    cy = height / 2;
+}
+</script>
+</body>
+</html>

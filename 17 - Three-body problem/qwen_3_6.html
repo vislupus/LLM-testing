@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Multi-Body Gravitational Simulation</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <style>
+    body { margin: 0; padding: 0; overflow: hidden; background: #222; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: system-ui, sans-serif; }
+    canvas { box-shadow: 0 0 25px rgba(0,0,0,0.6); }
+  </style>
+</head>
+<body>
+<script>
+/**
+ * Multi-Body Gravitational Simulation
+ * Features: Newtonian gravity, Velocity Verlet integration, persistent trails,
+ * chaotic but bounded orbits, and a spacecraft transfer trajectory.
+ */
+
+let G = 0.55;
+let dt = 0.04;
+let substeps = 6;
+let softening = 8;
+let trailBuffer;
+let bodies = [];
+let spacecraft;
+let frameCount = 0;
+let scDeparted = false;
+
+// Phase tracking for spacecraft trajectory
+const SC_PHASE_ATTACHED = 0;
+const SC_PHASE_DEPARTURE = 1;
+const SC_PHASE_SUN_LOOP = 2;
+const SC_PHASE_JUPITER_TRANSFER = 3;
+let scPhase = SC_PHASE_ATTACHED;
+
+class Body {
+  constructor(x, y, vx, vy, mass, color, radius, isPlanet = false) {
+    this.pos = createVector(x, y);
+    this.vel = createVector(vx, vy);
+    this.acc = createVector(0, 0);
+    this.mass = mass;
+    this.color = color;
+    this.radius = radius;
+    this.isPlanet = isPlanet;
+    this.trailColor = color;
+  }
+
+  applyForce(fx, fy) {
+    this.acc.x += fx / this.mass;
+    this.acc.y += fy / this.mass;
+  }
+
+  integrate() {
+    // Velocity Verlet Integration (symplectic, conserves energy better)
+    this.pos.x += this.vel.x * dt + 0.5 * this.acc.x * dt * dt;
+    this.pos.y += this.vel.y * dt + 0.5 * this.acc.y * dt * dt;
+    
+    // Acceleration is updated externally after all forces are calculated
+    // Velocity update happens after new acceleration is computed
+  }
+
+  updateVelocity(newAccX, newAccY) {
+    this.vel.x += 0.5 * (this.acc.x + newAccX) * dt;
+    this.vel.y += 0.5 * (this.acc.y + newAccY) * dt;
+    this.acc.x = newAccX;
+    this.acc.y = newAccY;
+  }
+
+  drawTrail(buffer) {
+    buffer.noStroke();
+    buffer.fill(red(this.trailColor), green(this.trailColor), blue(this.trailColor), 45);
+    buffer.ellipse(this.pos.x, this.pos.y, 2.5, 2.5);
+  }
+
+  draw() {
+    noStroke();
+    fill(this.color);
+    // Subtle glow effect via larger semi-transparent background ellipse
+    if (this.isPlanet) {
+      fill(red(this.color), green(this.color), blue(this.color), 40);
+      ellipse(this.pos.x, this.pos.y, this.radius * 2.5, this.radius * 2.5);
+    }
+    fill(this.color);
+    ellipse(this.pos.x, this.pos.y, this.radius * 2, this.radius * 2);
+  }
+}
+
+function setup() {
+  createCanvas(800, 600);
+  noStroke();
+  frameRate(60);
+
+  // Trail buffer for persistent orbital paths
+  trailBuffer = createGraphics(width, height);
+  trailBuffer.background(220);
+
+  // Initialize bodies with carefully tuned chaotic but bounded initial conditions
+  // Sun at center
+  let sun = new Body(400, 300, 0, 0, 1000, [60, 60, 70], 22, false);
+  
+  // Earth: slightly super-circular velocity, clockwise
+  let earth = new Body(580, 300, 0, -1.38, 4.5, [70, 130, 200], 9, true);
+  
+  // Jupiter: slightly sub-circular velocity, counter-clockwise, opposite side
+  let jupiter = new Body(220, 300, 0, 0.95, 14, [180, 120, 60], 14, true);
+
+  // Add tiny perturbations to ensure chaotic precession without escape
+  earth.vel.add(p5.Vector.random2D().mult(0.05));
+  jupiter.vel.add(p5.Vector.random2D().mult(0.08));
+
+  bodies = [sun, earth, jupiter];
+
+  // Spacecraft starts attached to Earth
+  spacecraft = new Body(earth.pos.x, earth.pos.y, earth.vel.x, earth.vel.y, 0.001, [255, 50, 50], 3, false);
+  spacecraft.isSC = true;
+
+  computeAccelerations();
+}
+
+function draw() {
+  frameCount++;
+
+  // Physics substepping for stability
+  for (let s = 0; s < substeps; s++) {
+    // 1. Store old accelerations
+    let oldAccs = bodies.map(b => createVector(b.acc.x, b.acc.y));
+
+    // 2. Update positions (first half of Verlet)
+    bodies.forEach(b => b.integrate());
+
+    // 3. Compute new accelerations from updated positions
+    let newAccs = computeAccelerations();
+
+    // 4. Update velocities (second half of Verlet)
+    for (let i = 0; i < bodies.length; i++) {
+      bodies[i].updateVelocity(newAccs[i].x, newAccs[i].y);
+    }
+  }
+
+  // Spacecraft logic
+  updateSpacecraft();
+
+  // Draw to persistent trail buffer
+  trailBuffer.drawTrail(sun => {}); // dummy
+  bodies.forEach(b => b.drawTrail(trailBuffer));
+  spacecraft.drawTrail(trailBuffer);
+
+  // Render main canvas
+  background(220);
+  image(trailBuffer, 0, 0);
+
+  // Draw bodies
+  bodies.forEach(b => b.draw());
+  spacecraft.draw();
+
+  // UI Overlay
+  drawUI();
+}
+
+function computeAccelerations() {
+  let allBodies = [...bodies, spacecraft];
+  let accs = allBodies.map(() => createVector(0, 0));
+
+  // Pairwise gravity
+  for (let i = 0; i < allBodies.length; i++) {
+    for (let j = i + 1; j < allBodies.length; j++) {
+      let b1 = allBodies[i];
+      let b2 = allBodies[j];
+      
+      let dx = b2.pos.x - b1.pos.x;
+      let dy = b2.pos.y - b1.pos.y;
+      let distSq = dx * dx + dy * dy + softening * softening;
+      let dist = Math.sqrt(distSq);
+      
+      let force = G * b1.mass * b2.mass / distSq;
+      let fx = force * (dx / dist);
+      let fy = force * (dy / dist);
+
+      b1.applyForce(fx, fy);
+      b2.applyForce(-fx, -fy);
+
+      // Store accelerations for Verlet
+      accs[i].x += fx / b1.mass;
+      accs[i].y += fy / b1.mass;
+      accs[j].x -= fx / b2.mass;
+      accs[j].y -= fy / b2.mass;
+    }
+  }
+
+  // Soft boundary confinement to prevent drifting to infinity
+  // Very weak restoring force only activates near canvas edges
+  const boundRadius = 370;
+  allBodies.forEach((b, i) => {
+    let cx = b.pos.x - width / 2;
+    let cy = b.pos.y - height / 2;
+    let d = Math.sqrt(cx * cx + cy * cy);
+    if (d > boundRadius) {
+      let strength = 0.0008 * (d - boundRadius);
+      accs[i].x -= cx * strength;
+      accs[i].y -= cy * strength;
+    }
+  });
+
+  // Update stored accelerations for next step
+  for (let i = 0; i < allBodies.length; i++) {
+    allBodies[i].acc = accs[i];
+  }
+
+  return accs;
+}
+
+function updateSpacecraft() {
+  if (!scDeparted) {
+    // Phase 0: Orbit with Earth
+    spacecraft.pos.set(bodies[1].pos);
+    spacecraft.vel.set(bodies[1].vel);
+    
+    // Departure trigger at frame ~150
+    if (frameCount > 150) {
+      scDeparted = true;
+      // Apply departure delta-V: inward and slightly prograde for Sun loop
+      let deltaV = createVector(-1.75, 0.18);
+      spacecraft.vel.add(deltaV);
+      scPhase = SC_PHASE_DEPARTURE;
+    }
+    return;
+  }
+
+  // Phase tracking based on distance to Sun
+  let sun = bodies[0];
+  let distToSun = p5.Vector.dist(spacecraft.pos, sun.pos);
+
+  if (scPhase === SC_PHASE_DEPARTURE && distToSun < 100) {
+    scPhase = SC_PHASE_SUN_LOOP;
+  }
+  
+  if (scPhase === SC_PHASE_SUN_LOOP && distToSun > 100 && spacecraft.pos.x < sun.pos.x) {
+    scPhase = SC_PHASE_JUPITER_TRANSFER;
+    // Tiny course correction to ensure Jupiter encounter is plausible
+    // Applied only once as a mid-course maneuver
+    let jupiter = bodies[2];
+    let targetDir = p5.Vector.sub(jupiter.pos, spacecraft.pos).setMag(0.12);
+    spacecraft.vel.add(targetDir);
+  }
+}
+
+function drawUI() {
+  fill(0, 0, 0, 120);
+  rect(10, 10, 180, 85, 8);
+  fill(220);
+  noStroke();
+  textSize(12);
+  textAlign(LEFT, TOP);
+  
+  text(`Simulation Time: ${frameCount/60.0.toFixed(1)}s`, 18, 16);
+  text(`Sun Mass: 1000`, 18, 32);
+  text(`Earth Mass: 4.5`, 18, 46);
+  text(`Jupiter Mass: 14`, 18, 60);
+  text(`Spacecraft: ${scPhase === 0 ? 'Attached to Earth' : scPhase === 1 ? 'Departing →' : scPhase === 2 ? 'Looping Sun' : '→ Jupiter Transfer'}`, 18, 74);
+}
+
+// Click to restart simulation
+function mousePressed() {
+  frameCount = 0;
+  scDeparted = false;
+  scPhase = SC_PHASE_ATTACHED;
+  trailBuffer.background(220);
+  
+  let sun = bodies[0];
+  sun.pos.set(400, 300); sun.vel.set(0,0); sun.acc.set(0,0);
+  
+  let earth = bodies[1];
+  earth.pos.set(580, 300); earth.vel.set(0, -1.38); earth.acc.set(0,0);
+  earth.vel.add(p5.Vector.random2D().mult(0.05));
+  
+  let jupiter = bodies[2];
+  jupiter.pos.set(220, 300); jupiter.vel.set(0, 0.95); jupiter.acc.set(0,0);
+  jupiter.vel.add(p5.Vector.random2D().mult(0.08));
+  
+  spacecraft.pos.set(earth.pos); spacecraft.vel.set(earth.vel); spacecraft.acc.set(0,0);
+}
+</script>
+</body>
+</html>

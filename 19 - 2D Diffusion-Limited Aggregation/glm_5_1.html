@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DLA Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            color: #eee;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            overflow: hidden;
+        }
+        #controls {
+            display: flex;
+            gap: 20px;
+            padding: 15px;
+            background: #222;
+            border-radius: 8px;
+            margin: 15px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        label {
+            font-size: 0.9em;
+            margin-bottom: 5px;
+        }
+        input[type="range"] {
+            width: 120px;
+        }
+        #canvas-container {
+            position: relative;
+            border: 2px solid #444;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+        }
+        canvas {
+            display: block;
+        }
+        #status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <div class="control-group">
+            <label>Max Moving Particles: <span id="pCountVal">100</span></label>
+            <input type="range" id="pCount" min="10" max="500" value="100">
+        </div>
+        <div class="control-group">
+            <label>Steps per Frame (Speed): <span id="speedVal">5</span></label>
+            <input type="range" id="speed" min="1" max="20" value="5">
+        </div>
+        <div class="control-group">
+            <label>Inward Bias: <span id="biasVal">0.05</span></label>
+            <input type="range" id="bias" min="0" max="30" value="5">
+        </div>
+    </div>
+
+    <div id="canvas-container">
+        <canvas id="dlaCanvas"></canvas>
+        <div id="status">Fixed: 1 | Moving: 0</div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('dlaCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+
+    // Offscreen canvas for the fixed cluster to drastically improve rendering performance
+    const offCanvas = document.createElement('canvas');
+    const offCtx = offCanvas.getContext('2d');
+
+    const P_SIZE = 2; // Size of each particle in pixels
+    let W, H, GRID_W, GRID_H, CX, CY, MAX_R;
+
+    // Simulation State
+    let grid = [];           // 2D spatial hash for collision detection
+    let movingParticles = [];
+    let fixedCount = 0;
+    let isGrowing = true;
+    let maxRadius = 0;
+    let hue = 0;             // For rainbow coloring
+
+    // Parameters (linked to UI)
+    let maxMoving = 100;
+    let stepsPerFrame = 5;
+    let biasStrength = 0.05;
+
+    function init() {
+        W = Math.min(window.innerWidth - 40, 800);
+        H = Math.min(window.innerHeight - 150, 800);
+        canvas.width = W;
+        canvas.height = H;
+        offCanvas.width = W;
+        offCanvas.height = H;
+
+        GRID_W = Math.floor(W / P_SIZE);
+        GRID_H = Math.floor(H / P_SIZE);
+        CX = W / 2;
+        CY = H / 2;
+        MAX_R = Math.min(CX, CY) - 50; // Stop 50px from edge
+
+        // Initialize grid (0 = empty, 1 = fixed)
+        grid = new Array(GRID_W * GRID_H).fill(0);
+        
+        // Clear offscreen
+        offCtx.clearRect(0, 0, W, H);
+
+        // Place initial seed in center
+        const gx = Math.floor(CX / P_SIZE);
+        const gy = Math.floor(CY / P_SIZE);
+        fixParticle(gx, gy);
+
+        movingParticles = [];
+        fixedCount = 1;
+        maxRadius = 0;
+        isGrowing = true;
+        hue = 0;
+
+        // Spawn initial batch
+        for (let i = 0; i < maxMoving; i++) {
+            movingParticles.push(spawnParticle());
+        }
+    }
+
+    function getGridIndex(gx, gy) {
+        return gy * GRID_W + gx;
+    }
+
+    function fixParticle(gx, gy) {
+        grid[getGridIndex(gx, gy)] = 1;
+        
+        // Draw to offscreen canvas with color based on distance from center
+        const px = gx * P_SIZE;
+        const py = gy * P_SIZE;
+        
+        const dist = Math.hypot(px - CX, py - CY);
+        hue = (dist * 1.5) % 360; // Rainbow gradient based on radius
+        
+        offCtx.fillStyle = `hsl(${hue}, 100%, 60%)`;
+        offCtx.fillRect(px, py, P_SIZE, P_SIZE);
+
+        fixedCount++;
+        if (dist > maxRadius) maxRadius = dist;
+    }
+
+    function spawnParticle() {
+        // Spawn in a circle around the current max radius of the cluster
+        const angle = Math.random() * Math.PI * 2;
+        const spawnR = maxRadius + 20 + Math.random() * 50;
+        const px = CX + Math.cos(angle) * spawnR;
+        const py = CY + Math.sin(angle) * spawnR;
+
+        return {
+            x: px,
+            y: py,
+            gx: Math.floor(px / P_SIZE),
+            gy: Math.floor(py / P_SIZE)
+        };
+    }
+
+    function updateParticle(p) {
+        // Calculate bias vector towards center
+        const dxCenter = CX - p.x;
+        const dyCenter = CY - p.y;
+        const distCenter = Math.hypot(dxCenter, dyCenter) || 1;
+        const bx = (dxCenter / distCenter) * biasStrength;
+        const by = (dyCenter / distCenter) * biasStrength;
+
+        // Random walk + bias
+        const dx = Math.floor(Math.random() * 3) - 1 + bx; // -1, 0, 1 + bias
+        const dy = Math.floor(Math.random() * 3) - 1 + by;
+
+        // Update position
+        p.x += dx;
+        p.y += dy;
+        p.gx = Math.floor(p.x / P_SIZE);
+        p.gy = Math.floor(p.y / P_SIZE);
+
+        // Check boundaries: if out of bounds or too far away, reset
+        const distFromCenter = Math.hypot(p.x - CX, p.y - CY);
+        if (p.gx < 0 || p.gx >= GRID_W || p.gy < 0 || p.gy >= GRID_H || distFromCenter > maxRadius + 100) {
+            resetParticle(p);
+            return;
+        }
+
+        // Check collision with fixed particles (8-way neighbors)
+        let stuck = false;
+        for (let i = -1; i <= 1; i++) {
+            for (let j = -1; j <= 1; j++) {
+                if (i === 0 && j === 0) continue;
+                const nx = p.gx + i;
+                const ny = p.gy + j;
+                if (nx >= 0 && nx < GRID_W && ny >= 0 && ny < GRID_H) {
+                    if (grid[getGridIndex(nx, ny)] === 1) {
+                        stuck = true;
+                        break;
+                    }
+                }
+            }
+            if (stuck) break;
+        }
+
+        if (stuck) {
+            fixParticle(p.gx, p.gy);
+            resetParticle(p); // Reuse particle object for a new moving one
+            
+            // Check stopping condition
+            if (maxRadius >= MAX_R) {
+                isGrowing = false;
+            }
+        }
+    }
+
+    function resetParticle(p) {
+        const angle = Math.random() * Math.PI * 2;
+        const spawnR = maxRadius + 20 + Math.random() * 50;
+        p.x = CX + Math.cos(angle) * spawnR;
+        p.y = CY + Math.sin(angle) * spawnR;
+        p.gx = Math.floor(p.x / P_SIZE);
+        p.gy = Math.floor(p.y / P_SIZE);
+    }
+
+    function update() {
+        if (!isGrowing) return;
+
+        // Dynamically adjust number of moving particles based on slider
+        while (movingParticles.length < maxMoving) {
+            movingParticles.push(spawnParticle());
+        }
+        while (movingParticles.length > maxMoving) {
+            movingParticles.pop();
+        }
+
+        for (let i = 0; i < movingParticles.length; i++) {
+            const p = movingParticles[i];
+            // Do multiple steps per frame for faster growth
+            for (let s = 0; s < stepsPerFrame; s++) {
+                if (!isGrowing) break;
+                updateParticle(p);
+                // If the particle stuck and was reset, we break the inner loop 
+                // so it starts fresh from its new spawn position next frame
+                if (p.x === -1) break; 
+            }
+        }
+    }
+
+    function draw() {
+        // Clear main canvas
+        ctx.fillStyle = '#111';
+        ctx.fillRect(0, 0, W, H);
+
+        // Draw the fixed cluster from the offscreen canvas (very fast)
+        ctx.drawImage(offCanvas, 0, 0);
+
+        // Draw moving particles
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        for (let i = 0; i < movingParticles.length; i++) {
+            const p = movingParticles[i];
+            ctx.fillRect(p.gx * P_SIZE, p.gy * P_SIZE, P_SIZE, P_SIZE);
+        }
+
+        // Update UI status
+        statusEl.textContent = `Fixed: ${fixedCount} | Moving: ${movingParticles.length} | ${isGrowing ? 'Growing' : 'Finished'}`;
+    }
+
+    function loop() {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    // Event Listeners for UI
+    document.getElementById('pCount').addEventListener('input', (e) => {
+        maxMoving = parseInt(e.target.value);
+        document.getElementById('pCountVal').textContent = maxMoving;
+    });
+
+    document.getElementById('speed').addEventListener('input', (e) => {
+        stepsPerFrame = parseInt(e.target.value);
+        document.getElementById('speedVal').textContent = stepsPerFrame;
+    });
+
+    document.getElementById('bias').addEventListener('input', (e) => {
+        biasStrength = parseInt(e.target.value) / 100;
+        document.getElementById('biasVal').textContent = biasStrength.toFixed(2);
+    });
+
+    // Start
+    init();
+    loop();
+
+</script>
+</body>
+</html>

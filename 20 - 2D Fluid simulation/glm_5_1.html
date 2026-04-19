@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Fluid Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            color: #fff;
+            font-family: sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <b>Controls:</b><br>
+    Mouse Drag: Inject Fluid & Velocity<br>
+    1 / 2 / 3: Color Red / Green / Blue<br>
+    V: Toggle Vortex Force<br>
+    Up/Down: Viscosity (+/-)<br>
+    Left/Right: Diffusion (+/-)<br>
+    R: Reset Simulation
+</div>
+
+<script>
+// Fluid Simulation based on Jos Stam's "Stable Fluids"
+// Modified to support RGB color channels for mixing
+
+let N = 96; // Grid resolution
+let size;
+let dt = 0.1;
+let diff = 0.0001; // Diffusion rate
+let visc = 0.0000; // Viscosity
+
+let u, v, u_prev, v_prev;
+let dens_r, dens_g, dens_b;
+let dens_r_prev, dens_g_prev, dens_b_prev;
+
+let currentColor = 1; // 1=Red, 2=Green, 3=Blue
+let vortexEnabled = false;
+let isReset = false;
+
+function IX(i, j) {
+    return i + (N + 2) * j;
+}
+
+function setup() {
+    createCanvas(800, 800);
+    pixelDensity(1);
+    resetSimulation();
+}
+
+function resetSimulation() {
+    size = (N + 2) * (N + 2);
+    
+    u = new Float32Array(size);
+    v = new Float32Array(size);
+    u_prev = new Float32Array(size);
+    v_prev = new Float32Array(size);
+    
+    dens_r = new Float32Array(size);
+    dens_g = new Float32Array(size);
+    dens_b = new Float32Array(size);
+    
+    dens_r_prev = new Float32Array(size);
+    dens_g_prev = new Float32Array(size);
+    dens_b_prev = new Float32Array(size);
+}
+
+function addSource(x, s, dt) {
+    for (let i = 0; i < size; i++) {
+        x[i] += dt * s[i];
+    }
+}
+
+function setBnd(b, x) {
+    for (let i = 1; i <= N; i++) {
+        x[IX(0, i)]     = b === 1 ? -x[IX(1, i)] : x[IX(1, i)];
+        x[IX(N + 1, i)] = b === 1 ? -x[IX(N, i)] : x[IX(N, i)];
+        x[IX(i, 0)]     = b === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
+        x[IX(i, N + 1)] = b === 2 ? -x[IX(i, N)] : x[IX(i, N)];
+    }
+    x[IX(0, 0)]       = 0.5 * (x[IX(1, 0)] + x[IX(0, 1)]);
+    x[IX(0, N + 1)]   = 0.5 * (x[IX(1, N + 1)] + x[IX(0, N)]);
+    x[IX(N + 1, 0)]   = 0.5 * (x[IX(N, 0)] + x[IX(N + 1, 1)]);
+    x[IX(N + 1, N + 1)] = 0.5 * (x[IX(N, N + 1)] + x[IX(N + 1, N)]);
+}
+
+function linSolve(b, x, x0, a, c) {
+    let cRecip = 1.0 / c;
+    for (let k = 0; k < 4; k++) { // Iterations (20 is standard, 4 is faster)
+        for (let j = 1; j <= N; j++) {
+            for (let i = 1; i <= N; i++) {
+                x[IX(i, j)] = (x0[IX(i, j)] + a * (
+                    x[IX(i + 1, j)] + x[IX(i - 1, j)] +
+                    x[IX(i, j + 1)] + x[IX(i, j - 1)]
+                )) * cRecip;
+            }
+        }
+        setBnd(b, x);
+    }
+}
+
+function diffuse(b, x, x0, diff, dt) {
+    let a = dt * diff * N * N;
+    linSolve(b, x, x0, a, 1 + 4 * a);
+}
+
+function advect(b, d, d0, u, v, dt) {
+    let dt0 = dt * N;
+    for (let j = 1; j <= N; j++) {
+        for (let i = 1; i <= N; i++) {
+            let x = i - dt0 * u[IX(i, j)];
+            let y = j - dt0 * v[IX(i, j)];
+            
+            if (x < 0.5) x = 0.5;
+            if (x > N + 0.5) x = N + 0.5;
+            let i0 = Math.floor(x);
+            let i1 = i0 + 1;
+            
+            if (y < 0.5) y = 0.5;
+            if (y > N + 0.5) y = N + 0.5;
+            let j0 = Math.floor(y);
+            let j1 = j0 + 1;
+            
+            let s1 = x - i0;
+            let s0 = 1.0 - s1;
+            let t1 = y - j0;
+            let t0 = 1.0 - t1;
+            
+            d[IX(i, j)] = s0 * (t0 * d0[IX(i0, j0)] + t1 * d0[IX(i0, j1)]) +
+                           s1 * (t0 * d0[IX(i1, j0)] + t1 * d0[IX(i1, j1)]);
+        }
+    }
+    setBnd(b, d);
+}
+
+function project(u, v, p, div) {
+    for (let j = 1; j <= N; j++) {
+        for (let i = 1; i <= N; i++) {
+            div[IX(i, j)] = -0.5 * (
+                u[IX(i + 1, j)] - u[IX(i - 1, j)] +
+                v[IX(i, j + 1)] - v[IX(i, j - 1)]
+            ) / N;
+            p[IX(i, j)] = 0;
+        }
+    }
+    setBnd(0, div);
+    setBnd(0, p);
+    linSolve(0, p, div, 1, 4);
+    
+    for (let j = 1; j <= N; j++) {
+        for (let i = 1; i <= N; i++) {
+            u[IX(i, j)] -= 0.5 * N * (p[IX(i + 1, j)] - p[IX(i - 1, j)]);
+            v[IX(i, j)] -= 0.5 * N * (p[IX(i, j + 1)] - p[IX(i, j - 1)]);
+        }
+    }
+    setBnd(1, u);
+    setBnd(2, v);
+}
+
+function velStep(u, v, u0, v0, visc, dt) {
+    addSource(u, u0, dt);
+    addSource(v, v0, dt);
+    
+    [u0, u] = [u, u0]; diffuse(1, u, u0, visc, dt);
+    [v0, v] = [v, v0]; diffuse(2, v, v0, visc, dt);
+    
+    project(u, v, u0, v0);
+    
+    [u0, u] = [u, u0];
+    [v0, v] = [v, v0];
+    
+    advect(1, u, u0, u0, v0, dt);
+    advect(2, v, v0, u0, v0, dt);
+    
+    project(u, v, u0, v0);
+}
+
+function densStep(x, x0, u, v, diff, dt) {
+    addSource(x, x0, dt);
+    [x0, x] = [x, x0]; diffuse(0, x, x0, diff, dt);
+    [x0, x] = [x, x0]; advect(0, x, x0, u, v, dt);
+}
+
+function draw() {
+    background(0);
+    
+    // Handle continuous input
+    if (mouseIsPressed) {
+        let gridX = Math.floor(mouseX / (width / N)) + 1;
+        let gridY = Math.floor(mouseY / (height / N)) + 1;
+        
+        if (gridX > 0 && gridX <= N && gridY > 0 && gridY <= N) {
+            let dx = (mouseX - pmouseX) * 0.5;
+            let dy = (mouseY - pmouseY) * 0.5;
+            
+            // Inject velocity
+            u_prev[IX(gridX, gridY)] = dx;
+            v_prev[IX(gridX, gridY)] = dy;
+            
+            // Inject density color
+            let amount = 50;
+            if (currentColor === 1) dens_r_prev[IX(gridX, gridY)] = amount;
+            if (currentColor === 2) dens_g_prev[IX(gridX, gridY)] = amount;
+            if (currentColor === 3) dens_b_prev[IX(gridX, gridY)] = amount;
+            
+            // Make injection slightly wider
+            for (let i = -1; i <= 1; i++) {
+                for (let j = -1; j <= 1; j++) {
+                    u_prev[IX(gridX+i, gridY+j)] = dx * 0.5;
+                    v_prev[IX(gridX+i, gridY+j)] = dy * 0.5;
+                    if (currentColor === 1) dens_r_prev[IX(gridX+i, gridY+j)] = amount * 0.5;
+                    if (currentColor === 2) dens_g_prev[IX(gridX+i, gridY+j)] = amount * 0.5;
+                    if (currentColor === 3) dens_b_prev[IX(gridX+i, gridY+j)] = amount * 0.5;
+                }
+            }
+        }
+    }
+    
+    // Vortex force
+    if (vortexEnabled) {
+        let cx = N / 2;
+        let cy = N / 2;
+        for (let j = 1; j <= N; j++) {
+            for (let i = 1; i <= N; i++) {
+                let dx = i - cx;
+                let dy = j - cy;
+                let dist = Math.sqrt(dx*dx + dy*dy);
+                if (dist > 2 && dist < N/2) {
+                    let force = 0.2 * (1.0 - dist / (N/2));
+                    u_prev[IX(i, j)] += -dy / dist * force;
+                    v_prev[IX(i, j)] += dx / dist * force;
+                }
+            }
+        }
+    }
+    
+    // Step simulation
+    velStep(u, v, u_prev, v_prev, visc, dt);
+    densStep(dens_r, dens_r_prev, u, v, diff, dt);
+    densStep(dens_g, dens_g_prev, u, v, diff, dt);
+    densStep(dens_b, dens_b_prev, u, v, diff, dt);
+    
+    // Fade densities slightly so screen doesn't fill up entirely with mud
+    for (let i = 0; i < size; i++) {
+        dens_r[i] *= 0.995;
+        dens_g[i] *= 0.995;
+        dens_b[i] *= 0.995;
+    }
+    
+    // Clear previous inputs
+    u_prev.fill(0);
+    v_prev.fill(0);
+    dens_r_prev.fill(0);
+    dens_g_prev.fill(0);
+    dens_b_prev.fill(0);
+    
+    // Render fluid to pixel buffer
+    loadPixels();
+    let cellW = width / N;
+    let cellH = height / N;
+    
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            let gridX = Math.floor(x / cellW) + 1;
+            let gridY = Math.floor(y / cellH) + 1;
+            let idx = IX(gridX, gridY);
+            
+            let r = Math.min(255, dens_r[idx] * 255);
+            let g = Math.min(255, dens_g[idx] * 255);
+            let b = Math.min(255, dens_b[idx] * 255);
+            
+            // Enhance contrast
+            r = Math.sqrt(r / 255.0) * 255;
+            g = Math.sqrt(g / 255.0) * 255;
+            b = Math.sqrt(b / 255.0) * 255;
+            
+            let pix = (x + y * width) * 4;
+            pixels[pix] = r;
+            pixels[pix + 1] = g;
+            pixels[pix + 2] = b;
+            pixels[pix + 3] = 255;
+        }
+    }
+    updatePixels();
+    
+    // Draw UI text
+    fill(255);
+    noStroke();
+    textSize(16);
+    textAlign(LEFT, BOTTOM);
+    let colName = currentColor === 1 ? "RED" : currentColor === 2 ? "GREEN" : "BLUE";
+    text(`Color: ${colName} | Visc: ${visc.toFixed(4)} | Diff: ${diff.toFixed(4)} | Vortex: ${vortexEnabled ? "ON" : "OFF"}`, 10, height - 10);
+}
+
+function keyPressed() {
+    if (key === '1') currentColor = 1;
+    if (key === '2') currentColor = 2;
+    if (key === '3') currentColor = 3;
+    if (key === 'v' || key === 'V') vortexEnabled = !vortexEnabled;
+    if (key === 'r' || key === 'R') resetSimulation();
+    
+    if (keyCode === UP_ARROW) visc += 0.0001;
+    if (keyCode === DOWN_ARROW) visc = Math.max(0, visc - 0.0001);
+    if (keyCode === RIGHT_ARROW) diff += 0.0001;
+    if (keyCode === LEFT_ARROW) diff = Math.max(0.00001, diff - 0.0001);
+}
+</script>
+</body>
+</html>

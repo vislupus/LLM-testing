@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Von Kármán Vortex Street Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            color: #eee;
+            font-family: sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #ui {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            background: rgba(0, 0, 0, 0.85);
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 10;
+            pointer-events: none;
+            border: 1px solid #444;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        h3 { margin: 0 0 10px 0; color: #4dc9f6; }
+        .key { color: #ffaa00; font-weight: bold; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <h3>Von Kármán Vortex Street</h3>
+    <span class="key">Mouse Drag</span>: Move Obstacle<br>
+    <span class="key">Scroll / Q, E</span>: Rotate Obstacle<br>
+    <span class="key">1, 2, 3</span>: Shape (Circle, Rect, Ellipse)<br>
+    <span class="key">+ / -</span>: Change Size
+</div>
+
+<script>
+// --- Simulation Parameters ---
+const NX = 300;      // Grid width
+const NY = 120;      // Grid height
+const SCALE = 4;     // Rendering scale
+const NXNY = NX * NY;
+const U0 = 0.08;     // Inlet velocity (Lattice units, must be << 1)
+const TAU = 0.56;    // Relaxation time (Viscosity = (TAU - 0.5) / 3)
+
+// D2Q9 Lattice Boltzmann constants
+const cx = [0, 1, 0, -1, 0, 1, -1, -1, 1];
+const cy = [0, 0, 1, 0, -1, 1, 1, -1, -1];
+const w  = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36];
+const opp = [0, 3, 4, 1, 2, 7, 8, 5, 6]; // Opposite directions for bounce-back
+
+// --- State Arrays ---
+let f     = new Float32Array(NX * NY * 9);
+let fNew  = new Float32Array(NX * NY * 9);
+let solid = new Uint8Array(NX * NY);
+let prevSolid = new Uint8Array(NX * NY);
+
+let uxArr = new Float32Array(NX * NY);
+let uyArr = new Float32Array(NX * NY);
+
+// --- Obstacle State ---
+let obsX = NX / 4;
+let obsY = NY / 2;
+let obsSize = 10;    // Half-size essentially
+let obsAngle = 0;
+let shapeType = 0;   // 0: Circle, 1: Rect, 2: Ellipse
+
+// --- Helper Functions ---
+function idx(x, y) { return y * NX + x; }
+
+function feq(i, rho, ux, uy) {
+    let cu = cx[i]*ux + cy[i]*uy;
+    let usq = ux*ux + uy*uy;
+    return w[i] * rho * (1.0 + 3.0*cu + 4.5*cu*cu - 1.5*usq);
+}
+
+// --- p5.js Setup ---
+function setup() {
+    createCanvas(NX * SCALE, NY * SCALE);
+    pixelDensity(1);
+    
+    // Initialize flow field to uniform inlet velocity
+    for (let y = 0; y < NY; y++) {
+        for (let x = 0; x < NX; x++) {
+            let base = idx(x, y);
+            for (let i = 0; i < 9; i++) {
+                f[base + i * NXNY] = feq(i, 1.0, U0, 0);
+            }
+        }
+    }
+}
+
+// --- Main Draw Loop ---
+function draw() {
+    // 1. Update Obstacle Geometry
+    updateObstacle();
+    
+    // 2. Run LBM Steps
+    for (let step = 0; step < 4; step++) {
+        // Collision Step
+        for (let y = 1; y < NY - 1; y++) {
+            for (let x = 1; x < NX - 1; x++) {
+                let base = idx(x, y);
+                if (solid[base]) continue;
+                
+                let rho = 0, ux = 0, uy = 0;
+                for (let i = 0; i < 9; i++) {
+                    let val = f[base + i * NXNY];
+                    rho += val;
+                    ux += cx[i] * val;
+                    uy += cy[i] * val;
+                }
+                ux /= rho;
+                uy /= rho;
+                
+                uxArr[base] = ux;
+                uyArr[base] = uy;
+                
+                let usq = ux*ux + uy*uy;
+                for (let i = 0; i < 9; i++) {
+                    let cu = cx[i]*ux + cy[i]*uy;
+                    let feqVal = w[i] * rho * (1.0 + 3.0*cu + 4.5*cu*cu - 1.5*usq);
+                    f[base + i * NXNY] -= (f[base + i * NXNY] - feqVal) / TAU;
+                }
+            }
+        }
+        
+        // Streaming Step (Pull method with integrated bounce-back)
+        for (let y = 1; y < NY - 1; y++) {
+            for (let x = 1; x < NX - 1; x++) {
+                let base = idx(x, y);
+                for (let i = 0; i < 9; i++) {
+                    let sx = x - cx[i];
+                    let sy = y - cy[i];
+                    
+                    if (sx >= 0 && sx < NX && sy >= 0 && sy < NY) {
+                        if (solid[sy * NX + sx]) {
+                            // Source is solid -> Bounce back off obstacle
+                            fNew[base + i * NXNY] = f[base + opp[i] * NXNY];
+                        } else {
+                            // Source is fluid -> Pull
+                            fNew[base + i * NXNY] = f[sy * NX + sx + i * NXNY];
+                        }
+                    } else {
+                        // Source is out of bounds -> Bounce back off tube walls
+                        fNew[base + i * NXNY] = f[base + opp[i] * NXNY];
+                    }
+                }
+            }
+        }
+        
+        // Boundary Conditions
+        // Inlet (Left wall)
+        for (let y = 1; y < NY - 1; y++) {
+            let base = idx(0, y);
+            let pertUy = 0.005 * sin(y * 0.5 + frameCount * 0.05); // Small perturbation to trigger vortex shedding
+            for (let i = 0; i < 9; i++) {
+                fNew[base + i * NXNY] = feq(i, 1.0, U0, pertUy);
+            }
+        }
+        // Outlet (Right wall) - Zero gradient
+        for (let y = 1; y < NY - 1; y++) {
+            let base = idx(NX - 1, y);
+            for (let i = 0; i < 9; i++) {
+                fNew[base + i * NXNY] = fNew[idx(NX - 2, y) + i * NXNY];
+            }
+        }
+        
+        // Swap buffers
+        let temp = f; f = fNew; fNew = temp;
+    }
+    
+    // 3. Render Visualization
+    renderFlow();
+}
+
+// --- Obstacle Logic ---
+function updateObstacle() {
+    // Smooth mouse follow
+    if (mouseIsPressed && mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) {
+        obsX = lerp(obsX, mouseX / SCALE, 0.2);
+        obsY = lerp(obsY, mouseY / SCALE, 0.2);
+    }
+    
+    // Save previous solid state to detect newly uncovered fluid cells
+    prevSolid.set(solid);
+    
+    // Rasterize Obstacle
+    let cosA = cos(-obsAngle);
+    let sinA = sin(-obsAngle);
+    
+    for (let y = 0; y < NY; y++) {
+        for (let x = 0; x < NX; x++) {
+            let base = idx(x, y);
+            let dx = x - obsX;
+            let dy = y - obsY;
+            
+            // Rotate to local obstacle coordinates
+            let rx = dx * cosA - dy * sinA;
+            let ry = dx * sinA + dy * cosA;
+            
+            let isInside = false;
+            if (shapeType === 0) {        // Circle
+                isInside = (rx*rx + ry*ry) < obsSize*obsSize;
+            } else if (shapeType === 1) { // Rectangle
+                isInside = abs(rx) < obsSize && abs(ry) < obsSize * 0.7;
+            } else {                      // Ellipse
+                isInside = (rx*rx)/(obsSize*obsSize) + (ry*ry)/((obsSize*0.7)*(obsSize*0.7)) < 1;
+            }
+            
+            solid[base] = isInside ? 1 : 0;
+            
+            // Initialize cells that just became fluid (obstacle moved away)
+            if (!solid[base] && prevSolid[base]) {
+                for (let i = 0; i < 9; i++) {
+                    f[base + i * NXNY] = feq(i, 1.0, U0, 0);
+                }
+            }
+        }
+    }
+}
+
+// --- Rendering Logic ---
+function renderFlow() {
+    loadPixels();
+    for (let y = 1; y < NY - 1; y++) {
+        for (let x = 1; x < NX - 1; x++) {
+            let base = idx(x, y);
+            
+            // Calculate Vorticity (Curl of Velocity)
+            let vort = (uyArr[base + 1] - uyArr[base - 1]) * 0.5 - 
+                       (uxArr[base + NX] - uxArr[base - NX]) * 0.5;
+            
+            // Calculate Speed for background shading
+            let speed = sqrt(uxArr[base]*uxArr[base] + uyArr[base]*uyArr[base]);
+            let speedFactor = constrain(speed * 12, 0, 1);
+            
+            // Base background color (Dark Blue flowing stream)
+            let bgR = 5 + 15 * speedFactor;
+            let bgG = 15 + 25 * speedFactor;
+            let bgB = 40 + 50 * speedFactor;
+            
+            // Vorticity Color Mapping (Red for positive, Cyan for negative)
+            let v = constrain(vort * 120, -1, 1);
+            let vR = v > 0 ? 255 * v : 0;
+            let vG = v > 0 ? 80 * v : 200 * -v;
+            let vB = v < 0 ? 255 * -v : 0;
+            
+            let r = bgR + vR;
+            let g = bgG + vG;
+            let b = bgB + vB;
+            
+            // Obstacle Color
+            if (solid[base]) {
+                r = 60; g = 65; b = 75;
+            }
+            
+            // Draw SCALED pixels
+            for (let dy = 0; dy < SCALE; dy++) {
+                for (let dx = 0; dx < SCALE; dx++) {
+                    let pixIdx = ((y * SCALE + dy) * width + (x * SCALE + dx)) * 4;
+                    pixels[pixIdx] = r;
+                    pixels[pixIdx + 1] = g;
+                    pixels[pixIdx + 2] = b;
+                    pixels[pixIdx + 3] = 255;
+                }
+            }
+        }
+    }
+    updatePixels();
+}
+
+// --- Input Handlers ---
+function mouseWheel(event) {
+    obsAngle += event.delta * 0.005;
+    return false; // Prevent page scrolling
+}
+
+function keyPressed() {
+    if (key === '1') shapeType = 0; // Circle
+    if (key === '2') shapeType = 1; // Rectangle
+    if (key === '3') shapeType = 2; // Ellipse
+    
+    if (key === 'q' || key === 'Q') obsAngle -= 0.15;
+    if (key === 'e' || key === 'E') obsAngle += 0.15;
+    
+    if (key === '=' || key === '+') obsSize = min(30, obsSize + 1);
+    if (key === '-' || key === '_') obsSize = max(4, obsSize - 1);
+}
+</script>
+</body>
+</html>

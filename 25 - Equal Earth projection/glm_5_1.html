@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Equal Earth Projection Map</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/3.2.0/svg.min.js"></script>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: #f0f0f0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden; display: flex; flex-direction: column; align-items: center;
+        }
+        #map-container {
+            width: 100%; height: 90vh; border: 1px solid #ccc; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            background: #e8f4f8; cursor: grab; position: relative;
+        }
+        #map-container:active { cursor: grabbing; }
+        #ui-panel {
+            width: 100%; padding: 10px 20px; background: #fff; box-shadow: 0 -2px 5px rgba(0,0,0,0.1);
+            display: flex; justify-content: space-between; align-items: center; box-sizing: border-box;
+        }
+        .group { display: flex; align-items: center; gap: 10px; }
+        label { font-size: 14px; font-weight: 500; color: #333; }
+        input[type="number"] { width: 80px; padding: 5px; border: 1px solid #ccc; border-radius: 4px; }
+        button {
+            background: #007bff; color: white; border: none; padding: 6px 12px;
+            border-radius: 4px; cursor: pointer; font-weight: 500;
+        }
+        button:hover { background: #0056b3; }
+        #coords-overlay {
+            position: absolute; top: 10px; right: 10px; background: rgba(255,255,255,0.9);
+            padding: 10px; border-radius: 6px; font-size: 13px; pointer-events: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2); border: 1px solid #ddd; display: none; z-index: 10;
+        }
+        #instructions {
+            position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.6);
+            color: white; padding: 8px 12px; border-radius: 4px; font-size: 12px; pointer-events: none; z-index: 10;
+        }
+    </style>
+</head>
+<body>
+
+<div id="map-container"></div>
+
+<div id="ui-panel">
+    <div class="group">
+        <label>Latitude:</label>
+        <input type="number" id="lat-input" value="40" min="-90" max="90" step="0.1">
+        <label>Longitude:</label>
+        <input type="number" id="lon-input" value="-74" min="-180" max="180" step="0.1">
+        <button id="plot-btn">Plot Marker</button>
+    </div>
+    <div class="group">
+        <button id="clear-btn">Clear Markers</button>
+    </div>
+</div>
+
+<div id="coords-overlay">
+    Lat: <span id="disp-lat">--</span>°<br>
+    Lon: <span id="disp-lon">--</span>°
+</div>
+
+<div id="instructions">
+    Scroll to Zoom • Drag to Pan • Click map for Coordinates
+</div>
+
+<script>
+    // --- Configuration & State ---
+    const WIDTH = document.getElementById('map-container').clientWidth;
+    const HEIGHT = document.getElementById('map-container').clientHeight;
+    
+    const BASE_SCALE = Math.min(WIDTH / 5.2, HEIGHT / 2.7); // Scale to fit Equal Earth bounds
+    const CENTER_X = WIDTH / 2;
+    const CENTER_Y = HEIGHT / 2;
+
+    let view = { x: CENTER_X, y: CENTER_Y, scale: 1 };
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let dragViewStart = { x: 0, y: 0 };
+
+    // --- Equal Earth Projection Math ---
+    const A1 = 1.340264, A2 = -0.081106, A3 = 0.000893, A4 = 0.003796;
+
+    function forwardProject(lon, lat) {
+        const l = lon * Math.PI / 180;
+        const p = lat * Math.PI / 180;
+        const theta = Math.asin((Math.sqrt(3) / 2) * Math.sin(p));
+        
+        const sinT = Math.sin(theta);
+        const cosT = Math.cos(theta);
+        const sin2T = Math.sin(2 * theta);
+        const sin3T = Math.sin(3 * theta);
+        
+        const denom = A1 + A2 * sinT + A3 * sin2T + A4 * sin3T;
+        
+        const x = (2 * Math.sqrt(3) * l * cosT) / (3 * denom);
+        const y = theta * denom;
+        
+        return { x: x * BASE_SCALE, y: -y * BASE_SCALE }; // Flip Y for SVG
+    }
+
+    function inverseProject(svgX, svgY) {
+        // Convert SVG coords back to projected units
+        const x = svgX / BASE_SCALE;
+        const y = -svgY / BASE_SCALE; // Flip Y back
+
+        // Solve for theta using Newton-Raphson
+        let theta = y / A1; // Initial guess
+        for (let i = 0; i < 12; i++) {
+            const sinT = Math.sin(theta);
+            const cosT = Math.cos(theta);
+            const sin2T = Math.sin(2 * theta);
+            const sin3T = Math.sin(3 * theta);
+            
+            const fTheta = theta * (A1 + A2 * sinT + A3 * sin2T + A4 * sin3T) - y;
+            const fPrimeTheta = A1 + A2 * sinT + A3 * sin2T + A4 * sin3T + 
+                                theta * (A2 * cosT + 2 * A3 * Math.cos(2 * theta) + 3 * A4 * Math.cos(3 * theta));
+            
+            if (Math.abs(fPrimeTheta) < 1e-12) break; // Prevent div by zero
+            theta -= fTheta / fPrimeTheta;
+        }
+
+        // Calculate latitude
+        const sinTheta = Math.sin(theta);
+        const lat = Math.asin((2 * sinTheta) / Math.sqrt(3)) * 180 / Math.PI;
+
+        // Calculate longitude
+        const cosTheta = Math.cos(theta);
+        const sin2T = Math.sin(2 * theta);
+        const sin3T = Math.sin(3 * theta);
+        const denom = A1 + A2 * sinTheta + A3 * sin2T + A4 * sin3T;
+        
+        let lon = 0;
+        if (Math.abs(cosTheta) > 1e-9) {
+            lon = (3 * x * denom) / (2 * Math.sqrt(3) * cosTheta) * 180 / Math.PI;
+        } else {
+            lon = 0; // Pole
+        }
+
+        return { lat: lat, lon: lon };
+    }
+
+    // --- Map Data (Simplified GeoJSON-like) ---
+    const worldData = {
+        "North America": [[-130,50],[-125,60],[-120,65],[-110,68],[-100,70],[-85,70],[-75,60],[-55,50],[-65,45],[-80,25],[-90,18],[-100,20],[-105,25],[-120,35],[-125,45]],
+        "South America": [[-80,10],[-75,5],[-60,5],[-50,0],[-35,-5],[-35,-15],[-40,-22],[-50,-25],[-55,-30],[-65,-40],[-70,-50],[-75,-55],[-75,-45],[-70,-20],[-75,-10],[-80,0]],
+        "Europe": [[-10,36],[0,40],[-5,44],[0,48],[5,48],[10,45],[15,46],[20,40],[25,37],[30,42],[30,48],[25,55],[20,58],[25,65],[20,70],[10,65],[5,60],[0,52],[-5,48],[-10,44]],
+        "Africa": [[-15,30],[-17,15],[-10,5],[5,5],[10,0],[10,-5],[15,-10],[25,-15],[35,-25],[30,-35],[20,-35],[15,-25],[10,-5],[5,5],[10,5],[15,0],[20,5],[25,5],[30,0],[35,5],[40,10],[45,12],[50,10],[42,15],[35,30],[25,32],[10,35],[0,35]],
+        "Asia": [[40,10],[45,15],[50,25],[55,25],[60,20],[65,25],[70,20],[75,15],[80,10],[85,20],[90,22],[95,15],[100,15],[105,20],[110,20],[120,25],[125,35],[130,35],[135,40],[140,45],[145,50],[150,60],[160,65],[170,65],[180,65],[180,70],[150,70],[120,70],[90,70],[70,70],[60,65],[50,55],[40,50],[30,45],[30,42],[25,37],[30,35],[35,30]],
+        "Australia": [[115,-15],[120,-15],[130,-15],[135,-15],[140,-18],[150,-22],[150,-28],[148,-35],[140,-38],[135,-35],[130,-32],[125,-30],[115,-25]]
+    };
+
+    // --- SVG.js Setup ---
+    const draw = SVG().addTo('#map-container').size(WIDTH, HEIGHT);
+    const mapGroup = draw.group();
+    const markerGroup = draw.group(); // Markers on top
+
+    // Render Map
+    function renderMap() {
+        // Background Ocean
+        mapGroup.rect(WIDTH * 5, HEIGHT * 5).center(CENTER_X, CENTER_Y).fill('#e8f4f8').attr({ transform: null });
+
+        // Graticule
+        const graticuleGroup = mapGroup.group();
+        graticuleGroup.stroke({ color: '#ccc', width: 0.5 }).fill('none');
+        
+        // Meridians
+        for (let lon = -180; lon <= 180; lon += 15) {
+            const path = [];
+            for (let lat = -90; lat <= 90; lat += 2) {
+                const p = forwardProject(lon, lat);
+                path.push(lat === -90 ? 'M' : 'L', p.x, p.y);
+            }
+            graticuleGroup.path(path.join(' '));
+        }
+        // Parallels
+        for (let lat = -90; lat <= 90; lat += 15) {
+            const path = [];
+            for (let lon = -180; lon <= 180; lon += 2) {
+                const p = forwardProject(lon, lat);
+                path.push(lon === -180 ? 'M' : 'L', p.x, p.y);
+            }
+            graticuleGroup.path(path.join(' '));
+        }
+
+        // Landmasses
+        const landGroup = mapGroup.group();
+        landGroup.fill('#d4e6d4').stroke({ color: '#888', width: 1 });
+
+        for (const country in worldData) {
+            const coords = worldData[country];
+            const pathData = coords.map((c, i) => {
+                const p = forwardProject(c[0], c[1]);
+                return (i === 0 ? 'M' : 'L') + p.x + ' ' + p.y;
+            });
+            landGroup.path(pathData.join(' ') + ' Z');
+        }
+
+        // Apply initial view
+        updateTransform();
+    }
+
+    // --- Interaction Logic ---
+    function updateTransform() {
+        mapGroup.transform({ translateX: view.x, translateY: view.y, scale: view.scale, origin: '0 0' });
+    }
+
+    // Zoom
+    document.getElementById('map-container').addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        const newScale = view.scale * delta;
+        
+        // Limit zoom
+        if (newScale < 0.5 || newScale > 20) return;
+
+        // Zoom towards mouse pointer
+        const rect = draw.node.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        view.x = mouseX - (mouseX - view.x) * (newScale / view.scale);
+        view.y = mouseY - (mouseY - view.y) * (newScale / view.scale);
+        view.scale = newScale;
+
+        updateTransform();
+    });
+
+    // Pan
+    document.getElementById('map-container').addEventListener('mousedown', (e) => {
+        if (e.target.closest('button, input')) return;
+        isDragging = true;
+        dragStart = { x: e.clientX, y: e.clientY };
+        dragViewStart = { x: view.x, y: view.y };
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        view.x = dragViewStart.x + (e.clientX - dragStart.x);
+        view.y = dragViewStart.y + (e.clientY - dragStart.y);
+        updateTransform();
+    });
+
+    window.addEventListener('mouseup', () => { isDragging = false; });
+
+    // Click -> Inverse Projection
+    document.getElementById('map-container').addEventListener('click', (e) => {
+        if (Math.abs(e.clientX - dragStart.x) > 5 || Math.abs(e.clientY - dragStart.y) > 5) return; // Ignore drag clicks
+
+        const rect = draw.node.getBoundingClientRect();
+        const svgX = e.clientX - rect.left;
+        const svgY = e.clientY - rect.top;
+
+        // Convert screen coordinate to projected coordinate
+        const projX = (svgX - view.x) / view.scale;
+        const projY = (svgY - view.y) / view.scale;
+
+        const coords = inverseProject(projX, projY);
+        
+        // Validate
+        if (coords.lat >= -90 && coords.lat <= 90 && coords.lon >= -180 && coords.lon <= 180) {
+            const overlay = document.getElementById('coords-overlay');
+            document.getElementById('disp-lat').textContent = coords.lat.toFixed(4);
+            document.getElementById('disp-lon').textContent = coords.lon.toFixed(4);
+            overlay.style.display = 'block';
+            
+            // Auto-hide after 3 seconds
+            clearTimeout(window.coordTimer);
+            window.coordTimer = setTimeout(() => { overlay.style.display = 'none'; }, 3000);
+        }
+    });
+
+    // Plot Marker
+    document.getElementById('plot-btn').addEventListener('click', () => {
+        const lat = parseFloat(document.getElementById('lat-input').value);
+        const lon = parseFloat(document.getElementById('lon-input').value);
+        
+        if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+            alert("Invalid coordinates. Lat: [-90,90], Lon: [-180,180]");
+            return;
+        }
+
+        const p = forwardProject(lon, lat);
+        
+        const markerGroupLocal = markerGroup.group().attr({ class: 'marker' });
+        markerGroupLocal.circle(10).center(p.x, p.y).fill('#ff4136').stroke({ width: 2, color: '#fff' });
+        markerGroupLocal.text(`${lat.toFixed(1)}, ${lon.toFixed(1)}`).font({ size: 12, anchor: 'middle' }).fill('#333').move(p.x, p.y - 20);
+        
+        // Ensure markers transform with the map
+        // Since markerGroup is added to draw, we need to apply the same transform logic 
+        // OR just add markers to mapGroup so they zoom/pan automatically.
+        mapGroup.add(markerGroupLocal); 
+    });
+
+    // Clear Markers
+    document.getElementById('clear-btn').addEventListener('click', () => {
+        mapGroup.find('.marker').forEach(m => m.remove());
+    });
+
+    // Initialize
+    renderMap();
+
+</script>
+</body>
+</html>
