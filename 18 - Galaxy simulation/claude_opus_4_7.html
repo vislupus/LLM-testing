@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Galaxy Formation — p5.js</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; overflow: hidden;
+    background: rgb(220, 220, 220);
+    font-family: "SF Mono", "Menlo", Consolas, "Courier New", monospace;
+    color: #222;
+  }
+  canvas { display: block; }
+  #hud {
+    position: fixed; top: 10px; left: 12px;
+    padding: 10px 14px;
+    background: rgba(255, 255, 255, 0.55);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 6px;
+    font-size: 11.5px;
+    line-height: 1.65;
+    letter-spacing: 0.02em;
+    pointer-events: none;
+    min-width: 180px;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  #hud .label { color: #666; }
+  #hud .val   { color: #1a1a3a; font-weight: 600; }
+  #hud h1 {
+    margin: 0 0 6px 0; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.14em; text-transform: uppercase; color: #222;
+    border-bottom: 1px solid rgba(0,0,0,0.1); padding-bottom: 5px;
+  }
+  #controls {
+    position: fixed; bottom: 10px; left: 12px;
+    font-size: 10.5px; color: #555;
+    background: rgba(255,255,255,0.4);
+    padding: 6px 10px; border-radius: 4px;
+    letter-spacing: 0.03em;
+  }
+  #controls kbd {
+    font-family: inherit;
+    background: rgba(0,0,0,0.08);
+    border: 1px solid rgba(0,0,0,0.15);
+    border-radius: 3px;
+    padding: 0 5px;
+    font-size: 10px;
+  }
+</style>
+</head>
+<body>
+<div id="hud">
+  <h1>Galactic Evolution</h1>
+  <div><span class="label">particles  </span><span class="val" id="h-n">—</span></div>
+  <div><span class="label">merged     </span><span class="val" id="h-m">—</span></div>
+  <div><span class="label">BH mass    </span><span class="val" id="h-b">—</span></div>
+  <div><span class="label">sim time   </span><span class="val" id="h-t">—</span></div>
+  <div><span class="label">fps        </span><span class="val" id="h-f">—</span></div>
+  <div><span class="label">phase      </span><span class="val" id="h-p">—</span></div>
+</div>
+<div id="controls">
+  <kbd>SPACE</kbd> pause &nbsp;·&nbsp; <kbd>R</kbd> reset &nbsp;·&nbsp; <kbd>T</kbd> toggle trails &nbsp;·&nbsp; <kbd>H</kbd> hide HUD
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.1/p5.min.js"></script>
+<script>
+'use strict';
+
+/* ==========================================================================
+   GALAXY FORMATION — p5.js
+
+   Physics model
+   -------------
+   Each of 10,000 particles feels three gravitational forces:
+
+     1. Self-gravity from all other particles (computed with a Barnes-Hut
+        quadtree; acceleration a = G * M_cell / r^2 for distant cells).
+     2. A fixed central massive "black hole" potential (Keplerian:
+        a = G * M_BH / r^2, radial, with softening at the centre).
+     3. An *invisible* dark-matter halo represented analytically as an
+        isothermal sphere with a core:
+            rho(r) = rho_0 / (1 + (r/rc)^2)
+            v^2(r) = v0^2 * [1 - (rc/r) * atan(r/rc)]
+            a(r)   = v^2(r) / r, directed toward the centre
+        This force is what flattens the outer rotation curve and holds the
+        disk together at large radii.
+
+   Integration is semi-implicit (symplectic) Euler — good energy behaviour
+   for long-term orbital motion. Mergers conserve mass and momentum.
+   Particles that plunge through the BH absorption radius are swallowed
+   and add their mass to the BH.
+   ========================================================================== */
+
+/* ---------- Tunable simulation parameters ---------- */
+const NUM_PARTICLES = 10000;
+const G             = 0.45;    // gravitational constant (code units)
+const THETA         = 0.75;    // Barnes-Hut opening angle
+const THETA2        = THETA * THETA;
+const SOFTENING     = 2.2;     // gravitational softening length (pixels)
+const SOFT2         = SOFTENING * SOFTENING;
+const DT            = 0.22;    // integration timestep
+
+/* central black hole */
+const BH_MASS_INIT  = 1400;    // ~14% of total disk mass
+const BH_SOFT       = 4.0;
+const BH_SOFT2      = BH_SOFT * BH_SOFT;
+const BH_ABSORB_R   = 5.5;     // particles within this radius are absorbed
+const BH_ABSORB_R2  = BH_ABSORB_R * BH_ABSORB_R;
+
+/* dark-matter halo (isothermal sphere with core) */
+const HALO_V0       = 4.3;     // asymptotic flat-rotation velocity
+const HALO_V0_2     = HALO_V0 * HALO_V0;
+const HALO_RC       = 170;     // core radius (pixels)
+
+/* quadtree */
+const QT_CAPACITY   = 2;       // particles per leaf before subdividing
+const QT_MAX_DEPTH  = 18;
+
+/* visuals */
+const BG_BASE       = 220;
+const TRAIL_ALPHA   = 22;      // how quickly trails fade (lower = longer trails)
+const MAX_SPEED     = 9.0;     // clamp velocity to keep sim stable
+const MAX_SPEED_2   = MAX_SPEED * MAX_SPEED;
+
+/* ---------- Simulation state ---------- */
+let particles     = [];
+let bhMass        = BH_MASS_INIT;
+let mergedCount   = 0;
+let absorbedCount = 0;
+let simTime       = 0;
+let frameSimSteps = 1;   // physics sub-steps per render frame
+
+let paused        = false;
+let trailsOn      = true;
+let hudHidden     = false;
+let cx, cy;              // galaxy centre (in screen coords)
+
+/* ==========================================================================
+   QUADTREE  (Barnes-Hut, index-free, plain-object nodes)
+   ========================================================================== */
+
+function makeNode(x, y, size) {
+  return {
+    x, y, size,
+    children: null,   // null if leaf, else [NW, NE, SW, SE]
+    plist:    null,   // particle list if leaf
+    mass: 0, cmx: 0, cmy: 0,
+  };
+}
+
+function qtInsert(node, p, depth) {
+  if (node.children !== null) {
+    const mx = node.x + node.size * 0.5;
+    const my = node.y + node.size * 0.5;
+    const idx = (p.pos.y >= my ? 2 : 0) + (p.pos.x >= mx ? 1 : 0);
+    qtInsert(node.children[idx], p, depth + 1);
+    return;
+  }
+  if (node.plist === null) node.plist = [];
+  node.plist.push(p);
+  if (node.plist.length > QT_CAPACITY && depth < QT_MAX_DEPTH) {
+    const hs = node.size * 0.5;
+    const kids = [
+      makeNode(node.x,      node.y,      hs),
+      makeNode(node.x + hs, node.y,      hs),
+      makeNode(node.x,      node.y + hs, hs),
+      makeNode(node.x + hs, node.y + hs, hs),
+    ];
+    node.children = kids;
+    const mx = node.x + hs, my = node.y + hs;
+    const old = node.plist;
+    node.plist = null;
+    for (let i = 0; i < old.length; i++) {
+      const q = old[i];
+      const idx = (q.pos.y >= my ? 2 : 0) + (q.pos.x >= mx ? 1 : 0);
+      qtInsert(kids[idx], q, depth + 1);
+    }
+  }
+}
+
+/* Post-order: compute total mass and centre-of-mass per node. */
+function qtComputeMass(node) {
+  if (node.children !== null) {
+    let m = 0, mx = 0, my = 0;
+    const c = node.children;
+    for (let i = 0; i < 4; i++) {
+      qtComputeMass(c[i]);
+      m  += c[i].mass;
+      mx += c[i].mass * c[i].cmx;
+      my += c[i].mass * c[i].cmy;
+    }
+    node.mass = m;
+    if (m > 0) { node.cmx = mx / m; node.cmy = my / m; }
+  } else if (node.plist !== null) {
+    let m = 0, mx = 0, my = 0;
+    const pl = node.plist;
+    for (let i = 0; i < pl.length; i++) {
+      const q = pl[i];
+      m  += q.mass;
+      mx += q.mass * q.pos.x;
+      my += q.mass * q.pos.y;
+    }
+    node.mass = m;
+    if (m > 0) { node.cmx = mx / m; node.cmy = my / m; }
+  } else {
+    node.mass = 0;
+  }
+}
+
+/* Accumulate gravitational acceleration on p from this subtree.
+   Also performs close-encounter merger checks inside leaves.       */
+function qtAddForce(node, p) {
+  if (p.merged) return;
+  if (node.mass === 0) return;
+
+  if (node.children !== null) {
+    const dx = node.cmx - p.pos.x;
+    const dy = node.cmy - p.pos.y;
+    const d2 = dx*dx + dy*dy + SOFT2;
+    /* s^2 / d^2 < theta^2  -->  treat as single body */
+    if (node.size * node.size < THETA2 * d2) {
+      const invD  = 1.0 / Math.sqrt(d2);
+      const coeff = G * node.mass * invD / d2;
+      p.acc.x += coeff * dx;
+      p.acc.y += coeff * dy;
+    } else {
+      const c = node.children;
+      qtAddForce(c[0], p);
+      qtAddForce(c[1], p);
+      qtAddForce(c[2], p);
+      qtAddForce(c[3], p);
+    }
+    return;
+  }
+
+  /* Leaf: direct pair interaction + merger check */
+  const pl = node.plist;
+  if (pl === null) return;
+  const len = pl.length;
+  for (let i = 0; i < len; i++) {
+    const other = pl[i];
+    if (other === p || other.merged) continue;
+
+    const dx = other.pos.x - p.pos.x;
+    const dy = other.pos.y - p.pos.y;
+    const d2real = dx*dx + dy*dy;
+
+    /* merger: touching discs */
+    const rSum = other.radius + p.radius;
+    if (d2real < rSum * rSum) {
+      if (p.mass >= other.mass) {
+        mergeParticles(p, other);
+        continue;
+      } else {
+        mergeParticles(other, p);
+        return; /* p is gone; stop computing forces on it */
+      }
+    }
+
+    const d2 = d2real + SOFT2;
+    const invD  = 1.0 / Math.sqrt(d2);
+    const coeff = G * other.mass * invD / d2;
+    p.acc.x += coeff * dx;
+    p.acc.y += coeff * dy;
+  }
+}
+
+/* Conserve mass and momentum. Larger body keeps its identity. */
+function mergeParticles(big, small) {
+  const m1 = big.mass,   m2 = small.mass;
+  const M  = m1 + m2;
+  const invM = 1.0 / M;
+  big.vel.x = (m1 * big.vel.x + m2 * small.vel.x) * invM;
+  big.vel.y = (m1 * big.vel.y + m2 * small.vel.y) * invM;
+  big.pos.x = (m1 * big.pos.x + m2 * small.pos.x) * invM;
+  big.pos.y = (m1 * big.pos.y + m2 * small.pos.y) * invM;
+  big.mass   = M;
+  big.radius = Math.sqrt(M) * 0.55;
+  /* bigger merged stars redden slightly — evoking red giants */
+  big.warmth = Math.min(1, (big.warmth || 0) * 0.6 + 0.45);
+  small.merged = true;
+  mergedCount++;
+}
+
+/* ==========================================================================
+   External (analytic) forces: central BH + dark-matter halo
+   ========================================================================== */
+function applyExternalForces(p) {
+  const dx = cx - p.pos.x;
+  const dy = cy - p.pos.y;
+  const r2 = dx*dx + dy*dy;
+
+  /* BH: softened 1/r^2 gravity — dominates the inner region (Keplerian) */
+  const r2bh    = r2 + BH_SOFT2;
+  const invRbh  = 1.0 / Math.sqrt(r2bh);
+  const bhCoef  = G * bhMass * invRbh / r2bh; /* = G*M/r^3 */
+  p.acc.x += bhCoef * dx;
+  p.acc.y += bhCoef * dy;
+
+  /* BH absorption — swallow particles that fall into the centre */
+  if (r2 < BH_ABSORB_R2) {
+    p.merged = true;
+    bhMass += p.mass;
+    absorbedCount++;
+    return;
+  }
+
+  /* Halo: isothermal sphere with core.
+     a_mag = v0^2 * ( 1/r  -  (rc/r^2) * atan(r/rc) )
+     Direction: radially inward (toward cx, cy).
+     Near r=0 the parenthesis cancels to 0 smoothly; we floor r to keep
+     floating-point stable.                                                */
+  const r    = Math.sqrt(r2);
+  if (r > 1e-3) {
+    const invR = 1.0 / r;
+    const a_halo = HALO_V0_2 * (invR - (HALO_RC / (r2 + 1e-3)) * Math.atan(r / HALO_RC));
+    p.acc.x += a_halo * dx * invR;
+    p.acc.y += a_halo * dy * invR;
+  }
+}
+
+/* ==========================================================================
+   Initial conditions: a collapsing protogalactic cloud with partial
+   rotational support. Not enough spin to stay up -> infall, collapse,
+   then flatten into a disk with emergent spiral density waves.
+   ========================================================================== */
+function initParticles() {
+  particles = [];
+  bhMass = BH_MASS_INIT;
+  mergedCount = 0;
+  absorbedCount = 0;
+  simTime = 0;
+
+  const R_CLOUD    = Math.min(width, height) * 0.4;
+  const INIT_SPIN  = 0.55;   // fraction of circular velocity
+  const INIT_INFALL= 0.06;
+
+  for (let i = 0; i < NUM_PARTICLES; i++) {
+    /* Centrally-concentrated radial profile: u^0.55 */
+    const u = Math.random();
+    const r = R_CLOUD * Math.pow(u, 0.55) + 12;
+    const theta = Math.random() * Math.PI * 2;
+    const px = cx + r * Math.cos(theta);
+    const py = cy + r * Math.sin(theta);
+
+    /* Circular velocity at birth radius from BH + halo */
+    const v2_bh   = G * bhMass / (r + BH_SOFT);
+    const v2_halo = HALO_V0_2 * (1 - (HALO_RC / r) * Math.atan(r / HALO_RC));
+    const vCirc   = Math.sqrt(Math.max(0, v2_bh + v2_halo));
+
+    /* Tangential spin (counter-clockwise in screen coords) */
+    const vSpinX = -vCirc * INIT_SPIN * Math.sin(theta);
+    const vSpinY =  vCirc * INIT_SPIN * Math.cos(theta);
+
+    /* Small turbulence + gentle infall to make the collapse visible */
+    const vTx = randomGaussian() * 0.25;
+    const vTy = randomGaussian() * 0.25;
+    const vInX = -vCirc * INIT_INFALL * Math.cos(theta);
+    const vInY = -vCirc * INIT_INFALL * Math.sin(theta);
+
+    /* Mass distribution: mostly ~1, a few heavier "giant" stars */
+    const heavy = Math.random() < 0.02;
+    const mass  = heavy ? (2 + Math.random() * 3) : (0.7 + Math.random() * 0.6);
+
+    particles.push({
+      pos:    createVector(px, py),
+      vel:    createVector(vSpinX + vTx + vInX, vSpinY + vTy + vInY),
+      acc:    createVector(0, 0),
+      mass:   mass,
+      radius: Math.sqrt(mass) * 0.55,
+      merged: false,
+      warmth: Math.random() < 0.06 ? Math.random() * 0.8 + 0.2 : 0, /* rare hot stars */
+      bright: 0.7 + Math.random() * 0.3,
+    });
+  }
+}
+
+/* ==========================================================================
+   p5 lifecycle
+   ========================================================================== */
+function setup() {
+  const c = createCanvas(windowWidth, windowHeight);
+  c.parent(document.body);
+  pixelDensity(1);
+  cx = width  * 0.5;
+  cy = height * 0.5;
+  background(BG_BASE);
+  initParticles();
+  blendMode(BLEND);
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  cx = width  * 0.5;
+  cy = height * 0.5;
+  background(BG_BASE);
+}
+
+function keyPressed() {
+  if (key === ' ')                   paused   = !paused;
+  else if (key === 'r' || key === 'R') initParticles();
+  else if (key === 't' || key === 'T') { trailsOn = !trailsOn; background(BG_BASE); }
+  else if (key === 'h' || key === 'H') {
+    hudHidden = !hudHidden;
+    document.getElementById('hud').style.display = hudHidden ? 'none' : 'block';
+    document.getElementById('controls').style.display = hudHidden ? 'none' : 'block';
+  }
+}
+
+/* ---------- One physics step ---------- */
+function simulate() {
+  /* Build the quadtree fresh each step */
+  const size = Math.max(width, height) * 2.5;
+  const root = makeNode(cx - size * 0.5, cy - size * 0.5, size);
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    if (!p.merged) qtInsert(root, p, 0);
+  }
+  qtComputeMass(root);
+
+  /* Compute forces + check close-encounter mergers */
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    if (p.merged) continue;
+    p.acc.x = 0; p.acc.y = 0;
+    qtAddForce(root, p);
+    if (!p.merged) applyExternalForces(p);
+  }
+
+  /* Symplectic Euler integration + speed clamp */
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    if (p.merged) continue;
+    p.vel.x += p.acc.x * DT;
+    p.vel.y += p.acc.y * DT;
+    const v2 = p.vel.x * p.vel.x + p.vel.y * p.vel.y;
+    if (v2 > MAX_SPEED_2) {
+      const s = MAX_SPEED / Math.sqrt(v2);
+      p.vel.x *= s; p.vel.y *= s;
+    }
+    p.pos.x += p.vel.x * DT;
+    p.pos.y += p.vel.y * DT;
+  }
+
+  /* Compact the array occasionally to keep iteration fast */
+  if ((frameCount & 7) === 0) {
+    const alive = [];
+    for (let i = 0; i < particles.length; i++) {
+      if (!particles[i].merged) alive.push(particles[i]);
+    }
+    particles = alive;
+  }
+
+  simTime += DT;
+}
+
+/* ---------- Rendering ---------- */
+function renderParticles() {
+  noStroke();
+  const ps = particles;
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i];
+    if (p.merged) continue;
+
+    /* Size follows cube-rootish law of mass; minimum ~1px for visibility */
+    const size = Math.max(1.2, p.radius * 2.1);
+
+    /* Base palette: deep indigo, darker for heavier bodies.
+       Rare "warm" stars are tinted amber to break up the blue.    */
+    const a = Math.min(235, 110 + p.mass * 32);
+    if (p.warmth > 0.01) {
+      /* warm accent */
+      const w = p.warmth;
+      fill(90 + 60 * w, 50 + 20 * w, 30 + 10 * w, a);
+    } else {
+      /* cool indigo; slight lightness variation per particle */
+      const b = p.bright;
+      fill(18 + b * 22, 24 + b * 26, 70 + b * 38, a);
+    }
+    circle(p.pos.x, p.pos.y, size);
+  }
+}
+
+function renderBH() {
+  const bhR = 3 + Math.min(10, Math.pow(bhMass / BH_MASS_INIT, 0.33) * 3);
+
+  /* Soft outer glow — several concentric faint disks */
+  noStroke();
+  for (let i = 9; i >= 1; i--) {
+    const t = i / 9;
+    const rr = bhR * 2 + i * 4.5;
+    fill(90, 60, 110, Math.round(5 + 10 * t));
+    circle(cx, cy, rr);
+  }
+  /* Event-horizon-ish black core */
+  fill(6, 6, 14, 245);
+  circle(cx, cy, bhR * 2);
+  /* Warm inner bright spot (hot accretion) */
+  fill(255, 210, 150, 180);
+  circle(cx, cy, bhR * 0.55);
+}
+
+/* ---------- HUD ---------- */
+let hudUpdateFrame = 0;
+function updateHUD() {
+  if (hudHidden) return;
+  if ((frameCount - hudUpdateFrame) < 6) return;
+  hudUpdateFrame = frameCount;
+
+  let alive = 0;
+  for (let i = 0; i < particles.length; i++) if (!particles[i].merged) alive++;
+
+  let phase = 'collapse';
+  if (simTime > 60)  phase = 'infall';
+  if (simTime > 180) phase = 'disk formation';
+  if (simTime > 400) phase = 'spiral evolution';
+  if (simTime > 900) phase = 'relaxed galaxy';
+
+  document.getElementById('h-n').textContent = alive.toLocaleString();
+  document.getElementById('h-m').textContent =
+    mergedCount.toLocaleString() + ' + ' + absorbedCount.toLocaleString() + ' (BH)';
+  document.getElementById('h-b').textContent = Math.round(bhMass).toLocaleString();
+  document.getElementById('h-t').textContent = simTime.toFixed(0);
+  document.getElementById('h-f').textContent = frameRate().toFixed(0);
+  document.getElementById('h-p').textContent = phase;
+}
+
+/* ---------- Main frame ---------- */
+function draw() {
+  /* Motion-trail fade: lay down a semi-transparent base-color rectangle
+     each frame.  Any dark particle pixels blend gradually back toward the
+     background 220 over ~30 frames, producing soft trails.                */
+  if (trailsOn) {
+    noStroke();
+    fill(BG_BASE, TRAIL_ALPHA);
+    rect(-1, -1, width + 2, height + 2);
+  } else {
+    background(BG_BASE);
+  }
+
+  if (!paused) {
+    for (let s = 0; s < frameSimSteps; s++) simulate();
+  }
+
+  renderParticles();
+  renderBH();
+  updateHUD();
+}
+</script>
+</body>
+</html>

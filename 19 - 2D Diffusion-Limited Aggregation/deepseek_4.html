@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+  <title>Diffusion‑Limited Aggregation – Interactive DLA</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0b0b12;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+    }
+    .simulation-container {
+      background: #12121f;
+      border-radius: 24px;
+      padding: 1.2rem;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.2rem;
+      align-items: flex-start;
+      justify-content: center;
+    }
+    canvas {
+      display: block;
+      border-radius: 12px;
+      box-shadow: 0 0 30px rgba(100,150,255,0.15);
+      background: #080810;
+    }
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      min-width: 200px;
+      color: #ccc;
+      background: rgba(20,20,35,0.8);
+      border-radius: 16px;
+      padding: 1rem;
+      backdrop-filter: blur(8px);
+    }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+    }
+    label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      color: #aab;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: #6e8efb;
+    }
+    .value-display {
+      font-size: 0.75rem;
+      color: #ccd;
+      text-align: right;
+    }
+    button {
+      background: #6e8efb;
+      border: none;
+      color: white;
+      font-weight: bold;
+      padding: 0.6rem 1rem;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: background 0.2s;
+      letter-spacing: 0.04em;
+    }
+    button:hover {
+      background: #8aa5ff;
+    }
+    .info-text {
+      font-size: 0.75rem;
+      color: #999;
+      text-align: center;
+      margin-top: 0.3rem;
+    }
+    hr {
+      border-color: #2a2a40;
+      margin: 0.3rem 0;
+    }
+  </style>
+</head>
+<body>
+<div class="simulation-container">
+  <canvas id="displayCanvas" width="800" height="800"></canvas>
+  <div class="controls">
+    <div class="control-group">
+      <label>Particles <span id="countValue">100</span></label>
+      <input type="range" id="countSlider" min="10" max="300" value="100" step="1">
+    </div>
+    <div class="control-group">
+      <label>Speed <span id="speedValue">2.0</span></label>
+      <input type="range" id="speedSlider" min="0.5" max="6.0" value="2.0" step="0.1">
+    </div>
+    <div class="control-group">
+      <label>Bias <span id="biasValue">0.025</span></label>
+      <input type="range" id="biasSlider" min="0" max="0.1" value="0.025" step="0.001">
+    </div>
+    <hr>
+    <button id="resetBtn">↺ New Cluster</button>
+    <div class="info-text">Stops when cluster reaches 50px from edge</div>
+  </div>
+</div>
+
+<script>
+  (function() {
+    // ── Canvas elements ──────────────────────
+    const displayCanvas = document.getElementById('displayCanvas');
+    const ctx = displayCanvas.getContext('2d');
+    const width = displayCanvas.width;
+    const height = displayCanvas.height;
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    // ── Off‑screen collision canvas ─────────
+    const collisionCanvas = document.createElement('canvas');
+    collisionCanvas.width = width;
+    collisionCanvas.height = height;
+    const colCtx = collisionCanvas.getContext('2d');
+
+    // ── Simulation state ────────────────────
+    let movingParticles = [];
+    let fixedPositions = [];    // array of {x, y}
+    let clusterMaxDist = 0;     // max distance from center to any fixed particle
+    let growthStopped = false;
+    let frame = 0;
+
+    // ── Parameters (from sliders) ───────────
+    let targetParticleCount = 100;
+    let particleSpeed = 2.0;
+    let biasStrength = 0.025;
+
+    // ── Particle radius for sticking & drawing
+    const FIXED_RADIUS = 2.5;   // radius of fixed cluster particles (drawn)
+    const MOVING_RADIUS = 1.2;  // visual radius of moving particles
+
+    // ── Helper: draw a filled circle on collision canvas ──
+    function drawOnCollisionCanvas(x, y, radius) {
+      colCtx.beginPath();
+      colCtx.arc(x, y, radius, 0, Math.PI * 2);
+      colCtx.fillStyle = 'white';
+      colCtx.fill();
+    }
+
+    // ── Seed the cluster with one particle at center ──
+    function seedCluster() {
+      colCtx.clearRect(0, 0, width, height);
+      fixedPositions = [];
+      movingParticles = [];
+      clusterMaxDist = 0;
+      growthStopped = false;
+
+      // Add seed particle
+      const seed = { x: centerX, y: centerY };
+      fixedPositions.push(seed);
+      drawOnCollisionCanvas(seed.x, seed.y, FIXED_RADIUS);
+      // update maxDist
+      clusterMaxDist = Math.hypot(seed.x - centerX, seed.y - centerY);
+    }
+
+    // ── Spawn a new moving particle ────────────
+    function spawnParticle() {
+      // Determine spawn distance: outer edge = maxDist + 50, minimum 40
+      const spawnMargin = 60;
+      let spawnDist = Math.max(clusterMaxDist + spawnMargin, 35);
+      // clamp so it stays inside canvas with margin
+      spawnDist = Math.min(spawnDist, width / 2 - 15, height / 2 - 15);
+      if (spawnDist < 20) spawnDist = 20;
+
+      const angle = Math.random() * Math.PI * 2;
+      const x = centerX + Math.cos(angle) * spawnDist;
+      const y = centerY + Math.sin(angle) * spawnDist;
+      // Ensure inside canvas (just in case)
+      const px = Math.min(width - 5, Math.max(5, x));
+      const py = Math.min(height - 5, Math.max(5, y));
+
+      return {
+        x: px,
+        y: py,
+        stuck: false
+      };
+    }
+
+    // ── Initialize simulation ─────────────────
+    function initSimulation() {
+      seedCluster();
+      // Spawn initial moving particles
+      for (let i = 0; i < targetParticleCount; i++) {
+        movingParticles.push(spawnParticle());
+      }
+    }
+
+    // ── Check if moving particle collides with cluster ──
+    function isCollidingWithCluster(x, y) {
+      // Sample the collision canvas at the particle's rounded position
+      const px = Math.round(x);
+      const py = Math.round(y);
+      if (px < 0 || px >= width || py < 0 || py >= height) return false;
+      const pixel = colCtx.getImageData(px, py, 1, 1).data;
+      return pixel[3] > 0;  // alpha > 0 means cluster drawn
+    }
+
+    // ── Process a single moving particle ──────
+    function updateParticle(particle) {
+      if (particle.stuck) return false;
+
+      // 1) Random walk step
+      const step = particleSpeed;
+      const angle = Math.random() * Math.PI * 2;
+      let newX = particle.x + Math.cos(angle) * step;
+      let newY = particle.y + Math.sin(angle) * step;
+
+      // 2) Apply inward bias (toward center)
+      const dxToCenter = centerX - newX;
+      const dyToCenter = centerY - newY;
+      const distToCenter = Math.hypot(dxToCenter, dyToCenter);
+      if (distToCenter > 0.1) {
+        const biasFactor = biasStrength * step;
+        newX += (dxToCenter / distToCenter) * biasFactor;
+        newY += (dyToCenter / distToCenter) * biasFactor;
+      }
+
+      // 3) Keep particle inside canvas (bounce off edges)
+      const margin = 5;
+      if (newX < margin) { newX = margin; }
+      if (newX > width - margin) { newX = width - margin; }
+      if (newY < margin) { newY = margin; }
+      if (newY > height - margin) { newY = height - margin; }
+
+      // 4) Check collision with cluster
+      if (isCollidingWithCluster(newX, newY)) {
+        // Particle sticks
+        particle.stuck = true;
+        particle.x = newX;
+        particle.y = newY;
+
+        // Add to fixed cluster
+        const fixedPt = { x: newX, y: newY };
+        fixedPositions.push(fixedPt);
+        drawOnCollisionCanvas(newX, newY, FIXED_RADIUS);
+
+        // Update cluster max distance
+        const dist = Math.hypot(newX - centerX, newY - centerY);
+        if (dist > clusterMaxDist) {
+          clusterMaxDist = dist;
+        }
+
+        // Check if cluster reached edge threshold
+        const edgeThreshold = Math.min(width, height) / 2 - 50;
+        if (clusterMaxDist >= edgeThreshold && !growthStopped) {
+          growthStopped = true;
+        }
+        return true; // particle stuck
+      } else {
+        // Continue moving
+        particle.x = newX;
+        particle.y = newY;
+        return false;
+      }
+    }
+
+    // ── Main animation loop ─────────────────
+    function animationLoop() {
+      // Read current slider values
+      targetParticleCount = parseInt(document.getElementById('countSlider').value, 10);
+      particleSpeed = parseFloat(document.getElementById('speedSlider').value);
+      biasStrength = parseFloat(document.getElementById('biasSlider').value);
+      document.getElementById('countValue').textContent = targetParticleCount;
+      document.getElementById('speedValue').textContent = particleSpeed.toFixed(1);
+      document.getElementById('biasValue').textContent = biasStrength.toFixed(3);
+
+      // Update all moving particles
+      for (let i = movingParticles.length - 1; i >= 0; i--) {
+        const p = movingParticles[i];
+        const stuck = updateParticle(p);
+        if (stuck) {
+          // Remove from moving list
+          movingParticles.splice(i, 1);
+        }
+      }
+
+      // Spawn new particles to maintain target count (if growth not stopped)
+      if (!growthStopped) {
+        while (movingParticles.length < targetParticleCount) {
+          movingParticles.push(spawnParticle());
+        }
+      } else {
+        // If growth stopped but some moving particles remain, we don't spawn more.
+        // They will eventually stick or bounce until all are gone.
+        if (movingParticles.length === 0) {
+          // All done – simulation complete
+        }
+      }
+
+      // ── Render ───────────────────────────────
+      // Clear display canvas
+      ctx.clearRect(0, 0, width, height);
+
+      // Draw the entire cluster from collision canvas
+      ctx.drawImage(collisionCanvas, 0, 0);
+
+      // Draw moving particles as small bright dots
+      ctx.fillStyle = '#ffbb55';
+      for (const p of movingParticles) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, MOVING_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Optional: draw subtle center marker
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, 8, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Display status
+      ctx.fillStyle = '#ffffff90';
+      ctx.font = '11px monospace';
+      ctx.fillText(`Fixed: ${fixedPositions.length}  Moving: ${movingParticles.length}`, 10, height - 10);
+      if (growthStopped) {
+        ctx.fillStyle = '#ffaa00';
+        ctx.fillText('Growth stopped (edge reached)', 10, height - 25);
+      }
+
+      requestAnimationFrame(animationLoop);
+    }
+
+    // ── Slider event listeners ───────────────
+    document.getElementById('countSlider').addEventListener('input', (e) => {
+      targetParticleCount = parseInt(e.target.value, 10);
+      document.getElementById('countValue').textContent = targetParticleCount;
+    });
+    document.getElementById('speedSlider').addEventListener('input', (e) => {
+      particleSpeed = parseFloat(e.target.value);
+      document.getElementById('speedValue').textContent = particleSpeed.toFixed(1);
+    });
+    document.getElementById('biasSlider').addEventListener('input', (e) => {
+      biasStrength = parseFloat(e.target.value);
+      document.getElementById('biasValue').textContent = biasStrength.toFixed(3);
+    });
+
+    // ── Reset button ─────────────────────────
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      initSimulation();
+    });
+
+    // ── Start the simulation ─────────────────
+    initSimulation();
+    requestAnimationFrame(animationLoop);
+  })();
+</script>
+</body>
+</html>

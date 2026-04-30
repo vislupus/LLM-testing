@@ -26,13 +26,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **5/10** |
 | **Gemini 3**          | **4/10** |
 | **Gemini 2.5**        | **4/10** |
+| **ChatGPT 5.5**       | **5/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **2/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **3/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **7/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **3/10** |
@@ -40,12 +41,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **4/10** |
 | **Glm 4.6**           | **3/10** |
+| **Kimi K2.6**         | **2/10** |
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **4/10** |
+| **Deepseek 4**        | **5/10** |
 | **Deepseek 3.2**      | **5/10** |
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **6/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **7/10** |
 | **Qwen 3.5**          | **5/10** |
 | **MiMo-V2**           | **5/10** |
@@ -61,13 +65,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **2/10** |
 | **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **1/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **8/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **2/10** |
 | **Claude Opus 4.1**   | **2/10** |
@@ -75,12 +80,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **2/10** |
+| **Kimi K2.6**         | **7/10** |
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **2/10** |
+| **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **3/10** |
 | **Мinimax m2.7**      | **2/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **2/10** |
+| **Qwen 3.6 Max**      | **5/10** |
 | **Qwen 3.6**          | **4/10** |
 | **Qwen 3.5**          | **4/10** |
 | **MiMo-V2**           | **3/10** |
@@ -96,13 +104,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
 | **Gemini 2.5**        | **4/10** |
+| **ChatGPT 5.5**       | **6/10** |
 | **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **9/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Claude Opus 4.1**   | **6/10** |
@@ -110,12 +119,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **0/10** |
+| **Kimi K2.6**         | **3/10** |
 | **Kimi K2.5**         | **6/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **5/10** |
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **4/10** |
 | **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **4/10** |
 | **MiMo-V2**           | **4/10** |
@@ -131,13 +143,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **6/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **8/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **5/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **1/10** |
 | **Claude Opus 4.6**   | **1/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Claude Opus 4.1**   | **2/10** |
@@ -145,12 +158,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **2/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **0/10** |
+| **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **1/10** |
 | **Deepseek 3.2**      | **6/10** |
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **6/10** |
+| **Qwen 3.6 Max**      | **8/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **4/10** |
@@ -166,13 +182,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **5/10** |
 | **Gemini 2.5**        | **4/10** |
+| **ChatGPT 5.5**       | **8/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **8/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **4/10** |
@@ -180,12 +197,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **0/10** |
+| **Kimi K2.6**         | **4/10** |
 | **Kimi K2.5**         | **4/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **7/10** |
 | **Deepseek 3.2**      | **4/10** |
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **3/10** |
+| **Qwen 3.6 Max**      | **6/10** |
 | **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **4/10** |
 | **MiMo-V2**           | **4/10** |
@@ -201,13 +221,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **4/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **6/10** |
 | **ChatGPT 5.4**       | **1/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **8/10** |
 | **Claude Opus 4.6**   | **1/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **4/10** |
@@ -215,12 +236,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **3/10** |
+| **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **4/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **5/10** |
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **4/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **1/10** |
@@ -236,13 +260,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **3/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **7/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **5/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **9/10** |
 | **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Claude Opus 4.1**   | **4/10** |
@@ -250,12 +275,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **7/10** |
 | **Glm 4.6**           | **3/10** |
+| **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **9/10** |
 | **Deepseek 3.2**      | **10/10** |
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **9/10** |
+| **Qwen 3.6 Max**      | **8/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **7/10** |
 | **MiMo-V2**           | **3/10** |
@@ -271,13 +299,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **3/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **1/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **8/10** |
 | **Claude Opus 4.6**   | **8/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Claude Opus 4.1**   | **6/10** |
@@ -285,12 +314,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **2/10** |
+| **Kimi K2.6**         | **4/10** |
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **4/10** |
 | **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **6/10** |
+| **Qwen 3.6 Max**      | **7/10** |
 | **Qwen 3.6**          | **5/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **2/10** |
@@ -306,13 +338,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **5/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **8/10** |
 | **ChatGPT 5.4**       | **10/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **6/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **4/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Claude Opus 4.1**   | **6/10** |
@@ -320,12 +353,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **8/10** |
 | **Glm 4.7**           | **6/10** |
 | **Glm 4.6**           | **0/10** |
+| **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **7/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **7/10** |
+| **Qwen 3.6 Max**      | **6/10** |
 | **Qwen 3.6**          | **4/10** |
 | **Qwen 3.5**          | **6/10** |
 | **MiMo-V2**           | **8/10** |
@@ -341,13 +377,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **8/10** |
 | **Gemini 2.5**        | **6/10** |
+| **ChatGPT 5.5**       | **1/10** |
 | **ChatGPT 5.4**       | **10/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **ChatGPT 5**         | **7/10** |
 | **Grok 4.2**          | **7/10** |
 | **Grok 4.1**          | **4/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **10/10** |
 | **Claude Opus 4.1**   | **8/10** |
@@ -355,12 +392,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **5/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **0/10** |
+| **Kimi K2.6**         | **5/10** |
 | **Kimi K2.5**         | **6/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **5/10** |
 | **Deepseek 3.2**      | **10/10** |
 | **Мinimax m2.7**      | **9/10** |
 | **Мinimax m2.5**      | **5/10** |
 | **Мinimax m2.1**      | **3/10** |
+| **Qwen 3.6 Max**      | **7/10** |
 | **Qwen 3.6**          | **7/10** |
 | **Qwen 3.5**          | **6/10** |
 | **MiMo-V2**           | **6/10** |
@@ -376,13 +416,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **7/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **4/10** |
 | **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **7/10** |
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Claude Opus 4.1**   | **1/10** |
@@ -390,12 +431,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **1/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **8/10** |
+| **Kimi K2.6**         | **7/10** |
 | **Kimi K2.5**         | **3/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **1/10** |
 | **Deepseek 3.2**      | **7/10** |
 | **Мinimax m2.7**      | **6/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
@@ -411,13 +455,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
 | **Gemini 2.5**        | **2/10** |
+| **ChatGPT 5.5**       | **2/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **3/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **7/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **1/10** |
@@ -425,12 +470,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **1/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **3/10** |
+| **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **4/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **5/10** |
 | **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
@@ -446,13 +494,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **5/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **5/10** |
 | **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **8/10** |
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **6/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **9/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **1/10** |
@@ -460,12 +509,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **2/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **0/10** |
+| **Kimi K2.6**         | **2/10** |
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **2/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **3/10** |
@@ -481,13 +533,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **6/10** |
 | **Gemini 2.5**        | **3/10** |
+| **ChatGPT 5.5**       | **6/10** |
 | **ChatGPT 5.4**       | **3/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **2/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **3/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **8/10** |
 | **Claude Opus 4.5**   | **3/10** |
 | **Claude Opus 4.1**   | **1/10** |
@@ -495,12 +548,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **5/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **5/10** |
+| **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **1/10** |
 | **Deepseek 3.2**      | **7/10** |
 | **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **4/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
@@ -516,13 +572,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **9/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **8/10** |
 | **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **1/10** |
 | **ChatGPT 5.1**       | **7/10** |
 | **ChatGPT 5**         | **1/10** |
 | **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **1/10** |
@@ -530,12 +587,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **0/10** |
+| **Kimi K2.6**         | **5/10** |
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **4/10** |
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
@@ -551,13 +611,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **5/10** |
 | **Gemini 2.5**        | **3/10** |
+| **ChatGPT 5.5**       | **7/10** |
 | **ChatGPT 5.4**       | **9/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **1/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Claude Opus 4.1**   | **1/10** |
@@ -565,12 +626,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **5/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **0/10** |
+| **Kimi K2.6**         | **4/10** |
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **1/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **4/10** |
 | **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **8/10** |
@@ -586,13 +650,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **1/10** |
 | **Gemini 3**          | **3/10** |
 | **Gemini 2.5**        | **2/10** |
+| **ChatGPT 5.5**       | **6/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **6/10** |
 | **ChatGPT 5**         | **6/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **7/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **5/10** |
@@ -600,12 +665,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **7/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **4/10** |
+| **Kimi K2.6**         | **5/10** |
 | **Kimi K2.5**         | **6/10** |
 | **Kimi K2 Turbo**     | **3/10** |
+| **Deepseek 4**        | **1/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **2/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **5/10** |
+| **Qwen 3.6 Max**      | **4/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **4/10** |
@@ -621,13 +689,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **8/10** |
 | **Gemini 2.5**        | **4/10** |
+| **ChatGPT 5.5**       | **6/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **4/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **4/10** |
 | **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **4/10** |
 | **Claude Opus 4.1**   | **3/10** |
@@ -635,12 +704,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **2/10** |
+| **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **3/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **3/10** |
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **2/10** |
+| **Qwen 3.6 Max**      | **4/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
@@ -656,13 +728,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **7/10** |
 | **Gemini 2.5**        | **4/10** |
+| **ChatGPT 5.5**       | **8/10** |
 | **ChatGPT 5.4**       | **9/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **5/10** |
 | **Grok 4.1**          | **3/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **10/10** |
 | **Claude Opus 4.1**   | **1/10** |
@@ -670,12 +743,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **7/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **4/10** |
+| **Kimi K2.6**         | **5/10** |
 | **Kimi K2.5**         | **7/10** |
 | **Kimi K2 Turbo**     | **3/10** |
+| **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **4/10** |
 | **Мinimax m2.7**      | **4/10** |
 | **Мinimax m2.5**      | **8/10** |
 | **Мinimax m2.1**      | **9/10** |
+| **Qwen 3.6 Max**      | **7/10** |
 | **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **5/10** |
 | **MiMo-V2**           | **3/10** |
@@ -691,13 +767,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **7/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **5/10** |
 | **ChatGPT 5.1**       | **1/10** |
 | **ChatGPT 5**         | **4/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **8/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **4/10** |
 | **Claude Opus 4.1**   | **2/10** |
@@ -705,12 +782,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **6/10** |
+| **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 4**        | **1/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **4/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **3/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
@@ -726,13 +806,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **5/10** |
 | **Gemini 2.5**        | **3/10** |
+| **ChatGPT 5.5**       | **6/10** |
 | **ChatGPT 5.4**       | **10/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **3/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **4/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Claude Opus 4.1**   | **6/10** |
@@ -740,12 +821,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **2/10** |
+| **Kimi K2.6**         | **2/10** |
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **7/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **9/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
@@ -761,13 +845,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **7/10** |
 | **Gemini 2.5**        | **2/10** |
+| **ChatGPT 5.5**       | **6/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **4/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **9/10** |
 | **Claude Opus 4.6**   | **10/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Claude Opus 4.1**   | **5/10** |
@@ -775,12 +860,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **1/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **4/10** |
+| **Kimi K2.6**         | **6/10** |
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **2/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **4/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **3/10** |
@@ -796,13 +884,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **6/10** |
 | **Gemini 2.5**        | **4/10** |
+| **ChatGPT 5.5**       | **5/10** |
 | **ChatGPT 5.4**       | **8/10** |
 | **ChatGPT 5.2**       | **6/10** |
 | **ChatGPT 5.1**       | **5/10** |
 | **ChatGPT 5**         | **5/10** |
 | **Grok 4.2**          | **5/10** |
 | **Grok 4.1**          | **2/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Claude Opus 4.1**   | **4/10** |
@@ -810,12 +899,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **8/10** |
 | **Glm 4.7**           | **4/10** |
 | **Glm 4.6**           | **8/10** |
+| **Kimi K2.6**         | **6/10** |
 | **Kimi K2.5**         | **7/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 4**        | **1/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **6/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **7/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **2/10** |
 | **MiMo-V2**           | **1/10** |
@@ -831,13 +923,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **6/10** |
 | **Gemini 2.5**        | **3/10** |
+| **ChatGPT 5.5**       | **7/10** |
 | **ChatGPT 5.4**       | **9/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **4/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **9/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **9/10** |
 | **Claude Opus 4.1**   | **7/10** |
@@ -845,12 +938,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **2/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **8/10** |
+| **Kimi K2.6**         | **6/10** |
 | **Kimi K2.5**         | **7/10** |
 | **Kimi K2 Turbo**     | **4/10** |
+| **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **9/10** |
 | **Мinimax m2.5**      | **5/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **5/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **3/10** |
@@ -866,13 +962,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **3/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **5/10** |
 | **ChatGPT 5.4**       | **5/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **2/10** |
 | **ChatGPT 5**         | **2/10** |
 | **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **2/10** |
@@ -880,12 +977,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **2/10** |
+| **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **2/10** |
+| **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **3/10** |
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **5/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **2/10** |
 | **Qwen 3.5**          | **2/10** |
 | **MiMo-V2**           | **6/10** |
@@ -901,13 +1001,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **5/10** |
 | **Gemini 2.5**        | **3/10** |
+| **ChatGPT 5.5**       | **1/10** |
 | **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **3/10** |
 | **ChatGPT 5.1**       | **4/10** |
 | **ChatGPT 5**         | **1/10** |
 | **Grok 4.2**          | **2/10** |
 | **Grok 4.1**          | **1/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **9/10** |
 | **Claude Opus 4.6**   | **9/10** |
 | **Claude Opus 4.5**   | **8/10** |
 | **Claude Opus 4.1**   | **4/10** |
@@ -915,12 +1016,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **5/10** |
+| **Kimi K2.6**         | **6/10** |
 | **Kimi K2.5**         | **6/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **4/10** |
 | **Мinimax m2.5**      | **1/10** |
 | **Мinimax m2.1**      | **6/10** |
+| **Qwen 3.6 Max**      | **3/10** |
 | **Qwen 3.6**          | **6/10** |
 | **Qwen 3.5**          | **6/10** |
 | **MiMo-V2**           | **3/10** |
@@ -936,13 +1040,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **3/10** |
 | **Gemini 3**          | **4/10** |
 | **Gemini 2.5**        | **3/10** |
+| **ChatGPT 5.5**       | **3/10** |
 | **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **3/10** |
 | **ChatGPT 5**         | **1/10** |
 | **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **4/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **9/10** |
 | **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **4/10** |
@@ -950,12 +1055,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **1/10** |
+| **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **2/10** |
+| **Deepseek 4**        | **1/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **1/10** |
+| **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **2/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **1/10** |
@@ -971,13 +1079,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **7/10** |
 | **Gemini 3**          | **0/10** |
 | **Gemini 2.5**        | **5/10** |
+| **ChatGPT 5.5**       | **6/10** |
 | **ChatGPT 5.4**       | **7/10** |
 | **ChatGPT 5.2**       | **8/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **ChatGPT 5**         | **0/10** |
 | **Grok 4.2**          | **7/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **8/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
@@ -985,12 +1094,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **7/10** |
 | **Glm 4.7**           | **4/10** |
 | **Glm 4.6**           | **4/10** |
+| **Kimi K2.6**         | **0/10** |
 | **Kimi K2.5**         | **7/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **5/10** |
 | **Deepseek 3.2**      | **0/10** |
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.6 Max**      | **0/10** |
 | **Qwen 3.6**          | **7/10** |
 | **Qwen 3.5**          | **5/10** |
 | **MiMo-V2**           | **0/10** |
@@ -1006,13 +1118,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **8/10** |
 | **Gemini 3**          | **0/10** |
 | **Gemini 2.5**        | **0/10** |
+| **ChatGPT 5.5**       | **8/10** |
 | **ChatGPT 5.4**       | **6/10** |
 | **ChatGPT 5.2**       | **9/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **ChatGPT 5**         | **0/10** |
 | **Grok 4.2**          | **4/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **6/10** |
 | **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
@@ -1020,12 +1133,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **6/10** |
 | **Glm 4.6**           | **3/10** |
+| **Kimi K2.6**         | **6/10** |
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **6/10** |
 | **Deepseek 3.2**      | **1/10** |
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **6/10** |
 | **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.6 Max**      | **5/10** |
 | **Qwen 3.6**          | **1/10** |
 | **Qwen 3.5**          | **5/10** |
 | **MiMo-V2**           | **0/10** |
@@ -1041,13 +1157,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3**          | **0/10** |
 | **Gemini 2.5**        | **1/10** |
+| **ChatGPT 5.5**       | **2/10** |
 | **ChatGPT 5.4**       | **2/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **ChatGPT 5**         | **0/10** |
 | **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **4/10** |
 | **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
@@ -1055,12 +1172,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **2/10** |
+| **Kimi K2.6**         | **0/10** |
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **0/10** |
 | **Deepseek 3.2**      | **0/10** |
 | **Мinimax m2.7**      | **5/10** |
 | **Мinimax m2.5**      | **2/10** |
 | **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.6 Max**      | **0/10** |
 | **Qwen 3.6**          | **5/10** |
 | **Qwen 3.5**          | **1/10** |
 | **MiMo-V2**           | **0/10** |
@@ -1076,13 +1196,14 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3**          | **0/10** |
 | **Gemini 2.5**        | **5/10** |
+| **ChatGPT 5.5**       | **5/10** |
 | **ChatGPT 5.4**       | **4/10** |
 | **ChatGPT 5.2**       | **4/10** |
 | **ChatGPT 5.1**       | **0/10** |
 | **ChatGPT 5**         | **0/10** |
 | **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.7**   | **7/10** |
 | **Claude Opus 4.6**   | **7/10** |
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
@@ -1090,12 +1211,15 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **5/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **2/10** |
+| **Kimi K2.6**         | **0/10** |
 | **Kimi K2.5**         | **3/10** |
 | **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4**        | **0/10** |
 | **Deepseek 3.2**      | **0/10** |
 | **Мinimax m2.7**      | **7/10** |
 | **Мinimax m2.5**      | **3/10** |
 | **Мinimax m2.1**      | **0/10** |
+| **Qwen 3.6 Max**      | **0/10** |
 | **Qwen 3.6**          | **6/10** |
 | **Qwen 3.5**          | **3/10** |
 | **MiMo-V2**           | **0/10** |

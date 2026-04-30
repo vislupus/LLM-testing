@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+  <title>Strandbeest GA Walker – Babylon.js</title>
+  <script src="https://cdn.jsdelivr.net/npm/babylonjs@6.40.0/babylon.min.js"></script>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:'Segoe UI', system-ui, sans-serif; background:#1a1a2e; overflow:hidden; height:100vh; }
+    #app { display:flex; height:100vh; }
+    #canvasContainer { flex:1; position:relative; }
+    canvas { width:100%; height:100%; display:block; }
+    #uiPanel {
+      width:300px; background:#16213e; color:#e0e0e0; padding:15px; display:flex; flex-direction:column;
+      gap:12px; overflow-y:auto; box-shadow:2px 0 10px rgba(0,0,0,0.5); font-size:14px;
+    }
+    h2 { font-size:1.2rem; margin-bottom:5px; color:#f0a500; }
+    .control-group { display:flex; flex-direction:column; gap:4px; }
+    label { font-size:0.8rem; color:#aaa; }
+    input, select, button { padding:6px 8px; border-radius:4px; border:1px solid #3a3a5a; background:#0f3460; color:#fff; font-size:0.85rem; }
+    button { cursor:pointer; background:#e94560; border:none; font-weight:bold; transition:0.2s; }
+    button:hover { background:#ff6b7a; }
+    button.secondary { background:#53354a; }
+    .stats { font-size:0.85rem; }
+    .stat-row { display:flex; justify-content:space-between; }
+    hr { border-color:#2a2a4a; margin:8px 0; }
+    #bestInfo { font-size:0.8rem; background:#1a1a3e; padding:6px; border-radius:4px; max-height:150px; overflow-y:auto; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="uiPanel">
+    <h2>🧬 GA Walker</h2>
+    <div class="stats">
+      <div class="stat-row"><span>Generation:</span><span id="genCount">0</span></div>
+      <div class="stat-row"><span>Best Fitness:</span><span id="bestFit">0</span></div>
+      <div class="stat-row"><span>Population:</span><span id="popInfo">20</span></div>
+    </div>
+    <hr>
+    <div class="control-group">
+      <label>Population size</label>
+      <input type="number" id="popSize" value="20" min="4" max="100" step="4">
+    </div>
+    <div class="control-group">
+      <label>Mutation rate</label>
+      <input type="range" id="mutRate" min="0.01" max="0.5" step="0.01" value="0.1">
+      <span id="mutRateVal">0.10</span>
+    </div>
+    <div class="control-group">
+      <label>Cycle duration (s)</label>
+      <input type="range" id="cycleDur" min="1.0" max="4.0" step="0.1" value="2.0">
+      <span id="cycleDurVal">2.0</span>
+    </div>
+    <hr>
+    <button id="btnStartStop">▶ Start Evolution</button>
+    <button id="btnNextGen" class="secondary">⏭ Next Generation</button>
+    <button id="btnReplay" class="secondary">🔁 Replay Best</button>
+    <button id="btnReset" class="secondary">🔄 Reset GA</button>
+    <hr>
+    <div id="bestInfo">
+      <strong>Best genome (first 10):</strong><br>
+      <span id="bestGenomePreview">--</span>
+    </div>
+  </div>
+  <div id="canvasContainer"></div>
+</div>
+
+<script>
+  (function() {
+    // ---------- BABYLON SETUP ----------
+    const canvasContainer = document.getElementById('canvasContainer');
+    const engine = new BABYLON.Engine(canvasContainer, true, { preserveDrawingBuffer: true, stencil: true });
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0.1, 0.1, 0.15, 1);
+
+    // Camera & lights
+    const camera = new BABYLON.ArcRotateCamera("cam", -Math.PI/3, Math.PI/3, 12, new BABYLON.Vector3(0, 0.8, 0), scene);
+    camera.lowerRadiusLimit = 3;
+    camera.upperRadiusLimit = 25;
+    camera.attachControl(canvasContainer, true);
+    const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+    light.intensity = 0.8;
+    const ground = BABYLON.MeshBuilder.CreatePlane("ground", {width:30, height:30}, scene);
+    ground.rotation.x = Math.PI/2;
+    ground.position.y = 0;
+    const groundMat = new BABYLON.StandardMaterial("gmat", scene);
+    groundMat.diffuseColor = new BABYLON.Color3(0.25, 0.3, 0.35);
+    ground.material = groundMat;
+    ground.receiveShadows = true;
+
+    // creature root
+    let creatureRoot = new BABYLON.TransformNode("creature", scene);
+    let creatureMeshes = [];
+
+    function clearCreature() {
+      creatureMeshes.forEach(m => m.dispose());
+      creatureMeshes = [];
+      if (creatureRoot) creatureRoot.dispose();
+      creatureRoot = new BABYLON.TransformNode("creature", scene);
+    }
+
+    // ---------- GA STATE ----------
+    let population = [];
+    let bestGenome = null;
+    let bestFitness = -Infinity;
+    let bestTrajectory = [];    // {x,y} per simulation step
+    let generation = 0;
+    let isEvolving = false;
+    let evolveTimer = null;
+    let cycleTime = 0;
+    const dt = 0.016;          // simulation time step
+    let evalSteps = 125;       // will be set based on cycle duration
+    let cycleDuration = 2.0;
+
+    // GA parameters
+    let popSize = 20;
+    let mutationRate = 0.1;
+    const elitism = 2;
+    const tournamentSize = 3;
+    const geneCount = 48;      // 4 legs * 12 genes
+
+    // Gene ranges
+    const geneRanges = [];
+    (function initGeneRanges() {
+      // For each leg: lengths, amp, phase, offset (hip), amp,phase,offset (knee), amp,phase,offset (ankle)
+      const lenMin = 0.2, lenMax = 1.2;
+      const ampMin = 0.0, ampMax = 0.9;
+      const phaseMin = 0, phaseMax = Math.PI*2;
+      const offMin = -0.4, offMax = 0.4;
+      for (let leg = 0; leg < 4; leg++) {
+        geneRanges.push({min:lenMin, max:lenMax}); // thighLen
+        geneRanges.push({min:lenMin, max:lenMax}); // shinLen
+        geneRanges.push({min:lenMin, max:lenMax}); // footLen
+        geneRanges.push({min:ampMin, max:ampMax}); // hipAmp
+        geneRanges.push({min:phaseMin, max:phaseMax}); // hipPhase
+        geneRanges.push({min:offMin, max:offMax}); // hipOffset
+        geneRanges.push({min:ampMin, max:ampMax}); // kneeAmp
+        geneRanges.push({min:phaseMin, max:phaseMax}); // kneePhase
+        geneRanges.push({min:offMin, max:offMax}); // kneeOffset
+        geneRanges.push({min:ampMin, max:ampMax}); // ankleAmp
+        geneRanges.push({min:phaseMin, max:phaseMax}); // anklePhase
+        geneRanges.push({min:offMin, max:offMax}); // ankleOffset
+      }
+    })();
+
+    function randomGenome() {
+      const g = [];
+      for (let i = 0; i < geneCount; i++) {
+        const range = geneRanges[i];
+        g.push(range.min + Math.random() * (range.max - range.min));
+      }
+      return g;
+    }
+
+    function clampGenome(g) {
+      for (let i = 0; i < geneCount; i++) {
+        const range = geneRanges[i];
+        g[i] = Math.min(range.max, Math.max(range.min, g[i]));
+      }
+      return g;
+    }
+
+    // Decode genome to leg angles at a given time t
+    function getLegAngles(genome, t) {
+      const T = cycleDuration;
+      const legs = [];
+      for (let leg = 0; leg < 4; leg++) {
+        const base = leg * 12;
+        const thighLen = genome[base+0];
+        const shinLen = genome[base+1];
+        const footLen = genome[base+2];
+        const hipAmp = genome[base+3];
+        const hipPhase = genome[base+4];
+        const hipOff = genome[base+5];
+        const kneeAmp = genome[base+6];
+        const kneePhase = genome[base+7];
+        const kneeOff = genome[base+8];
+        const ankleAmp = genome[base+9];
+        const anklePhase = genome[base+10];
+        const ankleOff = genome[base+11];
+        const angle = (2 * Math.PI / T) * t;
+        const hip = hipAmp * Math.sin(angle + hipPhase) + hipOff;
+        const knee = kneeAmp * Math.sin(angle + kneePhase) + kneeOff;
+        const ankle = ankleAmp * Math.sin(angle + anklePhase) + ankleOff;
+        legs.push({ thighLen, shinLen, footLen, hip, knee, ankle });
+      }
+      return legs;
+    }
+
+    // Forward kinematics for one leg (local to body)
+    function computeFootLocal(legParams) {
+      const { thighLen, shinLen, footLen, hip, knee, ankle } = legParams;
+      // hip angle: angle of thigh relative to downward vertical (negative Y)
+      let thighDir = new BABYLON.Vector2(Math.sin(hip), -Math.cos(hip));
+      let kneePos = thighDir.scale(thighLen);
+      // knee joint angle is added to hip direction
+      let shinDir = thighDir.rotate(knee); // rotate by knee
+      let anklePos = kneePos.add(shinDir.scale(shinLen));
+      // ankle angle relative to shin
+      let footDir = shinDir.rotate(ankle);
+      let footEnd = anklePos.add(footDir.scale(footLen));
+      return footEnd; // Vector2 (x,y) relative to hip attach point
+    }
+
+    // Body dimensions
+    const bodyLength = 1.2, bodyWidth = 0.8, bodyHeight = 0.25;
+    // Attach points (local to body center)
+    function getAttachPoint(legIndex) {
+      const front = (legIndex === 0 || legIndex === 2) ? 1 : -1; // 0:front-left,1:front-right,2:back-left,3:back-right
+      const side = (legIndex % 2 === 0) ? 1 : -1; // left=1, right=-1
+      return new BABYLON.Vector3(front * bodyLength/2, -bodyHeight/2, side * bodyWidth/2);
+    }
+
+    // Simulation for a genome over evalSteps, returns {fitness, trajectory}
+    function evaluateGenome(genome, steps, trajectoryOut = false) {
+      const T = cycleDuration;
+      const dtStep = dt;
+      let bx = 0, by = 0.8; // start above ground
+      let vx = 0, vy = 0;
+      const mass = 1.0;
+      const g = 9.8;
+      const k = 200.0;  // ground spring
+      const d = 10.0;   // damping
+      const mu = 0.8;   // friction
+      let maxY = by, minY = by;
+      let sumY = 0;
+      const trajectory = trajectoryOut ? [] : null;
+      
+      for (let step = 0; step < steps; step++) {
+        const t = step * dtStep;
+        const legs = getLegAngles(genome, t);
+        const prevLegs = step > 0 ? getLegAngles(genome, t - dtStep) : legs;
+        
+        let totalFx = 0, totalFy = 0;
+        for (let i = 0; i < 4; i++) {
+          const attach = getAttachPoint(i);
+          const footCur = computeFootLocal(legs[i]);
+          const footPrev = computeFootLocal(prevLegs[i]);
+          // world foot position
+          const wxCur = bx + attach.x + footCur.x;
+          const wyCur = by + attach.y + footCur.y;
+          const wxPrev = bx + vx * (-dtStep) + attach.x + footPrev.x; // approximate prev foot world
+          const wyPrev = by + vy * (-dtStep) + attach.y + footPrev.y;
+          
+          const vFootX = (wxCur - wxPrev) / dtStep;
+          const vFootY = (wyCur - wyPrev) / dtStep;
+          
+          if (wyCur <= 0) {
+            const penetration = -wyCur;
+            const normalForce = Math.max(0, k * penetration - d * Math.min(0, vFootY));
+            totalFy += normalForce;
+            // Horizontal friction
+            const slipVx = vFootX;
+            let frictionForce = -mu * normalForce * Math.sign(slipVx);
+            if (Math.abs(frictionForce) > mu * normalForce) frictionForce = mu * normalForce * Math.sign(frictionForce);
+            totalFx += frictionForce;
+          }
+        }
+        
+        // Apply forces to body
+        const ax = totalFx / mass;
+        const ay = (totalFy / mass) - g;
+        vx += ax * dtStep;
+        vy += ay * dtStep;
+        bx += vx * dtStep;
+        by += vy * dtStep;
+        
+        if (by < 0.1) by = 0.1; // prevent sinking indefinitely
+        maxY = Math.max(maxY, by);
+        minY = Math.min(minY, by);
+        sumY += by;
+        
+        if (trajectoryOut) {
+          trajectory.push({x: bx, y: by});
+        }
+      }
+      
+      const fitness = bx - 0.5 * (maxY - minY) - 0.1 * Math.abs(by - (maxY+minY)/2);
+      return { fitness, trajectory: trajectoryOut ? trajectory : null };
+    }
+
+    // ---------- GA OPERATORS ----------
+    function selectParent(population, fitnesses) {
+      let best = null;
+      let bestFit = -Infinity;
+      for (let i = 0; i < tournamentSize; i++) {
+        const idx = Math.floor(Math.random() * population.length);
+        if (fitnesses[idx] > bestFit) {
+          bestFit = fitnesses[idx];
+          best = population[idx];
+        }
+      }
+      return best.slice();
+    }
+
+    function crossover(p1, p2) {
+      const child = [];
+      for (let i = 0; i < geneCount; i++) {
+        const range = geneRanges[i];
+        const min = Math.min(p1[i], p2[i]);
+        const max = Math.max(p1[i], p2[i]);
+        const diff = max - min;
+        const low = Math.max(range.min, min - 0.3 * diff);
+        const high = Math.min(range.max, max + 0.3 * diff);
+        child.push(low + Math.random() * (high - low));
+      }
+      return child;
+    }
+
+    function mutate(g) {
+      for (let i = 0; i < geneCount; i++) {
+        if (Math.random() < 0.3) {
+          const range = geneRanges[i];
+          const std = mutationRate * (range.max - range.min) * 0.5;
+          g[i] += (Math.random() * 2 - 1) * std;
+        }
+      }
+      return clampGenome(g);
+    }
+
+    function initPopulation(size) {
+      const pop = [];
+      for (let i = 0; i < size; i++) pop.push(randomGenome());
+      return pop;
+    }
+
+    function evaluatePopulation(pop) {
+      const fitnesses = pop.map(g => evaluateGenome(g, evalSteps).fitness);
+      return fitnesses;
+    }
+
+    function stepGeneration() {
+      if (population.length === 0) {
+        population = initPopulation(popSize);
+        generation = 0;
+      }
+      
+      const fitnesses = evaluatePopulation(population);
+      const indexed = population.map((g,i) => ({g, f:fitnesses[i]}));
+      indexed.sort((a,b) => b.f - a.f);
+      
+      const newBest = indexed[0];
+      if (newBest.f > bestFitness) {
+        bestFitness = newBest.f;
+        bestGenome = newBest.g.slice();
+        // re-simulate to get trajectory
+        const sim = evaluateGenome(bestGenome, evalSteps, true);
+        bestTrajectory = sim.trajectory;
+        cycleTime = 0;
+        buildCreatureFromGenome(bestGenome);
+      }
+      
+      // Build next generation
+      const newPop = [];
+      for (let i = 0; i < elitism && i < indexed.length; i++) {
+        newPop.push(indexed[i].g.slice());
+      }
+      while (newPop.length < popSize) {
+        const p1 = selectParent(population, fitnesses);
+        const p2 = selectParent(population, fitnesses);
+        let child1 = crossover(p1, p2);
+        let child2 = crossover(p2, p1);
+        child1 = mutate(child1);
+        child2 = mutate(child2);
+        newPop.push(child1);
+        if (newPop.length < popSize) newPop.push(child2);
+      }
+      population = newPop.slice(0, popSize);
+      generation++;
+      updateUI();
+    }
+
+    // ---------- VISUALIZATION ----------
+    function buildCreatureFromGenome(genome) {
+      clearCreature();
+      const bodyMat = new BABYLON.StandardMaterial("bodyMat", scene);
+      bodyMat.diffuseColor = new BABYLON.Color3(0.2, 0.5, 0.8);
+      const body = BABYLON.MeshBuilder.CreateBox("body", {width:bodyLength, height:bodyHeight, depth:bodyWidth}, scene);
+      body.material = bodyMat;
+      body.parent = creatureRoot;
+      body.position.y = 0;
+      creatureMeshes.push(body);
+      
+      const legColors = [new BABYLON.Color3(0.9,0.3,0.2), new BABYLON.Color3(0.2,0.8,0.3), new BABYLON.Color3(0.9,0.7,0.1), new BABYLON.Color3(0.6,0.3,0.9)];
+      
+      for (let legIdx = 0; legIdx < 4; legIdx++) {
+        const base = legIdx * 12;
+        const attach = getAttachPoint(legIdx);
+        let parentNode = creatureRoot;
+        let currentPos = attach.clone();
+        
+        const segments = [
+          {lenIdx: base+0, angleFunc: (t)=>getLegAngles(genome,t)[legIdx].hip, color: legColors[legIdx]},
+          {lenIdx: base+1, angleFunc: (t)=>getLegAngles(genome,t)[legIdx].knee, color: legColors[legIdx]},
+          {lenIdx: base+2, angleFunc: (t)=>getLegAngles(genome,t)[legIdx].ankle, color: legColors[legIdx]}
+        ];
+        
+        for (let s = 0; s < 3; s++) {
+          const segLen = genome[segments[s].lenIdx];
+          const jointNode = new BABYLON.TransformNode(`joint_${legIdx}_${s}`, scene);
+          jointNode.parent = parentNode;
+          jointNode.position = currentPos;
+          
+          const segMesh = BABYLON.MeshBuilder.CreateBox(`seg_${legIdx}_${s}`, {width:0.08, height:segLen, depth:0.08}, scene);
+          segMesh.material = new BABYLON.StandardMaterial(`segMat_${legIdx}_${s}`, scene);
+          segMesh.material.diffuseColor = segments[s].color;
+          segMesh.parent = jointNode;
+          segMesh.position.y = -segLen/2;
+          creatureMeshes.push(jointNode, segMesh);
+          
+          parentNode = jointNode;
+          currentPos = new BABYLON.Vector3(0, -segLen, 0);
+        }
+      }
+    }
+
+    function updateCreatureAngles(t) {
+      if (!bestGenome) return;
+      const legs = getLegAngles(bestGenome, t);
+      for (let legIdx = 0; legIdx < 4; legIdx++) {
+        const angles = legs[legIdx];
+        const jointNodes = creatureRoot.getChildTransformNodes().filter(n => n.name.startsWith(`joint_${legIdx}_`));
+        if (jointNodes.length >= 3) {
+          jointNodes[0].rotation.z = angles.hip;
+          jointNodes[1].rotation.z = angles.knee;
+          jointNodes[2].rotation.z = angles.ankle;
+        }
+      }
+    }
+
+    function updateBestPosition(cycleTime) {
+      if (!bestTrajectory || bestTrajectory.length === 0) return;
+      const totalSteps = bestTrajectory.length;
+      const startX = bestTrajectory[0].x;
+      const endX = bestTrajectory[totalSteps-1].x;
+      const netDx = endX - startX;
+      const cycleCount = Math.floor(cycleTime / cycleDuration);
+      const phaseInCycle = cycleTime % cycleDuration;
+      const stepIndex = Math.floor(phaseInCycle / dt) % totalSteps;
+      const relX = bestTrajectory[stepIndex].x - startX;
+      const bodyX = startX + cycleCount * netDx + relX;
+      const bodyY = bestTrajectory[stepIndex].y;
+      creatureRoot.position.x = bodyX;
+      creatureRoot.position.y = bodyY;
+      creatureRoot.position.z = 0;
+    }
+
+    // ---------- UI ----------
+    function updateUI() {
+      document.getElementById('genCount').textContent = generation;
+      document.getElementById('bestFit').textContent = bestFitness.toFixed(2);
+      document.getElementById('popInfo').textContent = population.length;
+      if (bestGenome) {
+        document.getElementById('bestGenomePreview').textContent = bestGenome.slice(0,10).map(v=>v.toFixed(2)).join(', ');
+      }
+    }
+
+    function startEvolution() {
+      if (isEvolving) return;
+      isEvolving = true;
+      document.getElementById('btnStartStop').textContent = '⏸ Pause Evolution';
+      if (population.length === 0) {
+        population = initPopulation(popSize);
+        generation = 0;
+      }
+      evolveTimer = setInterval(() => {
+        stepGeneration();
+      }, 800);
+    }
+
+    function stopEvolution() {
+      isEvolving = false;
+      if (evolveTimer) clearInterval(evolveTimer);
+      document.getElementById('btnStartStop').textContent = '▶ Start Evolution';
+    }
+
+    function resetGA() {
+      stopEvolution();
+      population = [];
+      bestGenome = null;
+      bestFitness = -Infinity;
+      bestTrajectory = [];
+      generation = 0;
+      cycleTime = 0;
+      clearCreature();
+      updateUI();
+    }
+
+    // ---------- EVENT LISTENERS ----------
+    document.getElementById('btnStartStop').addEventListener('click', () => {
+      if (isEvolving) stopEvolution(); else startEvolution();
+    });
+    document.getElementById('btnNextGen').addEventListener('click', () => {
+      if (isEvolving) stopEvolution();
+      if (population.length === 0) population = initPopulation(popSize);
+      stepGeneration();
+    });
+    document.getElementById('btnReplay').addEventListener('click', () => {
+      cycleTime = 0;
+    });
+    document.getElementById('btnReset').addEventListener('click', resetGA);
+
+    document.getElementById('popSize').addEventListener('change', function() {
+      popSize = parseInt(this.value) || 20;
+      if (population.length > popSize) population = population.slice(0, popSize);
+      updateUI();
+    });
+    document.getElementById('mutRate').addEventListener('input', function() {
+      mutationRate = parseFloat(this.value);
+      document.getElementById('mutRateVal').textContent = mutationRate.toFixed(2);
+    });
+    document.getElementById('cycleDur').addEventListener('input', function() {
+      cycleDuration = parseFloat(this.value);
+      document.getElementById('cycleDurVal').textContent = cycleDuration.toFixed(1);
+      evalSteps = Math.floor(cycleDuration / dt);
+      // reset best trajectory if exists
+      if (bestGenome) {
+        const sim = evaluateGenome(bestGenome, evalSteps, true);
+        bestTrajectory = sim.trajectory;
+        cycleTime = 0;
+      }
+    });
+
+    // ---------- RENDER LOOP ----------
+    engine.runRenderLoop(() => {
+      if (bestGenome && bestTrajectory.length > 0) {
+        cycleTime += engine.getDeltaTime() / 1000;
+        updateBestPosition(cycleTime);
+        updateCreatureAngles(cycleTime % cycleDuration);
+      }
+      scene.render();
+    });
+
+    window.addEventListener('resize', () => engine.resize());
+
+    // Initialize with a random population but not evolving
+    population = initPopulation(popSize);
+    updateUI();
+    // Run one evaluation to get a best individual for initial display
+    setTimeout(() => {
+      if (population.length > 0) {
+        const fits = evaluatePopulation(population);
+        let bestIdx = 0;
+        fits.forEach((f,i) => { if (f > fits[bestIdx]) bestIdx = i; });
+        bestGenome = population[bestIdx].slice();
+        bestFitness = fits[bestIdx];
+        const sim = evaluateGenome(bestGenome, evalSteps, true);
+        bestTrajectory = sim.trajectory;
+        buildCreatureFromGenome(bestGenome);
+        updateUI();
+      }
+    }, 100);
+  })();
+</script>
+</body>
+</html>

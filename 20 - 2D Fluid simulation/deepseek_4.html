@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realistic Fluid Simulation – p5.js Navier-Stokes</title>
+    <style>
+        :root {
+            --bg: #0a0a14;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            overflow: hidden;
+        }
+        #main-container {
+            display: flex;
+            gap: 14px;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            justify-content: center;
+            padding: 10px;
+        }
+        canvas {
+            border-radius: 14px;
+            box-shadow: 0 0 50px rgba(60, 120, 255, 0.15);
+        }
+        #ui-panel {
+            background: rgba(15, 15, 30, 0.9);
+            border-radius: 14px;
+            padding: 18px 16px;
+            color: #ccc;
+            font-size: 11px;
+            letter-spacing: 0.03em;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-width: 170px;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        #ui-panel h3 {
+            color: #fff;
+            font-size: 14px;
+            text-align: center;
+            margin-bottom: 2px;
+        }
+        .param-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .param-row .val {
+            color: #6eb5ff;
+            font-weight: 700;
+        }
+        .key-hint {
+            color: #888;
+            font-size: 9px;
+        }
+        .key-hint span {
+            color: #ffb74d;
+            font-weight: 700;
+        }
+        button {
+            padding: 7px 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(40, 40, 70, 0.7);
+            color: #ddd;
+            border-radius: 16px;
+            cursor: pointer;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            transition: all 0.2s;
+        }
+        button:hover {
+            background: rgba(60, 60, 100, 0.8);
+            border-color: #6eb5ff;
+            color: #fff;
+        }
+        .color-indicator {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            margin-right: 4px;
+            vertical-align: middle;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+        }
+        @media (max-width: 850px) {
+            #main-container {
+                flex-direction: column;
+                align-items: center;
+            }
+            #ui-panel {
+                flex-direction: row;
+                flex-wrap: wrap;
+                gap: 6px;
+                font-size: 9px;
+                padding: 10px;
+                min-width: auto;
+            }
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js">
+    </script>
+</head>
+<body>
+    <div id="main-container">
+        <div id="canvas-container"></div>
+        <div id="ui-panel">
+            <h3>💧 Fluid Controls</h3>
+            <div class="param-row">
+                <span>🎨 Color: <span class="color-indicator" id="color-dot"></span></span>
+                <span>keys <span>1-4</span></span>
+            </div>
+            <div class="param-row">
+                <span>🧴 Viscosity: <span class="val" id="visc-val">Low</span></span>
+                <span>key <span>V</span></span>
+            </div>
+            <div class="param-row">
+                <span>🌀 Vortex: <span class="val" id="vortex-val">ON</span></span>
+                <span>key <span>T</span></span>
+            </div>
+            <div class="param-row">
+                <span>🧱 Obstacles: <span class="val" id="obs-val">ON</span></span>
+                <span>key <span>O</span></span>
+            </div>
+            <button id="reset-btn">🔄 Reset (R)</button>
+            <button id="clear-btn">🧹 Clear Color (C)</button>
+            <div class="key-hint">🖱️ <span>Drag</span> to inject fluid</div>
+            <div class="key-hint">💨 <span>Faster drag</span> = more swirl</div>
+        </div>
+    </div>
+
+    <script>
+        new p5((p) => {
+            // ────────────────────────────────────────
+            // GRID CONFIGURATION
+            // ────────────────────────────────────────
+            const N = 80; // Grid resolution (N x N)
+            const SCALE = 8; // Pixels per grid cell → canvas 640×640
+            const SIZE = N * SCALE;
+            const DT = 0.18; // Simulation time step
+            const SUBSTEPS = 2; // Physics substeps per frame
+
+            // ────────────────────────────────────────
+            // VELOCITY FIELD (staggered grid)
+            //   u: horizontal velocity, (N+1)×N
+            //   v: vertical velocity, N×(N+1)
+            // ────────────────────────────────────────
+            let u, v, prevU, prevV;
+
+            // ────────────────────────────────────────
+            // DENSITY FIELDS (RGB, cell-centered N×N)
+            // ────────────────────────────────────────
+            let densR, densG, densB;
+            let prevDensR, prevDensG, prevDensB;
+
+            // ────────────────────────────────────────
+            // SIMULATION PARAMETERS
+            // ────────────────────────────────────────
+            let viscosity = 0.00008; // Base viscosity
+            let viscosityLevel = 0; // 0=low, 1=med, 2=high
+            const viscosityValues = [0.00003, 0.0003, 0.003];
+            let vortexEnabled = true;
+            let obstaclesEnabled = true;
+            const vorticityStrength = 4.5;
+
+            // ────────────────────────────────────────
+            // COLOR STATE
+            // ────────────────────────────────────────
+            let currentColor = { r: 255, g: 80, b: 60 }; // Default warm red
+            const colorPresets = [
+                { r: 255, g: 80, b: 60, name: 'Red' }, // 1
+                { r: 60, g: 180, b: 255, name: 'Blue' }, // 2
+                { r: 80, g: 220, b: 100, name: 'Green' }, // 3
+                { r: 255, g: 220, b: 100, name: 'Gold' }, // 4
+            ];
+            let colorIndex = 0;
+
+            // ────────────────────────────────────────
+            // MOUSE STATE
+            // ────────────────────────────────────────
+            let prevMouseX = 0;
+            let prevMouseY = 0;
+            let mouseForceScale = 90;
+
+            // ────────────────────────────────────────
+            // OBSTACLE DATA (circles in grid coords)
+            // ────────────────────────────────────────
+            let obstacles = [];
+
+            function createObstacles() {
+                obstacles = [];
+                if (obstaclesEnabled) {
+                    obstacles.push({ cx: 28, cy: 22, r: 6 });
+                    obstacles.push({ cx: 55, cy: 50, r: 7 });
+                    obstacles.push({ cx: 40, cy: 62, r: 5 });
+                    obstacles.push({ cx: 18, cy: 55, r: 5.5 });
+                    obstacles.push({ cx: 60, cy: 30, r: 4.5 });
+                }
+            }
+
+            // ────────────────────────────────────────
+            // HELPER: Create 2D array
+            // ────────────────────────────────────────
+            function createArray(rows, cols, val = 0) {
+                const arr = new Array(rows);
+                for (let i = 0; i < rows; i++) {
+                    arr[i] = new Float32Array(cols);
+                    if (val !== 0) arr[i].fill(val);
+                }
+                return arr;
+            }
+
+            // ────────────────────────────────────────
+            // STAM SOLVER: Add source
+            // ────────────────────────────────────────
+            function addSource(x, s, dt) {
+                for (let i = 0; i < x.length; i++) {
+                    for (let j = 0; j < x[i].length; j++) {
+                        x[i][j] += dt * s[i][j];
+                    }
+                }
+            }
+
+            // ────────────────────────────────────────
+            // STAM SOLVER: Set boundary conditions
+            // ────────────────────────────────────────
+            function setBounds(b, x, isU) {
+                const rows = x.length;
+                const cols = x[0].length;
+                // Top and bottom
+                for (let j = 0; j < cols; j++) {
+                    if (isU) {
+                        x[0][j] = b === 1 ? -x[1][j] : x[1][j];
+                        if (rows > 2) x[rows - 1][j] = b === 1 ? -x[rows - 2][j] : x[rows - 2][j];
+                    } else {
+                        x[0][j] = b === 2 ? -x[1][j] : x[1][j];
+                        if (rows > 2) x[rows - 1][j] = b === 2 ? -x[rows - 2][j] : x[rows - 2][j];
+                    }
+                }
+                // Left and right
+                for (let i = 0; i < rows; i++) {
+                    if (isU) {
+                        x[i][0] = b === 2 ? -x[i][1] : x[i][1];
+                        if (cols > 2) x[i][cols - 1] = b === 2 ? -x[i][cols - 2] : x[i][cols - 2];
+                    } else {
+                        x[i][0] = b === 1 ? -x[i][1] : x[i][1];
+                        if (cols > 2) x[i][cols - 1] = b === 1 ? -x[i][cols - 2] : x[i][cols - 2];
+                    }
+                }
+                // Corners: average
+                if (rows > 1 && cols > 1) {
+                    x[0][0] = 0.5 * (x[1][0] + x[0][1]);
+                    if (cols > 2) x[0][cols - 1] = 0.5 * (x[1][cols - 1] + x[0][cols - 2]);
+                    if (rows > 2) x[rows - 1][0] = 0.5 * (x[rows - 2][0] + x[rows - 1][1]);
+                    if (rows > 2 && cols > 2) x[rows - 1][cols - 1] = 0.5 * (x[rows - 2][cols - 1] + x[rows - 1][cols -
+                        2]);
+                }
+            }
+
+            // ────────────────────────────────────────
+            // STAM SOLVER: Linear solve (Gauss-Seidel)
+            // ────────────────────────────────────────
+            function linSolve(x, x0, a, c, iterations, isU) {
+                const rows = x.length;
+                const cols = x[0].length;
+                const cRecip = 1.0 / c;
+                for (let iter = 0; iter < iterations; iter++) {
+                    for (let i = 1; i < rows - 1; i++) {
+                        for (let j = 1; j < cols - 1; j++) {
+                            if (isObstacleCell(i, j, isU)) continue;
+                            x[i][j] = (x0[i][j] + a * (x[i - 1][j] + x[i + 1][j] + x[i][j - 1] + x[i][j + 1])) *
+                                cRecip;
+                        }
+                    }
+                    setBounds(0, x, isU);
+                }
+            }
+
+            // ────────────────────────────────────────
+            // STAM SOLVER: Diffuse
+            // ────────────────────────────────────────
+            function diffuse(x, x0, diff, dt, isU) {
+                const a = dt * diff * N * N;
+                linSolve(x, x0, a, 1 + 4 * a, isU ? 12 : 16, isU);
+            }
+
+            // ────────────────────────────────────────
+            // STAM SOLVER: Advect
+            // ────────────────────────────────────────
+            function advect(d, d0, uArr, vArr, dt, isU) {
+                const rows = d.length;
+                const cols = d[0].length;
+                const dt0 = dt * N;
+                for (let i = 0; i < rows; i++) {
+                    for (let j = 0; j < cols; j++) {
+                        if (isObstacleCell(i, j, isU)) { d[i][j] = 0; continue; }
+                        // Backtrack
+                        let x = i - dt0 * (isU ? uArr[i][j] : (uArr[i][j] + uArr[i + 1][j]) * 0.5);
+                        let y = j - dt0 * (isU ? (vArr[i][j] + vArr[i][j + 1]) * 0.5 : vArr[i][j]);
+                        // Clamp
+                        x = p.constrain(x, 0.5, rows - 1.5);
+                        y = p.constrain(y, 0.5, cols - 1.5);
+                        // Bilinear interpolation
+                        const i0 = Math.floor(x);
+                        const j0 = Math.floor(y);
+                        const i1 = i0 + 1;
+                        const j1 = j0 + 1;
+                        const sx = x - i0;
+                        const sy = y - j0;
+                        d[i][j] = d0[i0][j0] * (1 - sx) * (1 - sy) +
+                            d0[i1][j0] * sx * (1 - sy) +
+                            d0[i0][j1] * (1 - sx) * sy +
+                            d0[i1][j1] * sx * sy;
+                    }
+                }
+                setBounds(0, d, isU);
+            }
+
+            // ────────────────────────────────────────
+            // STAM SOLVER: Project (make divergence-free)
+            // ────────────────────────────────────────
+            function project(uArr, vArr, p, div) {
+                const uRows = uArr.length;
+                const uCols = uArr[0].length;
+                const vRows = vArr.length;
+                const vCols = vArr[0].length;
+
+                // Compute divergence
+                for (let i = 1; i < uRows - 1; i++) {
+                    for (let j = 1; j < uCols - 1; j++) {
+                        if (isObstacleCell(i, j, true)) { div[i][j] = 0; continue; }
+                        div[i][j] = -0.5 * (
+                            (uArr[i + 1][j] - uArr[i - 1][j]) / N +
+                            (vArr[i][j + 1] - vArr[i][j - 1]) / N
+                        );
+                        p[i][j] = 0;
+                    }
+                }
+                setBounds(0, div, false);
+                setBounds(0, p, false);
+
+                // Solve Poisson
+                for (let iter = 0; iter < 22; iter++) {
+                    for (let i = 1; i < uRows - 1; i++) {
+                        for (let j = 1; j < uCols - 1; j++) {
+                            if (isObstacleCell(i, j, false)) continue;
+                            p[i][j] = (div[i][j] + p[i - 1][j] + p[i + 1][j] + p[i][j - 1] + p[i][j + 1]) / 4;
+                        }
+                    }
+                    setBounds(0, p, false);
+                }
+
+                // Subtract gradient
+                for (let i = 1; i < uRows - 1; i++) {
+                    for (let j = 1; j < uCols - 1; j++) {
+                        if (isObstacleCell(i, j, true)) { uArr[i][j] = 0; continue; }
+                        uArr[i][j] -= 0.5 * N * (p[i + 1][j] - p[i - 1][j]);
+                    }
+                }
+                for (let i = 1; i < vRows - 1; i++) {
+                    for (let j = 1; j < vCols - 1; j++) {
+                        if (isObstacleCell(i, j, false)) { vArr[i][j] = 0; continue; }
+                        vArr[i][j] -= 0.5 * N * (p[i][j + 1] - p[i][j - 1]);
+                    }
+                }
+                setBounds(1, uArr, true);
+                setBounds(2, vArr, false);
+            }
+
+            // ────────────────────────────────────────
+            // VORTICITY CONFINEMENT
+            // ────────────────────────────────────────
+            function addVorticity(uArr, vArr) {
+                if (!vortexEnabled) return;
+                const uRows = uArr.length;
+                const uCols = uArr[0].length;
+                const curl = createArray(uRows, uCols, 0);
+                for (let i = 1; i < uRows - 1; i++) {
+                    for (let j = 1; j < uCols - 1; j++) {
+                        const dvdx = (vArr[i + 1][j] - vArr[i - 1][j]) * 0.5 * N;
+                        const dudy = (uArr[i][j + 1] - uArr[i][j - 1]) * 0.5 * N;
+                        curl[i][j] = dvdx - dudy;
+                    }
+                }
+                for (let i = 1; i < uRows - 1; i++) {
+                    for (let j = 1; j < uCols - 1; j++) {
+                        const absCurl = Math.abs(curl[i][j]);
+                        if (absCurl < 0.0001) continue;
+                        const gradX = (Math.abs(curl[i + 1][j]) - Math.abs(curl[i - 1][j])) * 0.5;
+                        const gradY = (Math.abs(curl[i][j + 1]) - Math.abs(curl[i][j - 1])) * 0.5;
+                        const len = Math.sqrt(gradX * gradX + gradY * gradY) + 0.00001;
+                        const str = vorticityStrength * DT;
+                        uArr[i][j] += gradY / len * str * (curl[i][j] > 0 ? 1 : -1);
+                        vArr[i][j] -= gradX / len * str * (curl[i][j] > 0 ? 1 : -1);
+                    }
+                }
+            }
+
+            // ────────────────────────────────────────
+            // OBSTACLE CHECK
+            // ────────────────────────────────────────
+            function isObstacleCell(i, j, isU) {
+                if (!obstaclesEnabled || obstacles.length === 0) return false;
+                // Check cell center against all obstacle circles
+                const cx = i;
+                const cy = j;
+                for (const obs of obstacles) {
+                    const dx = cx - obs.cx;
+                    const dy = cy - obs.cy;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < obs.r) return true;
+                }
+                return false;
+            }
+
+            function applyObstaclesToVelocity(uArr, vArr) {
+                if (!obstaclesEnabled) return;
+                for (let i = 0; i < uArr.length; i++) {
+                    for (let j = 0; j < uArr[0].length; j++) {
+                        if (isObstacleCell(i, j, true)) uArr[i][j] = 0;
+                    }
+                }
+                for (let i = 0; i < vArr.length; i++) {
+                    for (let j = 0; j < vArr[0].length; j++) {
+                        if (isObstacleCell(i, j, false)) vArr[i][j] = 0;
+                    }
+                }
+            }
+
+            function applyObstaclesToDensity(dArr) {
+                if (!obstaclesEnabled) return;
+                for (let i = 0; i < dArr.length; i++) {
+                    for (let j = 0; j < dArr[0].length; j++) {
+                        if (isObstacleCell(i, j, false)) dArr[i][j] = 0;
+                    }
+                }
+            }
+
+            // ────────────────────────────────────────
+            // VELOCITY STEP
+            // ────────────────────────────────────────
+            function velocityStep(uArr, vArr, prevUArr, prevVArr, visc, dt) {
+                // Swap
+                const tempU = prevUArr;
+                const tempV = prevVArr;
+                prevU = uArr;
+                prevV = vArr;
+                uArr = tempU;
+                vArr = tempV;
+                for (let i = 0; i < uArr.length; i++)
+                    for (let j = 0; j < uArr[0].length; j++) uArr[i][j] = prevU[i][j];
+                for (let i = 0; i < vArr.length; i++)
+                    for (let j = 0; j < vArr[0].length; j++) vArr[i][j] = prevV[i][j];
+
+                diffuse(uArr, prevU, visc, dt, true);
+                diffuse(vArr, prevV, visc, dt, false);
+
+                project(uArr, vArr, prevU, prevV);
+
+                // Swap again for advection
+                const tu2 = prevU;
+                const tv2 = prevV;
+                prevU = uArr;
+                prevV = vArr;
+                uArr = tu2;
+                vArr = tv2;
+                for (let i = 0; i < uArr.length; i++)
+                    for (let j = 0; j < uArr[0].length; j++) uArr[i][j] = prevU[i][j];
+                for (let i = 0; i < vArr.length; i++)
+                    for (let j = 0; j < vArr[0].length; j++) vArr[i][j] = prevV[i][j];
+
+                advect(uArr, prevU, prevU, prevV, dt, true);
+                advect(vArr, prevV, prevU, prevV, dt, false);
+
+                project(uArr, vArr, prevU, prevV);
+
+                applyObstaclesToVelocity(uArr, vArr);
+                return { uArr, vArr, prevUArr: prevU, prevVArr: prevV };
+            }
+
+            // ────────────────────────────────────────
+            // DENSITY STEP
+            // ────────────────────────────────────────
+            function densityStep(dArr, prevDArr, uArr, vArr, diff, dt) {
+                const temp = prevDArr;
+                prevDArr = dArr;
+                dArr = temp;
+                for (let i = 0; i < dArr.length; i++)
+                    for (let j = 0; j < dArr[0].length; j++) dArr[i][j] = prevDArr[i][j];
+
+                diffuse(dArr, prevDArr, diff, dt, false);
+
+                const temp2 = prevDArr;
+                prevDArr = dArr;
+                dArr = temp2;
+                for (let i = 0; i < dArr.length; i++)
+                    for (let j = 0; j < dArr[0].length; j++) dArr[i][j] = prevDArr[i][j];
+
+                advect(dArr, prevDArr, uArr, vArr, dt, false);
+                applyObstaclesToDensity(dArr);
+                return { dArr, prevDArr };
+            }
+
+            // ────────────────────────────────────────
+            // P5.JS SETUP
+            // ────────────────────────────────────────
+            p.setup = function() {
+                const canvas = p.createCanvas(SIZE, SIZE);
+                canvas.parent('canvas-container');
+                p.frameRate(60);
+                p.noStroke();
+
+                // Initialize velocity arrays (staggered)
+                u = createArray(N + 1, N, 0);
+                v = createArray(N, N + 1, 0);
+                prevU = createArray(N + 1, N, 0);
+                prevV = createArray(N, N + 1, 0);
+
+                // Initialize density arrays (RGB)
+                densR = createArray(N, N, 0);
+                densG = createArray(N, N, 0);
+                densB = createArray(N, N, 0);
+                prevDensR = createArray(N, N, 0);
+                prevDensG = createArray(N, N, 0);
+                prevDensB = createArray(N, N, 0);
+
+                createObstacles();
+                updateUI();
+            };
+
+            // ────────────────────────────────────────
+            // INJECT VELOCITY & COLOR AT GRID POS
+            // ────────────────────────────────────────
+            function injectAt(gx, gy, fx, fy, colorR, colorG, colorB) {
+                const r = 3; // Injection radius in grid cells
+                for (let di = -r; di <= r; di++) {
+                    for (let dj = -r; dj <= r; dj++) {
+                        const ni = gx + di;
+                        const nj = gy + dj;
+                        const dist = Math.sqrt(di * di + dj * dj);
+                        if (dist > r) continue;
+                        const weight = Math.exp(-dist * dist / (r * r * 0.4));
+                        // Inject velocity
+                        if (ni >= 0 && ni < N + 1 && nj >= 0 && nj < N) u[ni][nj] += fx * weight * 0.15;
+                        if (ni >= 0 && ni < N && nj >= 0 && nj < N + 1) v[ni][nj] += fy * weight * 0.15;
+                        // Inject density
+                        if (ni >= 0 && ni < N && nj >= 0 && nj < N) {
+                            densR[ni][nj] = p.constrain(densR[ni][nj] + colorR * weight * 0.35, 0, 255);
+                            densG[ni][nj] = p.constrain(densG[ni][nj] + colorG * weight * 0.35, 0, 255);
+                            densB[ni][nj] = p.constrain(densB[ni][nj] + colorB * weight * 0.35, 0, 255);
+                        }
+                    }
+                }
+            }
+
+            // ────────────────────────────────────────
+            // P5.JS DRAW
+            // ────────────────────────────────────────
+            p.draw = function() {
+                // ── Read viscosity setting ────────
+                viscosity = viscosityValues[viscosityLevel];
+
+                // ── Mouse interaction ─────────────
+                if (p.mouseIsPressed && p.mouseX >= 0 && p.mouseX < SIZE && p.mouseY >= 0 && p.mouseY < SIZE) {
+                    const gx = Math.floor(p.mouseX / SCALE);
+                    const gy = Math.floor(p.mouseY / SCALE);
+                    const dx = p.mouseX - prevMouseX;
+                    const dy = p.mouseY - prevMouseY;
+                    const speed = Math.sqrt(dx * dx + dy * dy);
+                    if (speed > 0.5 && gx >= 0 && gx < N && gy >= 0 && gy < N) {
+                        const fx = dx * mouseForceScale;
+                        const fy = dy * mouseForceScale;
+                        injectAt(gx, gy, fx, fy, currentColor.r, currentColor.g, currentColor.b);
+                    } else if (speed <= 0.5 && gx >= 0 && gx < N && gy >= 0 && gy < N) {
+                        // Stationary press: inject just color
+                        injectAt(gx, gy, 0, 0, currentColor.r * 0.5, currentColor.g * 0.5, currentColor.b * 0.5);
+                    }
+                }
+                prevMouseX = p.mouseX;
+                prevMouseY = p.mouseY;
+
+                // ── Physics simulation ────────────
+                for (let step = 0; step < SUBSTEPS; step++) {
+                    // Vorticity confinement
+                    if (vortexEnabled) addVorticity(u, v);
+
+                    // Velocity step
+                    const velResult = velocityStep(u, v, prevU, prevV, viscosity, DT);
+                    u = velResult.uArr;
+                    v = velResult.vArr;
+                    prevU = velResult.prevUArr;
+                    prevV = velResult.prevVArr;
+
+                    // Density steps (RGB)
+                    const drResult = densityStep(densR, prevDensR, u, v, 0.0001, DT);
+                    densR = drResult.dArr;
+                    prevDensR = drResult.prevDArr;
+                    const dgResult = densityStep(densG, prevDensG, u, v, 0.0001, DT);
+                    densG = dgResult.dArr;
+                    prevDensG = dgResult.prevDArr;
+                    const dbResult = densityStep(densB, prevDensB, u, v, 0.0001, DT);
+                    densB = dbResult.dArr;
+                    prevDensB = dbResult.prevDArr;
+                }
+
+                // ── Render ─────────────────────────
+                p.background(15, 15, 25);
+                for (let i = 0; i < N; i++) {
+                    for (let j = 0; j < N; j++) {
+                        const r = p.constrain(densR[i][j], 0, 255);
+                        const g = p.constrain(densG[i][j], 0, 255);
+                        const b = p.constrain(densB[i][j], 0, 255);
+                        if (r < 1 && g < 1 && b < 1) continue;
+                        p.fill(r, g, b, 240);
+                        p.rect(i * SCALE, j * SCALE, SCALE, SCALE);
+                    }
+                }
+
+                // ── Render obstacles ───────────────
+                if (obstaclesEnabled) {
+                    p.fill(30, 30, 40, 220);
+                    p.stroke(80, 80, 100, 180);
+                    p.strokeWeight(1.5);
+                    for (const obs of obstacles) {
+                        p.ellipse(obs.cx * SCALE, obs.cy * SCALE, obs.r * 2 * SCALE, obs.r * 2 * SCALE);
+                    }
+                    p.noStroke();
+                }
+
+                // ── Subtle velocity indicator dots ──
+                // (optional: tiny dots showing flow direction)
+                if (p.frameCount % 3 === 0) {
+                    for (let i = 2; i < N - 1; i += 8) {
+                        for (let j = 2; j < N - 1; j += 8) {
+                            const vu = (u[i][j] + u[i + 1][j]) * 0.5;
+                            const vv = (v[i][j] + v[i][j + 1]) * 0.5;
+                            const spd = Math.sqrt(vu * vu + vv * vv);
+                            if (spd > 0.3) {
+                                const alpha = p.constrain(spd * 60, 0, 80);
+                                p.fill(255, 255, 255, alpha);
+                                p.ellipse(i * SCALE, j * SCALE, 2, 2);
+                            }
+                        }
+                    }
+                }
+            };
+
+            // ────────────────────────────────────────
+            // KEYBOARD HANDLING
+            // ────────────────────────────────────────
+            p.keyPressed = function() {
+                const key = p.key.toLowerCase();
+                if (key === '1') { colorIndex = 0;
+                    updateColor(); }
+                if (key === '2') { colorIndex = 1;
+                    updateColor(); }
+                if (key === '3') { colorIndex = 2;
+                    updateColor(); }
+                if (key === '4') { colorIndex = 3;
+                    updateColor(); }
+                if (key === 'v') {
+                    viscosityLevel = (viscosityLevel + 1) % 3;
+                    updateUI();
+                }
+                if (key === 't') { vortexEnabled = !vortexEnabled;
+                    updateUI(); }
+                if (key === 'o') {
+                    obstaclesEnabled = !obstaclesEnabled;
+                    createObstacles();
+                    updateUI();
+                }
+                if (key === 'r') resetSimulation();
+                if (key === 'c') clearDensity();
+            };
+
+            function updateColor() {
+                currentColor = colorPresets[colorIndex];
+                updateUI();
+            }
+
+            function updateUI() {
+                document.getElementById('visc-val').textContent = ['Low', 'Medium', 'High'][viscosityLevel];
+                document.getElementById('vortex-val').textContent = vortexEnabled ? 'ON' : 'OFF';
+                document.getElementById('obs-val').textContent = obstaclesEnabled ? 'ON' : 'OFF';
+                const dot = document.getElementById('color-dot');
+                dot.style.backgroundColor = `rgb(${currentColor.r},${currentColor.g},${currentColor.b})`;
+            }
+
+            function resetSimulation() {
+                u = createArray(N + 1, N, 0);
+                v = createArray(N, N + 1, 0);
+                prevU = createArray(N + 1, N, 0);
+                prevV = createArray(N, N + 1, 0);
+                densR = createArray(N, N, 0);
+                densG = createArray(N, N, 0);
+                densB = createArray(N, N, 0);
+                prevDensR = createArray(N, N, 0);
+                prevDensG = createArray(N, N, 0);
+                prevDensB = createArray(N, N, 0);
+                createObstacles();
+                updateUI();
+            }
+
+            function clearDensity() {
+                densR = createArray(N, N, 0);
+                densG = createArray(N, N, 0);
+                densB = createArray(N, N, 0);
+                prevDensR = createArray(N, N, 0);
+                prevDensG = createArray(N, N, 0);
+                prevDensB = createArray(N, N, 0);
+            }
+
+            // ────────────────────────────────────────
+            // BUTTON HANDLERS
+            // ────────────────────────────────────────
+            document.getElementById('reset-btn').addEventListener('click', resetSimulation);
+            document.getElementById('clear-btn').addEventListener('click', clearDensity);
+
+            // ────────────────────────────────────────
+            // INIT
+            // ────────────────────────────────────────
+            updateUI();
+            console.log('💧 Fluid Simulation Ready!');
+            console.log('   🖱️ Drag mouse to inject fluid & swirl');
+            console.log('   ⌨️ Keys 1-4: Color | V: Viscosity | T: Vortex | O: Obstacles | R: Reset | C: Clear');
+        });
+    </script>
+</body>
+</html>

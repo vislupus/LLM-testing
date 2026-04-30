@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Galaxy Formation Simulation</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { display: flex; justify-content: center; align-items: center;
+         min-height: 100vh; background: #111; overflow: hidden; }
+  canvas { border-radius: 4px; }
+  #info {
+    position: fixed; top: 12px; left: 12px; z-index: 10;
+    background: rgba(0,0,0,.65); color: #bbb; font: 11px/1.6 monospace;
+    padding: 8px 12px; border-radius: 6px; pointer-events: none;
+    backdrop-filter: blur(4px);
+  }
+  #info b { color: #fff; }
+</style>
+</head>
+<body>
+<div id="info">
+  <b>Galaxy Formation — 10 000 particles</b><br>
+  Barnes–Hut Quadtree · Softened Gravity · Merging<br>
+  <span id="stats"></span>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<script>
+/* ═══════════════════════════════════════════════════════
+   GALAXY FORMATION SIMULATION
+   10 000 particles · Barnes-Hut Quadtree · Merging
+   Dark matter halo · Central black hole · Spiral arms
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Constants ── */
+const NUM_PARTICLES  = 10000;
+const G              = 1.2;          // gravitational constant (scaled)
+const SOFTENING      = 3.0;          // softening length ε
+const THETA          = 0.7;          // Barnes-Hut opening angle
+const MERGE_DIST     = 2.5;          // merge threshold distance
+const DT             = 0.15;         // integration timestep
+const INITIAL_RADIUS = 280;          // initial cloud radius
+const BLACK_HOLE_MASS= 800;         // central massive object
+const DM_MASS        = 15000;       // total dark matter halo mass
+const DM_SCALE       = 150;         // dark matter scale radius
+const TRAIL_ALPHA    = 18;           // background fade for trails (lower = longer trails)
+
+let particles = [];
+let blackHole;
+let quadtree;
+let particleCount;
+let simTime = 0;
+
+/* ═══════════════════════════════════════════════════════
+   PARTICLE CLASS
+   ═══════════════════════════════════════════════════════ */
+class Particle {
+  constructor(x, y, vx, vy, mass) {
+    this.pos = createVector(x, y);
+    this.vel = createVector(vx, vy);
+    this.acc = createVector(0, 0);
+    this.mass = mass;
+    this.radius = pow(mass, 0.33) * 0.8;
+    this.alive = true;
+    this.distFromCenter = 0;
+  }
+
+  applyForce(fx, fy) {
+    this.acc.x += fx / this.mass;
+    this.acc.y += fy / this.mass;
+  }
+
+  step() {
+    this.vel.x += this.acc.x * DT;
+    this.vel.y += this.acc.y * DT;
+    this.pos.x += this.vel.x * DT;
+    this.pos.y += this.vel.y * DT;
+    this.acc.set(0, 0);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   QUADTREE (Barnes-Hut)
+   Each node covers a rectangular region. If it contains
+   more than one particle it subdivides into 4 children.
+   Stores total mass and center-of-mass for approximation.
+   ═══════════════════════════════════════════════════════ */
+class Quadtree {
+  constructor(x, y, w, h) {
+    this.x = x; this.y = y;   // center
+    this.w = w; this.h = h;   // half-widths
+    this.particle = null;      // single particle (leaf)
+    this.children = null;      // array of 4 children
+    this.totalMass = 0;
+    this.comX = 0;             // center of mass x
+    this.comY = 0;             // center of mass y
+    this.count = 0;            // number of particles in subtree
+  }
+
+  /* Insert a particle into the tree */
+  insert(p) {
+    if (p.pos.x < this.x - this.w || p.pos.x > this.x + this.w ||
+        p.pos.y < this.y - this.h || p.pos.y > this.y + this.h) {
+      return false; // out of bounds
+    }
+
+    if (this.count === 0) {
+      /* Empty node — place particle here */
+      this.particle = p;
+      this.totalMass = p.mass;
+      this.comX = p.pos.x;
+      this.comY = p.pos.y;
+      this.count = 1;
+      return true;
+    }
+
+    if (this.count === 1 && !this.children) {
+      /* Node has one particle — subdivide and redistribute */
+      this._subdivide();
+      /* Re-insert existing particle into children */
+      if (this.particle) {
+        this._insertIntoChildren(this.particle);
+        this.particle = null;
+      }
+    }
+
+    if (!this.children) this._subdivide();
+    this._insertIntoChildren(p);
+
+    /* Update aggregate properties */
+    this.totalMass += p.mass;
+    this.comX = (this.comX * this.count + p.pos.x * p.mass) / (this.count + 1);
+    this.comY = (this.comY * this.count + p.pos.y * p.mass) / (this.count + 1);
+    this.count++;
+    return true;
+  }
+
+  _subdivide() {
+    const hw = this.w / 2;
+    const hh = this.h / 2;
+    this.children = [
+      new Quadtree(this.x - hw, this.y - hh, hw, hh),
+      new Quadtree(this.x + hw, this.y - hh, hw, hh),
+      new Quadtree(this.x - hw, this.y + hh, hw, hh),
+      new Quadtree(this.x + hw, this.y + hh, hw, hh),
+    ];
+  }
+
+  _insertIntoChildren(p) {
+    for (let child of this.children) {
+      if (child.insert(p)) return;
+    }
+  }
+
+  /*
+   * Compute gravitational force on particle p using
+   * Barnes-Hut approximation: if a node is far enough
+   * away (size/distance < θ), treat it as a single mass
+   * at its center of mass. Otherwise recurse into children.
+   */
+  computeForce(p, softening) {
+    if (this.count === 0) return;
+
+    const dx = this.comX - p.pos.x;
+    const dy = this.comY - p.pos.y;
+    const distSq = dx * dx + dy * dy;
+    const dist = sqrt(distSq);
+
+    /* Leaf node with single particle */
+    if (this.count === 1 && this.particle) {
+      if (this.particle === p || !this.particle.alive) return;
+      const softDistSq = distSq + softening * softening;
+      const force = G * this.particle.mass / softDistSq;
+      p.applyForce(force * dx / sqrt(softDistSq),
+                   force * dy / sqrt(softDistSq));
+      return;
+    }
+
+    /* Barnes-Hut criterion */
+    const size = max(this.w, this.h) * 2;
+    if (dist > 0 && size / dist < THETA) {
+      /* Approximate: treat entire node as single mass */
+      const softDistSq = distSq + softening * softening;
+      const force = G * this.totalMass / softDistSq;
+      p.applyForce(force * dx / sqrt(softDistSq),
+                   force * dy / sqrt(softDistSq));
+      return;
+    }
+
+    /* Recurse into children */
+    if (this.children) {
+      for (let child of this.children) {
+        child.computeForce(p, softening);
+      }
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   DARK MATTER HALO FORCE
+   Isothermal sphere profile: ρ(r) ∝ 1/(r² + a²)
+   Enclosed mass: M(<r) = M_total * r³ / (r² + a²)^(3/2)
+   Force: F = G * M(<r) / r²  (radially inward)
+   ═══════════════════════════════════════════════════════ */
+function applyDarkMatterForce(p) {
+  const dx = p.pos.x;  // relative to center (0,0)
+  const dy = p.pos.y;
+  const r = sqrt(dx * dx + dy * dy);
+  if (r < 1) return;
+
+  const r3 = r * r * r;
+  const denom = pow(r * r + DM_SCALE * DM_SCALE, 1.5);
+  const enclosedMass = DM_MASS * r3 / denom;
+
+  const force = G * enclosedMass / (r * r + SOFTENING * SOFTENING);
+  p.applyForce(-force * dx / r, -force * dy / r);
+}
+
+/* ═══════════════════════════════════════════════════════
+   CENTRAL BLACK HOLE FORCE
+   ═══════════════════════════════════════════════════════ */
+function applyBlackHoleForce(p) {
+  const dx = blackHole.pos.x - p.pos.x;
+  const dy = blackHole.pos.y - p.pos.y;
+  const distSq = dx * dx + dy * dy;
+  const softDistSq = distSq + SOFTENING * SOFTENING * 4;
+  const dist = sqrt(softDistSq);
+  const force = G * blackHole.mass / softDistSq;
+  p.applyForce(force * dx / dist, force * dy / dist);
+
+  /* Also move black hole (Newton's 3rd law) */
+  const bhForce = G * p.mass / softDistSq;
+  blackHole.applyForce(-bhForce * dx / dist, -bhForce * dy / dist);
+}
+
+/* ═══════════════════════════════════════════════════════
+   PARTICLE MERGING
+   When two particles are very close, merge them into one
+   conserving mass and momentum.
+   ═══════════════════════════════════════════════════════ */
+function mergeParticles() {
+  /* Use a spatial grid for efficient neighbor finding */
+  const cellSize = MERGE_DIST * 2;
+  const grid = {};
+
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    if (!p.alive) continue;
+
+    const cx = floor(p.pos.x / cellSize);
+    const cy = floor(p.pos.y / cellSize);
+    const key = cx + ',' + cy;
+
+    if (!grid[key]) grid[key] = [];
+    grid[key].push(i);
+  }
+
+  /* Check neighbors in adjacent cells */
+  const checked = new Set();
+  for (let key in grid) {
+    const [cx, cy] = key.split(',').map(Number);
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const neighborKey = (cx + dx) + ',' + (cy + dy);
+        const neighborCell = grid[neighborKey];
+        if (!neighborCell) continue;
+
+        const currentCell = grid[key];
+        for (let i of currentCell) {
+          for (let j of neighborCell) {
+            if (i >= j) continue;
+            const pairKey = i * 100000 + j;
+            if (checked.has(pairKey)) continue;
+            checked.add(pairKey);
+
+            const a = particles[i];
+            const b = particles[j];
+            if (!a.alive || !b.alive) continue;
+
+            const ddx = a.pos.x - b.pos.x;
+            const ddy = a.pos.y - b.pos.y;
+            const dist = sqrt(ddx * ddx + ddy * ddy);
+
+            if (dist < MERGE_DIST) {
+              /* Merge: conserve mass and momentum */
+              const totalMass = a.mass + b.mass;
+              a.vel.x = (a.vel.x * a.mass + b.vel.x * b.mass) / totalMass;
+              a.vel.y = (a.vel.y * a.mass + b.vel.y * b.mass) / totalMass;
+              a.pos.x = (a.pos.x * a.mass + b.pos.x * b.mass) / totalMass;
+              a.pos.y = (a.pos.y * a.mass + b.pos.y * b.mass) / totalMass;
+              a.mass = totalMass;
+              a.radius = pow(totalMass, 0.33) * 0.8;
+              b.alive = false;
+              particleCount--;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   SETUP — Initial Conditions
+   Protogalactic cloud: slightly rotating, roughly spherical
+   ═══════════════════════════════════════════════════════ */
+function setup() {
+  createCanvas(800, 800);
+  colorMode(RGB);
+
+  /* Central black hole */
+  blackHole = new Particle(0, 0, 0, 0, BLACK_HOLE_MASS);
+
+  particles = [];
+  particleCount = NUM_PARTICLES;
+
+  /*
+   * Create initial protogalactic cloud:
+   * - Particles distributed in a disk-like shape with thickness
+   * - Small solid-body rotation (angular momentum seed)
+   * - Small random velocity dispersion
+   * - Mass varies slightly (some heavier, most light)
+   */
+  for (let i = 0; i < NUM_PARTICLES; i++) {
+    /* Random position in a sphere/disk */
+    const theta = random(TWO_PI);
+    const phi = random(-HALF_PI, HALF_PI);
+    const r = random(1) < 0.7
+      ? random(30, INITIAL_RADIUS)           // disk particles
+      : random(30, INITIAL_RADIUS * 1.4);    // halo particles
+
+    /* Flatten into disk with some thickness */
+    const x = r * cos(phi) * cos(theta);
+    const y = r * cos(phi) * sin(theta);
+    const z = r * sin(phi) * 0.3;  // thickness (we project z into slight y offset)
+
+    /* Initial velocity: solid-body rotation + random dispersion */
+    const rotSpeed = r * 0.004;  // solid body rotation
+    const vx = -sin(theta) * rotSpeed + random(-0.4, 0.4);
+    const vy =  cos(theta) * rotSpeed + random(-0.4, 0.4);
+
+    /* Mass distribution: most are light, some heavier */
+    const mass = random(1) < 0.9
+      ? random(0.5, 1.5)
+      : random(1.5, 4.0);
+
+    const p = new Particle(x, y + z * 0.3, vx, vy, mass);
+    particles.push(p);
+  }
+
+  /* Give the whole cloud a slight net rotation */
+  for (let p of particles) {
+    const angle = atan2(p.pos.y, p.pos.x);
+    const r = sqrt(p.pos.x * p.pos.x + p.pos.y * p.pos.y);
+    const extraRot = r * 0.002;
+    p.vel.x += -sin(angle) * extraRot;
+    p.vel.y +=  cos(angle) * extraRot;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   DRAW — Main Loop
+   ═══════════════════════════════════════════════════════ */
+function draw() {
+  /* Trail effect: draw semi-transparent background */
+  background(220, TRAIL_ALPHA);
+
+  /* ── Build Quadtree ── */
+  const treeSize = max(width, height) * 1.5;
+  quadtree = new Quadtree(0, 0, treeSize, treeSize);
+
+  /* Insert alive particles */
+  for (let p of particles) {
+    if (p.alive) quadtree.insert(p);
+  }
+  quadtree.insert(blackHole);
+
+  /* ── Compute Forces ── */
+  for (let p of particles) {
+    if (!p.alive) continue;
+
+    /* Gravity from all other particles (Barnes-Hut) */
+    quadtree.computeForce(p, SOFTENING);
+
+    /* Dark matter halo */
+    applyDarkMatterForce(p);
+
+    /* Central black hole */
+    applyBlackHoleForce(p);
+  }
+
+  /* ── Integrate (Velocity Verlet simplified) ── */
+  for (let p of particles) {
+    if (!p.alive) continue;
+    p.step();
+  }
+  blackHole.step();
+
+  /* Keep black hole near center (damping) */
+  blackHole.vel.mult(0.95);
+  blackHole.pos.mult(0.98);
+
+  /* ── Merge close particles (every 8 frames for performance) ── */
+  if (frameCount % 8 === 0) {
+    mergeParticles();
+  }
+
+  /* ── Draw Particles ── */
+  noStroke();
+  translate(width / 2, height / 2);
+
+  for (let p of particles) {
+    if (!p.alive) continue;
+
+    const dist = sqrt(p.pos.x * p.pos.x + p.pos.y * p.pos.y);
+    p.distFromCenter = dist;
+
+    /* Color based on distance from center */
+    let r, g, b, alpha;
+    const normDist = constrain(dist / 300, 0, 1);
+
+    if (normDist < 0.15) {
+      /* Core: bright white/yellow */
+      r = 255; g = 240; b = 180;
+      alpha = 220;
+    } else if (normDist < 0.4) {
+      /* Inner disk: warm yellow/orange */
+      const t = (normDist - 0.15) / 0.25;
+      r = 255;
+      g = lerp(240, 160, t);
+      b = lerp(180, 80, t);
+      alpha = lerp(220, 160, t);
+    } else if (normDist < 0.7) {
+      /* Mid disk: orange to blue */
+      const t = (normDist - 0.4) / 0.3;
+      r = lerp(255, 100, t);
+      g = lerp(160, 140, t);
+      b = lerp(80, 220, t);
+      alpha = lerp(160, 120, t);
+    } else {
+      /* Outer disk/halo: blue/purple */
+      const t = (normDist - 0.7) / 0.3;
+      r = lerp(100, 60, t);
+      g = lerp(140, 80, t);
+      b = lerp(220, 180, t);
+      alpha = lerp(120, 60, t);
+    }
+
+    /* Brighter for more massive particles */
+    const massBright = constrain(pow(p.mass, 0.3), 0.5, 2.0);
+    alpha *= massBright;
+    alpha = constrain(alpha, 30, 255);
+
+    fill(r, g, b, alpha);
+
+    const sz = constrain(p.radius * 1.2, 1, 8);
+    ellipse(p.pos.x, p.pos.y, sz, sz);
+  }
+
+  /* Draw black hole */
+  fill(20, 20, 30, 200);
+  ellipse(blackHole.pos.x, blackHole.pos.y, 14, 14);
+  /* Accretion glow */
+  fill(255, 200, 100, 80);
+  ellipse(blackHole.pos.x, blackHole.pos.y, 22, 22);
+  fill(255, 240, 200, 40);
+  ellipse(blackHole.pos.x, blackHole.pos.y, 32, 32);
+
+  /* ── Update stats ── */
+  simTime += DT;
+  if (frameCount % 15 === 0) {
+    document.getElementById('stats').innerHTML =
+      `Particles: <b>${particleCount}</b> · ` +
+      `Time: <b>${nf(simTime, 1, 1)}</b> · ` +
+      `FPS: <b>${nf(frameRate(), 1, 0)}</b>`;
+  }
+}
+</script>
+</body>
+</html>

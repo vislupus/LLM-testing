@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galaxy Formation – 10,000 Particles with Quadtree</title>
+    <style>
+        :root {
+            --bg: #1a1a2e;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: var(--bg);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #canvas-container {
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 0 80px rgba(180, 160, 255, 0.2), 0 0 160px rgba(140, 120, 220, 0.1);
+        }
+        canvas {
+            display: block;
+        }
+        #info-panel {
+            position: fixed;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            background: rgba(10, 10, 20, 0.8);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 22px;
+            padding: 10px 20px;
+            color: #ddd;
+            font-size: 11px;
+            letter-spacing: 0.04em;
+            pointer-events: none;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            text-align: center;
+        }
+        @media (max-width: 700px) {
+            #info-panel {
+                font-size: 8px;
+                padding: 6px 12px;
+                border-radius: 14px;
+            }
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js">
+    </script>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="info-panel">
+        🌌 Galaxy Formation · 10,000 particles · Quadtree Barnes-Hut · ☀ Central Black Hole · 🌀 Dark Matter Halo
+    </div>
+
+    <script>
+        // ────────────────────────────────────────────
+        // p5.js Sketch – Galaxy Formation Simulation
+        // ────────────────────────────────────────────
+        new p5((p) => {
+            // ── Constants ──────────────────────────
+            const G = 0.38; // Gravitational constant (scaled)
+            const SOFTENING = 2.8; // Softening length to prevent singularities
+            const THETA = 0.58; // Barnes-Hut approximation threshold
+            const MERGE_DIST = 1.6; // Distance threshold for particle merging
+            const QT_CAPACITY = 5; // Quadtree capacity per node
+            const HALO_CORE_RADIUS = 190; // Dark matter halo core radius
+            const HALO_MASS = 9000; // Effective dark matter halo mass
+            const BH_MASS = 4200; // Central black hole mass
+
+            // ── Particle count ────────────────────
+            const TOTAL_PARTICLES = 10000;
+
+            // ── Global arrays ─────────────────────
+            let particles = [];
+            let blackHole = null;
+            let frameCount = 0;
+
+            // ────────────────────────────────────────
+            // PARTICLE CLASS
+            // ────────────────────────────────────────
+            class Particle {
+                constructor(x, y, vx, vy, mass, isBlackHole = false) {
+                    this.pos = p.createVector(x, y);
+                    this.vel = p.createVector(vx, vy);
+                    this.acc = p.createVector(0, 0);
+                    this.mass = mass;
+                    this.isBlackHole = isBlackHole;
+                    this.alive = true;
+                    this.merged = false;
+                    // Visual properties (derived from mass)
+                    this.updateVisuals();
+                }
+
+                updateVisuals() {
+                    // Size scales with cube root of mass (roughly)
+                    if (this.isBlackHole) {
+                        this.visualRadius = 12;
+                        this.brightness = 255;
+                        this.hue = 30;
+                    } else {
+                        this.visualRadius = p.constrain(p.pow(this.mass, 0.38) * 0.9, 0.5, 7);
+                        this.brightness = p.constrain(140 + this.mass * 15, 140, 255);
+                        this.hue = p.constrain(35 + this.mass * 8, 28, 60);
+                    }
+                }
+
+                applyForce(fx, fy) {
+                    this.acc.x += fx / this.mass;
+                    this.acc.y += fy / this.mass;
+                }
+
+                update(dt) {
+                    this.vel.x += this.acc.x * dt;
+                    this.vel.y += this.acc.y * dt;
+                    this.pos.x += this.vel.x * dt;
+                    this.pos.y += this.vel.y * dt;
+                    this.acc.set(0, 0);
+                }
+
+                draw() {
+                    if (!this.alive) return;
+                    const r = this.visualRadius;
+                    if (this.isBlackHole) {
+                        // Dark core with bright ring
+                        p.fill(10, 8, 15, 240);
+                        p.noStroke();
+                        p.ellipse(this.pos.x, this.pos.y, r * 2.2, r * 2.2);
+                        p.fill(255, 200, 100, 70);
+                        p.ellipse(this.pos.x, this.pos.y, r * 2.8, r * 2.8);
+                        p.fill(255, 230, 180, 50);
+                        p.ellipse(this.pos.x, this.pos.y, r * 3.5, r * 3.5);
+                        p.fill(255, 160, 40, 200);
+                        p.ellipse(this.pos.x, this.pos.y, r * 0.6, r * 0.6);
+                    } else {
+                        const alpha = p.constrain(this.brightness, 60, 255);
+                        p.colorMode(p.HSB, 360, 100, 100, 255);
+                        p.fill(this.hue, 20, p.constrain(this.brightness * 0.4, 25, 95), alpha);
+                        p.noStroke();
+                        p.ellipse(this.pos.x, this.pos.y, r * 2, r * 2);
+                        p.colorMode(p.RGB, 255);
+                    }
+                }
+            }
+
+            // ────────────────────────────────────────
+            // RECTANGLE (for Quadtree boundaries)
+            // ────────────────────────────────────────
+            class Rect {
+                constructor(x, y, w, h) {
+                    this.x = x;
+                    this.y = y;
+                    this.w = w;
+                    this.h = h;
+                }
+                contains(particle) {
+                    return (
+                        particle.pos.x >= this.x &&
+                        particle.pos.x < this.x + this.w &&
+                        particle.pos.y >= this.y &&
+                        particle.pos.y < this.y + this.h
+                    );
+                }
+                intersects(other) {
+                    return !(
+                        other.x > this.x + this.w ||
+                        other.x + other.w < this.x ||
+                        other.y > this.y + this.h ||
+                        other.y + other.h < this.y
+                    );
+                }
+            }
+
+            // ────────────────────────────────────────
+            // QUADTREE CLASS (with Barnes-Hut support)
+            // ────────────────────────────────────────
+            class Quadtree {
+                constructor(boundary, capacity) {
+                    this.boundary = boundary;
+                    this.capacity = capacity;
+                    this.particles = [];
+                    this.divided = false;
+                    this.nw = null;
+                    this.ne = null;
+                    this.sw = null;
+                    this.se = null;
+                    this.totalMass = 0;
+                    this.centerOfMass = p.createVector(0, 0);
+                }
+
+                subdivide() {
+                    const x = this.boundary.x;
+                    const y = this.boundary.y;
+                    const hw = this.boundary.w / 2;
+                    const hh = this.boundary.h / 2;
+                    this.nw = new Quadtree(new Rect(x, y, hw, hh), this.capacity);
+                    this.ne = new Quadtree(new Rect(x + hw, y, hw, hh), this.capacity);
+                    this.sw = new Quadtree(new Rect(x, y + hh, hw, hh), this.capacity);
+                    this.se = new Quadtree(new Rect(x + hw, y + hh, hw, hh), this.capacity);
+                    this.divided = true;
+                }
+
+                insert(particle) {
+                    if (!this.boundary.contains(particle)) return false;
+                    // Update center of mass
+                    const newMass = this.totalMass + particle.mass;
+                    this.centerOfMass.x = (this.centerOfMass.x * this.totalMass + particle.pos.x * particle.mass) /
+                        newMass;
+                    this.centerOfMass.y = (this.centerOfMass.y * this.totalMass + particle.pos.y * particle.mass) /
+                        newMass;
+                    this.totalMass = newMass;
+
+                    if (!this.divided && this.particles.length < this.capacity) {
+                        this.particles.push(particle);
+                        return true;
+                    }
+                    if (!this.divided) {
+                        this.subdivide();
+                        // Redistribute existing particles
+                        const oldParticles = [...this.particles];
+                        this.particles = [];
+                        for (const p of oldParticles) {
+                            this.insertIntoChild(p);
+                        }
+                    }
+                    return this.insertIntoChild(particle);
+                }
+
+                insertIntoChild(particle) {
+                    if (this.nw.insert(particle)) return true;
+                    if (this.ne.insert(particle)) return true;
+                    if (this.sw.insert(particle)) return true;
+                    if (this.se.insert(particle)) return true;
+                    return false;
+                }
+
+                // Barnes-Hut force calculation
+                calculateForce(particle, theta) {
+                    if (this.totalMass === 0) return p.createVector(0, 0);
+                    // If this node has only one particle and it's the same particle, skip
+                    if (!this.divided && this.particles.length === 1 && this.particles[0] === particle) {
+                        return p.createVector(0, 0);
+                    }
+                    const dx = this.centerOfMass.x - particle.pos.x;
+                    const dy = this.centerOfMass.y - particle.pos.y;
+                    const distSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
+                    const dist = p.sqrt(distSq);
+                    const s = this.boundary.w;
+
+                    // Barnes-Hut criterion: if node size / distance < theta, approximate
+                    if (!this.divided || (s / dist < theta)) {
+                        const forceMag = G * particle.mass * this.totalMass / distSq;
+                        const fx = forceMag * dx / dist;
+                        const fy = forceMag * dy / dist;
+                        return p.createVector(fx, fy);
+                    } else {
+                        // Recurse into children
+                        let totalForce = p.createVector(0, 0);
+                        if (this.nw) totalForce.add(this.nw.calculateForce(particle, theta));
+                        if (this.ne) totalForce.add(this.ne.calculateForce(particle, theta));
+                        if (this.sw) totalForce.add(this.sw.calculateForce(particle, theta));
+                        if (this.se) totalForce.add(this.se.calculateForce(particle, theta));
+                        return totalForce;
+                    }
+                }
+            }
+
+            // ────────────────────────────────────────
+            // DARK MATTER HALO FORCE
+            // ────────────────────────────────────────
+            function haloForce(particle, centerX, centerY) {
+                const dx = centerX - particle.pos.x;
+                const dy = centerY - particle.pos.y;
+                const r2 = dx * dx + dy * dy + SOFTENING * SOFTENING;
+                const r = p.sqrt(r2);
+                // Plummer-like softened profile for the halo
+                const core2 = HALO_CORE_RADIUS * HALO_CORE_RADIUS;
+                const denom = p.pow(r2 + core2, 1.5);
+                const forceMag = G * particle.mass * HALO_MASS / denom * r;
+                const fx = forceMag * dx / r;
+                const fy = forceMag * dy / r;
+                return p.createVector(fx, fy);
+            }
+
+            // ────────────────────────────────────────
+            // MERGE PARTICLES (spatial hash grid)
+            // ────────────────────────────────────────
+            function mergeParticles(particlesList, gridSize) {
+                const grid = new Map();
+                // Assign particles to grid cells
+                for (const particle of particlesList) {
+                    if (!particle.alive || particle.merged) continue;
+                    if (particle.isBlackHole) continue; // Black hole doesn't merge with others this way
+                    const cx = p.floor(particle.pos.x / gridSize);
+                    const cy = p.floor(particle.pos.y / gridSize);
+                    const key = cx + ',' + cy;
+                    if (!grid.has(key)) grid.set(key, []);
+                    grid.get(key).push(particle);
+                }
+
+                const toRemove = [];
+                // Check each cell for close encounters
+                for (const [key, cellParticles] of grid) {
+                    if (cellParticles.length < 2) continue;
+                    for (let i = 0; i < cellParticles.length; i++) {
+                        const a = cellParticles[i];
+                        if (a.merged || !a.alive) continue;
+                        for (let j = i + 1; j < cellParticles.length; j++) {
+                            const b = cellParticles[j];
+                            if (b.merged || !b.alive) continue;
+                            const dx = a.pos.x - b.pos.x;
+                            const dy = a.pos.y - b.pos.y;
+                            const dist = p.sqrt(dx * dx + dy * dy);
+                            if (dist < MERGE_DIST) {
+                                // Merge b into a (conserving mass and momentum)
+                                const totalMass = a.mass + b.mass;
+                                a.pos.x = (a.pos.x * a.mass + b.pos.x * b.mass) / totalMass;
+                                a.pos.y = (a.pos.y * a.mass + b.pos.y * b.mass) / totalMass;
+                                a.vel.x = (a.vel.x * a.mass + b.vel.x * b.mass) / totalMass;
+                                a.vel.y = (a.vel.y * a.mass + b.vel.y * b.mass) / totalMass;
+                                a.mass = totalMass;
+                                a.updateVisuals();
+                                b.merged = true;
+                                b.alive = false;
+                                toRemove.push(b);
+                            }
+                        }
+                    }
+                }
+
+                // Handle black hole consuming nearby particles
+                if (blackHole && blackHole.alive) {
+                    for (const particle of particlesList) {
+                        if (!particle.alive || particle.merged || particle.isBlackHole) continue;
+                        const dx = blackHole.pos.x - particle.pos.x;
+                        const dy = blackHole.pos.y - particle.pos.y;
+                        const dist = p.sqrt(dx * dx + dy * dy);
+                        if (dist < blackHole.visualRadius + 2) {
+                            blackHole.mass += particle.mass;
+                            blackHole.updateVisuals();
+                            particle.merged = true;
+                            particle.alive = false;
+                            toRemove.push(particle);
+                        }
+                    }
+                }
+
+                // Remove merged particles
+                for (const p of toRemove) {
+                    const idx = particlesList.indexOf(p);
+                    if (idx >= 0) particlesList.splice(idx, 1);
+                }
+                return toRemove.length;
+            }
+
+            // ────────────────────────────────────────
+            // SETUP
+            // ────────────────────────────────────────
+            p.setup = function() {
+                const canvas = p.createCanvas(900, 900);
+                canvas.parent('canvas-container');
+                p.frameRate(60);
+                p.noStroke();
+                p.colorMode(p.RGB, 255);
+
+                const cx = p.width / 2;
+                const cy = p.height / 2;
+
+                // Create black hole at center
+                blackHole = new Particle(cx, cy, 0, 0, BH_MASS, true);
+                particles.push(blackHole);
+
+                // Create protogalactic cloud
+                const cloudRadius = 220;
+                const sigma = cloudRadius / 2.8;
+
+                for (let i = 0; i < TOTAL_PARTICLES - 1; i++) {
+                    // Sample position from 2D Gaussian
+                    const angle = p.random(p.TWO_PI);
+                    const r = p.abs(p.randomGaussian(0, sigma));
+                    const px = cx + r * p.cos(angle);
+                    const py = cy + r * p.sin(angle);
+
+                    // Initial velocity: rotational + thermal
+                    // Enclosed mass estimate for circular velocity
+                    const enclosedMass = BH_MASS + (TOTAL_PARTICLES - 1) * (1 - p.exp(-r * r / (2 * sigma * sigma))) *
+                        0.8;
+                    const vCirc = p.sqrt(G * enclosedMass / p.max(r, 1));
+                    const vRot = vCirc * 0.32; // 32% of circular → significant collapse
+                    const vxRot = -vRot * p.sin(angle);
+                    const vyRot = vRot * p.cos(angle);
+
+                    // Thermal dispersion
+                    const vTherm = p.randomGaussian(0, 0.6);
+                    const thermAngle = p.random(p.TWO_PI);
+                    const vxTherm = vTherm * p.cos(thermAngle);
+                    const vyTherm = vTherm * p.sin(thermAngle);
+
+                    const vx = vxRot + vxTherm;
+                    const vy = vyRot + vyTherm;
+
+                    const particle = new Particle(px, py, vx, vy, 0.6 + p.random() * 0.8);
+                    particles.push(particle);
+                }
+
+                // Initial trail seeding
+                for (let i = 0; i < 8; i++) {
+                    updateAllParticles(1 / 60);
+                }
+
+                console.log('🌌 Galaxy Formation Ready!');
+                console.log('   Particles:', particles.length);
+                console.log('   Quadtree Barnes-Hut theta:', THETA);
+                console.log('   Black Hole mass:', BH_MASS);
+                console.log('   Dark Matter Halo mass:', HALO_MASS);
+            };
+
+            // ────────────────────────────────────────
+            // UPDATE ALL PARTICLES (one physics step)
+            // ────────────────────────────────────────
+            function updateAllParticles(dt) {
+                if (particles.length === 0) return;
+
+                // Build Quadtree
+                const boundary = new Rect(0, 0, p.width, p.height);
+                const quadtree = new Quadtree(boundary, QT_CAPACITY);
+                for (const particle of particles) {
+                    if (particle.alive && !particle.merged) {
+                        quadtree.insert(particle);
+                    }
+                }
+
+                // Compute forces using Barnes-Hut + halo
+                const cx = p.width / 2;
+                const cy = p.height / 2;
+                const forces = [];
+                for (const particle of particles) {
+                    if (!particle.alive || particle.merged) {
+                        forces.push(null);
+                        continue;
+                    }
+                    const gravForce = quadtree.calculateForce(particle, THETA);
+                    const haloF = haloForce(particle, cx, cy);
+                    forces.push(p.createVector(gravForce.x + haloF.x, gravForce.y + haloF.y));
+                }
+
+                // Apply forces and update
+                for (let i = 0; i < particles.length; i++) {
+                    const particle = particles[i];
+                    if (!particle.alive || particle.merged) continue;
+                    const f = forces[i];
+                    if (f) {
+                        particle.applyForce(f.x, f.y);
+                    }
+                    particle.update(dt);
+
+                    // Keep within bounds with soft reflection
+                    const margin = 30;
+                    const bounceDamping = 0.5;
+                    if (particle.pos.x < margin) {
+                        particle.pos.x = margin;
+                        particle.vel.x *= -bounceDamping;
+                    }
+                    if (particle.pos.x > p.width - margin) {
+                        particle.pos.x = p.width - margin;
+                        particle.vel.x *= -bounceDamping;
+                    }
+                    if (particle.pos.y < margin) {
+                        particle.pos.y = margin;
+                        particle.vel.y *= -bounceDamping;
+                    }
+                    if (particle.pos.y > p.height - margin) {
+                        particle.pos.y = p.height - margin;
+                        particle.vel.y *= -bounceDamping;
+                    }
+                }
+            }
+
+            // ────────────────────────────────────────
+            // DRAW
+            // ────────────────────────────────────────
+            p.draw = function() {
+                frameCount++;
+                const dt = 1.0 / 60;
+
+                // ── Trail effect: semi-transparent overlay ──
+                p.fill(220, 7);
+                p.noStroke();
+                p.rect(0, 0, p.width, p.height);
+
+                // ── Physics update ───────────────────
+                updateAllParticles(dt);
+
+                // ── Merge particles ──────────────────
+                if (frameCount % 4 === 0) {
+                    mergeParticles(particles, 22);
+                }
+
+                // ── Render all particles ─────────────
+                p.colorMode(p.RGB, 255);
+                // Sort by mass so brighter/more massive particles render on top
+                const renderList = [...particles].filter(p => p.alive && !p.merged);
+                renderList.sort((a, b) => a.mass - b.mass);
+
+                for (const particle of renderList) {
+                    particle.draw();
+                }
+
+                // ── Central glow (galactic core) ─────
+                const cx = p.width / 2;
+                const cy = p.height / 2;
+                if (blackHole && blackHole.alive) {
+                    cx2 = blackHole.pos.x;
+                    cy2 = blackHole.pos.y;
+                } else {
+                    cx2 = cx;
+                    cy2 = cy;
+                }
+                p.fill(255, 220, 150, 12);
+                p.noStroke();
+                p.ellipse(cx2, cy2, 80, 80);
+                p.fill(255, 200, 120, 8);
+                p.ellipse(cx2, cy2, 140, 140);
+
+                // ── HUD ──────────────────────────────
+                p.fill(30, 30, 45, 200);
+                p.noStroke();
+                p.rect(8, 8, 220, 48, 6);
+                p.fill(255);
+                p.textSize(9);
+                p.textAlign(p.LEFT);
+                p.text('Particles: ' + particles.filter(p => p.alive).length, 18, 27);
+                p.text('BH Mass: ' + p.nf(blackHole ? blackHole.mass : 0, 0, 0), 18, 43);
+            };
+
+            // ────────────────────────────────────────
+            // WINDOW RESIZE
+            // ────────────────────────────────────────
+            p.windowResized = function() {
+                p.resizeCanvas(900, 900);
+            };
+
+            // ────────────────────────────────────────
+            // KEYBOARD
+            // ────────────────────────────────────────
+            p.keyPressed = function() {
+                if (p.key === 'r' || p.key === 'R') {
+                    // Reset simulation
+                    particles = [];
+                    frameCount = 0;
+                    p.setup();
+                }
+            };
+        });
+    </script>
+</body>
+</html>

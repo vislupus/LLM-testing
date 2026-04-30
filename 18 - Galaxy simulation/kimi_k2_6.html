@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Galaxy Formation Simulation</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #dcdcdc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+  canvas { display: block; }
+  #ui {
+    position: absolute; top: 12px; left: 12px;
+    background: rgba(255,255,255,0.85); backdrop-filter: blur(8px);
+    padding: 14px 18px; border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    font-size: 12px; color: #333; max-width: 260px; line-height: 1.6;
+  }
+  #ui h2 { font-size: 14px; margin-bottom: 8px; color: #1a1a2e; }
+  #ui .stat { display: flex; justify-content: space-between; }
+  #ui .stat span:first-child { color: #666; }
+  #ui .stat span:last-child { font-weight: 600; color: #1a1a2e; }
+  #ui button {
+    margin-top: 10px; padding: 6px 14px; border: none; border-radius: 6px;
+    background: #1a1a2e; color: #fff; font-size: 11px; cursor: pointer; width: 100%;
+  }
+  #ui button:hover { background: #2a2a4e; }
+  #ui .hint { margin-top: 8px; font-size: 10px; color: #888; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <h2>🌌 Galaxy Formation</h2>
+  <div class="stat"><span>Particles</span><span>10,000</span></div>
+  <div class="stat"><span>Time</span><span id="time-stat">0 Myr</span></div>
+  <div class="stat"><span>Central Mass</span><span id="mass-stat">—</span></div>
+  <div class="stat"><span>Sim Speed</span><span id="fps-stat">—</span></div>
+  <button onclick="resetGalaxy()">Restart Simulation</button>
+  <div class="hint">Click & drag to rotate view<br>Scroll to zoom</div>
+</div>
+
+<script>
+/* ===================== QUADTREE ===================== */
+class Quadtree {
+  constructor(boundary, capacity) {
+    this.boundary = boundary; // {x, y, w, h}
+    this.capacity = capacity;
+    this.particles = [];
+    this.divided = false;
+    this.mass = 0;
+    this.com = createVector(0, 0); // center of mass
+  }
+
+  subdivide() {
+    const { x, y, w, h } = this.boundary;
+    const hw = w / 2, hh = h / 2;
+    this.nw = new Quadtree({ x, y, w: hw, h: hh }, this.capacity);
+    this.ne = new Quadtree({ x: x + hw, y, w: hw, h: hh }, this.capacity);
+    this.sw = new Quadtree({ x, y: y + hh, w: hw, h: hh }, this.capacity);
+    this.se = new Quadtree({ x: x + hw, y: y + hh, w: hw, h: hh }, this.capacity);
+    this.divided = true;
+  }
+
+  insert(p) {
+    if (!this.contains(p.pos)) return false;
+
+    if (this.particles.length < this.capacity && !this.divided) {
+      this.particles.push(p);
+      this.updateMass();
+      return true;
+    }
+
+    if (!this.divided) this.subdivide();
+
+    let inserted = false;
+    if (this.nw.insert(p)) inserted = true;
+    else if (this.ne.insert(p)) inserted = true;
+    else if (this.sw.insert(p)) inserted = true;
+    else if (this.se.insert(p)) inserted = true;
+
+    if (inserted) this.updateMass();
+    return inserted;
+  }
+
+  contains(pos) {
+    return pos.x >= this.boundary.x && pos.x < this.boundary.x + this.boundary.w &&
+           pos.y >= this.boundary.y && pos.y < this.boundary.y + this.boundary.h;
+  }
+
+  updateMass() {
+    this.mass = 0;
+    this.com.set(0, 0);
+    // Direct particles
+    for (const p of this.particles) {
+      this.mass += p.mass;
+      this.com.add(p.pos.copy().mult(p.mass));
+    }
+    // Children
+    if (this.divided) {
+      for (const child of [this.nw, this.ne, this.sw, this.se]) {
+        this.mass += child.mass;
+        this.com.add(child.com.copy().mult(child.mass));
+      }
+    }
+    if (this.mass > 0) this.com.div(this.mass);
+  }
+
+  // Barnes-Hut approximation
+  getForce(particle, theta) {
+    if (this.mass === 0) return createVector(0, 0);
+
+    const d = p5.Vector.dist(particle.pos, this.com);
+    if (d === 0) return createVector(0, 0);
+
+    // If leaf node or far enough away, approximate
+    if (!this.divided || (this.boundary.w / d < theta)) {
+      const force = p5.Vector.sub(this.com, particle.pos);
+      const distSq = max(d * d, 100); // softening
+      const strength = (G * this.mass * particle.mass) / distSq;
+      force.setMag(strength);
+      return force;
+    }
+
+    // Otherwise recurse into children
+    let total = createVector(0, 0);
+    for (const child of [this.nw, this.ne, this.sw, this.se]) {
+      total.add(child.getForce(particle, theta));
+    }
+    return total;
+  }
+
+  query(range, found) {
+    if (!this.intersects(range)) return;
+    for (const p of this.particles) {
+      if (this.inRange(p.pos, range)) found.push(p);
+    }
+    if (this.divided) {
+      for (const child of [this.nw, this.ne, this.sw, this.se]) child.query(range, found);
+    }
+  }
+
+  intersects(range) {
+    return !(range.x > this.boundary.x + this.boundary.w ||
+             range.x + range.w < this.boundary.x ||
+             range.y > this.boundary.y + this.boundary.h ||
+             range.y + range.h < this.boundary.y);
+  }
+
+  inRange(pos, range) {
+    return pos.x >= range.x && pos.x <= range.x + range.w &&
+           pos.y >= range.y && pos.y <= range.y + range.h;
+  }
+
+  clear() {
+    this.particles = [];
+    this.mass = 0;
+    this.com.set(0, 0);
+    this.divided = false;
+    this.nw = this.ne = this.sw = this.se = null;
+  }
+}
+
+/* ===================== PARTICLE (STAR) ===================== */
+class Particle {
+  constructor(x, y, mass) {
+    this.pos = createVector(x, y);
+    this.vel = createVector(0, 0);
+    this.acc = createVector(0, 0);
+    this.mass = mass;
+    this.radius = sqrt(mass) * 0.8;
+    this.brightness = random(0.4, 1.0);
+    this.colorOffset = random(-20, 20); // slight color variation
+    this.merged = false;
+    this.age = 0;
+    this.trail = [];
+    this.maxTrail = 8;
+  }
+
+  applyForce(force) {
+    const f = p5.Vector.div(force, this.mass);
+    this.acc.add(f);
+  }
+
+  update() {
+    this.vel.add(this.acc);
+    this.vel.mult(damping);
+    this.pos.add(this.vel);
+    this.acc.mult(0);
+    this.age++;
+
+    // Trail
+    this.trail.push(this.pos.copy());
+    if (this.trail.length > this.maxTrail) this.trail.shift();
+  }
+
+  display() {
+    const screenPos = worldToScreen(this.pos);
+    const r = this.radius * zoom;
+    if (r < 0.3) return; // too small to see
+
+    // Trail
+    if (showTrails && this.trail.length > 1) {
+      noFill();
+      for (let i = 0; i < this.trail.length - 1; i++) {
+        const a = map(i, 0, this.trail.length, 0, 120);
+        const t1 = worldToScreen(this.trail[i]);
+        const t2 = worldToScreen(this.trail[i + 1]);
+        stroke(200 + this.colorOffset, 200 + this.colorOffset, 255, a * this.brightness);
+        strokeWeight(r * 0.3 * (i / this.trail.length));
+        line(t1.x, t1.y, t2.x, t2.y);
+      }
+    }
+
+    // Glow
+    const glowSize = r * 3;
+    const glow = drawingContext.createRadialGradient(screenPos.x, screenPos.y, 0, screenPos.x, screenPos.y, glowSize);
+    const baseR = constrain(200 + this.colorOffset + this.age * 0.01, 180, 255);
+    const baseG = constrain(220 + this.colorOffset * 0.5 - this.age * 0.005, 200, 255);
+    const baseB = 255;
+    glow.addColorStop(0, `rgba(${baseR}, ${baseG}, ${baseB}, ${this.brightness * 0.9})`);
+    glow.addColorStop(0.4, `rgba(${baseR}, ${baseG}, ${baseB}, ${this.brightness * 0.3})`);
+    glow.addColorStop(1, `rgba(${baseR}, ${baseG}, ${baseB}, 0)`);
+    drawingContext.fillStyle = glow;
+    noStroke();
+    ellipse(screenPos.x, screenPos.y, glowSize * 2);
+
+    // Core
+    fill(baseR, baseG, baseB, this.brightness * 255);
+    ellipse(screenPos.x, screenPos.y, r * 2);
+  }
+}
+
+/* ===================== BLACK HOLE / CENTRAL CORE ===================== */
+class BlackHole {
+  constructor(mass) {
+    this.pos = createVector(0, 0);
+    this.mass = mass;
+    this.radius = sqrt(mass) * 0.5;
+    this.accretionDisk = [];
+    for (let i = 0; i < 60; i++) {
+      this.accretionDisk.push({
+        angle: random(TWO_PI),
+        dist: random(this.radius * 2, this.radius * 6),
+        speed: random(0.02, 0.08),
+        brightness: random(0.3, 0.8)
+      });
+    }
+  }
+
+  display() {
+    const screenPos = worldToScreen(this.pos);
+    const r = this.radius * zoom;
+
+    // Accretion disk
+    for (const d of this.accretionDisk) {
+      d.angle += d.speed;
+      const x = screenPos.x + cos(d.angle) * d.dist * zoom;
+      const y = screenPos.y + sin(d.angle) * d.dist * zoom * 0.3; // flattened
+      fill(255, 200, 100, d.brightness * 150);
+      noStroke();
+      ellipse(x, y, 2 * zoom);
+    }
+
+    // Event horizon glow
+    const glow = drawingContext.createRadialGradient(screenPos.x, screenPos.y, 0, screenPos.x, screenPos.y, r * 4);
+    glow.addColorStop(0, 'rgba(0, 0, 0, 1)');
+    glow.addColorStop(0.3, 'rgba(20, 10, 40, 0.8)');
+    glow.addColorStop(0.6, 'rgba(80, 40, 120, 0.3)');
+    glow.addColorStop(1, 'rgba(100, 60, 150, 0)');
+    drawingContext.fillStyle = glow;
+    ellipse(screenPos.x, screenPos.y, r * 8);
+
+    // Schwarzschild radius
+    fill(0);
+    ellipse(screenPos.x, screenPos.y, r * 2);
+  }
+}
+
+/* ===================== GLOBALS ===================== */
+let particles = [];
+let blackHole;
+let quadtree;
+let G = 0.8;
+let damping = 0.998;
+let theta = 0.5; // Barnes-Hut threshold
+let zoom = 1.0;
+let panX = 0, panY = 0;
+let showTrails = true;
+let simTime = 0;
+let darkMatterStrength = 0.15;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  colorMode(RGB, 255);
+  initGalaxy();
+}
+
+function initGalaxy() {
+  particles = [];
+  simTime = 0;
+
+  // Central supermassive black hole
+  blackHole = new BlackHole(5000);
+
+  // Protogalactic cloud: particles in a spherical distribution with slight rotation
+  const count = 10000;
+  for (let i = 0; i < count; i++) {
+    // Use rejection sampling for more uniform sphere
+    let r, theta, phi;
+    let accepted = false;
+    while (!accepted) {
+      r = random(50, 400);
+      const maxDens = 1 / (1 + pow(r / 150, 2)); // density profile
+      if (random(1) < maxDens) accepted = true;
+    }
+
+    theta = random(0, PI);
+    phi = random(0, TWO_PI);
+
+    // Flatten into disk over time via initial conditions
+    const flattenFactor = 0.3 + 0.7 * (1 - r / 400); // inner regions more disk-like
+    const x = r * sin(theta) * cos(phi);
+    const y = r * sin(theta) * sin(phi) * flattenFactor;
+    const z = r * cos(theta) * flattenFactor;
+
+    const mass = random(0.5, 3);
+    const p = new Particle(x, y, mass);
+
+    // Initial Keplerian velocity for rotation
+    const dist = sqrt(x*x + y*y);
+    const vMag = sqrt((G * blackHole.mass) / (dist + 50)) * random(0.85, 1.15);
+    const vAngle = atan2(y, x) + HALF_PI + random(-0.1, 0.1);
+    p.vel = createVector(cos(vAngle) * vMag, sin(vAngle) * vMag);
+
+    // Add slight inward drift for collapse
+    const inward = p5.Vector.sub(blackHole.pos, p.pos).normalize().mult(random(0.05, 0.3));
+    p.vel.add(inward);
+
+    particles.push(p);
+  }
+}
+
+function resetGalaxy() {
+  initGalaxy();
+}
+
+function draw() {
+  background(220, 220, 225);
+
+  // Subtle background nebula effect
+  drawNebula();
+
+  // Update simulation
+  updatePhysics();
+  simTime += 0.5;
+
+  // Center view on galaxy
+  const targetZoom = min(width, height) / 900;
+  zoom = lerp(zoom, targetZoom * (1 + mouseScrollZoom), 0.05);
+
+  // Display
+  push();
+  translate(width / 2 + panX, height / 2 + panY);
+
+  // Draw particles (back to front for depth)
+  const sorted = [...particles].sort((a, b) => b.pos.mag() - a.pos.mag());
+  for (const p of sorted) p.display();
+
+  // Black hole on top
+  blackHole.display();
+
+  pop();
+
+  // UI updates
+  if (frameCount % 30 === 0) {
+    document.getElementById('time-stat').textContent = floor(simTime) + ' Myr';
+    document.getElementById('mass-stat').textContent = (blackHole.mass / 1000).toFixed(1) + 'k M☉';
+    document.getElementById('fps-stat').textContent = floor(frameRate()) + ' fps';
+  }
+}
+
+function drawNebula() {
+  // Very subtle background gradient
+  const ctx = drawingContext;
+  const grad = ctx.createRadialGradient(width/2, height/2, 0, width/2, height/2, max(width, height));
+  grad.addColorStop(0, 'rgba(200, 200, 210, 0.3)');
+  grad.addColorStop(0.5, 'rgba(215, 215, 220, 0.1)');
+  grad.addColorStop(1, 'rgba(220, 220, 225, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, width, height);
+}
+
+function updatePhysics() {
+  // Build quadtree
+  const boundary = { x: -1000, y: -1000, w: 2000, h: 2000 };
+  quadtree = new Quadtree(boundary, 8);
+  for (const p of particles) {
+    if (!p.merged) quadtree.insert(p);
+  }
+
+  // Forces
+  for (const p of particles) {
+    if (p.merged) continue;
+
+    // Barnes-Hut gravity from all other particles
+    const treeForce = quadtree.getForce(p, theta);
+    p.applyForce(treeForce);
+
+    // Central black hole gravity
+    const toCenter = p5.Vector.sub(blackHole.pos, p.pos);
+    const distSq = max(toCenter.magSq(), 400);
+    const bhForce = toCenter.normalize().mult((G * blackHole.mass * p.mass) / distSq);
+    p.applyForce(bhForce);
+
+    // Dark matter halo (approximated as additional inward force that scales with distance)
+    const dmForce = toCenter.normalize().mult(darkMatterStrength * p.mass * toCenter.mag() / 1000);
+    p.applyForce(dmForce);
+
+    // Spiral density wave perturbation (creates arm structure)
+    const dist = p.pos.mag();
+    const angle = atan2(p.pos.y, p.pos.x);
+    const spiralPhase = dist * 0.015 - simTime * 0.002;
+    const spiralStrength = 0.08 * exp(-dist / 300);
+    const spiralAngle = angle + spiralPhase;
+    const spiralForce = createVector(cos(spiralAngle), sin(spiralAngle)).mult(spiralStrength * p.mass);
+    p.applyForce(spiralForce);
+
+    // Collision / merging
+    const searchRange = { x: p.pos.x - p.radius * 3, y: p.pos.y - p.radius * 3, w: p.radius * 6, h: p.radius * 6 };
+    const neighbors = [];
+    quadtree.query(searchRange, neighbors);
+
+    for (const other of neighbors) {
+      if (other === p || other.merged) continue;
+      const d = p5.Vector.dist(p.pos, other.pos);
+      if (d < (p.radius + other.radius) * 0.6 && d > 0) {
+        // Merge smaller into larger
+        if (p.mass >= other.mass) {
+          p.mass += other.mass * 0.7; // mass conservation with some loss
+          p.radius = sqrt(p.mass) * 0.8;
+          p.vel = p5.Vector.add(p.vel.mult(p.mass), other.vel.mult(other.mass)).div(p.mass + other.mass);
+          p.brightness = min(1, p.brightness + 0.05);
+          other.merged = true;
+        }
+      }
+    }
+  }
+
+  // Update positions and remove merged
+  for (const p of particles) {
+    if (!p.merged) p.update();
+  }
+  particles = particles.filter(p => !p.merged);
+
+  // Accrete mass to black hole from very close particles
+  for (const p of particles) {
+    if (p.pos.mag() < blackHole.radius * 2) {
+      blackHole.mass += p.mass * 0.5;
+      blackHole.radius = sqrt(blackHole.mass) * 0.5;
+      p.merged = true;
+    }
+  }
+  particles = particles.filter(p => !p.merged);
+
+  // Replenish particles to maintain visual density
+  while (particles.length < 8000) {
+    const angle = random(TWO_PI);
+    const r = random(200, 500);
+    const p = new Particle(cos(angle) * r, sin(angle) * r * 0.3, random(0.3, 1.5));
+    const vMag = sqrt((G * blackHole.mass) / (r + 50)) * random(0.9, 1.1);
+    const vAngle = atan2(p.pos.y, p.pos.x) + HALF_PI;
+    p.vel = createVector(cos(vAngle) * vMag, sin(vAngle) * vMag);
+    particles.push(p);
+  }
+}
+
+/* ===================== VIEWPORT ===================== */
+let mouseScrollZoom = 0;
+let isDragging = false;
+let lastMouseX, lastMouseY;
+
+function worldToScreen(v) {
+  return createVector(v.x * zoom + width/2 + panX, v.y * zoom + height/2 + panY);
+}
+
+function screenToWorld(x, y) {
+  return createVector((x - width/2 - panX) / zoom, (y - height/2 - panY) / zoom);
+}
+
+function mouseWheel(event) {
+  mouseScrollZoom -= event.delta * 0.001;
+  mouseScrollZoom = constrain(mouseScrollZoom, -0.5, 2);
+  return false;
+}
+
+function mousePressed() {
+  if (mouseX < 280 && mouseY < 200) return; // don't drag on UI
+  isDragging = true;
+  lastMouseX = mouseX;
+  lastMouseY = mouseY;
+}
+
+function mouseDragged() {
+  if (isDragging) {
+    panX += mouseX - lastMouseX;
+    panY += mouseY - lastMouseY;
+    lastMouseX = mouseX;
+    lastMouseY = mouseY;
+  }
+}
+
+function mouseReleased() {
+  isDragging = false;
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+}
+</script>
+</body>
+</html>

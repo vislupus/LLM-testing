@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Osogovo 3D Terrain Diorama - Babylon.js</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
+      background-color: #0a0a14;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #renderCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      outline: none;
+      touch-action: none;
+    }
+    .instructions {
+      position: absolute;
+      bottom: 15px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.7);
+      color: #ddd;
+      padding: 8px 18px;
+      border-radius: 20px;
+      font-size: 14px;
+      pointer-events: none;
+      backdrop-filter: blur(5px);
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="renderCanvas"></canvas>
+  <div class="instructions">🖱️ Drag to orbit | 📜 Scroll to zoom | Right-drag to pan</div>
+
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script>
+    (function() {
+      // ────────────────────────────────────
+      // Canvas and Engine
+      // ────────────────────────────────────
+      const canvas = document.getElementById("renderCanvas");
+      const engine = new BABYLON.Engine(canvas, true, {
+        preserveDrawingBuffer: false,
+        stencil: true,
+        antialias: true
+      });
+
+      const scene = new BABYLON.Scene(engine);
+      scene.clearColor = new BABYLON.Color4(0.55, 0.68, 0.82, 1.0); // light sky blue
+      scene.fogMode = BABYLON.Scene.FOGMODE_LINEAR;
+      scene.fogColor = new BABYLON.Color3(0.55, 0.68, 0.82);
+      scene.fogStart = 80;
+      scene.fogEnd = 160;
+
+      // ────────────────────────────────────
+      // Camera
+      // ────────────────────────────────────
+      const camera = new BABYLON.ArcRotateCamera(
+        "camera",
+        -Math.PI / 4,   // alpha (horizontal rotation)
+        Math.PI / 3.5,  // beta (vertical angle)
+        85,             // radius
+        new BABYLON.Vector3(0, 8, 0), // target
+        scene
+      );
+      camera.lowerRadiusLimit = 35;
+      camera.upperRadiusLimit = 180;
+      camera.lowerBetaLimit = 0.2;
+      camera.upperBetaLimit = 1.45;
+      camera.panningSensibility = 500;
+      camera.wheelPrecision = 40;
+      camera.attachControl(canvas, true);
+      camera.target = new BABYLON.Vector3(0, 10, 0);
+
+      // ────────────────────────────────────
+      // Lighting
+      // ────────────────────────────────────
+      const hemisphericLight = new BABYLON.HemisphericLight(
+        "hemiLight",
+        new BABYLON.Vector3(0.5, 1.0, 0.3),
+        scene
+      );
+      hemisphericLight.intensity = 0.65;
+      hemisphericLight.diffuse = new BABYLON.Color3(1.0, 0.96, 0.88);
+      hemisphericLight.groundColor = new BABYLON.Color3(0.3, 0.3, 0.35);
+
+      const directionalLight = new BABYLON.DirectionalLight(
+        "sunLight",
+        new BABYLON.Vector3(-0.6, -0.9, -0.4),
+        scene
+      );
+      directionalLight.intensity = 0.8;
+      directionalLight.diffuse = new BABYLON.Color3(1.0, 0.95, 0.85);
+
+      // ────────────────────────────────────
+      // Terrain parameters
+      // ────────────────────────────────────
+      const groundWidth = 100;
+      const groundDepth = 100;
+      const minHeight = 0;
+      const maxHeight = 28;         // exaggerate relief
+      const subdivisions = 256;     // high detail for the height map
+      const heightMapUrl = "./Osogovo Height Map (Merged).png";
+      const diffuseTextureUrl = "./Osogovo_map.jpg";
+
+      // ────────────────────────────────────
+      // Base material for sides and bottom
+      // ────────────────────────────────────
+      const pedestalMat = new BABYLON.StandardMaterial("pedestalMat", scene);
+      pedestalMat.diffuseColor = new BABYLON.Color3(0.25, 0.25, 0.28);
+      pedestalMat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+      pedestalMat.roughness = 0.85;
+
+      // ────────────────────────────────────
+      // Create terrain (ground) mesh
+      // ────────────────────────────────────
+      const terrain = BABYLON.MeshBuilder.CreateGroundFromHeightMap(
+        "terrain",
+        heightMapUrl,
+        {
+          width: groundWidth,
+          height: groundDepth,
+          subdivisions: subdivisions,
+          minHeight: minHeight,
+          maxHeight: maxHeight,
+          onReady: onTerrainReady
+        },
+        scene
+      );
+
+      // Prepare terrain material (texture will be applied inside onReady to be safe)
+      const terrainMat = new BABYLON.StandardMaterial("terrainMat", scene);
+      terrainMat.diffuseTexture = new BABYLON.Texture(diffuseTextureUrl, scene);
+      terrainMat.diffuseTexture.uScale = 1;
+      terrainMat.diffuseTexture.vScale = 1;
+      terrainMat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
+      terrainMat.roughness = 0.9;
+      terrain.material = terrainMat;
+
+      // ────────────────────────────────────
+      // Function called once height map is loaded
+      // ────────────────────────────────────
+      function onTerrainReady() {
+        // ── Compute bottom level ──────────
+        const vertexData = terrain.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+        if (!vertexData) {
+          console.warn("No vertex data available; using default bottom.");
+          buildPedestal(-5);
+          findPeaksAndPlaceMarkers();
+          return;
+        }
+        let minY = Infinity;
+        for (let i = 1; i < vertexData.length; i += 3) {
+          const y = vertexData[i];
+          if (y < minY) minY = y;
+        }
+        const bottomY = minY - 3.5; // go a bit lower than the deepest valley
+
+        // ── Build pedestal (walls and bottom) ──
+        buildPedestal(bottomY);
+
+        // ── Find the three highest distinct peaks ──
+        findPeaksAndPlaceMarkers(vertexData, bottomY);
+      }
+
+      // ────────────────────────────────────
+      // Build diorama box: four walls + bottom plane
+      // ────────────────────────────────────
+      function buildPedestal(bottomY) {
+        const halfW = groundWidth / 2;
+        const halfD = groundDepth / 2;
+        const step = 0.8; // sampling step along the edges (smaller = smoother walls)
+
+        // Helper: sample a top edge path from (x1,z1) to (x2,z2) with constant x or z
+        function sampleEdge(constantAxis, constantValue, start, end, isConstantX) {
+          const points = [];
+          const steps = Math.ceil(Math.abs(end - start) / step);
+          for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const varyingCoord = start + t * (end - start);
+            let x, z;
+            if (isConstantX) {
+              x = constantValue;
+              z = varyingCoord;
+            } else {
+              x = varyingCoord;
+              z = constantValue;
+            }
+            const y = terrain.getHeightAtCoordinates(x, z);
+            points.push(new BABYLON.Vector3(x, y, z));
+          }
+          return points;
+        }
+
+        // Four edges (clockwise)
+        const topEdge1 = sampleEdge('x', -halfW, -halfD, halfD, true);   // left wall (X = min)
+        const topEdge2 = sampleEdge('z', halfD, -halfW, halfW, false);   // top wall (Z = max)
+        const topEdge3 = sampleEdge('x', halfW, halfD, -halfD, true);    // right wall (X = max)
+        const topEdge4 = sampleEdge('z', -halfD, halfW, -halfW, false);  // bottom wall (Z = min)
+
+        const allEdges = [topEdge1, topEdge2, topEdge3, topEdge4];
+
+        allEdges.forEach(topPath => {
+          if (topPath.length < 2) return;
+          const bottomPath = topPath.map(p => new BABYLON.Vector3(p.x, bottomY, p.z));
+          const ribbon = BABYLON.MeshBuilder.CreateRibbon("wall", {
+            pathArray: [topPath, bottomPath],
+            closeArray: false,
+            closePath: false,
+            sideOrientation: BABYLON.Mesh.DOUBLESIDE
+          }, scene);
+          ribbon.material = pedestalMat;
+          ribbon.receiveShadows = true;
+        });
+
+        // Bottom plane
+        const bottomPlane = BABYLON.MeshBuilder.CreateGround("bottom", {
+          width: groundWidth,
+          height: groundDepth
+        }, scene);
+        bottomPlane.position.y = bottomY;
+        bottomPlane.material = pedestalMat;
+        bottomPlane.receiveShadows = true;
+      }
+
+      // ────────────────────────────────────
+      // Find three highest peaks and place markers + billboard labels
+      // ────────────────────────────────────
+      function findPeaksAndPlaceMarkers(vertexData, bottomY) {
+        // If vertexData not passed, try to retrieve
+        if (!vertexData) {
+          vertexData = terrain.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+        }
+        if (!vertexData || vertexData.length === 0) {
+          console.warn("Cannot place markers without vertex data.");
+          return;
+        }
+
+        // Collect all vertices as {x, y, z}
+        const vertices = [];
+        for (let i = 0; i < vertexData.length; i += 3) {
+          const x = vertexData[i];
+          const y = vertexData[i + 1];
+          const z = vertexData[i + 2];
+          vertices.push({ x, y, z });
+        }
+
+        // Sort by height descending
+        vertices.sort((a, b) => b.y - a.y);
+
+        // Greedy selection of peaks with minimum distance
+        const minDistance = 4.5; // minimum XZ distance between distinct peaks
+        const selectedPeaks = [];
+        for (const v of vertices) {
+          if (selectedPeaks.length >= 3) break;
+          // Check distance to already selected peaks
+          let tooClose = false;
+          for (const p of selectedPeaks) {
+            const dx = v.x - p.x;
+            const dz = v.z - p.z;
+            if (Math.sqrt(dx * dx + dz * dz) < minDistance) {
+              tooClose = true;
+              break;
+            }
+          }
+          if (!tooClose) {
+            selectedPeaks.push(v);
+          }
+        }
+
+        // If we couldn't find 3, pad with the highest remaining (unlikely)
+        while (selectedPeaks.length < 3 && vertices.length > selectedPeaks.length) {
+          for (const v of vertices) {
+            if (!selectedPeaks.includes(v)) {
+              selectedPeaks.push(v);
+              if (selectedPeaks.length >= 3) break;
+            }
+          }
+        }
+
+        // Place each peak marker
+        const markerMat = new BABYLON.StandardMaterial("markerMat", scene);
+        markerMat.diffuseColor = new BABYLON.Color3(0.95, 0.2, 0.15);
+        markerMat.specularColor = new BABYLON.Color3(0.3, 0.3, 0.3);
+        markerMat.emissiveColor = new BABYLON.Color3(0.25, 0.05, 0.05);
+
+        selectedPeaks.forEach((peak, index) => {
+          const labelNumber = index + 1;
+          const peakPos = new BABYLON.Vector3(peak.x, peak.y, peak.z);
+
+          // Small sphere marker
+          const marker = BABYLON.MeshBuilder.CreateSphere("peakMarker" + labelNumber, {
+            diameter: 0.6,
+            segments: 8
+          }, scene);
+          marker.position = peakPos.clone();
+          marker.position.y += 0.3; // raise slightly above terrain
+          marker.material = markerMat;
+
+          // Billboard text label
+          createBillboardLabel(
+            "Peak " + labelNumber,
+            new BABYLON.Vector3(peak.x, peak.y + 1.0, peak.z),
+            scene
+          );
+        });
+      }
+
+      // ────────────────────────────────────
+      // Billboard label (plane with dynamic texture)
+      // ────────────────────────────────────
+      function createBillboardLabel(text, position, scene) {
+        // Dynamic texture
+        const width = 512;
+        const height = 128;
+        const dynamicTex = new BABYLON.DynamicTexture(
+          "labelTex_" + text,
+          { width: width, height: height },
+          scene,
+          true
+        );
+        const ctx = dynamicTex.getContext();
+        ctx.clearRect(0, 0, width, height);
+        // Background semi-transparent
+        ctx.fillStyle = "rgba(20, 20, 30, 0.8)";
+        ctx.fillRect(10, 10, width - 20, height - 20);
+        // Border
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 4;
+        ctx.strokeRect(15, 15, width - 30, height - 30);
+        // Text
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 48px 'Segoe UI', 'Arial', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, width / 2, height / 2);
+
+        dynamicTex.update();
+
+        // Plane material
+        const labelMat = new BABYLON.StandardMaterial("labelMat_" + text, scene);
+        labelMat.diffuseTexture = dynamicTex;
+        labelMat.useAlphaFromDiffuseTexture = true;
+        labelMat.backFaceCulling = false;
+        labelMat.specularColor = BABYLON.Color3.Black();
+        labelMat.emissiveColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+
+        // Plane mesh
+        const plane = BABYLON.MeshBuilder.CreatePlane("labelPlane_" + text, {
+          width: 4.5,
+          height: 1.125,
+        }, scene);
+        plane.position = position.clone();
+        plane.position.y += 1.2; // above the marker
+        plane.material = labelMat;
+        plane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+      }
+
+      // ────────────────────────────────────
+      // Render loop
+      // ────────────────────────────────────
+      engine.runRenderLoop(() => {
+        scene.render();
+      });
+
+      // ────────────────────────────────────
+      // Resize handler
+      // ────────────────────────────────────
+      window.addEventListener("resize", () => {
+        engine.resize();
+      });
+
+      // ────────────────────────────────────
+      // Keyboard shortcut to reset view
+      // ────────────────────────────────────
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "r" || e.key === "R") {
+          camera.alpha = -Math.PI / 4;
+          camera.beta = Math.PI / 3.5;
+          camera.radius = 85;
+          camera.target.set(0, 10, 0);
+        }
+      });
+
+      console.log("🏔️ Osogovo 3D terrain ready. Use mouse to orbit and zoom.");
+      console.log("   Markers placed on three highest peaks.");
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Osogovo 3D Terrain Diorama</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #000; }
+  #renderCanvas { width: 100vw; height: 100vh; display: block; }
+
+  #info-panel {
+    position: fixed; top: 16px; left: 16px; z-index: 100;
+    background: rgba(10, 14, 26, 0.85);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(100, 180, 120, 0.2);
+    border-radius: 12px; padding: 16px 20px;
+    color: #b0c8b8; font-family: 'Segoe UI', Tahoma, sans-serif;
+    font-size: 13px; max-width: 260px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+  }
+  #info-panel h2 {
+    font-size: 15px; color: #6fcf8a; margin-bottom: 8px;
+    letter-spacing: 0.5px;
+  }
+  #info-panel p { line-height: 1.6; color: #8a9a90; font-size: 11.5px; }
+  #info-panel .peak-list { margin-top: 10px; }
+  #info-panel .peak-item {
+    display: flex; align-items: center; gap: 6px;
+    margin-bottom: 4px; font-size: 11px;
+  }
+  #info-panel .peak-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #ff4444; flex-shrink: 0;
+    box-shadow: 0 0 6px rgba(255,68,68,0.5);
+  }
+
+  #loading-overlay {
+    position: fixed; inset: 0; z-index: 999;
+    background: rgba(8, 12, 20, 0.95);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: #6fcf8a; font-family: 'Segoe UI', sans-serif;
+    transition: opacity 0.6s;
+  }
+  #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+  #loading-overlay .spinner {
+    width: 48px; height: 48px; border: 3px solid rgba(111,207,138,0.2);
+    border-top-color: #6fcf8a; border-radius: 50%;
+    animation: spin 1s linear infinite; margin-bottom: 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loading-overlay p { font-size: 14px; letter-spacing: 0.5px; }
+</style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <p>Loading Osogovo Terrain…</p>
+</div>
+
+<canvas id="renderCanvas"></canvas>
+
+<div id="info-panel">
+  <h2>🏔️ Osogovo Mountain</h2>
+  <p>3D terrain diorama built from heightmap data.
+     Orbit with mouse, scroll to zoom, right-click to pan.</p>
+  <div class="peak-list" id="peakList"></div>
+</div>
+
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script>
+(function () {
+  const canvas = document.getElementById('renderCanvas');
+  const engine = new BABYLON.Engine(canvas, true, { stencil: true });
+
+  /* ── Configuration ─────────────────────────────────────── */
+  const HEIGHTMAP_FILE  = "Osogovo Height Map (Merged).png";
+  const DIFFUSE_FILE    = "Osogovo_map.jpg";
+  const TERRAIN_W       = 120;          // world units width
+  const TERRAIN_H       = 120;          // world units depth
+  const SUBDIVISIONS    = 256;          // terrain mesh resolution
+  const HEIGHT_SCALE    = 35;           // vertical exaggeration
+  const PEDESTAL_DEPTH  = 12;           // how far walls go down
+  const WALL_THICKNESS  = 0.6;          // pedestal wall thickness
+  const NUM_PEAKS       = 3;            // markers to place
+
+  /* ── Scene ─────────────────────────────────────────────── */
+  const scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0.04, 0.06, 0.10, 1);
+  scene.fogMode    = BABYLON.Scene.FOGMODE_EXP2;
+  scene.fogDensity = 0.004;
+  scene.fogColor   = new BABYLON.Color3(0.08, 0.12, 0.18);
+
+  /* Camera */
+  const camera = new BABYLON.ArcRotateCamera("cam",
+    -Math.PI / 3, Math.PI / 3.2, 110,
+    new BABYLON.Vector3(TERRAIN_W / 2, HEIGHT_SCALE * 0.35, TERRAIN_H / 2), scene);
+  camera.attachControl(canvas, true);
+  camera.lowerRadiusLimit  = 20;
+  camera.upperRadiusLimit  = 300;
+  camera.wheelPrecision    = 15;
+  camera.panningSensibility = 600;
+  camera.minZ = 0.5;
+
+  /* Lighting */
+  const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+  hemi.intensity    = 0.45;
+  hemi.diffuse      = new BABYLON.Color3(0.65, 0.75, 0.9);
+  hemi.groundColor  = new BABYLON.Color3(0.15, 0.2, 0.12);
+
+  const dir = new BABYLON.DirectionalLight("dir", new BABYLON.Vector3(-1, -1.5, 0.8), scene);
+  dir.position = new BABYLON.Vector3(80, 100, -40);
+  dir.intensity = 1.3;
+  dir.diffuse   = new BABYLON.Color3(1, 0.96, 0.88);
+  dir.specular  = new BABYLON.Color3(0.25, 0.25, 0.3);
+
+  const shadows = new BABYLON.ShadowGenerator(2048, dir);
+  shadows.useBlurExponentialShadowMap = true;
+  shadows.blurKernel = 12;
+  shadows.darkness   = 0.35;
+
+  const amb = new BABYLON.PointLight("amb", new BABYLON.Vector3(TERRAIN_W / 2, 5, TERRAIN_H / 2), scene);
+  amb.intensity = 0.12;
+  amb.diffuse   = new BABYLON.Color3(0.4, 0.5, 0.6);
+
+  /* Skybox */
+  const skyMat = new BABYLON.StandardMaterial("skyMat", scene);
+  skyMat.backFaceCulling = false;
+  skyMat.disableLighting = true;
+  skyMat.emissiveColor   = new BABYLON.Color3(0.18, 0.28, 0.48);
+  const sky = BABYLON.MeshBuilder.CreateBox("sky", { size: 600 }, scene);
+  sky.material = skyMat;
+  sky.infiniteDistance = true;
+
+  /* ── Materials ─────────────────────────────────────────── */
+  const terrainMat = new BABYLON.StandardMaterial("terrainMat", scene);
+  terrainMat.diffuseColor  = new BABYLON.Color3(1, 1, 1);
+  terrainMat.specularColor = new BABYLON.Color3(0.08, 0.08, 0.1);
+  terrainMat.specularPower = 32;
+
+  const wallMat = new BABYLON.StandardMaterial("wallMat", scene);
+  wallMat.diffuseColor  = new BABYLON.Color3(0.28, 0.22, 0.18);
+  wallMat.specularColor = new BABYLON.Color3(0.04, 0.04, 0.04);
+  wallMat.emissiveColor = new BABYLON.Color3(0.02, 0.02, 0.01);
+
+  const bottomMat = new BABYLON.StandardMaterial("bottomMat", scene);
+  bottomMat.diffuseColor  = new BABYLON.Color3(0.2, 0.18, 0.15);
+  bottomMat.specularColor = new BABYLON.Color3(0.03, 0.03, 0.03);
+
+  const markerMat = new BABYLON.StandardMaterial("markerMat", scene);
+  markerMat.diffuseColor  = new BABYLON.Color3(1, 0.15, 0.15);
+  markerMat.emissiveColor = new BABYLON.Color3(0.6, 0.08, 0.08);
+  markerMat.specularColor = new BABYLON.Color3(0.5, 0.5, 0.5);
+
+  const poleMat = new BABYLON.StandardMaterial("poleMat", scene);
+  poleMat.diffuseColor  = new BABYLON.Color3(0.9, 0.9, 0.9);
+  poleMat.specularColor = new BABYLON.Color3(0.4, 0.4, 0.4);
+
+  /* ── Build Terrain ─────────────────────────────────────── */
+  const terrain = BABYLON.MeshBuilder.CreateGroundFromHeightMap("terrain", {
+    width: TERRAIN_W, height: TERRAIN_H,
+    subdivisions: SUBDIVISIONS,
+    minHeight: 0, maxHeight: HEIGHT_SCALE,
+    url: HEIGHTMAP_FILE,
+    onReady: (mesh) => {
+      mesh.receiveShadows = true;
+      shadows.addShadowCaster(mesh);
+      document.getElementById('loading-overlay').classList.add('hidden');
+      findPeaksAndPlaceMarkers(mesh);
+    }
+  }, scene);
+
+  terrain.material = terrainMat;
+
+  /* Apply diffuse texture once loaded */
+  const diffuseTex = new BABYLON.Texture(DIFFUSE_FILE, scene, false, false,
+    BABYLON.Texture.TRILINEAR_SAMPLINGMODE);
+  diffuseTex.uScale = 1;
+  diffuseTex.vScale = 1;
+  terrainMat.diffuseTexture = diffuseTex;
+
+  /* ── Pedestal Walls & Bottom ───────────────────────────── */
+  function buildPedestal() {
+    const W = TERRAIN_W, H = TERRAIN_H, D = PEDESTAL_DEPTH, T = WALL_THICKNESS;
+
+    /* Front wall (z = H) */
+    const front = BABYLON.MeshBuilder.CreateBox("pedFront", {
+      width: W + T * 2, height: D, depth: T
+    }, scene);
+    front.position.set(W / 2, -D / 2, H + T / 2);
+    front.material = wallMat;
+    front.receiveShadows = true;
+    shadows.addShadowCaster(front);
+
+    /* Back wall (z = 0) */
+    const back = BABYLON.MeshBuilder.CreateBox("pedBack", {
+      width: W + T * 2, height: D, depth: T
+    }, scene);
+    back.position.set(W / 2, -D / 2, -T / 2);
+    back.material = wallMat;
+    back.receiveShadows = true;
+    shadows.addShadowCaster(back);
+
+    /* Left wall (x = 0) */
+    const left = BABYLON.MeshBuilder.CreateBox("pedLeft", {
+      width: T, height: D, depth: H
+    }, scene);
+    left.position.set(-T / 2, -D / 2, H / 2);
+    left.material = wallMat;
+    left.receiveShadows = true;
+    shadows.addShadowCaster(left);
+
+    /* Right wall (x = W) */
+    const right = BABYLON.MeshBuilder.CreateBox("pedRight", {
+      width: T, height: D, depth: H
+    }, scene);
+    right.position.set(W + T / 2, -D / 2, H / 2);
+    right.material = wallMat;
+    right.receiveShadows = true;
+    shadows.addShadowCaster(right);
+
+    /* Bottom plate */
+    const bottom = BABYLON.MeshBuilder.CreateBox("pedBottom", {
+      width: W + T * 2, height: T * 0.5, depth: H + T * 2
+    }, scene);
+    bottom.position.set(W / 2, -D - T * 0.25, H / 2);
+    bottom.material = bottomMat;
+    bottom.receiveShadows = true;
+    shadows.addShadowCaster(bottom);
+
+    /* Decorative top rim */
+    const rimMat = new BABYLON.StandardMaterial("rimMat", scene);
+    rimMat.diffuseColor  = new BABYLON.Color3(0.35, 0.3, 0.25);
+    rimMat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+    rimMat.emissiveColor = new BABYLON.Color3(0.02, 0.02, 0.01);
+
+    const rimH = 0.3;
+    const rimT = 0.4;
+    const rimFront = BABYLON.MeshBuilder.CreateBox("rimF", {
+      width: W + rimT * 2, height: rimH, depth: rimT
+    }, scene);
+    rimFront.position.set(W / 2, rimH / 2, H + rimT / 2);
+    rimFront.material = rimMat;
+
+    const rimBack = BABYLON.MeshBuilder.CreateBox("rimB", {
+      width: W + rimT * 2, height: rimH, depth: rimT
+    }, scene);
+    rimBack.position.set(W / 2, rimH / 2, -rimT / 2);
+    rimBack.material = rimMat;
+
+    const rimLeft = BABYLON.MeshBuilder.CreateBox("rimL", {
+      width: rimT, height: rimH, depth: H
+    }, scene);
+    rimLeft.position.set(-rimT / 2, rimH / 2, H / 2);
+    rimLeft.material = rimMat;
+
+    const rimRight = BABYLON.MeshBuilder.CreateBox("rimR", {
+      width: rimT, height: rimH, depth: H
+    }, scene);
+    rimRight.position.set(W + rimT / 2, rimH / 2, H / 2);
+    rimRight.material = rimMat;
+  }
+  buildPedestal();
+
+  /* ── Peak Detection & Markers ──────────────────────────── */
+  function findPeaksAndPlaceMarkers(terrainMesh) {
+    const positions = terrainMesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    if (!positions) return;
+
+    const W = TERRAIN_W, H = TERRAIN_H;
+    const margin = 5; // avoid edge peaks
+
+    /* Collect all vertices with their heights */
+    const vertices = [];
+    for (let i = 0; i < positions.length; i += 3) {
+      const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+      if (x > margin && x < W - margin && z > margin && z < H - margin) {
+        vertices.push({ x, y, z, idx: i / 3 });
+      }
+    }
+
+    /* Sort by height descending */
+    vertices.sort((a, b) => b.y - a.y);
+
+    /* Greedy peak selection – keep peaks far apart */
+    const minDist = Math.min(W, H) * 0.15;
+    const peaks = [];
+
+    for (const v of vertices) {
+      if (peaks.length >= NUM_PEAKS) break;
+      const tooClose = peaks.some(p => {
+        const dx = p.x - v.x, dz = p.z - v.z;
+        return Math.sqrt(dx * dx + dz * dz) < minDist;
+      });
+      if (!tooClose) peaks.push(v);
+    }
+
+    /* Known peak names for Osogovo (override labels) */
+    const peakNames = ["Ruen (2252 m)", "Carev Vrv (2084 m)", "Sokol (1960 m)"];
+
+    const peakListEl = document.getElementById('peakList');
+
+    peaks.forEach((p, i) => {
+      const name = peakNames[i] || `Peak ${i + 1} (${p.y.toFixed(1)} m)`;
+
+      /* Pole */
+      const poleH = 3;
+      const pole = BABYLON.MeshBuilder.CreateCylinder("pole" + i, {
+        height: poleH, diameter: 0.15, tessellation: 8
+      }, scene);
+      pole.position.set(p.x, p.y + poleH / 2, p.z);
+      pole.material = poleMat;
+      shadows.addShadowCaster(pole);
+
+      /* Sphere marker */
+      const sphere = BABYLON.MeshBuilder.CreateSphere("marker" + i, {
+        diameter: 1.2, segments: 12
+      }, scene);
+      sphere.position.set(p.x, p.y + poleH + 0.6, p.z);
+      sphere.material = markerMat;
+      shadows.addShadowCaster(sphere);
+
+      /* Pulsing ring */
+      const ring = BABYLON.MeshBuilder.CreateTorus("ring" + i, {
+        diameter: 2.5, thickness: 0.12, tessellation: 24
+      }, scene);
+      ring.position.set(p.x, p.y + poleH + 0.6, p.z);
+      ring.material = markerMat;
+
+      /* Billboard label */
+      const label = createBillboardLabel(name, p.x, p.y + poleH + 2.5, p.z);
+
+      /* Animate ring pulse */
+      scene.registerBeforeRender(() => {
+        const t = performance.now() / 1000;
+        const pulse = 1 + Math.sin(t * 3 + i * 2) * 0.15;
+        ring.scaling.set(pulse, pulse, pulse);
+        sphere.scaling.set(1 + Math.sin(t * 2.5 + i) * 0.08,
+                           1 + Math.sin(t * 2.5 + i) * 0.08,
+                           1 + Math.sin(t * 2.5 + i) * 0.08);
+      });
+
+      /* Info panel entry */
+      const item = document.createElement('div');
+      item.className = 'peak-item';
+      item.innerHTML = `<span class="peak-dot"></span> ${name}`;
+      peakListEl.appendChild(item);
+    });
+  }
+
+  /* ── Billboard Label (plane + dynamic texture) ─────────── */
+  function createBillboardLabel(text, x, y, z) {
+    const planeW = 14, planeH = 3;
+    const plane = BABYLON.MeshBuilder.CreatePlane("label_" + text, {
+      width: planeW, height: planeH
+    }, scene);
+    plane.position.set(x, y, z);
+    plane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+
+    const tex = new BABYLON.DynamicTexture("labelTex_" + text, {
+      width: 512, height: 128
+    }, scene, false);
+    tex.hasAlpha = true;
+
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 512, 128);
+
+    /* Background pill */
+    const radius = 20;
+    const pad = 8;
+    ctx.fillStyle = "rgba(8, 14, 24, 0.82)";
+    ctx.beginPath();
+    ctx.roundRect(pad, pad, 512 - pad * 2, 128 - pad * 2, radius);
+    ctx.fill();
+
+    /* Border */
+    ctx.strokeStyle = "rgba(111, 207, 138, 0.5)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(pad, pad, 512 - pad * 2, 128 - pad * 2, radius);
+    ctx.stroke();
+
+    /* Text */
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 34px 'Segoe UI', Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, 256, 64);
+
+    tex.update();
+
+    const labelMat = new BABYLON.StandardMaterial("labelMat_" + text, scene);
+    labelMat.diffuseTexture = tex;
+    labelMat.emissiveColor  = new BABYLON.Color3(0.15, 0.2, 0.15);
+    labelMat.opacityTexture = tex;
+    labelMat.backFaceCulling = false;
+    labelMat.disableLighting = true;
+    plane.material = labelMat;
+
+    return plane;
+  }
+
+  /* ── Render Loop ───────────────────────────────────────── */
+  engine.runRenderLoop(() => scene.render());
+  window.addEventListener("resize", () => engine.resize());
+
+  /* Fallback: hide loading after timeout if textures fail */
+  setTimeout(() => {
+    document.getElementById('loading-overlay').classList.add('hidden');
+  }, 8000);
+
+})();
+</script>
+</body>
+</html>

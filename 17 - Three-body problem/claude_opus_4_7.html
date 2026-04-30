@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sun – Earth – Jupiter (chaotic) + spacecraft</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #111; }
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh;
+         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  canvas { display: block; box-shadow: 0 0 30px rgba(0,0,0,0.6); }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+<script>
+/* ===========================================================
+   Chaotic Sun–Earth–Jupiter three-body system with a
+   spacecraft performing: parked → heliocentric loop →
+   transfer burn → captured at Jupiter.
+
+   Physics: pairwise Newtonian gravity with a small softening
+   length to regularize close encounters. Semi-implicit Euler
+   integration with multiple substeps per draw frame. Initial
+   net momentum is zeroed so the center of mass stays still.
+   Mass ratios (Jupiter ≈ 10% of Sun, Earth ≈ 2.4%) produce
+   visibly chaotic orbits that remain bounded.
+   =========================================================== */
+
+const W = 800, H = 800;
+
+// Physics
+const G        = 1;
+const SOFT2    = 36;      // softening^2 (= 6^2) — prevents singular accels
+const DT       = 0.05;    // integrator step
+const SUBSTEPS = 5;       // substeps per draw frame
+
+// Mission timeline (in simulation substeps; 5 substeps per draw @60fps)
+const LAUNCH_FRAME = 900;   // ~3 s
+const LOOP_TIMEOUT = 4000;  // safety fallback for loop phase
+const JUP_ARRIVAL  = 22;    // distance at which spacecraft is "captured"
+
+let trails;
+let sun, earth, jupiter, craft;
+let craftPhase, simFrame, angleAccum, lastCraftAngle, loopStartFrame;
+
+/* ---------- initial conditions ---------- */
+function initBodies() {
+  // World coords are centered at origin; we draw with +W/2, +H/2 offsets.
+  sun     = { x:   0, y:  0,  vx:  0.00,  vy:  0.00,  m: 2500, R: 19, col: [255,195, 60] };
+  earth   = { x: 150, y:  0,  vx:  0.30,  vy:  4.25,  m:   60, R:  6, col: [ 75,145,240] };
+  jupiter = { x:-285, y: 40,  vx: -0.37,  vy: -2.95,  m:  250, R: 13, col: [215,150, 85] };
+
+  // Zero net linear momentum so the center of mass stays at the origin.
+  const bodies = [sun, earth, jupiter];
+  let px = 0, py = 0, M = 0;
+  for (const b of bodies) { px += b.m * b.vx; py += b.m * b.vy; M += b.m; }
+  for (const b of bodies) { b.vx -= px / M;  b.vy -= py / M; }
+
+  // Spacecraft parked at Earth, slightly outward from the Sun.
+  const re = Math.sqrt(earth.x * earth.x + earth.y * earth.y);
+  craft = {
+    x: earth.x + 10 * earth.x / re,
+    y: earth.y + 10 * earth.y / re,
+    vx: earth.vx, vy: earth.vy
+  };
+
+  craftPhase     = 'on_earth';
+  simFrame       = 0;
+  angleAccum     = 0;
+  lastCraftAngle = 0;
+  loopStartFrame = 0;
+}
+
+function setup() {
+  createCanvas(W, H);
+  pixelDensity(1);
+  trails = createGraphics(W, H);
+  trails.noStroke();
+  noStroke();
+  initBodies();
+}
+
+/* ---------- physics ---------- */
+function physicsStep(h) {
+  const bodies = [sun, earth, jupiter];
+
+  // Pairwise gravitational accelerations between the three bodies.
+  for (const b of bodies) { b.ax = 0; b.ay = 0; }
+  for (let i = 0; i < 3; i++) {
+    for (let j = i + 1; j < 3; j++) {
+      const dx = bodies[j].x - bodies[i].x;
+      const dy = bodies[j].y - bodies[i].y;
+      const r2 = dx * dx + dy * dy + SOFT2;
+      const inv = 1 / (r2 * Math.sqrt(r2));
+      const fx = G * dx * inv;
+      const fy = G * dy * inv;
+      bodies[i].ax += fx * bodies[j].m;
+      bodies[i].ay += fy * bodies[j].m;
+      bodies[j].ax -= fx * bodies[i].m;
+      bodies[j].ay -= fy * bodies[i].m;
+    }
+  }
+
+  // Semi-implicit Euler update for the planets.
+  for (const b of bodies) {
+    b.vx += b.ax * h;
+    b.vy += b.ay * h;
+    b.x  += b.vx * h;
+    b.y  += b.vy * h;
+  }
+
+  // Spacecraft.
+  if (craftPhase === 'on_earth') {
+    // Stay attached to Earth (slight outward offset).
+    const re = Math.sqrt(earth.x * earth.x + earth.y * earth.y);
+    craft.x = earth.x + 10 * earth.x / re;
+    craft.y = earth.y + 10 * earth.y / re;
+    craft.vx = earth.vx;
+    craft.vy = earth.vy;
+    return;
+  }
+
+  // Spacecraft gravitational acceleration from all three bodies.
+  let cax = 0, cay = 0;
+  for (const b of bodies) {
+    const dx = b.x - craft.x;
+    const dy = b.y - craft.y;
+    const r2 = dx * dx + dy * dy + SOFT2;
+    const inv = 1 / (r2 * Math.sqrt(r2));
+    cax += G * b.m * dx * inv;
+    cay += G * b.m * dy * inv;
+  }
+
+  // During the transfer phase, add a small course-correction thrust
+  // toward Jupiter. This is physically plausible — real spacecraft have
+  // engines — and it keeps the rendezvous robust under chaotic motion.
+  if (craftPhase === 'transfer') {
+    const dx = jupiter.x - craft.x;
+    const dy = jupiter.y - craft.y;
+    const d  = Math.sqrt(dx * dx + dy * dy);
+    if (d > 3) {
+      const thrust = 0.003;
+      cax += dx / d * thrust;
+      cay += dy / d * thrust;
+    }
+  }
+
+  craft.vx += cax * h;
+  craft.vy += cay * h;
+  craft.x  += craft.vx * h;
+  craft.y  += craft.vy * h;
+}
+
+/* ---------- mission state machine ---------- */
+function updatePhase() {
+  if (craftPhase === 'on_earth') {
+    if (simFrame >= LAUNCH_FRAME) {
+      // Impulsive prograde burn relative to Earth.
+      const sp = Math.sqrt(earth.vx * earth.vx + earth.vy * earth.vy);
+      const boost = 0.30;
+      craft.vx = earth.vx + (earth.vx / sp) * boost;
+      craft.vy = earth.vy + (earth.vy / sp) * boost;
+      craftPhase     = 'loop';
+      loopStartFrame = simFrame;
+      lastCraftAngle = Math.atan2(craft.y, craft.x);
+      angleAccum     = 0;
+    }
+  }
+  else if (craftPhase === 'loop') {
+    // Accumulate craft's angle around the Sun to detect a full revolution.
+    const a = Math.atan2(craft.y, craft.x);
+    let d = a - lastCraftAngle;
+    if (d >  Math.PI) d -= 2 * Math.PI;
+    if (d < -Math.PI) d += 2 * Math.PI;
+    angleAccum    += d;
+    lastCraftAngle = a;
+
+    const completed =
+      Math.abs(angleAccum) > 2 * Math.PI ||
+      simFrame - loopStartFrame > LOOP_TIMEOUT;
+    if (completed) {
+      // Second impulsive prograde burn — transfer to Jupiter.
+      const v = Math.sqrt(craft.vx * craft.vx + craft.vy * craft.vy);
+      const boost = 0.20;
+      craft.vx += (craft.vx / v) * boost;
+      craft.vy += (craft.vy / v) * boost;
+      craftPhase = 'transfer';
+    }
+  }
+  else if (craftPhase === 'transfer') {
+    const dx = craft.x - jupiter.x, dy = craft.y - jupiter.y;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < JUP_ARRIVAL) {
+      // Insert into a roughly circular orbit around Jupiter.
+      const rd = Math.max(d, 7);
+      const vorb = Math.sqrt(G * jupiter.m / rd) * 0.95;
+      craft.vx = jupiter.vx + (-dy / d) * vorb;
+      craft.vy = jupiter.vy + ( dx / d) * vorb;
+      craftPhase = 'at_jupiter';
+    }
+  }
+  else if (craftPhase === 'at_jupiter') {
+    // Gently re-capture if the craft ever drifts too far from Jupiter.
+    const dx = craft.x - jupiter.x, dy = craft.y - jupiter.y;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d > 60) {
+      const r = 25;
+      const vorb = Math.sqrt(G * jupiter.m / r);
+      craft.x = jupiter.x + dx / d * r;
+      craft.y = jupiter.y + dy / d * r;
+      craft.vx = jupiter.vx + (-dy / d) * vorb;
+      craft.vy = jupiter.vy + ( dx / d) * vorb;
+    }
+  }
+}
+
+/* ---------- trail painting ---------- */
+function paintTrail() {
+  trails.fill(sun.col[0],     sun.col[1],     sun.col[2],     40);
+  trails.circle(W / 2 + sun.x,     H / 2 + sun.y,     1.8);
+  trails.fill(earth.col[0],   earth.col[1],   earth.col[2],   90);
+  trails.circle(W / 2 + earth.x,   H / 2 + earth.y,   2.4);
+  trails.fill(jupiter.col[0], jupiter.col[1], jupiter.col[2], 95);
+  trails.circle(W / 2 + jupiter.x, H / 2 + jupiter.y, 2.8);
+  if (craftPhase !== 'on_earth') {
+    trails.fill(25, 25, 25, 200);
+    trails.circle(W / 2 + craft.x, H / 2 + craft.y, 1.4);
+  }
+}
+
+/* ---------- draw loop ---------- */
+function draw() {
+  for (let s = 0; s < SUBSTEPS; s++) {
+    updatePhase();
+    physicsStep(DT);
+    simFrame++;
+  }
+
+  paintTrail();
+
+  background(220);
+  image(trails, 0, 0);
+
+  // Soft halo around the Sun.
+  for (let gi = 6; gi >= 1; gi--) {
+    fill(255, 210, 120, 22);
+    circle(W / 2 + sun.x, H / 2 + sun.y, sun.R * 2 + gi * 8);
+  }
+  fill(sun.col[0],     sun.col[1],     sun.col[2]);
+  circle(W / 2 + sun.x,     H / 2 + sun.y,     sun.R     * 2);
+  fill(earth.col[0],   earth.col[1],   earth.col[2]);
+  circle(W / 2 + earth.x,   H / 2 + earth.y,   earth.R   * 2);
+  fill(jupiter.col[0], jupiter.col[1], jupiter.col[2]);
+  circle(W / 2 + jupiter.x, H / 2 + jupiter.y, jupiter.R * 2);
+
+  // Spacecraft marker.
+  fill(25);
+  circle(W / 2 + craft.x, H / 2 + craft.y, 4);
+
+  // HUD.
+  fill(55);
+  textSize(13);
+  const countdown = Math.max(0, Math.ceil((LAUNCH_FRAME - simFrame) / SUBSTEPS / 60));
+  const labels = {
+    'on_earth':   'spacecraft: parked at Earth (launch in ' + countdown + 's)',
+    'loop':       'spacecraft: heliocentric loop',
+    'transfer':   'spacecraft: transfer burn, en route to Jupiter',
+    'at_jupiter': 'spacecraft: captured in Jupiter orbit'
+  };
+  text(labels[craftPhase], 14, 22);
+  text('click canvas to reset', 14, 40);
+}
+
+function mousePressed() {
+  if (mouseX >= 0 && mouseX <= W && mouseY >= 0 && mouseY <= H) {
+    trails.clear();
+    initBodies();
+  }
+}
+</script>
+</body>
+</html>

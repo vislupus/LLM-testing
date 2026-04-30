@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Space Battle — Fleet Clash</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{overflow:hidden;background:#000}
+  #renderCanvas{width:100vw;height:100vh;display:block}
+  #ui{position:fixed;top:12px;left:12px;z-index:100;
+    background:rgba(8,12,24,.85);backdrop-filter:blur(10px);
+    border:1px solid rgba(100,160,255,.15);border-radius:12px;
+    padding:14px 18px;color:#8ab;font:12px/1.6 'Segoe UI',sans-serif;max-width:220px}
+  #ui h2{font-size:14px;color:#5a9fff;margin-bottom:6px;letter-spacing:.5px}
+  #ui p{color:#5a7a9a;font-size:11px}
+  .fleet-stat{display:flex;align-items:center;gap:6px;margin:3px 0}
+  .fleet-stat .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .fleet-stat .bar{height:4px;border-radius:2px;flex:1;background:rgba(255,255,255,.08)}
+  .fleet-stat .fill{height:100%;border-radius:2px;transition:width .3s}
+</style>
+</head>
+<body>
+<canvas id="renderCanvas"></canvas>
+<div id="ui">
+  <h2>⚔️ Fleet Clash</h2>
+  <p>Orbit: left-click drag · Zoom: scroll · Pan: right-click</p>
+  <div style="margin-top:8px">
+    <div class="fleet-stat"><span class="dot" style="background:#4facfe"></span>
+      Blue Fleet: <span id="blueCount">10</span>
+      <div class="bar"><div class="fill" id="blueBar" style="width:100%;background:#4facfe"></div></div>
+    </div>
+    <div class="fleet-stat"><span class="dot" style="background:#ff6b6b"></span>
+      Red Fleet: <span id="redCount">10</span>
+      <div class="bar"><div class="fill" id="redBar" style="width:100%;background:#ff6b6b"></div></div>
+    </div>
+  </div>
+</div>
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script>
+(function(){
+"use strict";
+
+/* ═══════════════════════════════════════════
+   SCENE SETUP
+   ═══════════════════════════════════════════ */
+const canvas = document.getElementById('renderCanvas');
+const engine = new BABYLON.Engine(canvas, true, {stencil:true});
+const scene = new BABYLON.Scene(engine);
+scene.clearColor = new BABYLON.Color4(.02,.03,.08,1);
+scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
+scene.fogDensity = .001;
+scene.fogColor = new BABYLON.Color3(.04,.06,.12);
+scene.ambientColor = new BABYLON.Color3(.08,.1,.15);
+
+/* Camera */
+const cam = new BABYLON.ArcRotateCamera('cam', -Math.PI/3, Math.PI/3, 180,
+  BABYLON.Vector3.Zero(), scene);
+cam.attachControl(canvas, true);
+cam.lowerRadiusLimit = 30;
+cam.upperRadiusLimit = 500;
+cam.wheelPrecision = 8;
+cam.panningSensibility = 400;
+
+/* Lights */
+const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0,1,0), scene);
+hemi.intensity = .3;
+hemi.diffuse = new BABYLON.Color3(.4,.5,.7);
+hemi.groundColor = new BABYLON.Color3(.1,.1,.15);
+
+const sun = new BABYLON.DirectionalLight('sun', new BABYLON.Vector3(-.4,-.6,.5), scene);
+sun.position = new BABYLON.Vector3(60,80,-50);
+sun.intensity = 1.2;
+sun.diffuse = new BABYLON.Color3(1,.96,.88);
+
+const sg = new BABYLON.ShadowGenerator(1024, sun);
+sg.useBlurExponentialShadowMap = true;
+sg.blurKernel = 8;
+sg.darkness = .4;
+
+/* Glow layer */
+const glow = new BABYLON.GlowLayer('glow', scene, {blurKernelSize:32, mainTextureFixedSize:512});
+glow.intensity = .5;
+
+/* ═══════════════════════════════════════════
+   STARFIELD & NEBULA
+   ═══════════════════════════════════════════ */
+function createStarfield(){
+  const sps = new BABYLON.SolidParticleSystem('stars', scene);
+  const tiny = BABYLON.MeshBuilder.CreateBox('s', {size:.4}, scene);
+  sps.addShape(tiny, 2000);
+  tiny.dispose();
+  const mesh = sps.buildMesh();
+  mesh.hasVertexAlpha = true;
+
+  const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+  const colors = mesh.getVerticesData(BABYLON.VertexBuffer.ColorKind);
+
+  for(let i=0; i<2000; i++){
+    const r = 200 + Math.random()*300;
+    const theta = Math.random()*Math.PI*2;
+    const phi = Math.acos(2*Math.random()-1);
+    positions[i*3]   = r*Math.sin(phi)*Math.cos(theta);
+    positions[i*3+1] = r*Math.sin(phi)*Math.sin(theta);
+    positions[i*3+2] = r*Math.cos(phi);
+    const b = .5+Math.random()*.5;
+    const tint = Math.random();
+    colors[i*4]   = tint>.7?b:b*.8;
+    colors[i*4+1] = tint>.5?b:b*.7;
+    colors[i*4+2] = tint<.3?b*.7:b;
+    colors[i*4+3] = b;
+  }
+  mesh.setVerticesData(BABYLON.VertexBuffer.PositionKind, positions);
+  mesh.setVerticesData(BABYLON.VertexBuffer.ColorKind, colors);
+
+  const mat = new BABYLON.StandardMaterial('starMat', scene);
+  mat.disableLighting = true;
+  mat.emissiveColor = new BABYLON.Color3(.8,.85,1);
+  mat.vertexColorEnabled = true;
+  mesh.material = mat;
+}
+createStarfield();
+
+/* Nebula planes */
+for(let i=0;i<4;i++){
+  const neb = BABYLON.MeshBuilder.CreatePlane('neb'+i, {size:300+Math.random()*200}, scene);
+  neb.position.set((Math.random()-.5)*200,(Math.random()-.5)*100,(Math.random()-.5)*200);
+  neb.rotation.set(Math.random()*Math.PI,Math.random()*Math.PI,Math.random()*Math.PI);
+  const nm = new BABYLON.StandardMaterial('nm'+i, scene);
+  nm.disableLighting = true;
+  nm.emissiveColor = new BABYLON.Color3(
+    .05+Math.random()*.08,
+    .03+Math.random()*.05,
+    .08+Math.random()*.12
+  );
+  nm.alpha = .15+Math.random()*.1;
+  nm.backFaceCulling = false;
+  neb.material = nm;
+}
+
+/* ═══════════════════════════════════════════
+   MATERIALS
+   ═══════════════════════════════════════════ */
+function mat(name,diff,spec,emis,alp){
+  const m = new BABYLON.StandardMaterial(name,scene);
+  m.diffuseColor=diff||new BABYLON.Color3(.5,.5,.5);
+  m.specularColor=spec||new BABYLON.Color3(.08,.08,.08);
+  if(emis) m.emissiveColor=emis;
+  if(alp!==undefined) m.alpha=alp;
+  return m;
+}
+
+const M = {
+  blueHull: mat('blueHull',new BABYLON.Color3(.15,.25,.45),new BABYLON.Color3(.15,.15,.2),new BABYLON.Color3(.03,.06,.12)),
+  blueAccent: mat('blueAccent',new BABYLON.Color3(.3,.5,.85),new BABYLON.Color3(.2,.2,.3),new BABYLON.Color3(.08,.15,.3)),
+  blueGlow: mat('blueGlow',new BABYLON.Color3(.4,.7,1),new BABYLON.Color3(.3,.3,.3),new BABYLON.Color3(.3,.6,1)),
+  blueProj: mat('blueProj',new BABYLON.Color3(.3,.7,1),new BABYLON.Color3(.3,.3,.3),new BABYLON.Color3(.4,.8,1),.9),
+  blueTrail: mat('blueTrail',new BABYLON.Color3(.2,.5,.9),new BABYLON.Color3(.2,.2,.2),new BABYLON.Color3(.2,.5,.9),.5),
+
+  redHull: mat('redHull',new BABYLON.Color3(.45,.15,.15),new BABYLON.Color3(.15,.1,.1),new BABYLON.Color3(.12,.03,.03)),
+  redAccent: mat('redAccent',new BABYLON.Color3(.85,.3,.3),new BABYLON.Color3(.2,.15,.15),new BABYLON.Color3(.3,.08,.08)),
+  redGlow: mat('redGlow',new BABYLON.Color3(1,.4,.3),new BABYLON.Color3(.3,.2,.2),new BABYLON.Color3(1,.3,.2)),
+  redProj: mat('redProj',new BABYLON.Color3(1,.3,.3),new BABYLON.Color3(.3,.2,.2),new BABYLON.Color3(1,.4,.3),.9),
+  redTrail: mat('redTrail',new BABYLON.Color3(.9,.2,.2),new BABYLON.Color3(.2,.1,.1),new BABYLON.Color3(.9,.2,.2),.5),
+
+  engine: mat('engine',new BABYLON.Color3(.3,.5,.9),new BABYLON.Color3(.2,.2,.2),new BABYLON.Color3(.5,.7,1)),
+  engineRed: mat('engineRed',new BABYLON.Color3(.9,.3,.2),new BABYLON.Color3(.2,.1,.1),new BABYLON.Color3(1,.4,.2)),
+  cockpit: mat('cockpit',new BABYLON.Color3(.2,.4,.6),new BABYLON.Color3(.3,.3,.3),new BABYLON.Color3(.1,.2,.3)),
+  darkMetal: mat('darkMetal',new BABYLON.Color3(.2,.2,.22),new BABYLON.Color3(.15,.15,.15)),
+  debris: mat('debris',new BABYLON.Color3(.35,.25,.15),new BABYLON.Color3(.05,.05,.05),new BABYLON.Color3(.15,.08,.03)),
+  explosion: mat('explosion',new BABYLON.Color3(1,.6,.15),new BABYLON.Color3(.3,.2,.1),new BABYLON.Color3(1,.5,.1)),
+  shockwave: mat('shockwave',new BABYLON.Color3(1,.8,.4),new BABYLON.Color3(.3,.3,.3),new BABYLON.Color3(1,.7,.3),.6),
+};
+
+/* ═══════════════════════════════════════════
+   SHIP CONSTRUCTION
+   ═══════════════════════════════════════════ */
+function createShipMesh(name, isFlagship, isBlue){
+  const root = new BABYLON.TransformNode(name, scene);
+  const hull = isBlue ? M.blueHull : M.redHull;
+  const accent = isBlue ? M.blueAccent : M.redAccent;
+  const glowMat = isBlue ? M.blueGlow : M.redGlow;
+  const engMat = isBlue ? M.engine : M.engineRed;
+
+  const s = isFlagship ? 2.2 : 1;
+
+  /* Main hull — elongated box with taper */
+  const body = BABYLON.MeshBuilder.CreateBox(name+'_body', {
+    width: 2*s, height: 1.2*s, depth: 5*s
+  }, scene);
+  body.material = hull;
+  body.parent = root;
+  sg.addShadowCaster(body);
+
+  /* Nose cone */
+  const nose = BABYLON.MeshBuilder.CreateCylinder(name+'_nose', {
+    height: 2*s, diameterTop: 0, diameterBottom: 2*s, tessellation: 6
+  }, scene);
+  nose.rotation.x = Math.PI/2;
+  nose.position.z = 3.5*s;
+  nose.material = accent;
+  nose.parent = root;
+  sg.addShadowCaster(nose);
+
+  /* Cockpit */
+  const cockpit = BABYLON.MeshBuilder.CreateSphere(name+'_cockpit', {
+    diameter: 1*s, segments: 6
+  }, scene);
+  cockpit.position.set(0, .5*s, 1.5*s);
+  cockpit.scaling.y = .6;
+  cockpit.material = M.cockpit;
+  cockpit.parent = root;
+
+  /* Wings */
+  for(let side=-1;side<=1;side+=2){
+    const wing = BABYLON.MeshBuilder.CreateBox(name+'_wing'+side, {
+      width: 3*s, height: .15*s, depth: 2.5*s
+    }, scene);
+    wing.position.set(side*2.2*s, -.2*s, -.5*s);
+    wing.rotation.z = side*.15;
+    wing.material = accent;
+    wing.parent = root;
+    sg.addShadowCaster(wing);
+
+    /* Wing tip */
+    const tip = BABYLON.MeshBuilder.CreateBox(name+'_tip'+side, {
+      width: .4*s, height: .4*s, depth: .8*s
+    }, scene);
+    tip.position.set(side*3.8*s, -.1*s, -.5*s);
+    tip.material = glowMat;
+    tip.parent = root;
+  }
+
+  /* Engine nacelles */
+  for(let side=-1;side<=1;side+=2){
+    const nacelle = BABYLON.MeshBuilder.CreateCylinder(name+'_nac'+side, {
+      height: 2*s, diameter: .6*s, tessellation: 8
+    }, scene);
+    nacelle.rotation.x = Math.PI/2;
+    nacelle.position.set(side*1.3*s, -.3*s, -2.5*s);
+    nacelle.material = hull;
+    nacelle.parent = root;
+    sg.addShadowCaster(nacelle);
+
+    /* Engine glow */
+    const engGlow = BABYLON.MeshBuilder.CreateSphere(name+'_eng'+side, {
+      diameter: .7*s, segments: 4
+    }, scene);
+    engGlow.position.set(side*1.3*s, -.3*s, -3.6*s);
+    engGlow.material = engMat;
+    engGlow.parent = root;
+  }
+
+  /* Flagship extra details */
+  if(isFlagship){
+    /* Command bridge dome */
+    const dome = BABYLON.MeshBuilder.CreateSphere(name+'_dome', {
+      diameter: 2*s, segments: 8, slice: .5
+    }, scene);
+    dome.position.set(0, 1*s, 0);
+    dome.material = accent;
+    dome.parent = root;
+    sg.addShadowCaster(dome);
+
+    /* Side pods */
+    for(let side=-1;side<=1;side+=2){
+      const pod = BABYLON.MeshBuilder.CreateBox(name+'_pod'+side, {
+        width: 1*s, height: .8*s, depth: 3*s
+      }, scene);
+      pod.position.set(side*2*s, .3*s, -.5*s);
+      pod.material = hull;
+      pod.parent = root;
+      sg.addShadowCaster(pod);
+    }
+
+    /* Antenna array */
+    const antenna = BABYLON.MeshBuilder.CreateCylinder(name+'_ant', {
+      height: 1.5*s, diameterTop: .05, diameterBottom: .15*s, tessellation: 4
+    }, scene);
+    antenna.position.set(0, 2*s, -1*s);
+    antenna.material = M.darkMetal;
+    antenna.parent = root;
+
+    const antBall = BABYLON.MeshBuilder.CreateSphere(name+'_antBall', {diameter:.3*s, segments:4}, scene);
+    antBall.position.set(0, 2.8*s, -1*s);
+    antBall.material = glowMat;
+    antBall.parent = root;
+  }
+
+  /* Thruster point lights */
+  for(let side=-1;side<=1;side+=2){
+    const tl = new BABYLON.PointLight(name+'_tl'+side,
+      new BABYLON.Vector3(side*1.3*s, -.3*s, -4*s), scene);
+    tl.diffuse = isBlue ? new BABYLON.Color3(.3,.6,1) : new BABYLON.Color3(1,.4,.2);
+    tl.intensity = .4;
+    tl.range = 12*s;
+    tl.parent = root;
+  }
+
+  return root;
+}
+
+/* ═══════════════════════════════════════════
+   HEALTH BAR
+   ═══════════════════════════════════════════ */
+function createHealthBar(parent, isBlue){
+  const plane = BABYLON.MeshBuilder.CreatePlane('hb', {width:4, height:.35}, scene);
+  plane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+  plane.position.y = 4;
+  plane.parent = parent;
+
+  const tex = new BABYLON.DynamicTexture('hbTex', {width:128, height:12}, scene, false);
+  tex.hasAlpha = true;
+
+  const m = new BABYLON.StandardMaterial('hbMat', scene);
+  m.diffuseTexture = tex;
+  m.opacityTexture = tex;
+  m.emissiveColor = new BABYLON.Color3(.1,.1,.1);
+  m.disableLighting = true;
+  m.backFaceCulling = false;
+  plane.material = m;
+
+  return { plane, tex, hp: 100, maxHP: 100 };
+}
+
+function updateHealthBar(hb){
+  const ctx = hb.tex.getContext();
+  ctx.clearRect(0,0,128,12);
+
+  /* Background */
+  ctx.fillStyle = 'rgba(20,20,30,.8)';
+  ctx.fillRect(2,2,124,8);
+
+  /* Health fill */
+  const pct = Math.max(0, hb.hp / hb.maxHP);
+  const color = pct>.5 ? (hb.isBlue?'#4facfe':'#ff6b6b') :
+                pct>.25 ? '#feca57' : '#ff4444';
+  ctx.fillStyle = color;
+  ctx.fillRect(3,3, Math.round(122*pct),6);
+
+  /* Glow */
+  ctx.fillStyle = pct>.5 ? 'rgba(100,200,255,.3)' : 'rgba(255,100,50,.3)';
+  ctx.fillRect(3,3, Math.round(122*pct),2);
+
+  hb.tex.update();
+}
+
+/* ═══════════════════════════════════════════
+   FLEET CREATION
+   ═══════════════════════════════════════════ */
+const ships = [];
+const projectiles = [];
+const explosions = [];
+const debris = [];
+
+function createFleet(isBlue){
+  const fleet = [];
+  const cx = isBlue ? -60 : 60;
+  const cz = 0;
+
+  /* Flagship at center */
+  const flagRoot = createShipMesh(isBlue?'blueFlag':'redFlag', true, isBlue);
+  flagRoot.position.set(cx, 0, cz);
+  flagRoot.rotation.y = isBlue ? Math.PI/2 : -Math.PI/2;
+  const flagHB = createHealthBar(flagRoot, isBlue);
+  flagHB.hp = 200; flagHB.maxHP = 200;
+  flagHB.isBlue = isBlue;
+  updateHealthBar(flagHB);
+
+  const flagship = {
+    root: flagRoot,
+    hb: flagHB,
+    isBlue, isFlagship: true,
+    alive: true,
+    hp: 200, maxHP: 200,
+    speed: .15,
+    targetX: cx, targetY: 0, targetZ: cz,
+    fireTimer: Math.random()*2,
+    fireRate: 3,
+    moveAngle: Math.random()*Math.PI*2,
+    moveSpeed: .3 + Math.random()*.2,
+    strafeDir: Math.random()>.5?1:-1,
+  };
+  fleet.push(flagship);
+
+  /* 9 escort ships in formation */
+  const positions = [
+    [-12, 3, -10], [-12, -3, -10], [-12, 0, 10],
+    [-6, 5, -18], [-6, -5, -18], [-6, 5, 18],
+    [-6, -5, 18], [0, 8, -8], [0, -8, 8],
+  ];
+
+  for(let i=0;i<9;i++){
+    const p = positions[i];
+    const rx = cx + (isBlue ? p[0] : -p[0]);
+    const ry = p[1];
+    const rz = cz + p[2];
+
+    const root = createShipMesh(
+      (isBlue?'blue':'red')+'_escort'+i, false, isBlue
+    );
+    root.position.set(rx, ry, rz);
+    root.rotation.y = isBlue ? Math.PI/2 : -Math.PI/2;
+
+    const hb = createHealthBar(root, isBlue);
+    hb.isBlue = isBlue;
+    updateHealthBar(hb);
+
+    fleet.push({
+      root, hb,
+      isBlue, isFlagship: false,
+      alive: true,
+      hp: 100, maxHP: 100,
+      speed: .25,
+      targetX: rx, targetY: ry, targetZ: rz,
+      fireTimer: Math.random()*3,
+      fireRate: 3,
+      moveAngle: Math.random()*Math.PI*2,
+      moveSpeed: .5 + Math.random()*.5,
+      strafeDir: Math.random()>.5?1:-1,
+      formationOffset: {x: isBlue?p[0]:-p[0], y:p[1], z:p[2]},
+    });
+  }
+
+  return fleet;
+}
+
+const blueFleet = createFleet(true);
+const redFleet = createFleet(false);
+ships.push(...blueFleet, ...redFleet);
+
+/* ═══════════════════════════════════════════
+   PROJECTILES
+   ═══════════════════════════════════════════ */
+function fireProjectile(ship){
+  if(!ship.alive) return;
+
+  const dir = ship.root.rotation.y;
+  const fwd = new BABYLON.Vector3(Math.sin(dir), 0, Math.cos(dir));
+  const pos = ship.root.position.clone();
+  const speed = 3;
+
+  const count = ship.isFlagship ? 2 : 1;
+
+  for(let i=0;i<count;i++){
+    const offset = count>1 ? (i===0?-1.2:1.2) : 0;
+    const right = new BABYLON.Vector3(-fwd.z, 0, fwd.x);
+    const spawnPos = pos.add(fwd.scale(4)).add(right.scale(offset));
+    spawnPos.y += .3;
+
+    /* Projectile sphere */
+    const proj = BABYLON.MeshBuilder.CreateSphere('proj_'+projectiles.length, {
+      diameter: .5, segments: 4
+    }, scene);
+    proj.position.copyFrom(spawnPos);
+    proj.material = ship.isBlue ? M.blueProj : M.redProj;
+
+    /* Trail */
+    const trail = BABYLON.MeshBuilder.CreateCylinder('trail_'+projectiles.length, {
+      height: 3, diameterTop: 0, diameterBottom: .3, tessellation: 4
+    }, scene);
+    trail.material = ship.isBlue ? M.blueTrail : M.redTrail;
+    trail.position.copyFrom(spawnPos);
+
+    /* Trail light */
+    const tl = new BABYLON.PointLight('projLight_'+projectiles.length,
+      spawnPos.clone(), scene);
+    tl.diffuse = ship.isBlue ? new BABYLON.Color3(.3,.7,1) : new BABYLON.Color3(1,.3,.3);
+    tl.intensity = .6;
+    tl.range = 8;
+
+    projectiles.push({
+      mesh: proj, trail, light: tl,
+      vx: fwd.x * speed,
+      vy: fwd.y * speed,
+      vz: fwd.z * speed,
+      isBlue: ship.isBlue,
+      damage: ship.isFlagship ? 18 : 12,
+      life: 4,
+      alive: true,
+    });
+  }
+}
+
+/* ═══════════════════════════════════════════
+   EXPLOSIONS
+   ═══════════════════════════════════════════ */
+function createExplosion(x, y, z, size, isBlue){
+  const expSize = size || 1;
+  const baseColor = isBlue ?
+    new BABYLON.Color3(.3,.6,1) :
+    new BABYLON.Color3(1,.4,.2);
+
+  /* Core fireball */
+  const core = BABYLON.MeshBuilder.CreateSphere('expCore_'+explosions.length, {
+    diameter: 3*expSize, segments: 8
+  }, scene);
+  core.position.set(x, y, z);
+  const coreMat = mat('expCoreMat', baseColor, new BABYLON.Color3(.3,.3,.3), baseColor.clone().scale(.8));
+  core.material = coreMat;
+
+  /* Shockwave ring */
+  const ring = BABYLON.MeshBuilder.CreateTorus('expRing_'+explosions.length, {
+    diameter: 2, thickness: .3, tessellation: 24
+  }, scene);
+  ring.position.set(x, y, z);
+  ring.material = M.shockwave;
+
+  /* Bright flash light */
+  const flash = new BABYLON.PointLight('expFlash_'+explosions.length,
+    new BABYLON.Vector3(x,y,z), scene);
+  flash.diffuse = baseColor;
+  flash.intensity = 5;
+  flash.range = 40*expSize;
+
+  /* Sparks */
+  const sparkCount = Math.floor(20*expSize);
+  for(let i=0;i<sparkCount;i++){
+    const angle = Math.random()*Math.PI*2;
+    const elev = (Math.random()-.5)*Math.PI;
+    const spd = 1 + Math.random()*3*expSize;
+    const spark = BABYLON.MeshBuilder.CreateBox('spark', {size:.15+Math.random()*.2}, scene);
+    spark.position.set(x,y,z);
+    spark.material = M.explosion;
+    debris.push({
+      mesh: spark,
+      vx: Math.cos(angle)*Math.cos(elev)*spd,
+      vy: Math.sin(elev)*spd + .5,
+      vz: Math.sin(angle)*Math.cos(elev)*spd,
+      life: .8+Math.random()*.8,
+      maxLife: .8+Math.random()*.8,
+      gravity: -.02,
+    });
+  }
+
+  /* Debris chunks */
+  const debrisCount = Math.floor(10*expSize);
+  for(let i=0;i<debrisCount;i++){
+    const angle = Math.random()*Math.PI*2;
+    const elev = (Math.random()-.5)*Math.PI*.6;
+    const spd = .5 + Math.random()*1.5*expSize;
+    const chunk = BABYLON.MeshBuilder.CreateBox('chunk', {
+      width: .2+Math.random()*.4,
+      height: .2+Math.random()*.3,
+      depth: .2+Math.random()*.4
+    }, scene);
+    chunk.position.set(x,y,z);
+    chunk.material = M.debris;
+    chunk.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
+    debris.push({
+      mesh: chunk,
+      vx: Math.cos(angle)*Math.cos(elev)*spd,
+      vy: Math.sin(elev)*spd + .3,
+      vz: Math.sin(angle)*Math.cos(elev)*spd,
+      life: 2+Math.random()*2,
+      maxLife: 2+Math.random()*2,
+      gravity: -.015,
+      rotSpeed: (Math.random()-.5)*.1,
+    });
+  }
+
+  explosions.push({
+    core, ring, light: flash,
+    x, y, z,
+    time: 0,
+    maxTime: 1.5,
+    expSize,
+    alive: true,
+    chainChecked: false,
+    baseColor,
+  });
+}
+
+/* ═══════════════════════════════════════════
+   AI MOVEMENT & TARGETING
+   ═══════════════════════════════════════════ */
+function getNearestEnemy(ship){
+  const enemies = ship.isBlue ? redFleet : blueFleet;
+  let nearest = null, nearDist = Infinity;
+  enemies.forEach(e => {
+    if(!e.alive) return;
+    const dx = e.root.position.x - ship.root.position.x;
+    const dy = e.root.position.y - ship.root.position.y;
+    const dz = e.root.position.z - ship.root.position.z;
+    const d = Math.sqrt(dx*dx+dy*dy+dz*dz);
+    if(d < nearDist){ nearDist = d; nearest = e; }
+  });
+  return { ship: nearest, dist: nearDist };
+}
+
+function updateShipAI(ship, dt){
+  if(!ship.alive) return;
+
+  const { ship: target, dist } = getNearestEnemy(ship);
+
+  /* Movement — orbit and strafe */
+  ship.moveAngle += ship.moveSpeed * dt * .3;
+
+  let desiredX, desiredY, desiredZ;
+
+  if(target){
+    /* Move toward enemy but maintain some distance */
+    const idealDist = ship.isFlagship ? 40 : 25;
+    const tx = target.root.position.x;
+    const ty = target.root.position.y;
+    const tz = target.root.position.z;
+
+    const dx = tx - ship.root.position.x;
+    const dz = tz - ship.root.position.z;
+    const angle = Math.atan2(dx, dz);
+
+    if(dist > idealDist + 10){
+      /* Approach */
+      desiredX = tx - Math.sin(angle)*idealDist;
+      desiredZ = tz - Math.cos(angle)*idealDist;
+      desiredY = ty + Math.sin(ship.moveAngle)*5;
+    } else if(dist < idealDist - 5){
+      /* Back off */
+      desiredX = tx + Math.sin(angle)*idealDist;
+      desiredZ = tz + Math.cos(angle)*idealDist;
+      desiredY = ty + Math.sin(ship.moveAngle)*5;
+    } else {
+      /* Strafe */
+      const strafeAngle = angle + ship.strafeDir * Math.PI/2;
+      desiredX = tx - Math.sin(strafeAngle)*idealDist + Math.sin(ship.moveAngle)*8;
+      desiredZ = tz - Math.cos(strafeAngle)*idealDist + Math.cos(ship.moveAngle)*8;
+      desiredY = ty + Math.sin(ship.moveAngle*1.5)*6;
+    }
+
+    /* Face target */
+    const targetRot = Math.atan2(dx, dz);
+    let rotDiff = targetRot - ship.root.rotation.y;
+    while(rotDiff > Math.PI) rotDiff -= Math.PI*2;
+    while(rotDiff < -Math.PI) rotDiff += Math.PI*2;
+    ship.root.rotation.y += rotDiff * 2 * dt;
+  } else {
+    /* No enemies — patrol */
+    desiredX = ship.root.position.x + Math.sin(ship.moveAngle)*2;
+    desiredY = Math.sin(ship.moveAngle*.7)*5;
+    desiredZ = ship.root.position.z + Math.cos(ship.moveAngle)*2;
+  }
+
+  /* Smooth movement */
+  const lerpSpeed = ship.isFlagship ? 1.5 : 2.5;
+  ship.root.position.x += (desiredX - ship.root.position.x) * lerpSpeed * dt;
+  ship.root.position.y += (desiredY - ship.root.position.y) * lerpSpeed * dt;
+  ship.root.position.z += (desiredZ - ship.root.position.z) * lerpSpeed * dt;
+
+  /* Gentle roll during turns */
+  ship.root.rotation.z = Math.sin(ship.moveAngle * 2) * .1;
+
+  /* Firing */
+  ship.fireTimer -= dt;
+  if(ship.fireTimer <= 0 && target && dist < 80){
+    ship.fireTimer = ship.fireRate + Math.random()*.5;
+    fireProjectile(ship);
+  }
+
+  /* Engine flicker */
+  const t = performance.now()/1000;
+  ship.root.getChildren().forEach(child => {
+    if(child.name && child.name.includes('_eng')){
+      child.scaling.setScalar(.8 + Math.sin(t*8 + ship.root.uniqueId)*.3);
+    }
+  });
+}
+
+/* ═══════════════════════════════════════════
+   GAME LOOP
+   ═══════════════════════════════════════════ */
+let lastTime = performance.now();
+
+function gameLoop(){
+  const now = performance.now();
+  const dt = Math.min((now - lastTime)/1000, .05);
+  lastTime = now;
+
+  /* Update ships AI */
+  ships.forEach(s => updateShipAI(s, dt));
+
+  /* Update projectiles */
+  for(let i=projectiles.length-1;i>=0;i--){
+    const p = projectiles[i];
+    if(!p.alive) continue;
+
+    p.mesh.position.x += p.vx;
+    p.mesh.position.y += p.vy;
+    p.mesh.position.z += p.vz;
+
+    /* Trail follows projectile */
+    p.trail.position.copyFrom(p.mesh.position);
+    p.trail.position.x -= p.vx*.3;
+    p.trail.position.y -= p.vy*.3;
+    p.trail.position.z -= p.vz*.3;
+    /* Orient trail opposite to velocity */
+    const len = Math.sqrt(p.vx*p.vx+p.vy*p.vy+p.vz*p.vz);
+    if(len>0){
+      p.trail.rotation.x = Math.atan2(p.vy, Math.sqrt(p.vx*p.vx+p.vz*p.vz)) + Math.PI/2;
+      p.trail.rotation.z = Math.atan2(p.vx, p.vz);
+    }
+
+    p.light.position.copyFrom(p.mesh.position);
+
+    p.life -= dt;
+    if(p.life <= 0){
+      p.alive = false;
+      p.mesh.dispose();
+      p.trail.dispose();
+      p.light.dispose();
+      projectiles.splice(i,1);
+      continue;
+    }
+
+    /* Check hits against enemy ships */
+    const enemies = p.isBlue ? redFleet : blueFleet;
+    for(const ship of enemies){
+      if(!ship.alive) continue;
+      const dx = p.mesh.position.x - ship.root.position.x;
+      const dy = p.mesh.position.y - ship.root.position.y;
+      const dz = p.mesh.position.z - ship.root.position.z;
+      const dist = Math.sqrt(dx*dx+dy*dy+dz*dz);
+      const hitRadius = ship.isFlagship ? 4 : 2.5;
+
+      if(dist < hitRadius){
+        /* Hit! */
+        ship.hp -= p.damage;
+        ship.hb.hp = ship.hp;
+        updateHealthBar(ship.hb);
+
+        /* Small hit flash */
+        createExplosion(p.mesh.position.x, p.mesh.position.y, p.mesh.position.z, .2, p.isBlue);
+
+        p.alive = false;
+        p.mesh.dispose();
+        p.trail.dispose();
+        p.light.dispose();
+        projectiles.splice(i,1);
+
+        if(ship.hp <= 0){
+          /* Ship destroyed! */
+          ship.alive = false;
+          createExplosion(
+            ship.root.position.x,
+            ship.root.position.y,
+            ship.root.position.z,
+            ship.isFlagship ? 2.5 : 1.5,
+            ship.isBlue
+          );
+          ship.root.dispose();
+          ship.hb.plane.dispose();
+          ship.hb.tex.dispose();
+        }
+        break;
+      }
+    }
+  }
+
+  /* Update explosions */
+  for(let i=explosions.length-1;i>=0;i--){
+    const e = explosions[i];
+    if(!e.alive) continue;
+
+    e.time += dt;
+    const progress = e.time / e.maxTime;
+
+    /* Chain reaction check (once) */
+    if(!e.chainChecked && e.time > .1){
+      e.chainChecked = true;
+      const chainRadius = 6 * e.expSize;
+      ships.forEach(ship => {
+        if(!ship.alive) return;
+        const dx = ship.root.position.x - e.x;
+        const dy = ship.root.position.y - e.y;
+        const dz = ship.root.position.z - e.z;
+        const d = Math.sqrt(dx*dx+dy*dy+dz*dz);
+        if(d < chainRadius){
+          /* Chain reaction! */
+          ship.hp = 0;
+          ship.alive = false;
+          createExplosion(
+            ship.root.position.x,
+            ship.root.position.y,
+            ship.root.position.z,
+            ship.isFlagship ? 2.5 : 1.5,
+            ship.isBlue
+          );
+          ship.root.dispose();
+          ship.hb.plane.dispose();
+          ship.hb.tex.dispose();
+        }
+      });
+    }
+
+    if(progress >= 1){
+      e.alive = false;
+      e.core.dispose();
+      e.ring.dispose();
+      e.light.dispose();
+      explosions.splice(i,1);
+    } else {
+      /* Core expands and fades */
+      const coreScale = 1 + progress * 3 * e.expSize;
+      e.core.scaling.setScalar(coreScale);
+      e.core.material.alpha = 1 - progress;
+      e.core.material.emissiveColor = e.baseColor.clone().scale(1-progress);
+
+      /* Shockwave expands */
+      const ringScale = 1 + progress * 12 * e.expSize;
+      e.ring.scaling.setScalar(ringScale);
+      e.ring.material.alpha = .6 * (1 - progress);
+
+      /* Flash fades */
+      e.light.intensity = 5 * (1 - progress) * (1 - progress);
+    }
+  }
+
+  /* Update debris */
+  for(let i=debris.length-1;i>=0;i--){
+    const d = debris[i];
+    d.mesh.position.x += d.vx * dt * 60;
+    d.mesh.position.y += d.vy * dt * 60;
+    d.mesh.position.z += d.vz * dt * 60;
+    d.vy += d.gravity * dt * 60;
+
+    if(d.rotSpeed){
+      d.mesh.rotation.x += d.rotSpeed;
+      d.mesh.rotation.y += d.rotSpeed * .7;
+    }
+
+    d.life -= dt;
+    if(d.life <= 0){
+      d.mesh.dispose();
+      debris.splice(i,1);
+    } else {
+      const fadePct = d.life / d.maxLife;
+      d.mesh.material = d.mesh.material === M.explosion ?
+        (fadePct > .5 ? M.explosion : M.debris) : M.debris;
+      if(d.mesh.material === M.explosion){
+        d.mesh.material.alpha = fadePct;
+      }
+    }
+  }
+
+  /* Update UI */
+  const blueAlive = blueFleet.filter(s=>s.alive).length;
+  const redAlive = redFleet.filter(s=>s.alive).length;
+  document.getElementById('blueCount').textContent = blueAlive;
+  document.getElementById('redCount').textContent = redAlive;
+  document.getElementById('blueBar').style.width = (blueAlive/10*100)+'%';
+  document.getElementById('redBar').style.width = (redAlive/10*100)+'%';
+
+  /* Check win condition */
+  if(blueAlive === 0 || redAlive === 0){
+    /* Slowly rotate camera around the victors */
+    cam.alpha += dt * .1;
+  }
+}
+
+/* ═══════════════════════════════════════════
+   RENDER LOOP
+   ═══════════════════════════════════════════ */
+engine.runRenderLoop(()=>{
+  gameLoop();
+  scene.render();
+});
+window.addEventListener('resize',()=>engine.resize());
+
+})();
+</script>
+</body>
+</html>

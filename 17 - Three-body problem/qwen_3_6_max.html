@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chaotic Three-Body + Spacecraft Simulation</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { display: flex; justify-content: center; align-items: center;
+         min-height: 100vh; background: #111; overflow: hidden; }
+  canvas { border-radius: 8px; box-shadow: 0 0 40px rgba(0,0,0,.5); }
+  #info {
+    position: fixed; top: 14px; left: 14px; z-index: 10;
+    background: rgba(0,0,0,.7); color: #ccc; font: 12px/1.6 monospace;
+    padding: 10px 14px; border-radius: 8px; pointer-events: none;
+    backdrop-filter: blur(6px);
+  }
+  #info b { color: #fff; }
+  #info .sun { color: #f0c040; }
+  #info .earth { color: #40a0f0; }
+  #info .jupiter { color: #d08040; }
+  #info .craft { color: #f06080; }
+</style>
+</head>
+<body>
+<div id="info">
+  <b>Chaotic Gravitational System</b><br>
+  <span class="sun">● Sun</span> &nbsp;
+  <span class="earth">● Earth</span> &nbsp;
+  <span class="jupiter">● Jupiter</span> &nbsp;
+  <span class="craft">● Spacecraft</span><br>
+  Click to restart &nbsp;|&nbsp; Scroll to zoom
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<script>
+/* ═══════════════════════════════════════════════════════
+   CHAOTIC THREE-BODY + SPACECRAFT GRAVITATIONAL SIM
+   Uses Velocity Verlet integration with softened gravity.
+   Units are arbitrary but self-consistent.
+   ═══════════════════════════════════════════════════════ */
+
+let bodies = [];
+let trailPG;            // off-screen buffer for persistent trails
+let zoomLevel = 1;
+let simTime = 0;
+let spacecraftLaunched = false;
+let spacecraftPhase = 0;   // 0=on Earth, 1=departing, 2=solar loop, 3=heading to Jupiter, 4=arrived
+let launchTimer = 0;
+
+/* Gravitational constant (scaled for our unit system) */
+const G = 800;
+const SOFTENING = 8;       // prevents singularities at close approach
+const DT = 0.015;          // integration timestep
+const SUBSTEPS = 4;        // substeps per frame for accuracy
+const TRAIL_FADE = 0.003;  // how fast old trails fade (lower = more persistent)
+
+/* ═══════════════════════════════════════════════════════
+   BODY CLASS
+   ═══════════════════════════════════════════════════════ */
+class Body {
+  constructor(name, mass, x, y, vx, vy, color, radius) {
+    this.name = name;
+    this.mass = mass;
+    this.pos = createVector(x, y);
+    this.vel = createVector(vx, vy);
+    this.acc = createVector(0, 0);
+    this.color = color;
+    this.radius = radius;
+    this.trailColor = color;
+  }
+
+  /* Compute acceleration from all other bodies */
+  computeAcc(allBodies) {
+    this.acc.set(0, 0);
+    for (let other of allBodies) {
+      if (other === this) continue;
+      let dx = other.pos.x - this.pos.x;
+      let dy = other.pos.y - this.pos.y;
+      let distSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
+      let dist = sqrt(distSq);
+      let forceMag = G * other.mass / distSq;
+      this.acc.x += forceMag * dx / dist;
+      this.acc.y += forceMag * dy / dist;
+    }
+  }
+
+  /* Velocity Verlet step */
+  step(dt) {
+    /* Half-step velocity */
+    this.vel.x += 0.5 * this.acc.x * dt;
+    this.vel.y += 0.5 * this.acc.y * dt;
+    /* Full-step position */
+    this.pos.x += this.vel.x * dt;
+    this.pos.y += this.vel.y * dt;
+  }
+
+  /* Second half of Velocity Verlet (after re-computing accelerations) */
+  stepVelocity(dt) {
+    this.vel.x += 0.5 * this.acc.x * dt;
+    this.vel.y += 0.5 * this.acc.y * dt;
+  }
+
+  speed() {
+    return sqrt(this.vel.x * this.vel.x + this.vel.y * this.vel.y);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   SETUP
+   ═══════════════════════════════════════════════════════ */
+function setup() {
+  createCanvas(800, 800);
+  noStroke();
+
+  /* Create off-screen trail buffer */
+  trailPG = createGraphics(width, height);
+  trailPG.background(220);
+  trailPG.noStroke();
+
+  initSimulation();
+}
+
+function initSimulation() {
+  simTime = 0;
+  spacecraftLaunched = false;
+  spacecraftPhase = 0;
+  launchTimer = 0;
+
+  bodies = [];
+
+  /*
+   * CHAOTIC INITIAL CONDITIONS
+   * The Sun is the most massive body but not overwhelmingly so.
+   * Earth and Jupiter are placed close enough that their mutual
+   * perturbations create visibly chaotic, non-Keplerian orbits.
+   * All velocities are chosen so the system stays bounded but
+   * never settles into a stable pattern.
+   *
+   * Center of mass is roughly at the origin with near-zero
+   * net momentum so the whole system stays centered on screen.
+   */
+
+  /* Sun — massive, starts near center with small velocity */
+  bodies.push(new Body(
+    'Sun', 500,
+    0, 0,
+    -0.3, 0.2,
+    color(240, 200, 60), 14
+  ));
+
+  /* Earth — moderate mass, placed in an eccentric orbit */
+  bodies.push(new Body(
+    'Earth', 15,
+    120, 40,
+    -0.8, 3.5,
+    color(60, 160, 240), 6
+  ));
+
+  /* Jupiter — heavy enough to strongly perturb Earth's orbit */
+  bodies.push(new Body(
+    'Jupiter', 80,
+    -100, -160,
+    2.5, -1.2,
+    color(210, 130, 60), 10
+  ));
+
+  /*
+   * Spacecraft — tiny mass, starts co-located with Earth
+   * and shares Earth's initial velocity. It will launch
+   * after a short delay.
+   */
+  let earth = bodies[1];
+  bodies.push(new Body(
+    'Spacecraft', 0.01,
+    earth.pos.x + 5, earth.pos.y + 5,
+    earth.vel.x, earth.vel.y,
+    color(240, 80, 120), 3
+  ));
+
+  /* Compute initial accelerations */
+  for (let b of bodies) b.computeAcc(bodies);
+
+  /* Clear trail buffer */
+  trailPG.background(220);
+}
+
+/* ═══════════════════════════════════════════════════════
+   SPACECRAFT TRAJECTORY MANAGEMENT
+   ═══════════════════════════════════════════════════════ */
+function updateSpacecraft(dt) {
+  let craft = bodies[3];
+  let sun = bodies[0];
+  let earth = bodies[1];
+  let jupiter = bodies[2];
+
+  launchTimer += dt;
+
+  if (spacecraftPhase === 0) {
+    /* Phase 0: Spacecraft rides with Earth */
+    craft.pos.set(earth.pos.x + 5, earth.pos.y + 5);
+    craft.vel.set(earth.vel.x, earth.vel.y);
+
+    /* Launch after ~300 time units */
+    if (launchTimer > 300) {
+      spacecraftPhase = 1;
+      /*
+       * Departure burn: add velocity to send spacecraft on a
+       * trajectory that loops around the Sun. We aim roughly
+       * perpendicular to the Sun-craft line with enough speed
+       * to create a wide arc.
+       */
+      let toSun = p5.Vector.sub(sun.pos, craft.pos);
+      let distSun = toSun.mag();
+      toSun.normalize();
+      /* Tangential direction (perpendicular to radial) */
+      let tangent = createVector(-toSun.y, toSun.x);
+      /* Departure delta-v: strong enough for a solar loop */
+      let deltaV = tangent.mult(4.5);
+      /* Also add a radial component inward toward Sun */
+      deltaV.add(toSun.mult(1.5));
+      craft.vel.add(deltaV);
+    }
+  }
+  else if (spacecraftPhase === 1) {
+    /*
+     * Phase 1: Solar loop — spacecraft is on its way around the Sun.
+     * We monitor the angle swept around the Sun to detect when
+     * it has completed a significant loop (> 270 degrees).
+     */
+    let toSun = p5.Vector.sub(sun.pos, craft.pos);
+    let angle = atan2(toSun.y, toSun.x);
+
+    /* Track total angle swept */
+    if (!this._prevAngle) this._prevAngle = angle;
+    let dAngle = angle - this._prevAngle;
+    if (dAngle > PI) dAngle -= TWO_PI;
+    if (dAngle < -PI) dAngle += TWO_PI;
+    if (!this._totalAngle) this._totalAngle = 0;
+    this._totalAngle += dAngle;
+    this._prevAngle = angle;
+
+    /* After sweeping more than ~300 degrees, redirect toward Jupiter */
+    if (abs(this._totalAngle) > 5.2) {
+      spacecraftPhase = 2;
+      /*
+       * Mid-course correction: adjust velocity to intercept Jupiter.
+       * We compute a rough intercept course.
+       */
+      let toJupiter = p5.Vector.sub(jupiter.pos, craft.pos);
+      let distJ = toJupiter.mag();
+      let travelTime = distJ / 3.0;  // rough estimate
+      /* Predict Jupiter's future position */
+      let futureJ = p5.Vector.add(jupiter.pos, p5.Vector.mult(jupiter.vel, travelTime));
+      let interceptDir = p5.Vector.sub(futureJ, craft.pos);
+      interceptDir.normalize();
+      /* Set velocity toward intercept with moderate speed */
+      let targetSpeed = 3.5;
+      craft.vel = interceptDir.mult(targetSpeed);
+    }
+  }
+  else if (spacecraftPhase === 2) {
+    /*
+     * Phase 2: Heading to Jupiter — monitor distance.
+     * When close enough, enter orbit phase.
+     */
+    let toJupiter = p5.Vector.sub(jupiter.pos, craft.pos);
+    let distJ = toJupiter.mag();
+
+    if (distJ < 40) {
+      spacecraftPhase = 3;
+      /*
+       * Arrival burn: circularize around Jupiter.
+       * Match Jupiter's velocity plus a small orbital component.
+       */
+      let tangent = createVector(-toJupiter.y, toJupiter.x);
+      tangent.normalize();
+      craft.vel = p5.Vector.add(
+        jupiter.vel,
+        tangent.mult(2.0)
+      );
+    }
+
+    /* Small course corrections to keep on intercept */
+    if (distJ > 60 && simTime % 1 < dt * 2) {
+      let futureJ = p5.Vector.add(jupiter.pos,
+        p5.Vector.mult(jupiter.vel, distJ / craft.speed()));
+      let desired = p5.Vector.sub(futureJ, craft.pos);
+      desired.normalize();
+      desired.mult(craft.speed());
+      /* Gentle correction */
+      let correction = p5.Vector.sub(desired, craft.vel);
+      correction.mult(0.02);
+      craft.vel.add(correction);
+    }
+  }
+  else if (spacecraftPhase === 3) {
+    /*
+     * Phase 3: Orbiting Jupiter — maintain a loose orbit.
+     * The natural gravity does most of the work; we just
+     * prevent escape with occasional corrections.
+     */
+    let toJupiter = p5.Vector.sub(jupiter.pos, craft.pos);
+    let distJ = toJupiter.mag();
+
+    if (distJ > 80) {
+      /* Pull back toward Jupiter orbit */
+      let tangent = createVector(-toJupiter.y, toJupiter.x);
+      tangent.normalize();
+      craft.vel = p5.Vector.add(
+        jupiter.vel,
+        tangent.mult(1.8)
+      );
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   VELOCITY VERLET INTEGRATION (full system)
+   ═══════════════════════════════════════════════════════ */
+function integrate(dt) {
+  /* Step 1: advance positions and half-step velocities */
+  for (let b of bodies) b.step(dt);
+
+  /* Step 2: recompute accelerations at new positions */
+  for (let b of bodies) b.computeAcc(bodies);
+
+  /* Step 3: complete velocity half-step */
+  for (let b of bodies) b.stepVelocity(dt);
+}
+
+/* ═══════════════════════════════════════════════════════
+   CENTER-OF-MASS CORRECTION
+   Keeps the system centered on the canvas by removing
+   any net drift in the center of mass.
+   ═══════════════════════════════════════════════════════ */
+function correctDrift() {
+  let totalMass = 0;
+  let comX = 0, comY = 0;
+  let comVx = 0, comVy = 0;
+
+  for (let b of bodies) {
+    totalMass += b.mass;
+    comX += b.mass * b.pos.x;
+    comY += b.mass * b.pos.y;
+    comVx += b.mass * b.vel.x;
+    comVy += b.mass * b.vel.y;
+  }
+  comX /= totalMass;
+  comY /= totalMass;
+  comVx /= totalMass;
+  comVy /= totalMass;
+
+  /* Remove center-of-mass drift */
+  for (let b of bodies) {
+    b.pos.x -= comX;
+    b.pos.y -= comY;
+    b.vel.x -= comVx;
+    b.vel.y -= comVy;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   BOUNDARY CONTAINMENT
+   Gentle restoring force pushes bodies back if they
+   approach the edge of the visible region.
+   ═══════════════════════════════════════════════════════ */
+function containBodies() {
+  let boundary = 350 * zoomLevel;
+  let strength = 0.0005;
+
+  for (let b of bodies) {
+    let dist = sqrt(b.pos.x * b.pos.x + b.pos.y * b.pos.y);
+    if (dist > boundary) {
+      let excess = dist - boundary;
+      let force = strength * excess;
+      b.vel.x -= b.pos.x / dist * force;
+      b.vel.y -= b.pos.y / dist * force;
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   DRAW
+   ═══════════════════════════════════════════════════════ */
+function draw() {
+  /* Physics substeps */
+  for (let s = 0; s < SUBSTEPS; s++) {
+    integrate(DT);
+    simTime += DT;
+  }
+
+  /* Spacecraft trajectory management */
+  updateSpacecraft(DT * SUBSTEPS);
+
+  /* Keep system centered */
+  correctDrift();
+
+  /* Prevent bodies from leaving the canvas */
+  containBodies();
+
+  /* ── Draw trails to off-screen buffer ── */
+  /* Fade existing trails slightly */
+  trailPG.noStroke();
+  trailPG.fill(220, 220, 220, TRAIL_FADE * 255);
+  trailPG.rect(0, 0, trailPG.width, trailPG.height);
+
+  /* Draw new trail dots for each body */
+  let cx = width / 2;
+  let cy = height / 2;
+  for (let b of bodies) {
+    let sx = cx + b.pos.x * zoomLevel;
+    let sy = cy - b.pos.y * zoomLevel;  // flip Y for screen coords
+    let c = b.color;
+    trailPG.fill(red(c), green(c), blue(c), 180);
+    trailPG.noStroke();
+    let trailSize = max(2, b.radius * 0.4 * zoomLevel);
+    trailPG.ellipse(sx, sy, trailSize, trailSize);
+  }
+
+  /* ── Main canvas ── */
+  background(220);
+
+  /* Draw the persistent trails */
+  image(trailPG, 0, 0);
+
+  /* Draw bodies on top */
+  noStroke();
+  for (let b of bodies) {
+    let sx = cx + b.pos.x * zoomLevel;
+    let sy = cy - b.pos.y * zoomLevel;
+    let r = b.radius * zoomLevel;
+
+    /* Glow effect */
+    if (b.name === 'Sun') {
+      for (let g = 3; g >= 1; g--) {
+        fill(red(b.color), green(b.color), blue(b.color), 30 / g);
+        ellipse(sx, sy, r * (1 + g * 1.5), r * (1 + g * 1.5));
+      }
+    }
+
+    /* Body */
+    fill(b.color);
+    ellipse(sx, sy, r * 2, r * 2);
+
+    /* Highlight */
+    fill(255, 255, 255, 80);
+    ellipse(sx - r * 0.2, sy - r * 0.2, r * 0.6, r * 0.6);
+  }
+
+  /* Draw spacecraft trajectory indicator */
+  let craft = bodies[3];
+  let csx = cx + craft.pos.x * zoomLevel;
+  let csy = cy - craft.pos.y * zoomLevel;
+
+  if (spacecraftPhase >= 1 && spacecraftPhase <= 2) {
+    /* Pulsing ring around spacecraft during transit */
+    let pulse = sin(frameCount * 0.1) * 0.3 + 0.7;
+    noFill();
+    stroke(240, 80, 120, 100 * pulse);
+    strokeWeight(1.5);
+    ellipse(csx, csy, 16 * zoomLevel * pulse, 16 * zoomLevel * pulse);
+    noStroke();
+  }
+
+  /* Phase label */
+  fill(50);
+  textSize(11);
+  textAlign(LEFT, TOP);
+  let phaseLabels = ['On Earth', 'Departing → Solar Loop', 'Solar Loop', 'Heading to Jupiter', 'Orbiting Jupiter'];
+  text('Spacecraft: ' + phaseLabels[spacecraftPhase], 14, height - 30);
+  text('Time: ' + nf(simTime, 1, 1), 14, height - 14);
+}
+
+/* ═══════════════════════════════════════════════════════
+   INTERACTION
+   ═══════════════════════════════════════════════════════ */
+function mousePressed() {
+  /* Click to restart with fresh chaotic initial conditions */
+  initSimulation();
+  this._prevAngle = null;
+  this._totalAngle = null;
+}
+
+function mouseWheel(e) {
+  /* Scroll to zoom in/out */
+  zoomLevel *= e.delta > 0 ? 0.92 : 1.08;
+  zoomLevel = constrain(zoomLevel, 0.3, 3.0);
+  return false;
+}
+</script>
+</body>
+</html>
