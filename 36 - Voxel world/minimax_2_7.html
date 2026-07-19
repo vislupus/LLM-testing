@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voxel Medieval Realm — WebGPU</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; font-family:'Courier New',monospace; }
+canvas { display:block; width:100vw; height:100vh; }
+#ui { position:fixed; inset:0; pointer-events:none; z-index:10; }
+#fps { position:fixed; top:14px; left:14px; color:#f0e6c8; font-size:12px; text-shadow:1px 1px 2px #000; letter-spacing:1px; }
+#title { position:fixed; top:14px; left:50%; transform:translateX(-50%); color:#f0e6c8; font-size:16px; text-shadow:2px 2px 4px #000; letter-spacing:3px; text-transform:uppercase; white-space:nowrap; }
+#controls-hint { position:fixed; bottom:16px; left:16px; color:#c8b89a; font-size:11px; line-height:1.7; text-shadow:1px 1px 2px #000; opacity:0.9; }
+#time-btns { position:fixed; top:12px; right:14px; display:flex; gap:6px; pointer-events:all; }
+.tbtn { background:rgba(20,15,10,0.75); border:1px solid rgba(200,170,120,0.4); color:#e8d8b0; font-family:'Courier New',monospace; font-size:11px; padding:5px 12px; cursor:pointer; letter-spacing:1px; text-transform:uppercase; transition:all 0.2s; }
+.tbtn:hover { background:rgba(180,140,80,0.5); border-color:rgba(220,180,120,0.7); }
+.tbtn.active { background:rgba(180,140,80,0.6); border-color:#e8d090; color:#fff; }
+#screenshot-flash { position:fixed; inset:0; background:rgba(255,240,200,0.3); opacity:0; transition:opacity 0.1s; pointer-events:none; }
+#screenshot-flash.show { opacity:1; }
+#mode-indicator { position:fixed; bottom:16px; right:14px; color:#c8a060; font-size:11px; letter-spacing:2px; text-transform:uppercase; text-shadow:1px 1px 2px #000; }
+#loading { position:fixed; inset:0; background:#1a1208; display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:100; transition:opacity 0.8s; }
+#loading h1 { color:#e8c870; font-size:28px; letter-spacing:6px; text-transform:uppercase; margin-bottom:30px; text-shadow:0 0 20px rgba(232,180,80,0.5); }
+#loading-bar-wrap { width:300px; height:3px; background:rgba(200,170,120,0.2); }
+#loading-bar { height:100%; background:#e8c870; width:0%; transition:width 0.3s; box-shadow:0 0 10px #e8c870; }
+#loading-status { color:#a09070; font-size:11px; margin-top:14px; letter-spacing:2px; }
+</style>
+</head>
+<body>
+<div id="loading">
+  <h1>Voxel Realm</h1>
+  <div id="loading-bar-wrap"><div id="loading-bar"></div></div>
+  <div id="loading-status">Initializing WebGPU...</div>
+</div>
+<canvas id="canvas"></canvas>
+<div id="ui">
+  <div id="fps">-- FPS</div>
+  <div id="title">Medieval Realm</div>
+  <div id="controls-hint">
+    WASD · Move &nbsp;|&nbsp; Mouse · Look &nbsp;|&nbsp; Space/Shift · Up/Down<br>
+    Tab · Fly/Walk &nbsp;|&nbsp; Q/E · Yaw &nbsp;|&nbsp; O · Orbit<br>
+    1/2/3/4 · Dawn/Day/Dusk/Night &nbsp;|&nbsp; P · Screenshot &nbsp;|&nbsp; R · Reset
+  </div>
+  <div id="time-btns">
+    <button class="tbtn" data-t="dawn">Dawn</button>
+    <button class="tbtn active" data-t="day">Day</button>
+    <button class="tbtn" data-t="dusk">Dusk</button>
+    <button class="tbtn" data-t="night">Night</button>
+  </div>
+  <div id="mode-indicator">FLY MODE</div>
+</div>
+<div id="screenshot-flash"></div>
+
+<script>
+'use strict';
+
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+const WORLD_W = 256, WORLD_H = 64, WORLD_D = 256;
+const CHUNK_W = 16, CHUNK_H = 32, CHUNK_D = 16;
+const NUM_CX = WORLD_W / CHUNK_W, NUM_CD = WORLD_D / CHUNK_D;
+
+const B = {
+  AIR:0, STONE:1, DIRT:2, GRASS:3, SAND:4, WOOD:5, PLANKS:6,
+  COBBLE:7, BRICK:8, GLASS:9, WATER:10, LAVA:11, LEAVES:12,
+  SNOW:13, SANDSTONE:14, MOSSY:15, OBSIDIAN:16,
+  FLAG_RED:17, FLAG_BLUE:18, FLAG_GOLD:19,
+  THATCH:20, STONE_BRICK:21, TORCH:22, LANTERN:23,
+  WINDOW:24, FENCE:25, COBBLE_WALL:26, VINE:27,
+  DARK_STONE:28, BASALT:29, SNOW_BLOCK:30, BEDROCK:31
+};
+
+const ATLAS_W = 128, ATLAS_H = 64;
+const TILE_SIZE = 16;
+
+// ─── TIME OF DAY PRESETS ─────────────────────────────────────────────────────
+const TIMES = {
+  dawn: {
+    sunDir: [0.4, 0.3, -0.8], sunColor: [1.0, 0.7, 0.4], sunIntensity: 1.2,
+    skyTop: [0.15, 0.12, 0.25], skyHorizon: [0.9, 0.55, 0.35], skyGround: [0.3, 0.2, 0.15],
+    ambient: [0.25, 0.2, 0.3], fogColor: [0.7, 0.5, 0.4], fogDensity: 0.002,
+    waterTint: [0.4, 0.55, 0.7], bloom: 0.5, vignette: 0.4, stars: 0.0
+  },
+  day: {
+    sunDir: [0.6, 0.8, -0.4], sunColor: [1.0, 0.98, 0.9], sunIntensity: 1.6,
+    skyTop: [0.28, 0.52, 0.85], skyHorizon: [0.6, 0.75, 0.9], skyGround: [0.35, 0.5, 0.3],
+    ambient: [0.35, 0.4, 0.5], fogColor: [0.6, 0.72, 0.88], fogDensity: 0.0015,
+    waterTint: [0.15, 0.35, 0.55], bloom: 0.4, vignette: 0.3, stars: 0.0
+  },
+  dusk: {
+    sunDir: [-0.3, 0.2, -0.7], sunColor: [1.0, 0.45, 0.2], sunIntensity: 1.0,
+    skyTop: [0.1, 0.06, 0.2], skyHorizon: [0.8, 0.3, 0.15], skyGround: [0.2, 0.12, 0.1],
+    ambient: [0.2, 0.15, 0.25], fogColor: [0.6, 0.3, 0.25], fogDensity: 0.0022,
+    waterTint: [0.5, 0.3, 0.3], bloom: 0.7, vignette: 0.5, stars: 0.1
+  },
+  night: {
+    sunDir: [-0.2, -0.3, -0.8], sunColor: [0.4, 0.5, 0.8], sunIntensity: 0.25,
+    skyTop: [0.01, 0.01, 0.06], skyHorizon: [0.03, 0.03, 0.1], skyGround: [0.02, 0.02, 0.05],
+    ambient: [0.08, 0.08, 0.15], fogColor: [0.03, 0.03, 0.08], fogDensity: 0.003,
+    waterTint: [0.05, 0.1, 0.2], bloom: 1.2, vignette: 0.6, stars: 1.0
+  }
+};
+
+// Uniform indices (WGSL std140 layout)
+const U = {
+  VIEW_PROJ: 0,      // 0-15
+  CAM_POS: 16,       // 16-18 (pad to 19)
+  TIME: 20,          // 20
+  PADDING: 21,       // 21
+  SUN_DIR: 22,        // 22-24 (vec3, padded to 25)
+  SUN_INTENSITY: 25, // 25
+  FOG_DENSITY: 26,   // 26
+  FOG_COLOR: 27,      // 27-29 (vec3, padded to 30)
+  WATER_TIME: 31,     // 31
+  AMBIENT: 32,        // 32-34 (vec3, padded to 35)
+  SUN_COLOR: 36,      // 36-38 (vec3, padded to 39)
+  BLOOM: 39,         // 39
+  SKY_TOP: 40,        // 40-42 (vec3, padded to 43)
+  SKY_HORIZON: 44,   // 44-46 (vec3, padded to 47)
+  SKY_GROUND: 48,    // 48-50 (vec3, padded to 51)
+  WATER_TINT: 52,     // 52-54 (vec3, padded to 55)
+  VIGNETTE: 55,      // 55
+  STARS: 56,         // 56
+};
+const UNIFORM_SIZE = 64; // padded to 64 floats
+
+// ─── SHADERS ──────────────────────────────────────────────────────────────────
+const SHADERS = `
+struct Uniforms {
+  viewProj: mat4x4<f32>,
+  camPos: vec3<f32>,
+  _p0: f32,
+  time: f32,
+  _p1: f32,
+  sunDir: vec3<f32>,
+  _p2: f32,
+  sunIntensity: f32,
+  fogDensity: f32,
+  fogColor: vec3<f32>,
+  _p3: f32,
+  waterTime: f32,
+  ambient: vec3<f32>,
+  _p4: f32,
+  sunColor: vec3<f32>,
+  _p5: f32,
+  bloom: f32,
+  skyTop: vec3<f32>,
+  _p6: f32,
+  skyHorizon: vec3<f32>,
+  _p7: f32,
+  skyGround: vec3<f32>,
+  _p8: f32,
+  waterTint: vec3<f32>,
+  _p9: f32,
+  vignette: f32,
+  stars: f32,
+};
+
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var tex: texture_2d_array<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var sceneTex: texture_2d<f32>;
+@group(0) @binding(4) var sceneSamp: sampler;
+
+// ── Sky ──────────────────────────────────────────────────────────────────────
+struct SkyVSOut { @builtin(position) pos: vec4<f32>, @location(0) dir: vec3<f32> };
+@vertex
+fn skyVert(@builtin(vertex_index) vi: u32) -> SkyVSOut {
+  let q = array<vec2<f32>,6>(vec2<f32>(-1,-1),vec2<f32>(1,-1),vec2<f32>(-1,1),
+      vec2<f32>(-1,1),vec2<f32>(1,-1),vec2<f32>(1,1));
+  let uv = q[vi];
+  var out: SkyVSOut;
+  out.pos = vec4<f32>(uv, 0.9999, 1.0);
+  out.dir = vec3<f32>(uv.x, uv.y, -1.0);
+  return out;
+}
+
+@fragment
+fn skyFrag(v: SkyVSOut) -> @location(0) vec4<f32> {
+  let dir = normalize(v.dir);
+  let h = dir.y;
+  var skyTop = u.skyTop;
+  var skyHorizon = u.skyHorizon;
+  var skyGround = u.skyGround;
+  var skyColor: vec3<f32>;
+  if(h >= 0.0) {
+    skyColor = mix(skyHorizon, skyTop, pow(clamp(h, 0.0, 1.0), 0.5));
+  } else {
+    skyColor = mix(skyHorizon, skyGround, pow(clamp(1.0+h, 0.0, 1.0), 2.0));
+  }
+  let sunDir3 = normalize(u.sunDir);
+  let sunDot = dot(dir, sunDir3);
+  let sunDisk = smoothstep(0.9994, 1.0, sunDot);
+  let sunGlow = pow(max(sunDot, 0.0), 200.0) * 0.6;
+  skyColor += u.sunColor * (sunDisk + sunGlow) * u.sunIntensity * 1.5;
+  if(u.stars > 0.05) {
+    let sn = fract(sin(dot(dir.xy * 500.0, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    let sv = step(0.9985, sn) * clamp(h * 2.0, 0.0, 1.0);
+    skyColor += vec3<f32>(sv) * u.stars;
+  }
+  if(h > 0.05 && h < 0.55) {
+    let cx = dir.x * 3.0 + u.time * 0.008;
+    let cz = dir.z * 2.5 + u.time * 0.005;
+    let cn = fract(sin(cx) * cos(cz) * 1234.5);
+    let cloud = smoothstep(0.72, 0.82, cn) * smoothstep(0.05, 0.3, h) * smoothstep(0.55, 0.3, h);
+    skyColor = mix(skyColor, vec3<f32>(0.95, 0.95, 0.97), cloud * 0.55);
+  }
+  return vec4<f32>(skyColor, 1.0);
+}
+
+// ── Voxel vert ────────────────────────────────────────────────────────────────
+struct VoxVert {
+  @location(0) pos: vec3<f32>,
+  @location(1) normal: vec3<f32>,
+  @location(2) uv: vec2<f32>,
+  @location(3) tile: f32,
+  @location(4) light: f32,
+  @location(5) emissive: f32,
+};
+struct VoxVSOut {
+  @builtin(position) clip: vec4<f32>,
+  @location(0) worldPos: vec3<f32>,
+  @location(1) normal: vec3<f32>,
+  @location(2) uv: vec2<f32>,
+  @location(3) tile: f32,
+  @location(4) light: f32,
+  @location(5) emissive: f32,
+  @location(6) dist: f32,
+};
+
+@vertex
+fn voxVert(v: VoxVert) -> VoxVSOut {
+  var out: VoxVSOut;
+  out.clip = u.viewProj * vec4<f32>(v.pos, 1.0);
+  out.worldPos = v.pos;
+  out.normal = v.normal;
+  out.uv = v.uv;
+  out.tile = v.tile;
+  out.light = v.light;
+  out.emissive = v.emissive;
+  out.dist = distance(u.camPos, v.pos);
+  return out;
+}
+
+// ── Voxel frag ────────────────────────────────────────────────────────────────
+@fragment
+fn voxFrag(v: VoxVSOut) -> @location(0) vec4<f32> {
+  let tileX = u32(v.tile) % 8u;
+  let tileY = u32(v.tile) / 8u;
+  let px = (f32(tileX) + v.uv.x) / 8.0;
+  let py = (f32(tileY) + v.uv.y) / 8.0;
+  let atlasUV = vec2<f32>(px, py);
+  var texColor = textureSample(tex, samp, atlasUV, 0);
+  let NdotL = max(dot(v.normal, normalize(u.sunDir)), 0.0);
+  let sunContrib = NdotL * u.sunIntensity;
+  let totalLight = clamp(sunContrib * v.light + u.ambient.r, 0.05, 3.0);
+  var color = texColor.rgb * totalLight * u.sunColor;
+  if(v.emissive > 0.3) {
+    let flicker = 1.0 + 0.18 * sin(u.time * 7.0 + v.worldPos.x * 1.9 + v.worldPos.z * 2.3);
+    color = texColor.rgb * v.emissive * flicker * vec3<f32>(1.3, 0.7, 0.25);
+  }
+  let fogA = 1.0 - exp(-max(v.dist * u.fogDensity, 0.0));
+  color = mix(color, u.fogColor, fogA);
+  if(v.tile == 10.0) {
+    color = mix(color, color * u.waterTint, 0.45);
+  }
+  return vec4<f32>(color, texColor.a);
+}
+
+// ── Water vert ────────────────────────────────────────────────────────────────
+@vertex
+fn waterVert(v: VoxVert) -> VoxVSOut {
+  var out: VoxVSOut;
+  let wave = sin(v.pos.x * 0.4 + u.waterTime * 1.4) * 0.12 + cos(v.pos.z * 0.35 + u.waterTime * 1.1) * 0.08;
+  let wp = vec3<f32>(v.pos.x, v.pos.y + wave, v.pos.z);
+  out.clip = u.viewProj * vec4<f32>(wp, 1.0);
+  out.worldPos = wp;
+  out.normal = v.normal;
+  out.uv = v.uv;
+  out.tile = v.tile;
+  out.light = v.light;
+  out.emissive = v.emissive;
+  out.dist = distance(u.camPos, wp);
+  return out;
+}
+
+@fragment
+fn waterFrag(v: VoxVSOut) -> @location(0) vec4<f32> {
+  let scroll = vec2<f32>(u.waterTime * 0.04, u.waterTime * 0.025);
+  let uv = fract(v.uv + scroll);
+  let tileX = u32(v.tile) % 8u;
+  let tileY = u32(v.tile) / 8u;
+  let px = (f32(tileX) + uv.x) / 8.0;
+  let py = (f32(tileY) + uv.y) / 8.0;
+  var color = textureSample(tex, samp, vec2<f32>(px, py), 0).rgb;
+  let NdotL = max(dot(v.normal, normalize(u.sunDir)), 0.0);
+  let tl = clamp(NdotL * u.sunIntensity * 0.6 + u.ambient.r, 0.1, 2.0);
+  color *= tl * u.sunColor;
+  let fogA = 1.0 - exp(-max(v.dist * u.fogDensity, 0.0));
+  color = mix(color, u.fogColor, fogA);
+  return vec4<f32>(color, 0.62);
+}
+
+// ── Post-process ──────────────────────────────────────────────────────────────
+struct PostVSOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex
+fn postVert(@builtin(vertex_index) vi: u32) -> PostVSOut {
+  let q = array<vec2<f32>,6>(vec2<f32>(-1,-1),vec2<f32>(1,-1),vec2<f32>(-1,1),
+    vec2<f32>(-1,1),vec2<f32>(1,-1),vec2<f32>(1,1));
+  var out: PostVSOut;
+  out.pos = vec4<f32>(q[vi]*vec2<f32>(1,-1),0,1);
+  out.uv = q[vi] * 0.5 + 0.5;
+  return out;
+}
+
+@fragment
+fn postFrag(v: PostVSOut) -> @location(0) vec4<f32> {
+  var color = textureSample(sceneTex, sceneSamp, v.uv).rgb;
+  // Simple bloom from bright areas
+  let bright = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+  if(bright > 0.75) {
+    let bloom = (color - 0.75) * u.bloom * 0.35;
+    color = color + bloom;
+  }
+  // Vignette
+  let vig = 1.0 - length(v.uv - 0.5) * u.vignette;
+  color *= vig;
+  // Tone mapping (Reinhard)
+  color = color / (color + vec3<f32>(1.0));
+  return vec4<f32>(color, 1.0);
+}
+`;
+
+// ─── SEEDED RANDOM ────────────────────────────────────────────────────────────
+function mulberry32(seed) {
+  return function() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// ─── WORLD DATA ──────────────────────────────────────────────────────────────
+let world = new Uint8Array(WORLD_W * WORLD_H * WORLD_D);
+
+function idx(x, y, z) { return x + WORLD_W * (y + WORLD_H * z); }
+function getBlock(x, y, z) {
+  if(x < 0 || x >= WORLD_W || y < 0 || y >= WORLD_H || z < 0 || z >= WORLD_D) return B.AIR;
+  return world[idx(x, y, z)];
+}
+function setBlock(x, y, z, type) {
+  if(x < 0 || x >= WORLD_W || y < 0 || y >= WORLD_H || z < 0 || z >= WORLD_D) return;
+  world[idx(x, y, z)] = type;
+}
+function getHeight(x, z) {
+  for(let y = WORLD_H - 1; y >= 0; y--) {
+    if(world[idx(x, y, z)] !== B.AIR) return y;
+  }
+  return 0;
+}
+
+// ─── WORLD GENERATION ────────────────────────────────────────────────────────
+function generateTerrain() {
+  const rng = mulberry32(12345);
+  let heightMap = new Float32Array(WORLD_W * WORLD_D);
+  for(let z = 0; z < WORLD_D; z++) {
+    for(let x = 0; x < WORLD_W; x++) {
+      let nx = x / WORLD_W, nz = z / WORLD_D;
+      let h = 0;
+      h += Math.sin(nx * 6.28 * 3 + nz * 6.28 * 2) * 4;
+      h += Math.sin(nx * 6.28 * 7 + nz * 6.28 * 5) * 2;
+      h += Math.sin(nx * 6.28 * 15 + nz * 6.28 * 11) * 1;
+      h += rng() * 1.5 - 0.75;
+      let dvx = (x - 42) / 60.0, dvz = (z - 42) / 60.0;
+      let vd = Math.sqrt(dvx*dvx + dvz*dvz);
+      if(vd < 1.5) h += Math.max(0, (1.5 - vd) * 35);
+      let mx1 = (x - 20) / 50.0, mz1 = (z - 220) / 50.0;
+      let md1 = Math.sqrt(mx1*mx1+mz1*mz1);
+      if(md1 < 1.2) h += (1.2 - md1) * 45;
+      let mx2 = (x - 235) / 45.0, mz2 = (z - 20) / 45.0;
+      let md2 = Math.sqrt(mx2*mx2+mz2*mz2);
+      if(md2 < 1.0) h += (1.0 - md2) * 40;
+      heightMap[x + WORLD_W * z] = Math.max(1, Math.floor(12 + h));
+    }
+  }
+  for(let z = 0; z < WORLD_D; z++) {
+    for(let x = 0; x < WORLD_W; x++) {
+      let baseH = heightMap[x + WORLD_W * z];
+      for(let y = 0; y < baseH; y++) {
+        let bt = B.DIRT;
+        if(y === 0) bt = B.BEDROCK;
+        else if(y === baseH - 1) {
+          if(baseH > 35) bt = B.SNOW_BLOCK;
+          else if(baseH > 28) bt = B.SNOW;
+          else bt = B.GRASS;
+        } else if(y < baseH - 3) bt = B.STONE;
+        else bt = B.DIRT;
+        setBlock(x, y, z, bt);
+      }
+    }
+  }
+}
+
+function carveCaves() {
+  const rng = mulberry32(99999);
+  for(let i = 0; i < 250; i++) {
+    let cx = Math.floor(rng() * WORLD_W);
+    let cz = Math.floor(rng() * WORLD_D);
+    let cy = Math.floor(rng() * 28) + 2;
+    let r = Math.floor(rng() * 4) + 2;
+    for(let dx = -r; dx <= r; dx++) for(let dy = -r; dy <= r; dy++) for(let dz = -r; dz <= r; dz++) {
+      if(dx*dx+dy*dy+dz*dz <= r*r) {
+        let nx=cx+dx,ny=cy+dy,nz=cz+dz;
+        if(nx>=1&&nx<WORLD_W-1&&ny>=1&&ny<WORLD_H-1&&nz>=1&&nz<WORLD_D-1&&getBlock(nx,ny,nz)!==B.AIR) {
+          setBlock(nx,ny,nz, B.AIR);
+        }
+      }
+    }
+  }
+}
+
+// ─── CASTLE ─────────────────────────────────────────────────────────────────
+function buildCastle() {
+  const cx = 128, cz = 128;
+  const baseY = getHeight(cx, cz);
+
+  const tiers = [
+    {r:36, h: baseY+4}, {r:28, h: baseY+8}, {r:20, h: baseY+12},
+    {r:14, h: baseY+16}, {r:10, h: baseY+20}
+  ];
+  for(const t of tiers) {
+    for(let dx = -t.r; dx <= t.r; dx++) {
+      for(let dz = -t.r; dz <= t.r; dz++) {
+        let dist = Math.sqrt(dx*dx+dz*dz);
+        if(dist <= t.r) {
+          setBlock(cx+dx, t.h, cz+dz, B.GRASS);
+          setBlock(cx+dx, t.h-1, cz+dz, B.DIRT);
+          for(let sy = t.h-2; sy >= baseY; sy--) setBlock(cx+dx, sy, cz+dz, B.COBBLE);
+        }
+      }
+    }
+  }
+
+  const wallBase = baseY + 20;
+  const wR = 30;
+  for(let dx = -wR; dx <= wR; dx++) {
+    for(let dz = -wR; dz <= wR; dz++) {
+      let dist = Math.sqrt(dx*dx+dz*dz);
+      if(dist > wR-3 && dist <= wR) {
+        for(let wy = wallBase; wy < wallBase+15; wy++) {
+          let isMerlon = ((dx+dz) % 3 === 0) && wy === wallBase+14;
+          setBlock(cx+dx, wy, cz+dz, B.STONE_BRICK);
+          if(isMerlon) setBlock(cx+dx, wy+1, cz+dz, B.STONE_BRICK);
+        }
+        setBlock(cx+dx, wallBase-1, cz+dz, B.COBBLE);
+        setBlock(cx+dx, wallBase-2, cz+dz, B.COBBLE);
+      }
+    }
+  }
+
+  const moatR = wR + 1;
+  for(let dx = -moatR-8; dx <= moatR+8; dx++) {
+    for(let dz = -moatR-8; dz <= moatR+8; dz++) {
+      let dist = Math.sqrt(dx*dx+dz*dz);
+      if(dist > moatR && dist <= moatR+8) {
+        let gnd = getHeight(cx+dx, cz+dz);
+        if(getBlock(cx+dx,gnd,cz+dz)!==B.AIR) setBlock(cx+dx,gnd,cz+dz,B.AIR);
+        setBlock(cx+dx,gnd-1,cz+dz,B.WATER);
+        setBlock(cx+dx,gnd-2,cz+dz,B.WATER);
+        if(dist > moatR+6) setBlock(cx+dx,gnd+1,cz+dz,B.COBBLE);
+      }
+    }
+  }
+
+  for(let bx = moatR+1; bx <= moatR+6; bx++) {
+    for(let bz = -4; bz <= 4; bz++) {
+      setBlock(cx+bx, wallBase-3, cz+bz, B.COBBLE);
+      setBlock(cx+bx, wallBase-4, cz+bz, B.COBBLE);
+    }
+  }
+
+  const towers = [[cx-wR,cz-wR],[cx+wR,cz-wR],[cx-wR,cz+wR],[cx+wR,cz+wR]];
+  for(const [tx,tz] of towers) {
+    for(let ty = wallBase; ty < wallBase+25; ty++) {
+      for(let tdx = -4; tdx <= 4; tdx++) for(let tdz = -4; tdz <= 4; tdz++) {
+        let td = Math.sqrt(tdx*tdx+tdz*tdz);
+        if(td <= 3.5) setBlock(tx+tdx, ty, tz+tdz, td > 3 ? B.STONE_BRICK : B.COBBLE);
+      }
+      if(ty === wallBase+24) {
+        for(let tdx=-4;tdx<=4;tdx++) for(let tdz=-4;tdz<=4;tdz++) {
+          let td=Math.sqrt(tdx*tdx+tdz*tdz);
+          if(td>=3&&td<=4&&(tdx+tdz)%2===0) setBlock(tx+tdx,ty+1,tz+tdz,B.COBBLE);
+        }
+      }
+      if(ty>wallBase+4&&ty<wallBase+20&&ty%5===2) {
+        setBlock(tx,ty,tz-4,B.GLASS); setBlock(tx,ty,tz+4,B.GLASS);
+        setBlock(tx-4,ty,tz,B.GLASS); setBlock(tx+4,ty,tz,B.GLASS);
+      }
+    }
+    for(let ry=0;ry<6;ry++) {
+      let rr=4-ry;
+      for(let rdx=-rr;rdx<=rr;rdx++) for(let rdz=-rr;rdz<=rr;rdz++) {
+        if(Math.sqrt(rdx*rdx+rdz*rdz)<=rr) setBlock(tx+rdx,wallBase+25+ry,tz+rdz,B.COBBLE);
+      }
+    }
+    setBlock(tx,wallBase+31,tz,B.WOOD);
+    setBlock(tx,wallBase+32,tz,B.WOOD);
+  }
+
+  for(let kx=-6;kx<=6;kx++) {
+    for(let kz=-6;kz<=6;kz++) {
+      let kd=Math.sqrt(kx*kx+kz*kz);
+      for(let ky=wallBase;ky<wallBase+35;ky++) {
+        let isWall=kx===-6||kx===6||kz===-6||kz===6;
+        let isDoor=kx===0&&kz===6&&ky<=wallBase+2;
+        let isWin=!isDoor&&ky>wallBase+5&&ky<wallBase+28&&ky%4===1&&(kx===0||kz===0)&&kd>=5;
+        if(isDoor) continue;
+        else if(isWin) setBlock(cx+kx,ky,cz+kz,B.WINDOW);
+        else if(isWall) setBlock(cx+kx,ky,cz+kz,B.BRICK);
+      }
+    }
+  }
+  for(let kx=-6;kx<=6;kx++) for(let kz=-6;kz<=6;kz++) {
+    let kd=Math.sqrt(kx*kx+kz*kz);
+    if(kd>=5&&(kx+kz)%2===0) { setBlock(cx+kx,wallBase+35,cz+kz,B.BRICK); setBlock(cx+kx,wallBase+36,cz+kz,B.BRICK); }
+  }
+  setBlock(cx,wallBase+37,cz-6,B.WOOD);
+  setBlock(cx,wallBase+38,cz-6,B.FLAG_GOLD);
+
+  const chapelX=cx, chapelZ=cz+18;
+  for(let bx=-5;bx<=5;bx++) for(let bz=-4;bz<=4;bz++) {
+    let bk=Math.sqrt(bx*bx+bz*bz);
+    for(let by=0;by<10;by++) {
+      if(bk>4) setBlock(chapelX+bx,wallBase+by,chapelZ+bz,B.SANDSTONE);
+      if(bx===0&&by===10) setBlock(chapelX,wallBase+by,chapelZ,B.STONE);
+      if(bx===0&&by===9&&bz===0) setBlock(chapelX,wallBase+by,chapelZ,B.STONE);
+    }
+  }
+  setBlock(chapelX,wallBase+6,chapelZ+4,B.GLASS);
+  setBlock(chapelX,wallBase+6,chapelZ-4,B.GLASS);
+  setBlock(chapelX-5,wallBase+6,chapelZ,B.GLASS);
+  setBlock(chapelX+5,wallBase+6,chapelZ,B.GLASS);
+
+  for(let dx=-wR+2;dx<=wR-2;dx++) for(let dz=-wR+2;dz<=wR-2;dz++) {
+    let dist=Math.sqrt(dx*dx+dz*dz);
+    if(dist<wR-3) {
+      setBlock(cx+dx,wallBase-1,cz+dz,B.COBBLE);
+      if(Math.abs(dx)<=3&&Math.abs(dz)<=3&&Math.abs(dx)===Math.abs(dz)&&Math.abs(dx)<=2) {
+        if(Math.abs(dx)===2) setBlock(cx+dx,wallBase,cz+dz,B.COBBLE);
+        if(Math.abs(dx)<2) setBlock(cx+dx,wallBase-1,cz+dz,B.WATER);
+      }
+    }
+  }
+
+  const flagPos=[[cx+wR,wallBase+16,cz],[cx-wR,wallBase+16,cz],[cx,wallBase+16,cz+wR],[cx,wallBase+16,cz-wR],[cx+12,wallBase+10,cz+12],[cx-12,wallBase+10,cz-12]];
+  for(const [fx,fy,fz] of flagPos) {
+    setBlock(fx,fy,fz,B.WOOD); setBlock(fx,fy+1,fz,B.WOOD); setBlock(fx,fy+2,fz,B.FLAG_RED);
+  }
+
+  const torchPos=[[cx+wR-1,wallBase+8,cz+10],[cx+wR-1,wallBase+8,cz-10],[cx-wR+1,wallBase+8,cz+10],[cx-wR+1,wallBase+8,cz-10],[cx+10,wallBase+8,cz+wR-1],[cx-10,wallBase+8,cz+wR-1]];
+  for(const [tx,ty,tz] of torchPos) { setBlock(tx,ty,tz,B.TORCH); setBlock(tx,ty-1,tz,B.COBBLE); }
+
+  for(let gz=-5;gz<=5;gz++) {
+    for(let gy=0;gy<10;gy++) {
+      let archW=gy<6?5:3;
+      for(let gx=-archW;gx<=archW;gx++) {
+        let inGate=Math.abs(gz)<=3&&gx>=-3&&gx<=3&&gy<4;
+        if(!inGate) setBlock(cx+wR+gx,wallBase+gy,cz+gz,B.COBBLE);
+      }
+    }
+  }
+}
+
+// ─── VILLAGE ─────────────────────────────────────────────────────────────────
+function buildVillage() {
+  const rng = mulberry32(54321);
+
+  for(let z=100;z<=150;z++) {
+    let riverX=175+Math.sin((z-100)*0.15)*18;
+    let riverW=6;
+    for(let dx=-riverW;dx<=riverW;dx++) {
+      let ry=getHeight(Math.floor(riverX+dx),z)-1;
+      setBlock(Math.floor(riverX+dx),ry,z,B.WATER);
+      setBlock(Math.floor(riverX+dx),ry-1,z,B.DIRT);
+      if(Math.abs(dx)===riverW||Math.abs(dx)===riverW-1) setBlock(Math.floor(riverX+dx),ry+1,z,B.SAND);
+    }
+    if(z%3===0) {
+      setBlock(Math.floor(riverX+riverW+1),getHeight(Math.floor(riverX+riverW+1),z)+1,z,B.LEAVES);
+    }
+  }
+
+  const bridgeX=175, bridgeZ=120;
+  for(let bz=-6;bz<=6;bz++) {
+    let bh=getHeight(bridgeX,bridgeZ+bz);
+    for(let bx=-3;bx<=3;bx++) {
+      let hy=getHeight(bridgeX+bx,bridgeZ+bz);
+      setBlock(bridgeX+bx,hy,bridgeZ+bz,B.COBBLE);
+      setBlock(bridgeX+bx,hy+1,bridgeZ+bz,B.COBBLE);
+      if(bx===-3||bx===3) if(Math.abs(bz)%2===0) setBlock(bridgeX+bx,hy+2,bridgeZ+bz,B.COBBLE_WALL);
+    }
+  }
+
+  const houseTypes=['thatch','stone','timber','tall'];
+  for(let i=0;i<30;i++) {
+    let hx=145+Math.floor(rng()*50);
+    let hz=100+Math.floor(rng()*50);
+    let riverDist=Math.abs(hx-(175+Math.sin((hz-100)*0.15)*18));
+    if(riverDist<12) hx+=15;
+    let hy=getHeight(hx,hz)+1;
+    let type=houseTypes[Math.floor(rng()*houseTypes.length)];
+    let w=Math.floor(rng()*2)+4, d=Math.floor(rng()*2)+4, ht=Math.floor(rng()*3)+5;
+    for(let bx=-Math.floor(w/2);bx<=Math.floor(w/2);bx++) for(let bz=-Math.floor(d/2);bz<=Math.floor(d/2);bz++) setBlock(hx+bx,hy,hz+bz,B.PLANKS);
+    let wallType=type==='stone'?B.COBBLE:type==='timber'?B.WOOD:B.SANDSTONE;
+    for(let by=1;by<=ht;by++) {
+      for(let bx=-Math.floor(w/2);bx<=Math.floor(w/2);bx++) for(let bz=-Math.floor(d/2);bz<=Math.floor(d/2);bz++) {
+        let isE=bx===-Math.floor(w/2)||bx===Math.floor(w/2)||bz===-Math.floor(d/2)||bz===Math.floor(d/2);
+        let isD=bx===0&&bz===-Math.floor(d/2)&&by===1;
+        let isW=isE&&by>1&&by<ht&&(bx===0||bz===0);
+        if(isD) continue;
+        else if(isW&&by%2===0) setBlock(hx+bx,hy+by,hz+bz,B.GLASS);
+        else if(isE) setBlock(hx+bx,hy+by,hz+bz,wallType);
+      }
+    }
+    let roofType=type==='thatch'?B.THATCH:B.BRICK;
+    for(let ry=0;ry<4;ry++) for(let bx=-Math.floor(w/2)-1+ry;bx<=Math.floor(w/2)+1-ry;bx++) for(let bz=-Math.floor(d/2)-1+ry;bz<=Math.floor(d/2)+1-ry;bz++) setBlock(hx+bx,hy+ht+1+ry,hz+bz,roofType);
+    if(type!=='tall') {
+      let cx=Math.floor(rng()*(w-2))-Math.floor(w/2)+1;
+      setBlock(hx+cx,hy+ht+1,hz+Math.floor(d/2)-1,B.COBBLE);
+      setBlock(hx+cx,hy+ht+2,hz+Math.floor(d/2)-1,B.COBBLE);
+    }
+    setBlock(hx+Math.floor(w/2)+1,hy+1,hz-Math.floor(d/2),B.LANTERN);
+    setBlock(hx+Math.floor(w/2)+1,hy,hz-Math.floor(d/2),B.COBBLE);
+  }
+
+  // Tavern
+  const tavernX=160,tavernZ=108,ty2=getHeight(tavernX,tavernZ)+1;
+  for(let bx=-5;bx<=5;bx++) for(let bz=-4;bz<=4;bz++) setBlock(tavernX+bx,ty2,tavernZ+bz,B.PLANKS);
+  for(let by=1;by<=7;by++) for(let bx=-5;bx<=5;bx++) for(let bz=-4;bz<=4;bz++) {
+    let isE=bx===-5||bx===5||bz===-4||bz===4;
+    let isD=bx===0&&bz===-4&&by<=2;
+    let isW=isE&&by>1&&by<6&&(bx===0||bz===0);
+    if(isD) continue;
+    else if(isW) setBlock(tavernX+bx,ty2+by,tavernZ+bz,B.GLASS);
+    else if(isE) setBlock(tavernX+bx,ty2+by,tavernZ+bz,B.THATCH);
+  }
+  for(let ry=0;ry<3;ry++) for(let bx=-5+ry;bx<=5-ry;bx++) for(let bz=-4+ry;bz<=4-ry;bz++) setBlock(tavernX+bx,ty2+7+ry,tavernZ+bz,B.BRICK);
+  setBlock(tavernX+3,ty2+8,tavernZ+4,B.COBBLE);
+  setBlock(tavernX+3,ty2+9,tavernZ+4,B.COBBLE);
+
+  // Blacksmith
+  const bsX=152,bsZ=130,bsy=getHeight(bsX,bsZ)+1;
+  for(let bx=-4;bx<=4;bx++) for(let bz=-3;bz<=3;bz++) setBlock(bsX+bx,bsy,bsZ+bz,B.COBBLE);
+  for(let by=1;by<=5;by++) for(let bx=-4;bx<=4;bx++) for(let bz=-3;bz<=3;bz++) {
+    let isE=bx===-4||bx===4||bz===-3||bz===3;
+    let isD=bx===0&&bz===-3&&by<=2;
+    if(!isD&&isE) setBlock(bsX+bx,bsy+by,bsZ+bz,B.COBBLE);
+  }
+  for(let ry=0;ry<3;ry++) for(let bx=-4+ry;bx<=4-ry;bx++) for(let bz=-3+ry;bz<=3-ry;bz++) setBlock(bsX+bx,bsy+5+ry,bsZ+bz,B.COBBLE);
+  setBlock(bsX,bsy+1,bsZ+3,B.COBBLE);
+
+  // Chapel
+  const chapX=168,chapZ=135,cy3=getHeight(chapX,chapZ)+1;
+  for(let bx=-4;bx<=4;bx++) for(let bz=-3;bz<=3;bz++) setBlock(chapX+bx,cy3,chapZ+bz,B.SANDSTONE);
+  for(let by=1;by<=8;by++) for(let bx=-4;bx<=4;bx++) for(let bz=-3;bz<=3;bz++) {
+    let isE=bx===-4||bx===4||bz===-3||bz===3;
+    let isD=bx===0&&bz===-3&&by<=2;
+    if(!isD&&isE) setBlock(chapX+bx,cy3+by,chapZ+bz,B.SANDSTONE);
+  }
+  for(let by=0;by<=10;by++) {
+    let tw=3-by*0.25;
+    for(let bx=-2;bx<=2;bx++) for(let bz=-2;bz<=2;bz++) if(Math.abs(bx)<=tw&&Math.abs(bz)<=tw) setBlock(chapX,cy3+8+by,chapZ+4+bz,B.SANDSTONE);
+  }
+  setBlock(chapX,cy3+19,chapZ+6,B.STONE);
+  setBlock(chapX,cy3+20,chapZ+6,B.STONE);
+
+  // Marketplace
+  const mktX=163,mktZ=118;
+  for(let s=0;s<4;s++) {
+    let sx=mktX+s*4-6,sz=mktZ,mh=getHeight(sx,sz)+1;
+    for(let bx=-1;bx<=1;bx++) { setBlock(sx+bx,mh,sz,B.PLANKS); setBlock(sx+bx,mh+1,sz,B.PLANKS); }
+    setBlock(sx,mh+2,sz,B.THATCH);
+    setBlock(sx+2,mh,sz,B.COBBLE);
+  }
+
+  // Well
+  const wellX=158,wellZ=124,wy3=getHeight(wellX,wellZ);
+  for(let bx=-1;bx<=1;bx++) for(let bz=-1;bz<=1;bz++) { setBlock(wellX+bx,wy3,wellZ+bz,B.COBBLE); setBlock(wellX+bx,wy3+1,wellZ+bz,B.WATER); }
+
+  // Docks
+  for(let d=0;d<3;d++) {
+    let dx=175+Math.sin((110+d*12-100)*0.15)*18+7,dz=110+d*12,dh=getHeight(Math.floor(dx),dz);
+    for(let bx=-2;bx<=2;bx++) setBlock(Math.floor(dx)+bx,dh,Math.floor(dz),B.WOOD);
+    let bh2=dh+1;
+    setBlock(Math.floor(dx),bh2,Math.floor(dz),B.WOOD);
+    setBlock(Math.floor(dx),bh2,Math.floor(dz)+1,B.WOOD);
+  }
+
+  // Watermill
+  const millX=175,millZ=140,mly=getHeight(millX,millZ)+1;
+  for(let bx=-2;bx<=2;bx++) for(let bz=-2;bz<=2;bz++) setBlock(millX+bx,mly,millZ+bz,B.PLANKS);
+  for(let by=1;by<=6;by++) for(let bx=-2;bx<=2;bx++) for(let bz=-2;bz<=2;bz++) {
+    let isE=bx===-2||bx===2||bz===-2||bz===2;
+    if(isE) setBlock(millX+bx,mly+by,millZ+bz,B.WOOD);
+  }
+  setBlock(millX+3,mly+3,millZ,B.WOOD);
+  setBlock(millX+3,mly+4,millZ,B.WOOD);
+  setBlock(millX+3,mly+5,millZ,B.WOOD);
+
+  // Fences
+  const fenceAreas=[[148,112],[155,128],[162,118]];
+  for(const [fx,fz] of fenceAreas) {
+    let fy=getHeight(fx,fz)+1;
+    for(let i=-3;i<=3;i++) { setBlock(fx+i,fy,fz,B.FENCE); setBlock(fx,fy,fz+i,B.FENCE); }
+  }
+
+  // Road
+  for(let z=148;z<=170;z++) {
+    let rx=175+Math.sin((z-100)*0.15)*18;
+    for(let dx=-2;dx<=2;dx++) setBlock(Math.floor(rx+dx),getHeight(Math.floor(rx+dx),z),z,B.COBBLE);
+  }
+}
+
+// ─── VOLCANO ─────────────────────────────────────────────────────────────────
+function buildVolcano() {
+  const vx=42,vz=42,baseY=15;
+  for(let dy=0;dy<50;dy++) {
+    let r=Math.max(1,20-dy*0.4);
+    for(let dx=-r;dx<=r;dx++) for(let dz=-r;dz<=r;dz++) {
+      let dist=Math.sqrt(dx*dx+dz*dz);
+      if(dist<=r+1) {
+        let h=getHeight(vx+dx,vz+dz);
+        if(h<baseY+dy+5) setBlock(vx+dx,baseY+dy,vz+dz,B.BASALT);
+      }
+    }
+  }
+  for(let dx=-4;dx<=4;dx++) for(let dz=-4;dz<=4;dz++) if(Math.sqrt(dx*dx+dz*dz)<=4) {
+    setBlock(vx+dx,baseY+50,vz+dz,B.LAVA);
+    setBlock(vx+dx,baseY+51,vz+dz,B.LAVA);
+  }
+  for(let angle=0;angle<6.28;angle+=0.5) {
+    let colR=18+Math.sin(angle*5)*3;
+    let bx=Math.floor(vx+Math.cos(angle)*colR),bz=Math.floor(vz+Math.sin(angle)*colR);
+    let colH=3+Math.floor(Math.random()*5);
+    for(let by=0;by<colH;by++) setBlock(bx,baseY+by,bz,B.BASALT);
+    setBlock(bx,baseY+colH,bz,B.BASALT);
+  }
+  const rng=mulberry32(77777);
+  for(let i=0;i<8;i++) {
+    let tx=vx+Math.floor(rng()*30)-15,tz=vz+Math.floor(rng()*30)-15,th=getHeight(tx,tz)+1,treeH=4+Math.floor(rng()*4);
+    for(let by=0;by<treeH;by++) setBlock(tx,th+by,tz,B.WOOD);
+    for(let b=0;b<3;b++) { let bh=th+treeH-2+b; setBlock(tx+1,bh,tz,B.WOOD); setBlock(tx-1,bh,tz,B.WOOD); setBlock(tx,bh,tz+1,B.WOOD); }
+  }
+  for(let i=0;i<12;i++) {
+    let rx=vx+Math.floor(rng()*30)-15,rz=vz+Math.floor(rng()*30)-15,rh=getHeight(rx,rz)+1,ruH=2+Math.floor(rng()*6);
+    for(let by=0;by<ruH;by++) if(rng()>0.3) setBlock(rx,rh+by,rz,B.COBBLE);
+    if(rng()>0.5) for(let px=0;px<4;px++) setBlock(rx+px,rh,rz,B.COBBLE);
+  }
+}
+
+// ─── FORESTS ─────────────────────────────────────────────────────────────────
+function buildForests() {
+  const rng=mulberry32(11111);
+  const forestAreas=[
+    {cx:60,cz:160,r:25,type:'oak'},{cx:200,cz:60,r:22,type:'spruce'},
+    {cx:60,cz:60,r:18,type:'birch'},{cx:210,cz:200,r:20,type:'oak'},
+    {cx:30,cz:180,r:15,type:'birch'},{cx:220,cz:130,r:18,type:'mixed'},
+  ];
+  for(const fa of forestAreas) {
+    for(let i=0;i<80;i++) {
+      let angle=rng()*Math.PI*2,dist=rng()*fa.r;
+      let tx=Math.floor(fa.cx+Math.cos(angle)*dist),tz=Math.floor(fa.cz+Math.sin(angle)*dist);
+      let th=getHeight(tx,tz);
+      if(th<3||th>35||(getBlock(tx,th,tz)!==B.GRASS&&getBlock(tx,th,tz)!==B.DIRT)) continue;
+      buildTree(tx,th+1,tz,fa.type==='spruce'?'spruce':fa.type==='birch'?'birch':'oak',rng);
+    }
+  }
+}
+
+function buildTree(x,y,z,type,rng) {
+  let trunkH=type==='birch'?8+Math.floor(rng()*4):5+Math.floor(rng()*4);
+  for(let by=0;by<trunkH;by++) setBlock(x,y+by,z,B.WOOD);
+  if(type==='oak') {
+    let cr=4;
+    for(let dx=-cr;dx<=cr;dx++) for(let dz=-cr;dz<=cr;dz++) if(Math.sqrt(dx*dx+dz*dz)<=cr&&rng()>0.1) for(let dy=0;dy<=2;dy++) setBlock(x+dx,y+trunkH+dy,z+dz,B.LEAVES);
+  } else if(type==='spruce') {
+    for(let layer=0;layer<4;layer++) { let lr=3-layer,ly=y+trunkH+layer; for(let dx=-lr;dx<=lr;dx++) for(let dz=-lr;dz<=lr;dz++) if(Math.abs(dx)+Math.abs(dz)<=lr+1) setBlock(x+dx,ly,z+dz,B.LEAVES); }
+  } else if(type==='birch') {
+    for(let dx=-3;dx<=3;dx++) for(let dz=-3;dz<=3;dz++) { let d=Math.sqrt(dx*dx+dz*dz); if(d<=3) setBlock(x+dx,y+trunkH+1,z+dz,B.LEAVES); if(d<=2) setBlock(x+dx,y+trunkH+2,z+dz,B.LEAVES); }
+  }
+}
+
+// ─── CLIFFS & RUINS ─────────────────────────────────────────────────────────
+function buildCliffsAndRuins() {
+  const rng=mulberry32(33333);
+  for(let x=0;x<WORLD_W;x++) {
+    let nh=25+Math.floor(Math.sin(x*0.1)*10+Math.cos(x*0.07)*8);
+    for(let z=WORLD_D-30;z<WORLD_D;z++) {
+      let curH=getHeight(x,z);
+      if(curH<nh) for(let y=curH;y<nh;y++) setBlock(x,y,z,y>=nh-1?B.STONE:y>nh-4?B.COBBLE:B.STONE);
+    }
+  }
+  for(let x=0;x<WORLD_W;x++) {
+    let sh=20+Math.floor(Math.cos(x*0.08)*8);
+    for(let z=0;z<20;z++) {
+      let curH=getHeight(x,z);
+      if(curH<sh) for(let y=curH;y<sh;y++) setBlock(x,y,z,y>=sh-1?B.STONE:B.COBBLE);
+    }
+  }
+  const ruinSpots=[[30,100],[230,50],[50,220],[200,210],[90,30],[210,90]];
+  for(const [rx,rz] of ruinSpots) {
+    let rh=getHeight(rx,rz);
+    for(let i=0;i<8;i++) {
+      let px=rx+Math.floor(rng()*8)-4,pz=rz+Math.floor(rng()*8)-4,ph=getHeight(px,pz),pillarH=2+Math.floor(rng()*5);
+      for(let by=0;by<pillarH;by++) if(rng()>0.15) setBlock(px,ph+by,pz,B.COBBLE);
+      if(rng()>0.4) for(let bx=0;bx<4;bx++) setBlock(px+bx,ph,pz,B.COBBLE);
+    }
+  }
+  const towers=[[20,20],[236,20],[20,236],[236,236]];
+  for(const [tx,tz] of towers) {
+    let th=getHeight(tx,tz);
+    for(let by=0;by<15;by++) { let tw=by<10?3:4; for(let dx=-tw;dx<=tw;dx++) for(let dz=-tw;dz<=tw;dz++) if(Math.sqrt(dx*dx+dz*dz)<=tw) setBlock(tx+dx,th+by,tz+dz,B.COBBLE); }
+    setBlock(tx,th+15,tz,B.WOOD); setBlock(tx,th+16,tz,B.TORCH);
+  }
+  const lookouts=[[75,175],[195,75],[80,50],[190,195]];
+  for(const [lx,lz] of lookouts) {
+    let lh=getHeight(lx,lz);
+    for(let by=0;by<8;by++) setBlock(lx,lh+by,lz,B.WOOD);
+    for(let dx=-2;dx<=2;dx++) for(let dz=-2;dz<=2;dz++) setBlock(lx+dx,lh+8,lz+dz,B.PLANKS);
+    for(let dx=-1;dx<=1;dx++) for(let dz=-1;dz<=1;dz++) setBlock(lx+dx,lh+9,lz+dz,B.THATCH);
+    setBlock(lx,lh+10,lz,B.TORCH);
+  }
+}
+
+// ─── CHUNK MESHING ─────────────────────────────────────────────────────────────
+function buildChunkMeshes() {
+  let solidVerts=new Array(NUM_CX*NUM_CD), waterVerts=new Array(NUM_CX*NUM_CD);
+  const FACE_OFFSETS=[
+    [[1,0,0],[0,1,0],[0,0,1],[-1,0,0],[0,-1,0],[0,0,-1]],
+  ];
+  const FACE_UVS=[
+    [[1,0,1,1,0,1,0,0],[1,0,1,1,0,1,0,0],[0,0,1,0,1,1,0,1],[0,0,1,0,1,1,0,1],[1,0,1,1,0,1,0,0],[1,0,1,1,0,1,0,0]],
+  ];
+  const FACE_NORMALS=[
+    [[1,0,0],[0,1,0],[0,0,1],[-1,0,0],[0,-1,0],[0,0,-1]],
+  ];
+  const FACE_SHADE=[1.0,1.0,0.85,0.55,0.5,0.75];
+
+  for(let cx=0;cx<NUM_CX;cx++) {
+    for(let cz=0;cz<NUM_CD;cz++) {
+      solidVerts[cx*NUM_CD+cz]=[]; waterVerts[cx*NUM_CD+cz]=[];
+      for(let ly=0;ly<CHUNK_H;ly++) {
+        for(let lz=0;lz<CHUNK_D;lz++) {
+          for(let lx=0;lx<CHUNK_W;lx++) {
+            let wx=cx*CHUNK_W+lx,wy=ly,wz=cz*CHUNK_D+lz;
+            let block=getBlock(wx,wy,wz);
+            if(block===B.AIR) continue;
+            let isWater=block===B.WATER;
+            let emissive=0.0;
+            if(block===B.TORCH||block===B.LANTERN) emissive=2.5;
+            if(block===B.FLAG_RED||block===B.FLAG_BLUE||block===B.FLAG_GOLD) emissive=0.6;
+            if(block===B.WINDOW) emissive=0.4;
+            if(block===B.LAVA) emissive=3.5;
+            for(let f=0;f<6;f++) {
+              let [nx,ny,nz]=FACE_OFFSETS[0][f];
+              let adj=getBlock(wx+nx,wy+ny,wz+nz);
+              let adjTransparent=adj===B.AIR||adj===B.WATER;
+              if(!adjTransparent) continue;
+              let facePos=getFaceVerts(f,wx,wy,wz);
+              let faceNorm=FACE_NORMALS[0][f];
+              let uvArr=FACE_UVS[0][f];
+              let fLight=FACE_SHADE[f];
+              let indices=[0,1,2,0,2,3];
+              for(let ii of indices) {
+                let vd={pos:facePos[ii],normal:faceNorm,uv:[uvArr[ii*2],uvArr[ii*2+1]],tile:block,light:fLight,emissive};
+                if(isWater) waterVerts[cx*NUM_CD+cz].push(vd);
+                else solidVerts[cx*NUM_CD+cz].push(vd);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return {solidVerts,waterVerts};
+}
+
+function getFaceVerts(f,x,y,z) {
+  switch(f){case 0:return[[x+1,y,z],[x+1,y+1,z],[x+1,y+1,z+1],[x+1,y,z+1]];case 1:return[[x,y+1,z],[x+1,y+1,z],[x+1,y+1,z+1],[x,y+1,z+1]];case 2:return[[x,y,z+1],[x+1,y,z+1],[x+1,y+1,z+1],[x,y+1,z+1]];case 3:return[[x,y,z],[x,y+1,z],[x,y+1,z+1],[x,y,z+1]];case 4:return[[x,y,z],[x+1,y,z],[x+1,y,z+1],[x,y,z+1]];case 5:return[[x+1,y,z],[x,y,z],[x,y+1,z],[x+1,y+1,z]];}
+}
+
+// ─── TEXTURE ATLAS ────────────────────────────────────────────────────────────
+function createTextureAtlas() {
+  const canvas=document.createElement('canvas');
+  canvas.width=ATLAS_W; canvas.height=ATLAS_H;
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#888'; ctx.fillRect(0,0,ATLAS_W,ATLAS_H);
+  const T=TILE_SIZE;
+
+  function noise2d(x,y,s){const v=Math.sin(x*12.9898+y*78.233+s)*43758.5453;return v-Math.floor(v);}
+  function fillTile(ox,oy,color,var2=0.05){
+    for(let y=0;y<T;y++) for(let x=0;x<T;x++){
+      let n=noise2d(x,y,0)*var2;
+      let r=parseInt(color.slice(1,3),16),g=parseInt(color.slice(3,5),16),b=parseInt(color.slice(5,7),16);
+      ctx.fillStyle=`rgb(${Math.min(255,r+(n*50)|0)},${Math.min(255,g+(n*50)|0)},${Math.min(255,b+(n*50)|0)})`;
+      ctx.fillRect(ox*T+x,oy*T+y,1,1);
+    }
+  }
+  function block2d(ox,oy,drawFn){
+    ctx.save(); ctx.translate(ox*T,oy*T); drawFn(ctx,T); ctx.restore();
+  }
+  function simple(ox,oy,color){ctx.fillStyle=color;ctx.fillRect(ox*T,oy*T,T,T);}
+
+  const tiles=[
+    [B.STONE,0,0,()=>fillTile(0,0,'#888888',0.08)],
+    [B.DIRT,1,0,()=>fillTile(1,0,'#8B5A2B',0.1)],
+    [B.GRASS,2,0,()=>{ctx.fillStyle='#6a4020';ctx.fillRect(2*T,0,T,T);ctx.fillStyle='#4a7a2a';ctx.fillRect(2*T,0,T,2);}],
+    [B.SAND,3,0,()=>fillTile(3,0,'#e8d4a0',0.06)],
+    [B.WOOD,4,0,()=>{ctx.fillStyle='#644228';ctx.fillRect(4*T,0,T,T);for(let y=0;y<T;y++){let g=(Math.sin(y*0.8)*20|0)+20;ctx.fillStyle=`rgb(${80+g},${50+g/2},${30})`;ctx.fillRect(4*T,y,T,1);}}],
+    [B.PLANKS,5,0,()=>{ctx.fillStyle='#a07840';ctx.fillRect(5*T,0,T,T);ctx.strokeStyle='rgba(0,0,0,0.15)';ctx.lineWidth=1;for(let py=0;py<4;py++){ctx.beginPath();ctx.moveTo(5*T,py*T+T/4);ctx.lineTo(5*T+T,py*T+T/4);ctx.stroke();}}],
+    [B.COBBLE,6,0,()=>{const rng=mulberry32(42);for(let by=0;by<3;by++) for(let bx=0;bx<3;bx++){let n=rng()*30-15;ctx.fillStyle=`rgb(${120+n|0},${120+n|0},${110+n|0})`;ctx.fillRect(6*T+bx*T/3,by*T/3,T/3,T/3);}}],
+    [B.BRICK,7,0,()=>{const bh=T/4,bw=T/2;for(let by=0;by<4;by++){let off=by%2===0?0:bw/2;for(let bx=0;bx<3;bx++){let n=noise2d(bx,by,3)*20-10;ctx.fillStyle=`rgb(${170+n|0},${70+n*.5|0},${40})`;ctx.fillRect(7*T+bx*bw-off,by*bh,bw-1,bh-1);}}}],
+    [B.GLASS,0,1,()=>{ctx.fillStyle='rgba(180,220,255,0.25)';ctx.fillRect(0,T,T,T);ctx.strokeStyle='rgba(200,240,255,0.4)';ctx.strokeRect(0.5,T+0.5,T-1,T-1);ctx.fillStyle='rgba(255,255,255,0.15)';ctx.fillRect(1,T+1,T/3,T/3);}],
+    [B.WATER,1,1,()=>{for(let y=0;y<T;y++) for(let x=0;x<T;x++){let w=Math.sin(x*0.5+y*0.3)*20|0;ctx.fillStyle=`rgba(30,${100+w},${200+w*.5},0.65)`;ctx.fillRect(T+x,T+y,1,1);}}],
+    [B.LAVA,2,1,()=>{for(let y=0;y<T;y++) for(let x=0;x<T;x++){let n=noise2d(x,y,5)*40;ctx.fillStyle=`rgb(${220+n|0},${80+n*.3|0},20)`;ctx.fillRect(2*T+x,T+y,1,1);}}],
+    [B.LEAVES,3,1,()=>{for(let y=0;y<T;y++) for(let x=0;x<T;x++){let n=noise2d(x,y,6);let r=n>.4?60+n*30|0:40+n*20|0,g=n>.4?140+n*40|0:100+n*30|0,b=30+n*15|0;ctx.fillStyle=`rgb(${r},${g},${b})`;ctx.fillRect(3*T+x,T+y,1,1);}}],
+    [B.SNOW,4,1,()=>fillTile(4,1,'#f0f8ff',0.04)],
+    [B.SANDSTONE,5,1,()=>{ctx.fillStyle='#e8c870';ctx.fillRect(5*T,T,T,T);for(let by=0;by<4;by++){ctx.strokeStyle='rgba(0,0,0,0.08)';ctx.beginPath();ctx.moveTo(5*T,by*T+T/4);ctx.lineTo(5*T+T,by*T+T/4);ctx.stroke();}}],
+    [B.MOSSY,6,1,()=>{ctx.fillStyle='#667766';ctx.fillRect(6*T,T,T,T);for(let y=0;y<T;y++) for(let x=0;x<T;x++){if(noise2d(x,y,7)>.6){ctx.fillStyle='rgba(60,100,40,0.5)';ctx.fillRect(6*T+x,T+y,2,2);}}}],
+    [B.OBSIDIAN,7,1,()=>fillTile(7,1,'#1a0a2e',0.03)],
+    [B.FLAG_RED,0,2,()=>{ctx.fillStyle='#cc2222';ctx.fillRect(0,2*T,T,T);ctx.fillStyle='#ff4444';ctx.fillRect(1,2*T+1,T/3,T/2);}],
+    [B.FLAG_BLUE,1,2,()=>{ctx.fillStyle='#2244cc';ctx.fillRect(T,2*T,T,T);ctx.fillStyle='#4477ff';ctx.fillRect(T+1,2*T+1,T/3,T/2);}],
+    [B.FLAG_GOLD,2,2,()=>{ctx.fillStyle='#ddaa00';ctx.fillRect(2*T,2*T,T,T);ctx.fillStyle='#ffee44';ctx.fillRect(2*T+1,2*T+1,T/3,T/2);}],
+    [B.THATCH,3,2,()=>{for(let y=0;y<T;y++) for(let x=0;x<T;x++){let n=noise2d(x,y,8)*20;let v=180+n|0;ctx.fillStyle=`rgb(${v},${v+20|0},${v-10|0})`;ctx.fillRect(3*T+x,2*T+y,1,1);}}],
+    [B.STONE_BRICK,4,2,()=>{const bh=T/4,bw=T/2;for(let by=0;by<4;by++){let off=by%2===0?0:bw/2;for(let bx=0;bx<3;bx++){let n=noise2d(bx,by,9)*20-10;ctx.fillStyle=`rgb(${140+n|0},${140+n|0},${145+n|0})`;ctx.fillRect(4*T+bx*bw-off,2*T+by*bh,bw-1,bh-1);}}}],
+    [B.TORCH,5,2,()=>{ctx.fillStyle='#8B4513';ctx.fillRect(5*T+T/2-1,2*T+T/4,2,T*3/4);ctx.fillStyle='#ff8800';ctx.beginPath();ctx.arc(5*T+T/2,2*T+T/4,3,0,Math.PI*2);ctx.fill();ctx.fillStyle='#ffcc00';ctx.beginPath();ctx.arc(5*T+T/2,2*T+T/4-1,2,0,Math.PI*2);ctx.fill();}],
+    [B.LANTERN,6,2,()=>{ctx.fillStyle='#8B4513';ctx.fillRect(6*T+T/2-2,2*T,T,2);ctx.fillStyle='#333';ctx.fillRect(6*T+T/2-3,2*T+T/4,6,T/2);ctx.fillStyle='#ff9900';ctx.beginPath();ctx.arc(6*T+T/2,2*T+T/2,3,0,Math.PI*2);ctx.fill();}],
+    [B.WINDOW,7,2,()=>{ctx.fillStyle='#2a1a00';ctx.fillRect(7*T,2*T,T,T);ctx.fillStyle='rgba(255,220,100,0.6)';ctx.fillRect(7*T+1,2*T+1,T-2,T-2);ctx.strokeStyle='#4a3010';ctx.lineWidth=2;ctx.strokeRect(7*T+0.5,2*T+0.5,T-1,T-1);}],
+    [B.FENCE,0,3,()=>{ctx.fillStyle='#8B4513';ctx.fillRect(0,3*T,T,T);ctx.fillStyle='#6B3503';ctx.fillRect(0+T/2-1,3*T,2,T);ctx.fillRect(0,3*T+T/3,T,T/6);ctx.fillRect(0,3*T+T*2/3,T,T/6);}],
+    [B.COBBLE_WALL,1,3,()=>fillTile(1,3,'#888',0.1)],
+    [B.VINE,2,3,()=>{for(let y=0;y<T;y++) for(let x=0;x<T;x++){if(noise2d(x,y,10)>.5){ctx.fillStyle='rgba(30,100,20,0.7)';ctx.fillRect(2*T+x,3*T+y,2,2);}}}],
+    [B.DARK_STONE,3,3,()=>fillTile(3,3,'#555555',0.1)],
+    [B.BASALT,4,3,()=>{for(let y=0;y<T;y++) for(let x=0;x<T;x++){let n=noise2d(x,y,11)*30;ctx.fillStyle=`rgb(${40+n|0},${35+n*.8|0},${38+n*.6|0})`;ctx.fillRect(4*T+x,3*T+y,1,1);}}],
+    [B.SNOW_BLOCK,5,3,()=>fillTile(5,3,'#fafafa',0.03)],
+    [B.BEDROCK,6,3,()=>{for(let y=0;y<T;y++) for(let x=0;x<T;x++){let n=noise2d(x,y,12)*50;ctx.fillStyle=`rgb(${50+n|0},${50+n|0},${55+n|0})`;ctx.fillRect(6*T+x,3*T+y,1,1);}}],
+  ];
+
+  for(const [id,tx,ty,draw] of tiles) {
+    ctx.save();
+    ctx.translate(tx*T,ty*T);
+    draw();
+    ctx.restore();
+  }
+
+  return canvas;
+}
+
+// ─── MATRIX MATH ──────────────────────────────────────────────────────────────
+function mat4mul(a,b){
+  let o=new Float32Array(16);
+  for(let i=0;i<4;i++) for(let j=0;j<4;j++){o[i*4+j]=0;for(let k=0;k<4;k++) o[i*4+j]+=a[k*4+i]*b[j*4+k];}
+  return o;
+}
+function mat4perspective(fov,aspect,near,far){
+  let f=1/Math.tan(fov/2),nf=1/(near-far);
+  return new Float32Array([f/aspect,0,0,0,0,f,0,0,0,0,(far+near)*nf,-1,0,0,2*far*near*nf,0]);
+}
+function mat4lookat(eye,center,up){
+  let fx=center[0]-eye[0],fy=center[1]-eye[1],fz=center[2]-eye[2];
+  let fl=Math.sqrt(fx*fx+fy*fy+fz*fz);fx/=fl;fy/=fl;fz/=fl;
+  let sx=fy*up[2]-fz*up[1],sy=fz*up[0]-fx*up[2],sz=fx*up[1]-fy*up[0];
+  let sl=Math.sqrt(sx*sx+sy*sy+sz*sz);sx/=sl;sy/=sl;sz/=sl;
+  let ux=sy*fz-sz*fy,uy=sz*fx-sx*fz,uz=sx*fy-sy*fx;
+  return new Float32Array([sx,ux,-fx,0,sy,uy,-fy,0,sz,uz,-fz,0,-(sx*eye[0]+sy*eye[1]+sz*eye[2]),-(ux*eye[0]+uy*eye[1]+uz*eye[2]),(fx*eye[0]+fy*eye[1]+fz*eye[2]),1]);
+}
+
+// ─── WEBGPU SETUP ─────────────────────────────────────────────────────────────
+let device,context,format;
+let pipeline,waterPipeline,skyPipeline,postPipeline;
+let uniformBuffer,depthTexture,sceneTexture,sceneView;
+let atlasTexture,atlasSampler;
+let chunks=[];
+let currentTime='day',timeData={...TIMES.day};
+let waterTime=0;
+
+function updateLoadingBar(pct,status){
+  const bar=document.getElementById('loading-bar');
+  const statusEl=document.getElementById('loading-status');
+  if(bar) bar.style.width=pct+'%';
+  if(statusEl) statusEl.textContent=status;
+}
+
+async function init(){
+  updateLoadingBar(5,'Checking WebGPU...');
+  const canvas=document.getElementById('canvas');
+  if(!navigator.gpu){document.getElementById('loading-status').textContent='WebGPU not supported. Please use Chrome/Edge 113+';return;}
+  const adapter=await navigator.gpu.requestAdapter();
+  if(!adapter){document.getElementById('loading-status').textContent='No GPU adapter found.';return;}
+  device=await adapter.requestDevice();
+  context=canvas.getContext('webgpu');
+  format=navigator.gpu.getPreferredCanvasFormat();
+  context.configure({device,format,alphaMode:'premultiplied'});
+
+  updateLoadingBar(10,'Generating terrain...'); await new Promise(r=>setTimeout(r,5));
+  generateTerrain();
+  updateLoadingBar(20,'Carving caves...'); await new Promise(r=>setTimeout(r,5));
+  carveCaves();
+  updateLoadingBar(30,'Building castle...'); await new Promise(r=>setTimeout(r,5));
+  buildCastle();
+  updateLoadingBar(40,'Building village...'); await new Promise(r=>setTimeout(r,5));
+  buildVillage();
+  updateLoadingBar(50,'Building volcano...'); await new Promise(r=>setTimeout(r,5));
+  buildVolcano();
+  updateLoadingBar(55,'Building forests...'); await new Promise(r=>setTimeout(r,5));
+  buildForests();
+  updateLoadingBar(60,'Building cliffs...'); await new Promise(r=>setTimeout(r,5));
+  buildCliffsAndRuins();
+  updateLoadingBar(65,'Meshing chunks...'); await new Promise(r=>setTimeout(r,5));
+  const{solidVerts,waterVerts}=buildChunkMeshes();
+
+  updateLoadingBar(72,'Creating texture atlas...'); await new Promise(r=>setTimeout(r,5));
+  const atlasCanvas=createTextureAtlas();
+  const imgData=new Uint8Array(ATLAS_W*ATLAS_H*4);
+  const tmpCanvas=document.createElement('canvas');tmpCanvas.width=ATLAS_W;tmpCanvas.height=ATLAS_H;
+  const tmpCtx=tmpCanvas.getContext('2d');tmpCtx.drawImage(atlasCanvas,0,0);
+  imgData.set(new Uint8Array(tmpCtx.getImageData(0,0,ATLAS_W,ATLAS_H).data.buffer));
+  atlasTexture=device.createTexture({size:[ATLAS_W,ATLAS_H],format:'rgba8unorm',usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST});
+  device.queue.writeTexture({texture:atlasTexture,origin:[0,0,0]},imgData,{bytesPerRow:ATLAS_W*4,rowsPerImage:ATLAS_H},{width:ATLAS_W,height:ATLAS_H});
+  atlasSampler=device.createSampler({magFilter:'nearest',minFilter:'nearest',addressModeU:'repeat',addressModeV:'repeat'});
+
+  updateLoadingBar(78,'Compiling shaders...'); await new Promise(r=>setTimeout(r,5));
+  const mainMod=device.createShaderModule({code:SHADERS});
+
+  uniformBuffer=device.createBuffer({size:UNIFORM_SIZE*4,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+
+  updateLoadingBar(82,'Building chunk buffers...'); await new Promise(r=>setTimeout(r,5));
+  for(let cx=0;cx<NUM_CX;cx++) for(let cz=0;cz<NUM_CD;cz++){
+    let vi=solidVerts[cx*NUM_CD+cz],wvi=waterVerts[cx*NUM_CD+cz];
+    let va=new Float32Array(vi.length*12);
+    for(let i=0;i<vi.length;i++){let v=vi[i],o=i*12;va[o]=v.pos[0];va[o+1]=v.pos[1];va[o+2]=v.pos[2];va[o+3]=v.normal[0];va[o+4]=v.normal[1];va[o+5]=v.normal[2];va[o+6]=v.uv[0];va[o+7]=v.uv[1];va[o+8]=v.tile;va[o+9]=v.light;va[o+10]=v.emissive;va[o+11]=0;}
+    let wva=new Float32Array(wvi.length*12);
+    for(let i=0;i<wvi.length;i++){let v=wvi[i],o=i*12;wva[o]=v.pos[0];wva[o+1]=v.pos[1];wva[o+2]=v.pos[2];wva[o+3]=v.normal[0];wva[o+4]=v.normal[1];wva[o+5]=v.normal[2];wva[o+6]=v.uv[0];wva[o+7]=v.uv[1];wva[o+8]=v.tile;wva[o+9]=v.light;wva[o+10]=v.emissive;wva[o+11]=0;}
+    chunks.push({solidVB:va.length?makeVB(va):null,solidCount:vi.length,waterVB:wva.length?makeVB(wva):null,waterCount:wvi.length});
+  }
+
+  function makeVB(data){const b=device.createBuffer({size:data.byteLength,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});device.queue.writeBuffer(b,0,data);return b;}
+
+  function makePipeline(entryPoint){
+    return device.createRenderPipeline({
+      layout:'auto',
+      vertex:{module:mainMod,entryPoint:'voxVert',buffers:[{arrayStride:48,attributes:[{format:'float32x3',offset:0,shaderLocation:0},{format:'float32x3',offset:12,shaderLocation:1},{format:'float32x2',offset:24,shaderLocation:2},{format:'float32',offset:32,shaderLocation:3},{format:'float32',offset:36,shaderLocation:4},{format:'float32',offset:40,shaderLocation:5}]}]},
+      fragment:{module:mainMod,entryPoint,targets:[{format}]},
+      primitive:{topology:'triangle-list',cullMode:'back'},
+      depthStencil:{format:'depth24plus',depthWriteEnabled:true,depthCompare:'less'}
+    });
+  }
+
+  const bindGroupLayout=device.createBindGroupLayout({
+    entries:[
+      {binding:0,visibility:GPUShaderStage.VERTEX|GPUBufferUsage.UNIFORM?GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT:GPUShaderStage.FRAGMENT,buffer:{}},
+      {binding:1,visibility:GPUShaderStage.FRAGMENT,texture:{viewDimension:'2d',sampleType:'float'}},
+      {binding:2,visibility:GPUShaderStage.FRAGMENT,sampler:{}},
+    ]
+  });
+
+  const mainPipelineLayout=device.createPipelineLayout({bindGroupLayouts:[bindGroupLayout]});
+
+  skyPipeline=device.createRenderPipeline({
+    layout:mainPipelineLayout,
+    vertex:{module:mainMod,entryPoint:'skyVert',buffers:[]},
+    fragment:{module:mainMod,entryPoint:'skyFrag',targets:[{format}]},
+    primitive:{topology:'triangle-list'},
+    depthStencil:{format:'depth24plus',depthWriteEnabled:false,depthCompare:'less'}
+  });
+
+  pipeline=device.createRenderPipeline({
+    layout:mainPipelineLayout,
+    vertex:{module:mainMod,entryPoint:'voxVert',buffers:[{arrayStride:48,attributes:[{format:'float32x3',offset:0,shaderLocation:0},{format:'float32x3',offset:12,shaderLocation:1},{format:'float32x2',offset:24,shaderLocation:2},{format:'float32',offset:32,shaderLocation:3},{format:'float32',offset:36,shaderLocation:4},{format:'float32',offset:40,shaderLocation:5}]}]},
+    fragment:{module:mainMod,entryPoint:'voxFrag',targets:[{format,blend:{color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha'},alpha:{srcFactor:'src-alpha'}}}]},
+    primitive:{topology:'triangle-list',cullMode:'back'},
+    depthStencil:{format:'depth24plus',depthWriteEnabled:true,depthCompare:'less'}
+  });
+
+  waterPipeline=device.createRenderPipeline({
+    layout:mainPipelineLayout,
+    vertex:{module:mainMod,entryPoint:'waterVert',buffers:[{arrayStride:48,attributes:[{format:'float32x3',offset:0,shaderLocation:0},{format:'float32x3',offset:12,shaderLocation:1},{format:'float32x2',offset:24,shaderLocation:2},{format:'float32',offset:32,shaderLocation:3},{format:'float32',offset:36,shaderLocation:4},{format:'float32',offset:40,shaderLocation:5}]}]},
+    fragment:{module:mainMod,entryPoint:'waterFrag',targets:[{format,blend:{color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha'},alpha:{srcFactor:'src-alpha'}}}]},
+    primitive:{topology:'triangle-list',cullMode:'none'},
+    depthStencil:{format:'depth24plus',depthWriteEnabled:true,depthCompare:'less'}
+  });
+
+  const postLayout=device.createBindGroupLayout({
+    entries:[
+      {binding:0,visibility:GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT,buffer:{}},
+      {binding:1,visibility:GPUShaderStage.FRAGMENT,texture:{viewDimension:'2d'}},
+      {binding:2,visibility:GPUShaderStage.FRAGMENT,sampler:{}},
+    ]
+  });
+  const postPipelineLayout=device.createPipelineLayout({bindGroupLayouts:[postLayout]});
+  postPipeline=device.createRenderPipeline({
+    layout:postPipelineLayout,
+    vertex:{module:mainMod,entryPoint:'postVert',buffers:[{arrayStride:8,attributes:[{format:'float32x2',offset:0,shaderLocation:0}]}]},
+    fragment:{module:mainMod,entryPoint:'postFrag',targets:[{format}]},
+    primitive:{topology:'triangle-list'}
+  });
+
+  const mainBG=device.createBindGroup({
+    layout:bindGroupLayout,
+    entries:[
+      {binding:0,resource:{buffer:uniformBuffer}},
+      {binding:1,resource:atlasTexture.createView()},
+      {binding:2,resource:atlasSampler},
+    ]
+  });
+
+  let postBG=null;
+  function resize(){
+    const w=document.getElementById('canvas').clientWidth*devicePixelRatio|0;
+    const h=document.getElementById('canvas').clientHeight*devicePixelRatio|0;
+    if(canvas.width!==w||canvas.height!==h||!postBG){
+      canvas.width=w;canvas.height=h;
+      depthTexture=device.createTexture({size:[w,h],format:'depth24plus',usage:GPUTextureUsage.RENDER_ATTACHMENT});
+      sceneTexture=device.createTexture({size:[w,h],format,usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING});
+      sceneView=sceneTexture.createView();
+      postBG=device.createBindGroup({
+        layout:postLayout,
+        entries:[
+          {binding:0,resource:{buffer:uniformBuffer}},
+          {binding:1,resource:sceneView},
+          {binding:2,resource:device.createSampler({magFilter:'linear',minFilter:'linear'})},
+        ]
+      });
+    }
+    return{w,h};
+  }
+  let{w,h}=resize();
+  window.addEventListener('resize',()=>resize());
+
+  updateLoadingBar(92,'Starting...'); await new Promise(r=>setTimeout(r,5));
+
+  // Camera
+  const cam={pos:[128,100,70],yaw:0.3,pitch:-0.5,mode:'fly',orbitMode:false,orbitAngle:0,orbitCenter:[128,30,128],orbitDist:180};
+  const keys={};
+  let mouseDown=false,lastMX=0,lastMY=0;
+
+  canvas.addEventListener('mousedown',e=>{mouseDown=true;lastMX=e.clientX;lastMY=e.clientY;});
+  canvas.addEventListener('mouseup',()=>mouseDown=false);
+  canvas.addEventListener('mouseleave',()=>mouseDown=false);
+  canvas.addEventListener('mousemove',e=>{
+    if(!mouseDown)return;
+    let dx=e.clientX-lastMX,dy=e.clientY-lastMY;
+    cam.yaw-=dx*0.003;cam.pitch=Math.max(-1.5,Math.min(1.5,cam.pitch-dy*0.003));
+    lastMX=e.clientX;lastMY=e.clientY;
+  });
+  canvas.addEventListener('wheel',e=>{if(cam.orbitMode)cam.orbitDist=Math.max(50,Math.min(400,cam.orbitDist+e.deltaY*0.3));});
+
+  document.addEventListener('keydown',e=>{
+    keys[e.code]=true;
+    if(e.code==='Tab'){e.preventDefault();cam.mode=cam.mode==='fly'?'walk':'fly';updateModeUI();}
+    if(e.code==='KeyO')cam.orbitMode=!cam.orbitMode;
+    if(e.code==='KeyP')takeScreenshot();
+    if(e.code==='KeyR'){cam.pos=[128,100,70];cam.yaw=0.3;cam.pitch=-0.5;cam.orbitMode=false;}
+    if(e.code==='KeyH')document.getElementById('ui').style.opacity=document.getElementById('ui').style.opacity==='0'?'1':'0';
+    if(e.code==='Digit1')setTime('dawn');
+    if(e.code==='Digit2')setTime('day');
+    if(e.code==='Digit3')setTime('dusk');
+    if(e.code==='Digit4')setTime('night');
+    if(e.code==='Space')e.preventDefault();
+  });
+  document.addEventListener('keyup',e=>keys[e.code]=false);
+
+  document.querySelectorAll('.tbtn').forEach(btn=>{btn.addEventListener('click',()=>setTime(btn.dataset.t));});
+
+  function setTime(t){currentTime=t;timeData={...TIMES[t]};document.querySelectorAll('.tbtn').forEach(b=>b.classList.toggle('active',b.dataset.t===t));}
+  function updateModeUI(){const el=document.getElementById('mode-indicator');if(el)el.textContent=cam.mode==='fly'?'FLY MODE':'WALK MODE';}
+
+  function takeScreenshot(){
+    const flash=document.getElementById('screenshot-flash');
+    flash.classList.add('show');
+    setTimeout(()=>{canvas.toBlob(blob=>{const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='voxel-realm.png';a.click();URL.revokeObjectURL(url);});flash.classList.remove('show');},100);
+  }
+
+  function buildUniforms(elapsed){
+    let target=[
+      cam.pos[0]+Math.sin(cam.yaw)*Math.cos(cam.pitch),
+      cam.pos[1]+Math.sin(cam.pitch),
+      cam.pos[2]+Math.cos(cam.yaw)*Math.cos(cam.pitch)
+    ];
+    let view=mat4lookat(cam.pos,target,[0,1,0]);
+    let proj=mat4perspective(Math.PI/3,canvas.width/canvas.height,0.1,2000);
+    let vp=mat4mul(proj,view);
+    let d=new Float32Array(UNIFORM_SIZE);
+    d.set(vp,U.VIEW_PROJ);
+    d[U.CAM_POS]=cam.pos[0];d[U.CAM_POS+1]=cam.pos[1];d[U.CAM_POS+2]=cam.pos[2];
+    d[U.TIME]=elapsed;
+    d[U.SUN_DIR]=timeData.sunDir[0];d[U.SUN_DIR+1]=timeData.sunDir[1];d[U.SUN_DIR+2]=timeData.sunDir[2];
+    d[U.SUN_INTENSITY]=timeData.sunIntensity;
+    d[U.FOG_DENSITY]=timeData.fogDensity;
+    d[U.FOG_COLOR]=timeData.fogColor[0];d[U.FOG_COLOR+1]=timeData.fogColor[1];d[U.FOG_COLOR+2]=timeData.fogColor[2];
+    d[U.WATER_TIME]=waterTime;
+    d[U.AMBIENT]=timeData.ambient[0];d[U.AMBIENT+1]=timeData.ambient[1];d[U.AMBIENT+2]=timeData.ambient[2];
+    d[U.SUN_COLOR]=timeData.sunColor[0];d[U.SUN_COLOR+1]=timeData.sunColor[1];d[U.SUN_COLOR+2]=timeData.sunColor[2];
+    d[U.BLOOM]=timeData.bloom;
+    d[U.SKY_TOP]=timeData.skyTop[0];d[U.SKY_TOP+1]=timeData.skyTop[1];d[U.SKY_TOP+2]=timeData.skyTop[2];
+    d[U.SKY_HORIZON]=timeData.skyHorizon[0];d[U.SKY_HORIZON+1]=timeData.skyHorizon[1];d[U.SKY_HORIZON+2]=timeData.skyHorizon[2];
+    d[U.SKY_GROUND]=timeData.skyGround[0];d[U.SKY_GROUND+1]=timeData.skyGround[1];d[U.SKY_GROUND+2]=timeData.skyGround[2];
+    d[U.WATER_TINT]=timeData.waterTint[0];d[U.WATER_TINT+1]=timeData.waterTint[1];d[U.WATER_TINT+2]=timeData.waterTint[2];
+    d[U.VIGNETTE]=timeData.vignette;
+    d[U.STARS]=timeData.stars;
+    return d;
+  }
+
+  let lastTime=0,frameCount=0,fpsTime=0,startTime=performance.now();
+
+  function updateCamera(dt){
+    const speed=cam.mode==='fly'?40:20;
+    let fwd=[Math.sin(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),Math.cos(cam.yaw)*Math.cos(cam.pitch)];
+    let right=[Math.cos(cam.yaw),0,-Math.sin(cam.yaw)];
+    if(cam.orbitMode){
+      cam.orbitAngle+=dt*0.12;
+      cam.pos=[cam.orbitCenter[0]+Math.sin(cam.orbitAngle)*cam.orbitDist,cam.orbitCenter[1]+cam.orbitDist*0.4,cam.orbitCenter[2]+Math.cos(cam.orbitAngle)*cam.orbitDist];
+      let lx=cam.orbitCenter[0]-cam.pos[0],ly=cam.orbitCenter[1]-cam.pos[1],lz=cam.orbitCenter[2]-cam.pos[2];
+      cam.pitch=Math.asin(ly/Math.sqrt(lx*lx+ly*ly+lz*lz));
+      cam.yaw=Math.atan2(lx,lz);
+    }else{
+      if(keys['KeyW']){cam.pos[0]+=fwd[0]*speed*dt;cam.pos[1]+=fwd[1]*speed*dt;cam.pos[2]+=fwd[2]*speed*dt;}
+      if(keys['KeyS']){cam.pos[0]-=fwd[0]*speed*dt;cam.pos[1]-=fwd[1]*speed*dt;cam.pos[2]-=fwd[2]*speed*dt;}
+      if(keys['KeyA']){cam.pos[0]-=right[0]*speed*dt;cam.pos[2]-=right[2]*speed*dt;}
+      if(keys['KeyD']){cam.pos[0]+=right[0]*speed*dt;cam.pos[2]+=right[2]*speed*dt;}
+      if(cam.mode==='fly'){if(keys['Space'])cam.pos[1]+=speed*dt;if(keys['ShiftLeft']||keys['ShiftRight'])cam.pos[1]-=speed*dt;}
+      else{if(keys['Space'])cam.pos[1]+=8;let gh=getHeight(Math.floor(cam.pos[0]),Math.floor(cam.pos[2]))+2;if(cam.pos[1]>gh)cam.pos[1]=Math.max(gh,cam.pos[1]-20*dt);else if(cam.pos[1]<gh)cam.pos[1]=Math.min(gh,cam.pos[1]+20*dt);}
+      if(keys['KeyQ'])cam.yaw-=1.5*dt;
+      if(keys['KeyE'])cam.yaw+=1.5*dt;
+    }
+  }
+
+  function render(ts){
+    const elapsed=(ts-startTime)/1000,dt=Math.min((ts-lastTime)/1000,0.05);
+    lastTime=ts;waterTime+=dt;
+    frameCount++;fpsTime+=dt;
+    if(fpsTime>0.5){document.getElementById('fps').textContent=Math.round(frameCount/fpsTime)+' FPS';frameCount=0;fpsTime=0;}
+    updateCamera(dt);
+    resize();
+    const uniforms=buildUniforms(elapsed);
+    device.queue.writeBuffer(uniformBuffer,0,uniforms);
+    const encoder=device.createCommandEncoder();
+
+    const skyPass=encoder.beginRenderPass({colorAttachments:[{view:sceneView,clearValue:{r:0,g:0,b:0,a:1},loadOp:'clear',storeOp:'store'}],depthStencilAttachment:{view:depthTexture.createView(),depthClearValue:1.0,depthLoadOp:'clear',depthStoreOp:'store'}});
+    skyPass.setPipeline(skyPipeline);skyPass.setBindGroup(0,mainBG);skyPass.draw(6);skyPass.end();
+
+    const mainPass=encoder.beginRenderPass({colorAttachments:[{view:sceneView,loadOp:'load',storeOp:'store'}],depthStencilAttachment:{view:depthTexture.createView(),depthLoadOp:'load',depthStoreOp:'store'}});
+    mainPass.setPipeline(pipeline);mainPass.setBindGroup(0,mainBG);
+    for(const c of chunks)if(c.solidVB&&c.solidCount>0){mainPass.setVertexBuffer(0,c.solidVB);mainPass.draw(c.solidCount);}
+    mainPass.setPipeline(waterPipeline);mainPass.setBindGroup(0,mainBG);
+    for(const c of chunks)if(c.waterVB&&c.waterCount>0){mainPass.setVertexBuffer(0,c.waterVB);mainPass.draw(c.waterCount);}
+    mainPass.end();
+
+    const postPass=encoder.beginRenderPass({colorAttachments:[{view:context.getCurrentTexture().createView(),loadOp:'clear',storeOp:'store'}]});
+    postPass.setPipeline(postPipeline);postPass.setBindGroup(0,postBG);postPass.draw(6);postPass.end();
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(render);
+  }
+
+  const loading=document.getElementById('loading');
+  loading.style.opacity='0';
+  setTimeout(()=>{loading.style.display='none';},800);
+  requestAnimationFrame(render);
+}
+
+init().catch(err=>{console.error('Init failed:',err);document.getElementById('loading-status').textContent='Error: '+err.message;});
+</script>
+</body>
+</html>

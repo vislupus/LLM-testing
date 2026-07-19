@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebGPU Voxel Fantasy Diorama</title>
+<style>
+html,body,canvas{margin:0;padding:0;width:100%;height:100%;display:block;background:#000;font-family:sans-serif;overflow:hidden}
+#ui{position:fixed;top:12px;left:12px;z-index:10;color:#fff;pointer-events:none}
+button{pointer-events:auto;margin:2px 4px;padding:4px 8px;background:#222;border:1px solid #555;color:#fff;font-size:14px;border-radius:4px;cursor:pointer}
+button:hover{background:#555}
+#fps{position:absolute;top:0;right:12px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div>
+    <button data-tod="dawn">Dawn</button>
+    <button data-tod="day">Day</button>
+    <button data-tod="dusk">Dusk</button>
+    <button data-tod="night">Night</button>
+    <span id="fps"></span>
+  </div>
+  <div>WASD move • Space/Ctrl up/down • Right-drag look • O orbit • P screenshot</div>
+</div>
+
+<script type="module">
+/* -----------------------------------------------------------
+   Utility helpers
+----------------------------------------------------------- */
+const TAU = Math.PI*2;
+const vec3 = (x=0,y=0,z=0)=>new Float32Array([x,y,z]);
+const add  = (a,b)=>vec3(a[0]+b[0],a[1]+b[1],a[2]+b[2]);
+const sub  = (a,b)=>vec3(a[0]-b[0],a[1]-b[1],a[2]-b[2]);
+const muls = (a,s)=>vec3(a[0]*s,a[1]*s,a[2]*s);
+const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+const now  =()=>performance.now()/1000;
+function lerp(a,b,t){return a+(b-a)*t}
+
+/* -----------------------------------------------------------
+   WebGPU setup
+----------------------------------------------------------- */
+const canvas = document.getElementById("c");
+const adapter= await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const ctx    = canvas.getContext("webgpu");
+const fmt    = navigator.gpu.getPreferredCanvasFormat();
+ctx.configure({device,format:fmt,alphaMode:"opaque"});
+
+/* Resize */
+function fitCanvas(){
+  const dpr = window.devicePixelRatio||1;
+  const w   = canvas.clientWidth * dpr|0;
+  const h   = canvas.clientHeight* dpr|0;
+  if(canvas.width!==w || canvas.height!==h){
+    canvas.width=w;canvas.height=h;
+  }
+}
+window.addEventListener("resize",fitCanvas);fitCanvas();
+
+/* -----------------------------------------------------------
+   Camera
+----------------------------------------------------------- */
+class Camera{
+  constructor(){
+    this.pos = vec3(128,128,128);
+    this.pitch= -0.35; this.yaw= 0.8;
+    this.vel = vec3();
+    this.mode="fly"; // or "orbit"
+    this.orbitTarget=vec3(128,64,128);
+    this.speed=40;
+  }
+  get view(){
+    const t = this.mode==="orbit" ? this.orbitTarget : add(this.pos, this.lookDir);
+    return mat4LookAt(this.pos,t,vec3(0,1,0));
+  }
+  get proj(){
+    const aspect=canvas.width/canvas.height;
+    return mat4Perspective(70*Math.PI/180,aspect,0.1,2048);
+  }
+  get lookDir(){
+    return vec3(
+      Math.cos(this.pitch)*Math.sin(this.yaw),
+      Math.sin(this.pitch),
+      Math.cos(this.pitch)*Math.cos(this.yaw)
+    );
+  }
+}
+const cam=new Camera();
+
+/* -----------------------------------------------------------
+   Matrices (minimal) – column major Float32Array(16)
+----------------------------------------------------------- */
+function mat4Perspective(fovy,aspect,near,far){
+  const f=1/Math.tan(fovy/2), nf=1/(near-far);
+  const out=new Float32Array(16);
+  out[0]=f/aspect;out[5]=f;out[10]=(far+near)*nf;
+  out[11]=-1;out[14]=2*far*near*nf;return out;
+}
+function mat4LookAt(eye,ctr,up){
+  const z=sub(eye,ctr);let len=Math.hypot(...z);
+  if(len) z.set(z.map(v=>v/len));        // normalize z
+  let x = [up[1]*z[2]-up[2]*z[1],
+           up[2]*z[0]-up[0]*z[2],
+           up[0]*z[1]-up[1]*z[0]];
+  len=Math.hypot(...x); if(len)x=x.map(v=>v/len);
+  const y=[z[1]*x[2]-z[2]*x[1],
+           z[2]*x[0]-z[0]*x[2],
+           z[0]*x[1]-z[1]*x[0]];
+  const out=new Float32Array(16);
+  out[0]=x[0];out[1]=y[0];out[2]=z[0];out[3]=0;
+  out[4]=x[1];out[5]=y[1];out[6]=z[1];out[7]=0;
+  out[8]=x[2];out[9]=y[2];out[10]=z[2];out[11]=0;
+  out[12]=-(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]);
+  out[13]=-(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]);
+  out[14]=-(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]);
+  out[15]=1;return out;
+}
+
+/* -----------------------------------------------------------
+   Voxel world config
+----------------------------------------------------------- */
+const CHUNK = 32;
+const world = new Map();         // key = "x,y,z" chunk coords
+const palette = {
+  grass :[0.3,0.8,0.3],
+  dirt  :[0.55,0.35,0.2],
+  stone :[0.5,0.5,0.55],
+  water :[0.1,0.3,0.8],
+  wood  :[0.45,0.25,0.1],
+  lava  :[1.0,0.3,0.0],
+  plaster:[0.8,0.8,0.9],
+  roof  :[0.7,0.2,0.2],
+  gold  :[1.0,0.85,0.1],
+  basalt:[0.2,0.2,0.25],
+  snow  :[0.9,0.9,0.95],
+  glass :[0.6,0.8,1.0], // emissive windows
+};
+
+/* Block IDs */
+const AIR=0;
+const WATER=1;
+const GRASS=2;
+const DIRT=3;
+const STONE=4;
+const WOOD=5;
+const PLASTER=6;
+const ROOF=7;
+const GOLD=8;
+const LAVA=9;
+const BASALT=10;
+const SNOW=11;
+const GLASS=12;
+
+/* Palette array for GPU */
+const paletteArr = new Float32Array(Object.keys(palette).length*3);
+Object.values(palette).forEach((rgb,i)=>paletteArr.set(rgb,i*3));
+
+/* -----------------------------------------------------------
+   Chunk generation helpers
+----------------------------------------------------------- */
+function chunkKey(cx,cy,cz){return cx+","+cy+","+cz}
+function getBlock(x,y,z){
+  const cx=Math.floor(x/CHUNK), cy=Math.floor(y/CHUNK), cz=Math.floor(z/CHUNK);
+  const cKey=chunkKey(cx,cy,cz); const chunk=world.get(cKey);
+  if(!chunk) return AIR;
+  const lx=((x%CHUNK)+CHUNK)%CHUNK, ly=((y%CHUNK)+CHUNK)%CHUNK, lz=((z%CHUNK)+CHUNK)%CHUNK;
+  return chunk.data[lx+ly*CHUNK+lz*CHUNK*CHUNK]||AIR;
+}
+function setBlock(x,y,z,id){
+  const cx=Math.floor(x/CHUNK), cy=Math.floor(y/CHUNK), cz=Math.floor(z/CHUNK);
+  const cKey=chunkKey(cx,cy,cz);
+  let chunk=world.get(cKey);
+  if(!chunk){chunk={data:new Uint8Array(CHUNK*CHUNK*CHUNK),mesh:null,dirty:true};world.set(cKey,chunk);}
+  const lx=((x%CHUNK)+CHUNK)%CHUNK, ly=((y%CHUNK)+CHUNK)%CHUNK, lz=((z%CHUNK)+CHUNK)%CHUNK;
+  chunk.data[lx+ly*CHUNK+lz*CHUNK*CHUNK]=id;
+  chunk.dirty=true;
+}
+
+/* -----------------------------------------------------------
+   Hand-built diorama layout
+----------------------------------------------------------- */
+const HEIGHT = 128;
+
+/* Basic terrain heightmap – gentle hills */
+function groundH(x,z){
+  return 40 + 6*Math.sin(x*0.05)+4*Math.sin(z*0.07)+3*Math.sin((x+z)*0.02);
+}
+/* Brushes */
+function fillRect(x0,y0,z0,x1,y1,z1,id){
+  for(let x=x0;x<=x1;++x)
+  for(let y=y0;y<=y1;++y)
+  for(let z=z0;z<=z1;++z) setBlock(x,y,z,id);
+}
+function placeCylinder(cx,cy,cz,r,h,id){
+  for(let x=-r;x<=r;++x)
+  for(let z=-r;z<=r;++z)
+    if(x*x+z*z<=r*r)
+      for(let y=0;y<h;++y) setBlock(cx+x,cy+y,cz+z,id);
+}
+function placeBox(x0,y0,z0,x1,y1,z1,wallsId,roofId){
+  fillRect(x0,y0,z0,x1,y0,z1,wallsId);          // floor
+  fillRect(x0,y1,z0,x1,y1,z1,roofId);           // roof
+  for(let y=y0;y<=y1;++y){                      // walls
+    fillRect(x0,y,z0,x0,y,z1,wallsId);
+    fillRect(x1,y,z0,x1,y,z1,wallsId);
+    fillRect(x0,y,z0,x1,y,z0,wallsId);
+    fillRect(x0,y,z1,x1,y,z1,wallsId);
+  }
+}
+
+/* Terrain & water */
+for(let x=-256;x<=256;++x)
+for(let z=-256;z<=256;++z){
+  const h=groundH(x,z)|0;
+  for(let y=0;y<=h;++y){
+    setBlock(x,y,z, y===h ? GRASS : (y>h-4?DIRT:STONE));
+  }
+  /* River */
+  if(Math.abs(z-Math.sin(x*0.015)*60)<4){
+    for(let y= h+1 ; y<=46 ; ++y) setBlock(x,y,z,WATER);
+  }
+}
+/* Castle hill terraces */
+for(let r=60, y=groundH(0,0); r>10; r-=10,y+=4){
+  placeCylinder(0,y,0,r,4,STONE);
+  fillRect(-r+1,y+4,-r+1,r-1,y+4,r-1,GRASS);
+}
+/* Castle walls & keep */
+placeCylinder(0, HEIGHT-30,0,48,10,STONE);
+placeCylinder(0, HEIGHT-20,0,16,20,STONE); // keep core
+placeCylinder(0, HEIGHT,   0,18,2,ROOF);   // keep roof
+/* Towers */
+[[40,40],[40,-40],[-40,40],[-40,-40]].forEach(([tx,tz])=>{
+  placeCylinder(tx,HEIGHT-30,tz,6,22,STONE);
+  placeCylinder(tx,HEIGHT-8 ,tz,7,2,ROOF);
+});
+/* Village houses (procedural scatter) */
+for(let i=0;i<30;++i){
+  const angle=Math.random()*TAU;
+  const dist = 100+Math.random()*40;
+  const x = Math.cos(angle)*dist;
+  const z = Math.sin(angle)*dist + Math.sin(x*0.015)*60; // follow river curvature
+  const base = groundH(x,z)|0;
+  const w = 4+Math.random()*4|0, d=4+Math.random()*4|0, h=4+Math.random()*3|0;
+  placeBox(x-w,base,z-d,x+w,base+h,z+d,PLASTER,ROOF);
+}
+/* Volcano */
+for(let r=30, y=groundH(200,-200); r>3; r-=3,y+=6){
+  placeCylinder(200,y,-200,r,6,BASALT);
+}
+for(let y=groundH(200,-200)+45;y<groundH(200,-200)+60;++y)
+  placeCylinder(200,y,-200,7,1,LAVA);
+
+/* Snowy mountains */
+for(let x=-180;x<-60;++x)
+for(let z=140;z<260;++z){
+  const h=70+20*Math.random();
+  for(let y=groundH(x,z);y<=h;++y){
+    setBlock(x,y,z,y>h-4?SNOW:STONE);
+  }
+}
+
+/* Simple caves */
+for(let i=0;i<500;++i){
+  const x = (Math.random()-0.5)*512|0;
+  const y = 20+Math.random()*40|0;
+  const z = (Math.random()-0.5)*512|0;
+  for(let dx=-2;dx<=2;++dx)
+  for(let dy=-2;dy<=2;++dy)
+  for(let dz=-2;dz<=2;++dz)
+    if(dx*dx+dy*dy+dz*dz<4) setBlock(x+dx,y+dy,z+dz,AIR);
+}
+
+/* -----------------------------------------------------------
+   Greedy-quad meshing (face merge)  – CPU side
+----------------------------------------------------------- */
+function rebuildChunkMesh(cx,cy,cz){
+  const cKey=chunkKey(cx,cy,cz);
+  const chunk=world.get(cKey); if(!chunk||!chunk.dirty)return;
+  const v=[],c=[],n=[];
+  const dims=[CHUNK,CHUNK,CHUNK];
+  const data=chunk.data;
+  for(let d=0;d<3;++d){
+    const u=(d+1)%3,vv=(d+2)%3;
+    const x=[0,0,0];
+    const q=[0,0,0]; q[d]=1;
+    const mask = new Int16Array(dims[u]*dims[vv]);
+    for(x[d]=-1;x[d]<dims[d];){
+      let nMask=0;
+      x[d]++;
+      /* Build mask */
+      for(x[vv]=0;x[vv]<dims[vv];++x[vv])
+      for(x[u]=0;x[u]<dims[u];++x[u]){
+        const a= (x[d]>=0)? get(x[0],x[1],x[2]) : 0;
+        const b= (x[d]<dims[d]-1)? get(x[0]+q[0],x[1]+q[1],x[2]+q[2]) : 0;
+        const id = a && !b ? a : (!a && b ? -b : 0);
+        mask[nMask++]=id;
+      }
+      /* Greedy merge */
+      let i=0;
+      for(let j=0;j<dims[vv];++j){
+        for(let k=0;k<dims[u];){
+          const id=mask[i];
+          if(id){
+            let w, h;
+            for(w=1;k+w<dims[u] && mask[i+w]===id;++w);
+            for(h=1;j+h<dims[vv];++h){
+              let m=true;
+              for(let l=0;l<w;++l) if(mask[i+l+h*dims[u]]!==id){m=false;break}
+              if(!m)break;
+            }
+            /* Add quad */
+            x[u]=k; x[vv]=j;
+            const du=[0,0,0]; const dv=[0,0,0];
+            du[u]=w; dv[vv]=h;
+            const s=id>0?1:-1; const block=Math.abs(id);
+            const off=[cx*CHUNK,cy*CHUNK,cz*CHUNK];
+            const addVert=p=>{
+              v.push(p[0]+off[0],p[1]+off[1],p[2]+off[2]);
+              c.push(block);
+              n.push(...q.map(qv=>qv*s));
+            };
+            addVert([x[0],      x[1],      x[2]     ]);
+            addVert([x[0]+du[0],x[1]+du[1],x[2]+du[2]]);
+            addVert([x[0]+du[0]+dv[0],x[1]+du[1]+dv[1],x[2]+du[2]+dv[2]]);
+            addVert([x[0]+dv[0],x[1]+dv[1],x[2]+dv[2]]);
+            /* zero mask */
+            for(let hx=0;hx<h;++hx)
+              for(let wx=0;wx<w;++wx)
+                mask[i+wx+hx*dims[u]]=0;
+            k+=w; i+=w;
+          }else{++k; ++i;}
+        }
+      }
+    }
+  }
+  /* GPU buffers */
+  const vertBuf = device.createBuffer({
+    size:v.length*4, usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST
+  });
+  device.queue.writeBuffer(vertBuf,0,new Float32Array(v));
+  const normBuf = device.createBuffer({
+    size:n.length*4, usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST
+  });
+  device.queue.writeBuffer(normBuf,0,new Float32Array(n));
+  const colBuf = device.createBuffer({
+    size:c.length*4, usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST
+  });
+  device.queue.writeBuffer(colBuf,0,new Uint32Array(c));
+  chunk.mesh={vCount:v.length/3,vertBuf,normBuf,colBuf};
+  chunk.dirty=false;
+
+  /* --- Helpers --- */
+  function get(ix,iy,iz){
+    const idx=ix+iy*dims[0]+iz*dims[0]*dims[1];
+    return data[idx];
+  }
+}
+
+/* -----------------------------------------------------------
+   World rebuild pass
+----------------------------------------------------------- */
+function rebuildDirtyChunks(){
+  for(const key of world.keys()){
+    const [cx,cy,cz]=key.split(',').map(Number);
+    rebuildChunkMesh(cx,cy,cz);
+  }
+}
+
+/* -----------------------------------------------------------
+   GPU pipeline
+----------------------------------------------------------- */
+const module = device.createShaderModule({code:/*wgsl*/`
+struct VSOut {
+  @builtin(position) pos: vec4f,
+  @location(0) worldPos: vec3f,
+  @location(1) normal: vec3f,
+  @location(2) colIdx: u32,
+};
+struct Uniforms{
+  viewProj: mat4x4f,
+  sunDir  : vec3f,
+  time    : f32
+};
+@group(0) @binding(0) var<uniform> uni: Uniforms;
+@group(0) @binding(1) var<storage,read> palette: array<vec3f>;
+
+@vertex
+fn vs(@location(0) position: vec3f,
+      @location(1) normal: vec3f,
+      @location(2) colIdx: u32)->VSOut{
+  var out:VSOut;
+  out.pos = uni.viewProj * vec4f(position,1.);
+  out.worldPos=position;
+  out.normal=normal;
+  out.colIdx=colIdx;
+  return out;
+}
+
+fn tonemap(x:vec3f)->vec3f{
+  return x/(x+vec3f(1.));
+}
+
+@fragment
+fn fs(in:VSOut)->@location(0) vec4f{
+  let base = palette[in.colIdx];
+  let N = normalize(in.normal);
+  let L = normalize(-uni.sunDir);
+  let diff = max(dot(N,L),0.);
+  let sky = vec3f(0.5,0.6,0.9);
+  let col = base*0.2 + base*diff*0.8;
+  /* Fake fog */
+  let dist = length(in.worldPos);
+  let fog = clamp((dist-120.)/200.,0.,1.);
+  col = mix(col, sky, fog);
+  col = tonemap(col);
+  return vec4f(col,1.);
+}
+`});
+const pipeline = device.createRenderPipeline({
+  layout:"auto",
+  vertex:{
+    module,
+    entryPoint:"vs",
+    buffers:[
+      {arrayStride:12,attributes:[{shaderLocation:0,format:"float32x3",offset:0}]},
+      {arrayStride:12,attributes:[{shaderLocation:1,format:"float32x3",offset:0}]},
+      {arrayStride:4, attributes:[{shaderLocation:2,format:"uint32",offset:0}]}
+    ]
+  },
+  fragment:{
+    module,
+    entryPoint:"fs",
+    targets:[{format:fmt}]
+  },
+  primitive:{cullMode:"back"}
+});
+/* Uniform + palette buffers */
+const uniBuf = device.createBuffer({
+  size:80, usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST
+});
+const palBuf = device.createBuffer({
+  size:paletteArr.byteLength, usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST
+});
+device.queue.writeBuffer(palBuf,0,paletteArr);
+const bind = device.createBindGroup({
+  layout:pipeline.getBindGroupLayout(0),
+  entries:[{binding:0,resource:{buffer:uniBuf}},
+           {binding:1,resource:{buffer:palBuf}}]
+});
+
+/* -----------------------------------------------------------
+   Input
+----------------------------------------------------------- */
+const keys=new Set();
+window.addEventListener("keydown",e=>{keys.add(e.code); if(e.code==="KeyO")cam.mode=cam.mode==="orbit"?"fly":"orbit"; if(e.code==="KeyP")screenshot();});
+window.addEventListener("keyup",e=>keys.delete(e.code));
+let dragging=false,lastX=0,lastY=0;
+canvas.addEventListener("mousedown",e=>{if(e.button===2){dragging=true;lastX=e.clientX;lastY=e.clientY;}});
+window.addEventListener("mouseup",e=>dragging=false);
+window.addEventListener("mousemove",e=>{
+  if(!dragging)return;
+  const dx=(e.clientX-lastX)*0.003, dy=(e.clientY-lastY)*0.003;
+  lastX=e.clientX; lastY=e.clientY;
+  cam.yaw   -=dx;
+  cam.pitch = clamp(cam.pitch-dy,-1.4,1.4);
+});
+
+/* -----------------------------------------------------------
+   Time-of-day
+----------------------------------------------------------- */
+const TOD={
+  dawn :{sun:[-0.3,0.4,0.8]},
+  day  :{sun:[-0.8,0.7,0.4]},
+  dusk :{sun:[0.3,0.2,-0.6]},
+  night:{sun:[0.0,-1.0,0.0]}
+};
+let curTOD="dawn";
+document.querySelectorAll("button[data-tod]").forEach(b=>b.onclick=()=>{curTOD=b.dataset.tod});
+
+/* -----------------------------------------------------------
+   Main loop
+----------------------------------------------------------- */
+let tPrev=now();
+function loop(){
+  fitCanvas();
+  const t=now(); const dt=t-tPrev; tPrev=t;
+
+  /* Camera move */
+  if(cam.mode==="fly"){
+    const dir=cam.lookDir;
+    const right=vec3(dir[2],0,-dir[0]);
+    if(keys.has("KeyW")) cam.vel=add(cam.vel,muls(dir,cam.speed*dt));
+    if(keys.has("KeyS")) cam.vel=sub(cam.vel,muls(dir,cam.speed*dt));
+    if(keys.has("KeyA")) cam.vel=sub(cam.vel,muls(right,cam.speed*dt));
+    if(keys.has("KeyD")) cam.vel=add(cam.vel,muls(right,cam.speed*dt));
+    if(keys.has("Space")) cam.vel[1]+=cam.speed*dt;
+    if(keys.has("ControlLeft")) cam.vel[1]-=cam.speed*dt;
+    cam.pos=add(cam.pos,cam.vel);
+    cam.vel=muls(cam.vel,0.85);
+  }else{ /* orbit */
+    const r=200, speed=0.2;
+    cam.pos[0]=cam.orbitTarget[0]+Math.cos(t*speed)*r;
+    cam.pos[2]=cam.orbitTarget[2]+Math.sin(t*speed)*r;
+    cam.pos[1]=cam.orbitTarget[1]+80;
+    cam.yaw   =Math.PI+Math.atan2(cam.orbitTarget[0]-cam.pos[0],cam.orbitTarget[2]-cam.pos[2]);
+    cam.pitch =-0.4;
+  }
+
+  /* Update uniforms */
+  const viewProj=new Float32Array(16);
+  viewProj.set(cam.proj);
+  /* multiply proj*view (rough manual multiply) */
+  const v=cam.view; // 16
+  /* naive 4x4 * 4x4 */
+  const m=new Float32Array(16);
+  for(let r=0;r<4;++r)
+    for(let c=0;c<4;++c){
+      m[c+r*4]=viewProj[c]*v[r*4]+viewProj[c+4]*v[r*4+1]+viewProj[c+8]*v[r*4+2]+viewProj[c+12]*v[r*4+3];
+    }
+  device.queue.writeBuffer(uniBuf,0,m);
+  const sunDir=TOD[curTOD].sun;
+  device.queue.writeBuffer(uniBuf,64,new Float32Array(sunDir));
+  device.queue.writeBuffer(uniBuf,76,new Float32Array([t]));
+
+  /* Rebuild dirty meshes lazily */
+  rebuildDirtyChunks();
+
+  /* Render */
+  const encoder=device.createCommandEncoder();
+  const tex=ctx.getCurrentTexture().createView();
+  const pass=encoder.beginRenderPass({colorAttachments:[{view:tex,loadOp:"clear",storeOp:"store",clearValue:{r:0,g:0,b:0,a:1}}]});
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0,bind);
+  for(const chunk of world.values()){
+    if(!chunk.mesh)continue;
+    pass.setVertexBuffer(0,chunk.mesh.vertBuf);
+    pass.setVertexBuffer(1,chunk.mesh.normBuf);
+    pass.setVertexBuffer(2,chunk.mesh.colBuf);
+    pass.draw(chunk.mesh.vCount,1,0,0);
+  }
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+
+  /* FPS */
+  fps.textContent=(1/dt).toFixed(0)+" fps";
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* -----------------------------------------------------------
+   Screenshot
+----------------------------------------------------------- */
+function screenshot(){
+  const a=document.createElement("a");
+  a.download="shot-"+Date.now()+".png";
+  a.href=canvas.toDataURL("image/png");
+  a.click();
+}
+/* Prevent right-click menu for camera look */
+canvas.addEventListener("contextmenu",e=>e.preventDefault());
+
+</script>
+</body>
+</html>

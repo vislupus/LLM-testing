@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Voxel Fantasy World - WebGPU</title>
+<style>
+  html, body {
+    margin: 0;
+    overflow: hidden;
+    background: black;
+    font-family: sans-serif;
+  }
+  canvas {
+    display: block;
+  }
+  #ui {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    color: white;
+    z-index: 10;
+  }
+  button {
+    margin: 2px;
+    padding: 6px;
+  }
+</style>
+</head>
+<body>
+<div id="ui">
+  <button onclick="setTime(0)">Dawn</button>
+  <button onclick="setTime(1)">Day</button>
+  <button onclick="setTime(2)">Dusk</button>
+  <button onclick="setTime(3)">Night</button>
+  <button onclick="toggleOrbit()">Orbit</button>
+</div>
+<canvas id="c"></canvas>
+
+<script type="module">
+const canvas = document.getElementById("c");
+canvas.width = innerWidth;
+canvas.height = innerHeight;
+
+// --- WebGPU Setup ---
+if (!navigator.gpu) {
+  alert("WebGPU not supported");
+  throw "";
+}
+
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+
+const context = canvas.getContext("webgpu");
+const format = navigator.gpu.getPreferredCanvasFormat();
+
+context.configure({
+  device,
+  format,
+  alphaMode: "opaque"
+});
+
+// --- Camera ---
+let cam = {
+  x: 80, y: 60, z: 120,
+  pitch: -0.4,
+  yaw: -2.2,
+  speed: 0.5
+};
+
+let orbit = true;
+let timeMode = 1;
+
+function toggleOrbit(){ orbit = !orbit; }
+function setTime(t){ timeMode = t; }
+
+// --- Controls ---
+const keys = {};
+addEventListener("keydown", e => keys[e.key.toLowerCase()] = true);
+addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
+
+canvas.onclick = () => canvas.requestPointerLock();
+
+addEventListener("mousemove", e => {
+  if (document.pointerLockElement === canvas && !orbit) {
+    cam.yaw -= e.movementX * 0.002;
+    cam.pitch -= e.movementY * 0.002;
+    cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch));
+  }
+});
+
+// --- Noise ---
+function noise(x, z) {
+  return Math.sin(x*0.05) * 5 + Math.cos(z*0.05) * 5 + Math.sin(x*0.01+z*0.02)*10;
+}
+
+// --- World generation ---
+const SIZE = 128;
+const HEIGHT = 64;
+
+const world = new Uint8Array(SIZE*SIZE*HEIGHT);
+
+function idx(x,y,z){ return x + z*SIZE + y*SIZE*SIZE; }
+
+function set(x,y,z,v){
+  if(x>=0&&z>=0&&y>=0&&x<SIZE&&z<SIZE&&y<HEIGHT)
+    world[idx(x,y,z)] = v;
+}
+
+// Terrain
+for(let x=0;x<SIZE;x++){
+  for(let z=0;z<SIZE;z++){
+    let h = Math.floor(noise(x,z)+20);
+
+    // river curve
+    let river = Math.abs(z - (SIZE/2 + Math.sin(x*0.05)*10)) < 4;
+
+    for(let y=0;y<h;y++){
+      if(river && y < 18){
+        set(x,y,z,0);
+      } else {
+        set(x,y,z, y<3?3:1);
+      }
+    }
+
+    if(river){
+      for(let y=0;y<18;y++){
+        set(x,y,z,2); // water
+      }
+    }
+  }
+}
+
+// --- Castle (simple voxel structure) ---
+function buildCastle(cx,cz){
+  for(let x=-10;x<=10;x++){
+    for(let z=-10;z<=10;z++){
+      for(let y=20;y<35;y++){
+        if(Math.abs(x)==10||Math.abs(z)==10)
+          set(cx+x,y,cz+z,4);
+      }
+    }
+  }
+
+  // towers
+  for(let dx of [-10,10]){
+    for(let dz of [-10,10]){
+      for(let y=20;y<45;y++){
+        for(let x=-2;x<=2;x++){
+          for(let z=-2;z<=2;z++){
+            if(x*x+z*z<4)
+              set(cx+dx+x,y,cz+dz+z,4);
+          }
+        }
+      }
+    }
+  }
+}
+buildCastle(80,40);
+
+// --- Volcano ---
+function buildVolcano(cx,cz){
+  for(let x=-20;x<=20;x++){
+    for(let z=-20;z<=20;z++){
+      let d = Math.sqrt(x*x+z*z);
+      let h = 40 - d*1.5;
+      for(let y=0;y<h;y++){
+        set(cx+x,y,cz+z,5);
+      }
+    }
+  }
+  for(let y=30;y<45;y++){
+    set(cx,y,cz,6); // lava
+  }
+}
+buildVolcano(30,100);
+
+// --- Mesh generation ---
+let vertices = [];
+
+function pushFace(x,y,z,dir,color){
+  const s = 1;
+  const cube = [
+    [0,0,0],[1,0,0],[1,1,0],[0,1,0],
+    [0,0,1],[1,0,1],[1,1,1],[0,1,1]
+  ];
+  const faces = [
+    [0,1,2,3],[5,4,7,6],[4,0,3,7],
+    [1,5,6,2],[3,2,6,7],[4,5,1,0]
+  ];
+
+  let f = faces[dir];
+  for(let i of f){
+    vertices.push(
+      x+cube[i][0],
+      y+cube[i][1],
+      z+cube[i][2],
+      ...color
+    );
+  }
+}
+
+// Hidden-face meshing
+for(let x=0;x<SIZE;x++){
+  for(let y=0;y<HEIGHT;y++){
+    for(let z=0;z<SIZE;z++){
+      let v = world[idx(x,y,z)];
+      if(!v) continue;
+
+      let color =
+        v==1?[0.3,0.8,0.3]:
+        v==2?[0.2,0.4,1.0]:
+        v==3?[0.5,0.4,0.2]:
+        v==4?[0.7,0.7,0.8]:
+        v==5?[0.2,0.2,0.2]:
+        v==6?[1.0,0.3,0.1]:
+        [1,1,1];
+
+      const dirs = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0],[0,-1,0]];
+
+      dirs.forEach((d,i)=>{
+        let nx=x+d[0], ny=y+d[1], nz=z+d[2];
+        if(nx<0||ny<0||nz<0||nx>=SIZE||ny>=HEIGHT||nz>=SIZE ||
+           world[idx(nx,ny,nz)]==0){
+          pushFace(x,y,z,i,color);
+        }
+      });
+    }
+  }
+}
+
+// --- GPU Buffers ---
+const vBuffer = device.createBuffer({
+  size: vertices.length * 4,
+  usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+});
+device.queue.writeBuffer(vBuffer, 0, new Float32Array(vertices));
+
+// --- Shader ---
+const shader = device.createShaderModule({
+  code: `
+struct VSOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) color: vec3<f32>
+};
+
+@vertex
+fn vs(
+  @location(0) pos: vec3<f32>,
+  @location(1) color: vec3<f32>
+) -> VSOut {
+  var out: VSOut;
+  let scale = 0.02;
+  out.pos = vec4<f32>(
+    (pos.x - 64.0)*scale,
+    (pos.y - 32.0)*scale,
+    (pos.z - 64.0)*scale,
+    1.0
+  );
+  out.color = color;
+  return out;
+}
+
+@fragment
+fn fs(in: VSOut) -> @location(0) vec4<f32> {
+  return vec4<f32>(in.color, 1.0);
+}
+`
+});
+
+// --- Pipeline ---
+const pipeline = device.createRenderPipeline({
+  layout: "auto",
+  vertex: {
+    module: shader,
+    entryPoint: "vs",
+    buffers: [{
+      arrayStride: 24,
+      attributes: [
+        { shaderLocation: 0, offset: 0, format: "float32x3" },
+        { shaderLocation: 1, offset: 12, format: "float32x3" }
+      ]
+    }]
+  },
+  fragment: {
+    module: shader,
+    entryPoint: "fs",
+    targets: [{ format }]
+  },
+  primitive: {
+    topology: "triangle-list",
+    cullMode: "back"
+  }
+});
+
+// --- Render loop ---
+function frame(){
+  if(orbit){
+    cam.yaw += 0.002;
+  } else {
+    if(keys["w"]) cam.z -= Math.cos(cam.yaw)*cam.speed;
+    if(keys["s"]) cam.z += Math.cos(cam.yaw)*cam.speed;
+    if(keys["a"]) cam.x -= Math.sin(cam.yaw)*cam.speed;
+    if(keys["d"]) cam.x += Math.sin(cam.yaw)*cam.speed;
+    if(keys["q"]) cam.y -= cam.speed;
+    if(keys["e"]) cam.y += cam.speed;
+  }
+
+  const encoder = device.createCommandEncoder();
+  const view = context.getCurrentTexture().createView();
+
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{
+      view,
+      clearValue: { r:0.05,g:0.07,b:0.1,a:1 },
+      loadOp: "clear",
+      storeOp: "store"
+    }]
+  });
+
+  pass.setPipeline(pipeline);
+  pass.setVertexBuffer(0, vBuffer);
+  pass.draw(vertices.length / 6);
+  pass.end();
+
+  device.queue.submit([encoder.finish()]);
+  requestAnimationFrame(frame);
+}
+
+frame();
+</script>
+</body>
+</html>

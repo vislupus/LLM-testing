@@ -29,3 +29,8 @@
 29 - PDF to HTML exam
 30 - 3D animation
 31 - Mobile App Prototype
+32 - SVG pagoda with dragon
+33 - SVG infographic
+34 - SVG learning interface
+35 - Biological cell simulation
+36 - Voxel world

@@ -1,0 +1,1352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Sakura Pagoda — Cinematic 3D</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0a0a10;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#fff;}
+  #stage{position:fixed;inset:0;width:100vw;height:100vh;display:block;}
+  #stage.gl{image-rendering:auto;}
+  .ui{position:fixed;left:18px;top:16px;z-index:10;pointer-events:none;text-shadow:0 1px 6px rgba(0,0,0,.6);opacity:.9;}
+  .ui h1{font-size:14px;font-weight:600;letter-spacing:.16em;margin:0;text-transform:uppercase;color:#ffd9e6;}
+  .ui p{font-size:11px;margin:4px 0 0;color:#e9e9f0;opacity:.75;letter-spacing:.04em;}
+  .badge{position:fixed;right:18px;bottom:16px;z-index:10;font-size:10px;letter-spacing:.2em;color:#ffd9e6;opacity:.7;text-transform:uppercase;text-shadow:0 1px 4px rgba(0,0,0,.6);}
+  .vignette{position:fixed;inset:0;pointer-events:none;z-index:5;background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.55) 100%);mix-blend-mode:multiply;}
+  .grain{position:fixed;inset:0;pointer-events:none;z-index:6;opacity:.06;mix-blend-mode:overlay;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .6 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");}
+</style>
+</head>
+<body>
+<canvas id="stage" class="gl"></canvas>
+<div class="vignette"></div>
+<div class="grain"></div>
+<div class="ui">
+  <h1>Sakura Pagoda</h1>
+  <p>A cinematic study in WebGL</p>
+</div>
+<div class="badge">reel · 01</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   SAKURA PAGODA — Cinematic 3D, single-file WebGL
+   ----------------------------------------------------------------------------
+   - Pure WebGL 1.0 (no Three.js, no external libs)
+   - Procedural geometry, custom GLSL shaders
+   - Animated camera orbit, golden-hour directional + ambient + fill lights
+   - Soft shadow approximation, fog, tone mapping
+   - Two-pass post: bloom + vignette/CA/grain
+   - Particle system: falling sakura petals
+   - Animated koi in the pond
+   ============================================================================ */
+
+const canvas = document.getElementById("stage");
+const gl = canvas.getContext("webgl", {antialias:true, alpha:false, premultipliedAlpha:false, preserveDrawingBuffer:false});
+if(!gl){ document.body.innerHTML="<p style='color:#fff;padding:30px'>WebGL not supported.</p>"; throw new Error("no webgl"); }
+
+/* ----------------------------- 1. MATH ------------------------------------ */
+const V = {
+  sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],
+  add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],
+  scale:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],
+  dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],
+  len:a=>Math.hypot(a[0],a[1],a[2]),
+  norm:a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l];},
+};
+const M = {
+  ident:()=>new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+  mul:(a,b)=>{const o=new Float32Array(16);
+    for(let i=0;i<4;i++)for(let j=0;j<4;j++){o[i*4+j]=a[j]*b[i*4]+a[4+j]*b[i*4+1]+a[8+j]*b[i*4+2]+a[12+j]*b[i*4+3];}
+    return o;},
+  translate:(m,x,y,z)=>{const o=new Float32Array(m);o[12]=m[0]*x+m[4]*y+m[8]*z+m[12];o[13]=m[1]*x+m[5]*y+m[9]*z+m[13];o[14]=m[2]*x+m[6]*y+m[10]*z+m[14];o[15]=m[3]*x+m[7]*y+m[11]*z+m[15];return o;},
+  scale:(m,sx,sy,sz)=>{const o=new Float32Array(16);
+    o[0]=m[0]*sx;o[1]=m[1]*sx;o[2]=m[2]*sx;o[3]=m[3]*sx;
+    o[4]=m[4]*sy;o[5]=m[5]*sy;o[6]=m[6]*sy;o[7]=m[7]*sy;
+    o[8]=m[8]*sz;o[9]=m[9]*sz;o[10]=m[10]*sz;o[11]=m[11]*sz;
+    o[12]=m[12];o[13]=m[13];o[14]=m[14];o[15]=m[15];
+    return o;},
+  rotateY:(m,a)=>{const c=Math.cos(a),s=Math.sin(a),o=new Float32Array(16);
+    o[0]=m[0]*c+m[8]*-s;o[1]=m[1]*c+m[9]*-s;o[2]=m[2]*c+m[10]*-s;o[3]=m[3]*c+m[11]*-s;
+    o[4]=m[4];o[5]=m[5];o[6]=m[6];o[7]=m[7];
+    o[8]=m[0]*s+m[8]*c;o[9]=m[1]*s+m[9]*c;o[10]=m[2]*s+m[10]*c;o[11]=m[3]*s+m[11]*c;
+    o[12]=m[12];o[13]=m[13];o[14]=m[14];o[15]=m[15];return o;},
+  rotateX:(m,a)=>{const c=Math.cos(a),s=Math.sin(a),o=new Float32Array(16);
+    o[0]=m[0];o[1]=m[1];o[2]=m[2];o[3]=m[3];
+    o[4]=m[4]*c+m[8]*s;o[5]=m[5]*c+m[9]*s;o[6]=m[6]*c+m[10]*s;o[7]=m[7]*c+m[11]*s;
+    o[8]=m[4]*-s+m[8]*c;o[9]=m[5]*-s+m[9]*c;o[10]=m[6]*-s+m[10]*c;o[11]=m[7]*-s+m[11]*c;
+    o[12]=m[12];o[13]=m[13];o[14]=m[14];o[15]=m[15];return o;},
+  rotateZ:(m,a)=>{const c=Math.cos(a),s=Math.sin(a),o=new Float32Array(16);
+    o[0]=m[0]*c+m[4]*s;o[1]=m[1]*c+m[5]*s;o[2]=m[2]*c+m[6]*s;o[3]=m[3]*c+m[7]*s;
+    o[4]=m[0]*-s+m[4]*c;o[5]=m[1]*-s+m[5]*c;o[6]=m[2]*-s+m[6]*c;o[7]=m[3]*-s+m[7]*c;
+    o[8]=m[8];o[9]=m[9];o[10]=m[10];o[11]=m[11];
+    o[12]=m[12];o[13]=m[13];o[14]=m[14];o[15]=m[15];return o;},
+  perspective:(fov,asp,n,f)=>{const t=1/Math.tan(fov/2),o=new Float32Array(16);
+    o[0]=t/asp;o[5]=t;o[10]=(f+n)/(n-f);o[11]=-1;o[14]=2*f*n/(n-f);o[15]=0;return o;},
+  lookAt:(eye,tgt,up)=>{const f=V.norm(V.sub(tgt,eye)),s=V.norm(V.cross(f,up)),u=V.cross(s,f),o=new Float32Array(16);
+    o[0]=s[0];o[4]=s[1];o[8]=s[2];o[12]=-V.dot(s,eye);
+    o[1]=u[0];o[5]=u[1];o[9]=u[2];o[13]=-V.dot(u,eye);
+    o[2]=-f[0];o[6]=-f[1];o[10]=-f[2];o[14]=V.dot(f,eye);
+    o[3]=0;o[7]=0;o[11]=0;o[15]=1;return o;},
+  invert:(m)=>{const o=new Float32Array(16),a=m;
+    o[0]=a[5]*a[10]*a[15]-a[5]*a[11]*a[14]-a[9]*a[6]*a[15]+a[9]*a[7]*a[14]+a[13]*a[6]*a[11]-a[13]*a[7]*a[10];
+    o[4]=-a[4]*a[10]*a[15]+a[4]*a[11]*a[14]+a[8]*a[6]*a[15]-a[8]*a[7]*a[14]-a[12]*a[6]*a[11]+a[12]*a[7]*a[10];
+    o[8]=a[4]*a[9]*a[15]-a[4]*a[11]*a[13]-a[8]*a[5]*a[15]+a[8]*a[7]*a[13]+a[12]*a[5]*a[11]-a[12]*a[7]*a[9];
+    o[12]=-a[4]*a[9]*a[14]+a[4]*a[10]*a[13]+a[8]*a[5]*a[14]-a[8]*a[6]*a[13]-a[12]*a[5]*a[10]+a[12]*a[6]*a[9];
+    o[1]=-a[1]*a[10]*a[15]+a[1]*a[11]*a[14]+a[9]*a[2]*a[15]-a[9]*a[3]*a[14]-a[13]*a[2]*a[11]+a[13]*a[3]*a[10];
+    o[5]=a[0]*a[10]*a[15]-a[0]*a[11]*a[14]-a[8]*a[2]*a[15]+a[8]*a[3]*a[14]+a[12]*a[2]*a[11]-a[12]*a[3]*a[10];
+    o[9]=-a[0]*a[9]*a[15]+a[0]*a[11]*a[13]+a[8]*a[1]*a[15]-a[8]*a[3]*a[13]-a[12]*a[1]*a[11]+a[12]*a[3]*a[9];
+    o[13]=a[0]*a[9]*a[14]-a[0]*a[10]*a[13]-a[8]*a[1]*a[14]+a[8]*a[2]*a[13]+a[12]*a[1]*a[10]-a[12]*a[2]*a[9];
+    o[2]=a[1]*a[6]*a[15]-a[1]*a[7]*a[14]-a[5]*a[2]*a[15]+a[5]*a[3]*a[14]+a[13]*a[2]*a[7]-a[13]*a[3]*a[6];
+    o[6]=-a[0]*a[6]*a[15]+a[0]*a[7]*a[14]+a[4]*a[2]*a[15]-a[4]*a[3]*a[14]-a[12]*a[2]*a[7]+a[12]*a[3]*a[6];
+    o[10]=a[0]*a[5]*a[15]-a[0]*a[7]*a[13]-a[4]*a[1]*a[15]+a[4]*a[3]*a[13]+a[12]*a[1]*a[7]-a[12]*a[3]*a[5];
+    o[14]=-a[0]*a[5]*a[14]+a[0]*a[6]*a[13]+a[4]*a[1]*a[14]-a[4]*a[2]*a[13]-a[12]*a[1]*a[6]+a[12]*a[2]*a[5];
+    o[3]=-a[1]*a[6]*a[11]+a[1]*a[7]*a[10]+a[5]*a[2]*a[11]-a[5]*a[3]*a[10]-a[9]*a[2]*a[7]+a[9]*a[3]*a[6];
+    o[7]=a[0]*a[6]*a[11]-a[0]*a[7]*a[10]-a[4]*a[2]*a[11]+a[4]*a[3]*a[10]+a[8]*a[2]*a[7]-a[8]*a[3]*a[6];
+    o[11]=-a[0]*a[5]*a[11]+a[0]*a[7]*a[9]+a[4]*a[1]*a[11]-a[4]*a[3]*a[9]-a[8]*a[1]*a[7]+a[8]*a[3]*a[5];
+    o[15]=a[0]*a[5]*a[10]-a[0]*a[6]*a[9]-a[4]*a[1]*a[10]+a[4]*a[2]*a[9]+a[8]*a[1]*a[6]-a[8]*a[2]*a[5];
+    let det=a[0]*o[0]+a[1]*o[4]+a[2]*o[8]+a[3]*o[12]; if(!det) return M.ident(); det=1/det;
+    for(let i=0;i<16;i++) o[i]*=det; return o;},
+  transpose:(m)=>{const o=new Float32Array(16);
+    for(let i=0;i<4;i++)for(let j=0;j<4;j++) o[i*4+j]=m[j*4+i]; return o;},
+  normalFromModel:(m)=>{const inv=M.invert(m),t=M.transpose(inv);return Float32Array.from([t[0],t[1],t[2],0, t[4],t[5],t[6],0, t[8],t[9],t[10],0, 0,0,0,1]);},
+};
+
+/* --------------------------- 2. WEBGL HELPERS ----------------------------- */
+function compileShader(src,type){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(s),src);throw new Error("shader");}return s;}
+function makeProgram(vs,fs){const p=gl.createProgram();gl.attachShader(p,compileShader(vs,gl.VERTEX_SHADER));gl.attachShader(p,compileShader(fs,gl.FRAGMENT_SHADER));gl.linkProgram(p);if(!gl.getProgramParameter(p,gl.LINK_STATUS)){console.error(gl.getProgramInfoLog(p));throw new Error("link");}return p;}
+function mkBuffer(arr,target=gl.ARRAY_BUFFER){const b=gl.createBuffer();gl.bindBuffer(target,b);gl.bufferData(target,arr,gl.STATIC_DRAW);return b;}
+function bindAttrib(p,loc,buf,size,stride=0,off=0){gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,size,gl.FLOAT,false,stride,off);}
+
+/* --------------------------- 3. GEOMETRY ---------------------------------- */
+function buildCube(){ // unit cube centered at origin, faces outward
+  const v=[
+    // pos           normal      uv
+    -1,-1, 1,  0, 0, 1,  0,0,
+     1,-1, 1,  0, 0, 1,  1,0,
+     1, 1, 1,  0, 0, 1,  1,1,
+    -1, 1, 1,  0, 0, 1,  0,1,
+     1,-1,-1,  0, 0,-1, 0,0,
+    -1,-1,-1,  0, 0,-1, 1,0,
+    -1, 1,-1,  0, 0,-1, 1,1,
+     1, 1,-1,  0, 0,-1, 0,1,
+    -1, 1, 1,  0, 1, 0,  0,0,
+     1, 1, 1,  0, 1, 0,  1,0,
+     1, 1,-1,  0, 1, 0,  1,1,
+    -1, 1,-1,  0, 1, 0,  0,1,
+    -1,-1,-1,  0,-1, 0,  0,0,
+     1,-1,-1,  0,-1, 0,  1,0,
+     1,-1, 1,  0,-1, 0,  1,1,
+    -1,-1, 1,  0,-1, 0,  0,1,
+     1,-1, 1,  1, 0, 0,  0,0,
+     1,-1,-1,  1, 0, 0,  1,0,
+     1, 1,-1,  1, 0, 0,  1,1,
+     1, 1, 1,  1, 0, 0,  0,1,
+    -1,-1,-1, -1, 0, 0,  0,0,
+    -1,-1, 1, -1, 0, 0,  1,0,
+    -1, 1, 1, -1, 0, 0,  1,1,
+    -1, 1,-1, -1, 0, 0,  0,1,
+  ];
+  const idx=[];
+  for(let f=0;f<6;f++){const o=f*4;idx.push(o,o+1,o+2, o,o+2,o+3);}
+  return {v:new Float32Array(v),i:new Uint16Array(idx)};
+}
+function buildSphere(r=1,s=24,t=18){
+  const v=[],idx=[];
+  for(let y=0;y<=t;y++){
+    const v0=y/t,phi=v0*Math.PI,sp=Math.sin(phi),cp=Math.cos(phi);
+    for(let x=0;x<=s;x++){
+      const u=x/s,th=u*Math.PI*2,st=Math.sin(th),ct=Math.cos(th);
+      const px=ct*sp,py=cp,pz=st*sp;
+      v.push(px*r,py*r,pz*r, px,py,pz, u,v0);
+    }
+  }
+  for(let y=0;y<t;y++)for(let x=0;x<s;x++){
+    const a=y*(s+1)+x, b=a+s+1;
+    idx.push(a,b,a+1, a+1,b,b+1);
+  }
+  return {v:new Float32Array(v),i:new Uint16Array(idx)};
+}
+function buildCyl(rt=1,rb=1,h=1,sides=28){
+  const v=[],idx=[];
+  for(let y=0;y<=1;y++){
+    const r=y?rt:rb,y0=(y?0.5:-0.5)*h;
+    for(let x=0;x<=sides;x++){
+      const u=x/sides,th=u*Math.PI*2,c=Math.cos(th),s=Math.sin(th);
+      const nx=c,ny=0,nz=s;
+      v.push(c*r,y0,s*r, nx,ny,nz, u,y);
+    }
+  }
+  // top cap
+  const topCenter=v.length/8;v.push(0,h/2,0, 0,1,0, .5,.5);
+  const topStart=v.length/8;
+  for(let x=0;x<=sides;x++){const u=x/sides,th=u*Math.PI*2;v.push(Math.cos(th)*rt,h/2,Math.sin(th)*rt, 0,1,0, u,1);}
+  // bottom cap
+  const botCenter=v.length/8;v.push(0,-h/2,0, 0,-1,0, .5,.5);
+  const botStart=v.length/8;
+  for(let x=0;x<=sides;x++){const u=x/sides,th=u*Math.PI*2;v.push(Math.cos(th)*rb,-h/2,Math.sin(th)*rb, 0,-1,0, u,0);}
+  for(let y=0;y<1;y++)for(let x=0;x<sides;x++){const a=y*(sides+1)+x,b=a+sides+1;idx.push(a,b,a+1,a+1,b,b+1);}
+  for(let x=0;x<sides;x++){idx.push(topCenter, topStart+x, topStart+x+1);}
+  for(let x=0;x<sides;x++){idx.push(botCenter, botStart+x+1, botStart+x);}
+  return {v:new Float32Array(v),i:new Uint16Array(idx)};
+}
+function buildCone(r=1,h=1,sides=28){
+  const v=[],idx=[];
+  v.push(0,h/2,0, 0,1,0, .5,1); // tip
+  for(let x=0;x<=sides;x++){
+    const u=x/sides,th=u*Math.PI*2,c=Math.cos(th),s=Math.sin(th);
+    const nx=c,ny=r/h,nz=s; const l=Math.hypot(nx,ny,nz);
+    v.push(c*r,-h/2,s*r, nx/l,ny/l,nz/l, u,0);
+  }
+  for(let x=0;x<sides;x++) idx.push(0,1+x,2+x);
+  // bottom cap
+  const cap=v.length/8; v.push(0,-h/2,0, 0,-1,0, .5,.5);
+  for(let x=0;x<=sides;x++){const u=x/sides,th=u*Math.PI*2;v.push(Math.cos(th)*r,-h/2,Math.sin(th)*r, 0,-1,0, u,0);}
+  for(let x=0;x<sides;x++) idx.push(cap, cap+1+x+1, cap+1+x);
+  return {v:new Float32Array(v),i:new Uint16Array(idx)};
+}
+function buildPlane(){
+  const v=[-1,0,1, 0,1,0, 0,0,  1,0,1, 0,1,0, 1,0,  1,0,-1, 0,1,0, 1,1,  -1,0,-1, 0,1,0, 0,1];
+  const idx=[0,1,2, 0,2,3];
+  return {v:new Float32Array(v),i:new Uint16Array(idx)};
+}
+function buildDisc(r=1,sides=36){
+  const v=[0,0,0, 0,1,0, .5,.5];
+  for(let x=0;x<=sides;x++){const u=x/sides,th=u*Math.PI*2;v.push(Math.cos(th)*r,0,Math.sin(th)*r, 0,1,0, u,.5);}
+  const idx=[]; for(let x=0;x<sides;x++) idx.push(0,1+x,2+x);
+  return {v:new Float32Array(v),i:new Uint16Array(idx)};
+}
+// Rounded box (use cube with chamfer via normal averaging not needed for stylization)
+function buildTorus(R=1,r=.3,sides=24,rings=24){
+  const v=[],idx=[];
+  for(let y=0;y<=rings;y++){
+    const v0=y/rings,phi=v0*Math.PI*2,sp=Math.sin(phi),cp=Math.cos(phi);
+    for(let x=0;x<=sides;x++){
+      const u=x/sides,th=u*Math.PI*2,st=Math.sin(th),ct=Math.cos(th);
+      const px=(R+r*cp)*ct, py=r*sp, pz=(R+r*cp)*st;
+      const nx=cp*ct, ny=sp, nz=cp*st;
+      v.push(px,py,pz, nx,ny,nz, u,v0);
+    }
+  }
+  for(let y=0;y<rings;y++)for(let x=0;x<sides;x++){
+    const a=y*(sides+1)+x, b=a+sides+1;
+    idx.push(a,b,a+1, a+1,b,b+1);
+  }
+  return {v:new Float32Array(v),i:new Uint16Array(idx)};
+}
+
+/* --------------------------- 4. SHADERS ----------------------------------- */
+const STRIDE=8*4; // pos3,n3,uv2
+const VS = `
+attribute vec3 aPos;
+attribute vec3 aNor;
+attribute vec2 aUV;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+uniform mat4 uNormalMat;
+varying vec3 vWP;
+varying vec3 vWN;
+varying vec3 vUV;
+varying vec3 vNor;
+void main(){
+  vec4 wp = uModel*vec4(aPos,1.0);
+  vWP = wp.xyz;
+  vWN = (uNormalMat*vec4(aNor,0.0)).xyz;
+  vUV = aPos;
+  vNor = aNor;
+  gl_Position = uMVP*vec4(aPos,1.0);
+}`;
+const FS = `
+precision highp float;
+varying vec3 vWP;
+varying vec3 vWN;
+varying vec3 vUV;
+varying vec3 vNor;
+uniform vec3 uBaseCol;
+uniform vec3 uColA;
+uniform vec3 uColB;
+uniform vec3 uAccent;
+uniform float uPattern; // 0=solid,1=striped,2=checker,3=tree-rings
+uniform float uRough;
+uniform float uEmissive;
+uniform vec3 uEmCol;
+uniform float uTime;
+uniform vec3 uSunDir;
+uniform vec3 uSunCol;
+uniform vec3 uAmbCol;
+uniform vec3 uFillCol;
+uniform vec3 uFillDir;
+uniform vec3 uCamPos;
+uniform vec3 uFogCol;
+uniform float uFogStart;
+uniform float uFogEnd;
+uniform float uShin; // specular intensity
+uniform float uShadowness; // fake AO
+
+float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+
+vec3 patternCol(vec3 p){
+  if(uPattern<0.5) return uBaseCol;
+  if(uPattern<1.5){ // horizontal stripes (tile/roof)
+    float s = step(.5, fract(p.y*4.0));
+    return mix(uBaseCol, uColA, s*0.35);
+  }
+  if(uPattern<2.5){ // checker
+    vec2 c = floor(p.xz*1.5);
+    float k = mod(c.x+c.y,2.0);
+    return mix(uBaseCol, uColA, k*0.25);
+  }
+  if(uPattern<3.5){ // wood rings (cylinders)
+    float r = length(p.xz);
+    float rings = sin(r*22.0 + hash(floor(p.y*2.0))*6.28)*0.5+0.5;
+    return mix(uBaseCol, uColA, rings*0.45);
+  }
+  if(uPattern<4.5){ // bark noise
+    float n = hash(floor(p.xy*8.0+p.yz*2.0));
+    return mix(uBaseCol, uColA, n*0.35);
+  }
+  if(uPattern<5.5){ // water caustics (uv=position on plane)
+    float w = sin(vUV.x*4.0+uTime*0.6)*0.5+0.5;
+    w *= sin(vUV.z*5.0-uTime*0.4)*0.5+0.5;
+    return mix(uBaseCol, uColA, w*0.25);
+  }
+  if(uPattern<6.5){ // petals noise
+    float n = hash(floor(p.xy*9.0+p.yz*6.0));
+    return mix(uBaseCol, uColA, n*0.6);
+  }
+  return uBaseCol;
+}
+
+void main(){
+  vec3 N = normalize(vWN);
+  vec3 L = normalize(uSunDir);
+  vec3 V = normalize(uCamPos - vWP);
+  vec3 H = normalize(L+V);
+  vec3 F = normalize(-uFillDir);
+
+  vec3 albedo = patternCol(vUV);
+
+  float ndl = max(dot(N,L),0.0);
+  float ndh = max(dot(N,H),0.0);
+  float ndf = max(dot(N,F),0.0)*0.5+0.5;
+
+  // wrapped diffuse (soft)
+  float w = ndl*0.5+0.5;
+  float diff = w*w;
+
+  // spec
+  float spec = pow(ndh, mix(8.0, 96.0, 1.0-uRough)) * uShin;
+
+  // faux AO from local "height" via y
+  float ao = mix(0.55, 1.0, smoothstep(-1.0, 1.0, vWP.y*0.05+0.5));
+  ao = mix(ao, 1.0, uShadowness);
+
+  vec3 col = albedo * (uAmbCol*0.55 + uSunCol*diff*1.05 + uFillCol*ndf*0.35);
+  col += uSunCol * spec * 0.7;
+  col *= ao;
+  col += uEmCol * uEmissive;
+
+  // distance fog
+  float d = length(uCamPos - vWP);
+  float fog = clamp((d - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
+  col = mix(col, uFogCol, fog);
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// Particle VS/FS (sakura petals)
+const PVS=`
+attribute vec3 aPos;
+attribute vec3 aVel;
+attribute float aSeed;
+attribute float aSize;
+uniform mat4 uMVP;
+uniform float uTime;
+varying float vSeed;
+varying float vY;
+void main(){
+  vec3 p = aPos;
+  float t = uTime*0.7 + aSeed*6.28;
+  p.x += sin(t)*0.4 + cos(t*0.6)*0.2;
+  p.y -= mod(uTime*0.3 + aSeed*10.0, 8.0) - 4.0; // fall looped
+  p.y = mod(p.y + 6.0, 12.0) - 6.0;
+  p.z += cos(t*0.8)*0.3;
+  p.y += sin(t*0.5)*0.2;
+  vSeed = aSeed;
+  vY = p.y;
+  gl_Position = uMVP*vec4(p,1.0);
+  gl_PointSize = aSize;
+}`;
+const PFS=`
+precision mediump float;
+varying float vSeed;
+varying float vY;
+uniform float uTime;
+void main(){
+  vec2 c = gl_PointCoord*2.0-1.0;
+  float r = length(c);
+  if(r>1.0) discard;
+  // petal shape - teardrop
+  float ang = atan(c.y,c.x);
+  float petal = abs(sin(ang*1.5 + vSeed*6.0));
+  float a = smoothstep(1.0, 0.6, r) * (0.4 + 0.6*petal);
+  vec3 col = mix(vec3(1.0,0.83,0.88), vec3(1.0,0.7,0.78), vSeed);
+  col *= 0.9 + 0.2*sin(vSeed*9.0 + uTime);
+  gl_FragColor = vec4(col, a*0.85);
+}
+`;
+
+// Koi (instanced simple fish)
+const KVS=`
+attribute vec3 aPos;
+attribute vec3 aNor;
+attribute float aInst; // instance seed
+uniform mat4 uMVP;
+uniform mat4 uModel;
+uniform mat4 uNormalMat;
+varying vec3 vWN;
+varying vec3 vWP;
+varying float vSeed;
+varying vec3 vLocal;
+void main(){
+  vec4 wp = uModel*vec4(aPos,1.0);
+  vWP = wp.xyz;
+  vWN = (uNormalMat*vec4(aNor,0.0)).xyz;
+  vSeed = aInst;
+  vLocal = aPos;
+  gl_Position = uMVP*vec4(aPos,1.0);
+}`;
+const KFS=`
+precision highp float;
+varying vec3 vWN;
+varying vec3 vWP;
+varying float vSeed;
+varying vec3 vLocal;
+uniform vec3 uCamPos;
+uniform vec3 uSunDir;
+uniform vec3 uSunCol;
+uniform vec3 uAmbCol;
+uniform vec3 uFogCol;
+uniform float uFogStart;
+uniform float uFogEnd;
+void main(){
+  vec3 N = normalize(vWN);
+  vec3 L = normalize(uSunDir);
+  float diff = max(dot(N,L)*0.5+0.5,0.0);
+  diff = diff*diff;
+  vec3 base;
+  // simple palette: red, white, orange, black koi
+  float s = fract(vSeed*7.13);
+  if(s<0.33) base = vec3(0.95,0.32,0.22);
+  else if(s<0.66) base = vec3(0.98,0.92,0.85);
+  else base = vec3(0.18,0.10,0.08);
+  // spots
+  float sp = step(0.7, fract(sin(vLocal.x*8.0+vLocal.z*5.0+vSeed*3.0)*43758.5));
+  if(s<0.33) base = mix(base, vec3(0.98,0.95,0.88), sp*0.8);
+  else if(s<0.66) base = mix(base, vec3(0.85,0.18,0.15), sp*0.9);
+  else base = mix(base, vec3(0.95,0.55,0.25), sp*0.7);
+  vec3 col = base*(uAmbCol*0.5 + uSunCol*diff*1.1);
+  float d = length(uCamPos - vWP);
+  float fog = clamp((d - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
+  col = mix(col, uFogCol, fog);
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// Post: bloom + DOF + vignette + CA + grain
+const POST_VS = `
+attribute vec2 aPos;
+varying vec2 vUV;
+void main(){
+  vUV = aPos*0.5+0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+const POST_FS = `
+precision highp float;
+varying vec2 vUV;
+uniform sampler2D uScene;
+uniform vec2 uRes;
+uniform float uTime;
+uniform float uFocus;
+uniform float uDOF;
+uniform float uVignette;
+uniform float uGrain;
+uniform float uBloom;
+uniform vec2 uMouse;
+uniform vec2 uMouseL; // smoothed
+
+vec3 sampleCol(vec2 uv){
+  return texture2D(uScene, uv).rgb;
+}
+
+vec3 dofBlur(vec2 uv, float radius){
+  vec3 acc = vec3(0.0);
+  float w = 0.0;
+  // hex sample
+  const int N = 16;
+  for(int i=0;i<N;i++){
+    float a = float(i)/float(N)*6.28318;
+    float r1 = radius * (0.4 + 0.6*sin(a*3.0+uv.x*9.0));
+    vec2 o = vec2(cos(a), sin(a)) * r1;
+    vec3 c = sampleCol(uv + o/uRes);
+    float l = dot(c, vec3(0.299,0.587,0.114));
+    acc += c * (0.4 + l);
+    w += 0.4 + l;
+  }
+  return acc/w;
+}
+
+void main(){
+  vec2 uv = vUV;
+  vec2 toC = uv - vec2(0.5);
+  float d = length(toC);
+
+  // chromatic aberration radial
+  float ca = 0.0025 + d*0.012;
+  vec3 col;
+  col.r = sampleCol(uv + toC*ca).r;
+  col.g = sampleCol(uv).g;
+  col.b = sampleCol(uv - toC*ca).b;
+
+  // simple depth-based DOF approximation (radial)
+  float depth = d; // pseudo-depth: more blur towards edges
+  float far = smoothstep(uFocus, 1.0, d);
+  float near = smoothstep(0.0, uFocus*0.5, d);
+  float blurAmt = (far*1.6 + near*0.4) * uDOF;
+  vec3 sharp = col;
+  vec3 blur  = dofBlur(uv, 1.0 + blurAmt*22.0);
+  col = mix(sharp, blur, clamp(blurAmt,0.0,1.0));
+
+  // bloom: blur a thresholded version
+  vec3 bright = max(col - 0.78, 0.0);
+  vec3 bblur = vec3(0.0);
+  float bw = 0.0;
+  for(int i=0;i<12;i++){
+    float a = float(i)/12.0*6.28318;
+    vec2 o = vec2(cos(a), sin(a))*(6.0+sin(a*3.0)*2.0);
+    vec3 c = sampleCol(uv + o/uRes);
+    float l = max(dot(c, vec3(0.299,0.587,0.114)) - 0.6, 0.0);
+    bblur += c * l;
+    bw += l+0.001;
+  }
+  bblur /= bw;
+  col += bblur * uBloom * (1.0 - d*0.5);
+
+  // tone map (filmic)
+  col = col/(col+vec3(0.85));
+  col = pow(col, vec3(0.95));
+
+  // vignette
+  float vig = smoothstep(0.95, 0.25, d);
+  col *= mix(1.0, vig, uVignette);
+
+  // grain
+  float n = fract(sin(dot(uv*uRes + uTime, vec2(12.9898,78.233)))*43758.5453);
+  col += (n-0.5) * uGrain;
+
+  // warm tint
+  col.r *= 1.02; col.b *= 0.97;
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+const prog = makeProgram(VS, FS);
+const u = (n)=>gl.getUniformLocation(prog, n);
+const loc = {pos:gl.getAttribLocation(prog,"aPos"), nor:gl.getAttribLocation(prog,"aNor"), uv:gl.getAttribLocation(prog,"aUV")};
+const U = {
+  mvp:u("uMVP"), model:u("uModel"), nmat:u("uNormalMat"),
+  base:u("uBaseCol"), ca:u("uColA"), cb:u("uColB"), accent:u("uAccent"),
+  pat:u("uPattern"), rough:u("uRough"), em:u("uEmissive"), emCol:u("uEmCol"),
+  time:u("uTime"),
+  sun:u("uSunDir"), sunCol:u("uSunCol"), amb:u("uAmbCol"),
+  fill:u("uFillCol"), fillDir:u("uFillDir"),
+  cam:u("uCamPos"), fogCol:u("uFogCol"),
+  fogS:u("uFogStart"), fogE:u("uFogEnd"),
+  shin:u("uShin"), shad:u("uShadowness")
+};
+
+const kProg = makeProgram(KVS, KFS);
+const kLoc = {pos:gl.getAttribLocation(kProg,"aPos"), nor:gl.getAttribLocation(kProg,"aNor"), inst:gl.getAttribLocation(kProg,"aInst")};
+const kU = {mvp:u("uMVP"), model:u("uModel"), nmat:u("uNormalMat"), cam:u("uCamPos"), sun:u("uSunDir"), sunCol:u("uSunCol"), amb:u("uAmbCol"), fogCol:u("uFogCol"), fogS:u("uFogStart"), fogE:u("uFogEnd")};
+// unify uniforms via kU
+Object.assign(kU, {
+  mvp:gl.getUniformLocation(kProg,"uMVP"),
+  model:gl.getUniformLocation(kProg,"uModel"),
+  nmat:gl.getUniformLocation(kProg,"uNormalMat"),
+  cam:gl.getUniformLocation(kProg,"uCamPos"),
+  sun:gl.getUniformLocation(kProg,"uSunDir"),
+  sunCol:gl.getUniformLocation(kProg,"uSunCol"),
+  amb:gl.getUniformLocation(kProg,"uAmbCol"),
+  fogCol:gl.getUniformLocation(kProg,"uFogCol"),
+  fogS:gl.getUniformLocation(kProg,"uFogStart"),
+  fogE:gl.getUniformLocation(kProg,"uFogEnd"),
+});
+
+const pProg = makeProgram(PVS, PFS);
+const pLoc = {pos:gl.getAttribLocation(pProg,"aPos"), vel:gl.getAttribLocation(pProg,"aVel"), seed:gl.getAttribLocation(pProg,"aSeed"), size:gl.getAttribLocation(pProg,"aSize")};
+const pU = {mvp:gl.getUniformLocation(pProg,"uMVP"), time:gl.getUniformLocation(pProg,"uTime")};
+
+const postProg = makeProgram(POST_VS, POST_FS);
+const pstLoc = {pos:gl.getAttribLocation(postProg,"aPos")};
+const pstU = {
+  scene:gl.getUniformLocation(postProg,"uScene"),
+  res:gl.getUniformLocation(postProg,"uRes"),
+  time:gl.getUniformLocation(postProg,"uTime"),
+  focus:gl.getUniformLocation(postProg,"uFocus"),
+  dof:gl.getUniformLocation(postProg,"uDOF"),
+  vig:gl.getUniformLocation(postProg,"uVignette"),
+  grain:gl.getUniformLocation(postProg,"uGrain"),
+  bloom:gl.getUniformLocation(postProg,"uBloom"),
+  mouse:gl.getUniformLocation(postProg,"uMouse"),
+  mouseL:gl.getUniformLocation(postProg,"uMouseL"),
+};
+
+/* --------------------------- 5. SCENE BUILDER ----------------------------- */
+const CUBE = buildCube(), SPH = buildSphere(1,28,18), CYL = buildCyl(1,1,1,30), CON = buildCone(1,1,30), PL = buildPlane(), DC = buildDisc(1,40), TOR = buildTorus(1,.3,28,28);
+
+function makeMesh(geo){
+  const vBuf = mkBuffer(geo.v);
+  const iBuf = mkBuffer(geo.i, gl.ELEMENT_ARRAY_BUFFER);
+  return {vBuf,iBuf,count:geo.i.length};
+}
+const MESH = {cube:makeMesh(CUBE), sph:makeMesh(SPH), cyl:makeMesh(CYL), con:makeMesh(CON), pl:makeMesh(PL), dc:makeMesh(DC), tor:makeMesh(TOR)};
+
+// Materials
+function makeMat(o){
+  return {
+    base:o.base||[0.8,0.8,0.8],
+    colA:o.colA||o.base||[0.8,0.8,0.8],
+    colB:o.colB||o.base||[0.8,0.8,0.8],
+    accent:o.accent||[0.0,0.0,0.0],
+    pat:o.pat||0,
+    rough:o.rough==null?0.5:o.rough,
+    em:o.em||0.0,
+    emCol:o.emCol||[0,0,0],
+    shin:o.shin==null?0.2:o.shin,
+    shad:o.shad==null?0.6:o.shad,
+  };
+}
+const MAT = {
+  // pagoda
+  roof:makeMat({base:[0.18,0.19,0.22], colA:[0.08,0.08,0.10], pat:1, rough:0.6, shad:0.4, shin:0.15}),
+  roofEdge:makeMat({base:[0.32,0.16,0.12], colA:[0.4,0.2,0.14], pat:1, rough:0.5, shad:0.3}),
+  wall:makeMat({base:[0.95,0.86,0.72], colA:[0.85,0.74,0.58], pat:0, rough:0.85, shad:0.4}),
+  rail:makeMat({base:[0.55,0.18,0.14], colA:[0.6,0.22,0.18], pat:0, rough:0.55, shad:0.3, shin:0.3}),
+  door:makeMat({base:[0.32,0.12,0.10], colA:[0.45,0.18,0.14], pat:0, rough:0.6, shad:0.4}),
+  base:makeMat({base:[0.55,0.55,0.58], colA:[0.5,0.5,0.55], pat:2, rough:0.85, shad:0.3}),
+  gold:makeMat({base:[0.92,0.72,0.32], colA:[0.98,0.82,0.45], pat:0, rough:0.25, shad:0.4, shin:0.85, em:0.05, emCol:[0.95,0.78,0.4]}),
+  // trees
+  trunk:makeMat({base:[0.32,0.20,0.14], colA:[0.22,0.13,0.09], pat:4, rough:0.9, shad:0.2}),
+  sakura:makeMat({base:[1.0,0.78,0.85], colA:[0.95,0.62,0.74], pat:6, rough:0.7, shad:0.4}),
+  bamboo:makeMat({base:[0.42,0.55,0.28], colA:[0.55,0.65,0.34], pat:1, rough:0.6, shad:0.3, shin:0.2}),
+  bambooLeaf:makeMat({base:[0.35,0.55,0.25], colA:[0.45,0.62,0.28], pat:6, rough:0.7, shad:0.4}),
+  bush:makeMat({base:[0.22,0.45,0.20], colA:[0.30,0.52,0.25], pat:6, rough:0.8, shad:0.45}),
+  rock:makeMat({base:[0.55,0.55,0.55], colA:[0.45,0.45,0.48], pat:0, rough:0.95, shad:0.2}),
+  // ground
+  grass:makeMat({base:[0.42,0.55,0.30], colA:[0.52,0.62,0.34], pat:6, rough:0.85, shad:0.5}),
+  // water
+  water:makeMat({base:[0.30,0.58,0.62], colA:[0.20,0.45,0.55], pat:5, rough:0.2, shad:0.6, shin:0.85}),
+  // path
+  path:makeMat({base:[0.72,0.70,0.62], colA:[0.62,0.60,0.55], pat:2, rough:0.9, shad:0.3}),
+  // people
+  skin:makeMat({base:[0.95,0.82,0.72], colA:[0.88,0.74,0.62], pat:0, rough:0.7, shad:0.4}),
+  shirtR:makeMat({base:[0.85,0.30,0.30], colA:[0.65,0.20,0.20], pat:0, rough:0.6, shad:0.4}),
+  shirtG:makeMat({base:[0.30,0.55,0.35], colA:[0.20,0.45,0.28], pat:0, rough:0.6, shad:0.4}),
+  shirtW:makeMat({base:[0.95,0.95,0.95], colA:[0.82,0.82,0.85], pat:0, rough:0.6, shad:0.4}),
+  pants:makeMat({base:[0.25,0.25,0.30], colA:[0.18,0.18,0.22], pat:0, rough:0.7, shad:0.4}),
+  skirt:makeMat({base:[0.18,0.22,0.40], colA:[0.12,0.16,0.32], pat:0, rough:0.6, shad:0.4}),
+  hair:makeMat({base:[0.15,0.10,0.08], colA:[0.08,0.05,0.04], pat:0, rough:0.6, shad:0.4}),
+  bag:makeMat({base:[0.45,0.38,0.30], colA:[0.30,0.25,0.20], pat:0, rough:0.7, shad:0.4}),
+  // lanterns
+  lantern:makeMat({base:[0.7,0.7,0.72], colA:[0.55,0.55,0.58], pat:0, rough:0.7, shad:0.4}),
+  lanternGlow:makeMat({base:[1.0,0.85,0.55], colA:[1.0,0.7,0.4], pat:0, rough:0.5, shad:0.4, em:0.4, emCol:[1.0,0.78,0.45]}),
+};
+
+// Scene nodes
+const nodes = []; // {mat, mesh, m=model, draw=function}
+function addNode(opts){
+  const n = Object.assign({m:M.ident(), mat:MAT.wall, mesh:MESH.cube, sway:null, spin:null, _init:null}, opts);
+  nodes.push(n);
+  return n;
+}
+
+function pushTrans(n,t){n.m = M.translate(n.m, t[0],t[1],t[2]);}
+function pushScale(n,s){n.m = M.scale(n.m, s[0],s[1],s[2]);}
+function pushRotY(n,a){n.m = M.rotateY(n.m, a);}
+function pushRotX(n,a){n.m = M.rotateX(n.m, a);}
+
+/* ---------- GROUND ---------- */
+const ground = addNode({mesh:MESH.dc, mat:MAT.grass});
+pushScale(ground, [22, 1, 22]);
+
+/* ---------- POND ---------- */
+const pond = addNode({mesh:MESH.dc, mat:MAT.water});
+pushTrans(pond, [5.5, 0.02, 4.0]);
+pushScale(pond, [4.2, 1, 3.0]);
+// pond inner ring
+const pondRim = addNode({mesh:MESH.tor, mat:MAT.rock});
+pushTrans(pondRim, [5.5, 0.04, 4.0]);
+pushScale(pondRim, [4.3, 0.08, 3.1]);
+
+/* ---------- PAGODA (5 tiers) ---------- */
+function buildPagoda(){
+  const tiers = 5;
+  // base platform
+  const base = addNode({mesh:MESH.cube, mat:MAT.base});
+  pushTrans(base, [0, 0.6, 0]);
+  pushScale(base, [4.6, 1.2, 4.6]);
+
+  // base lower step
+  const baseStep = addNode({mesh:MESH.cube, mat:MAT.base});
+  pushTrans(baseStep, [0, 1.35, 0]);
+  pushScale(baseStep, [4.0, 0.3, 4.0]);
+
+  // ground floor room (5 walls-ish)
+  const groundFloor = addNode({mesh:MESH.cube, mat:MAT.wall});
+  pushTrans(groundFloor, [0, 2.55, 0]);
+  pushScale(groundFloor, [3.4, 2.4, 3.4]);
+  // 4 doors
+  for(let i=0;i<4;i++){
+    const door = addNode({mesh:MESH.cube, mat:MAT.door});
+    const a = i*Math.PI/2;
+    const x = Math.sin(a)*1.72, z = Math.cos(a)*1.72;
+    pushTrans(door, [x, 2.5, z]);
+    pushRotY(door, a);
+    pushScale(door, [0.05, 1.4, 0.6]);
+  }
+  // ground floor railings
+  for(let i=0;i<4;i++){
+    const r = addNode({mesh:MESH.cube, mat:MAT.rail});
+    const a = i*Math.PI/2 + Math.PI/4;
+    const x = Math.sin(a)*1.95, z = Math.cos(a)*1.95;
+    pushTrans(r, [x, 3.85, z]);
+    pushRotY(r, a);
+    pushScale(r, [2.6, 0.08, 0.08]);
+    // posts
+    for(let s=-1;s<=1;s+=2){
+      const p = addNode({mesh:MESH.cube, mat:MAT.rail});
+      pushTrans(p, [x + Math.cos(a)*s*1.25, 3.6, z - Math.sin(a)*s*1.25]);
+      pushScale(p, [0.08, 0.7, 0.08]);
+    }
+  }
+
+  // tiers
+  let yBase = 4.0;
+  const sizeStarts = [3.0, 2.4, 1.9, 1.5, 1.15];
+  const heights = [1.4, 1.1, 0.9, 0.75, 0.65];
+  for(let t=0;t<tiers;t++){
+    const s = sizeStarts[t], h = heights[t];
+    // wall block
+    const wall = addNode({mesh:MESH.cube, mat:MAT.wall});
+    pushTrans(wall, [0, yBase + h/2, 0]);
+    pushScale(wall, [s, h, s]);
+    // dark band on top
+    const band = addNode({mesh:MESH.cube, mat:MAT.rail});
+    pushTrans(band, [0, yBase + h - 0.06, 0]);
+    pushScale(band, [s*1.02, 0.12, s*1.02]);
+    // small rail on edge
+    const topRail = addNode({mesh:MESH.cube, mat:MAT.rail});
+    pushTrans(topRail, [0, yBase + h + 0.15, 0]);
+    pushScale(topRail, [s*1.04, 0.05, s*1.04]);
+
+    // 4 corner posts
+    for(let i=0;i<4;i++){
+      const a = i*Math.PI/2 + Math.PI/4;
+      const post = addNode({mesh:MESH.cube, mat:MAT.rail});
+      pushTrans(post, [Math.sin(a)*(s/2+0.05), yBase + h/2, Math.cos(a)*(s/2+0.05)]);
+      pushScale(post, [0.06, h+0.1, 0.06]);
+    }
+
+    // roof (curved using cone+cylinder trick: cone flipped, slightly squashed)
+    const roofY = yBase + h + 0.15;
+    const roofW = s*1.7;
+    const roofH = 0.45 + (5-t)*0.08;
+    // main sloped mass
+    const roof = addNode({mesh:MESH.con, mat:MAT.roof});
+    pushTrans(roof, [0, roofY + 0.05, 0]);
+    pushScale(roof, [roofW, roofH, roofW]);
+    // inverted (since we want wider at top -> flip Y)
+    // build pyramid that goes from base wide to top narrow: we can rotate cone 180 around X
+    pushRotX(roof, Math.PI);
+    // ring under roof (decorative)
+    const roofRing = addNode({mesh:MESH.tor, mat:MAT.roofEdge});
+    pushTrans(roofRing, [0, roofY - 0.05, 0]);
+    pushScale(roofRing, [roofW*0.95, 0.04, roofW*0.95]);
+    // 4 corner upturned eaves (small pyramids)
+    for(let i=0;i<4;i++){
+      const a = i*Math.PI/2 + Math.PI/4;
+      const r = roofW*0.6;
+      const ev = addNode({mesh:MESH.con, mat:MAT.roof});
+      pushTrans(ev, [Math.sin(a)*r, roofY + 0.05, Math.cos(a)*r]);
+      pushScale(ev, [0.35, 0.25, 0.35]);
+      pushRotX(ev, Math.PI*0.35);
+    }
+
+    yBase = roofY + roofH*0.2;
+  }
+
+  // spire (sorin)
+  const spirePost = addNode({mesh:MESH.cyl, mat:MAT.gold});
+  pushTrans(spirePost, [0, yBase + 0.5, 0]);
+  pushScale(spirePost, [0.08, 1.0, 0.08]);
+  const spireBall = addNode({mesh:MESH.sph, mat:MAT.gold});
+  pushTrans(spireBall, [0, yBase + 1.05, 0]);
+  pushScale(spireBall, [0.18, 0.18, 0.18]);
+  const spireTip = addNode({mesh:MESH.con, mat:MAT.gold});
+  pushTrans(spireTip, [0, yBase + 1.6, 0]);
+  pushScale(spireTip, [0.18, 0.6, 0.18]);
+
+  // small steps to entrance (front of ground floor)
+  for(let s=0;s<3;s++){
+    const st = addNode({mesh:MESH.cube, mat:MAT.base});
+    pushTrans(st, [0, 0.25 + s*0.18, 2.4 + s*0.18]);
+    pushScale(st, [1.2 - s*0.15, 0.18, 0.5]);
+  }
+}
+buildPagoda();
+
+/* ---------- CHERRY BLOSSOM TREES ---------- */
+function buildSakura(x,z,scale=1, hue=0){
+  // trunk
+  const trunk = addNode({mesh:MESH.cyl, mat:MAT.trunk});
+  pushTrans(trunk, [x, 1.2*scale, z]);
+  pushScale(trunk, [0.18*scale, 1.2*scale, 0.18*scale]);
+  // branches
+  for(let b=0;b<3;b++){
+    const ba = b*1.2 + 0.5;
+    const bLen = 0.8*scale;
+    const br = addNode({mesh:MESH.cyl, mat:MAT.trunk});
+    pushTrans(br, [x + Math.cos(ba)*0.3*scale, 1.8*scale + b*0.4*scale, z + Math.sin(ba)*0.3*scale]);
+    pushRotZ(br, 0.6);
+    pushRotY(br, ba);
+    pushScale(br, [0.06*scale, bLen*0.6, 0.06*scale]);
+  }
+  // blossom clusters (multiple spheres)
+  const matBl = makeMat(Object.assign({}, MAT.sakura, {base: hue>0.5?[1.0,0.72,0.82]:[1.0,0.82,0.88], colA:hue>0.5?[0.92,0.55,0.7]:[0.95,0.6,0.74]}));
+  const cluster = [
+    [0,2.0,0, 1.0], [0.6,2.3,0.2, 0.7], [-0.5,2.2,-0.3, 0.7], [0.1,2.6,0.5, 0.6],
+    [-0.4,2.4,0.4, 0.5], [0.3,2.8,-0.2, 0.55], [0,1.8,0.4, 0.6], [0,2.1,-0.5, 0.6]
+  ];
+  cluster.forEach(([cx,cy,cz,cr])=>{
+    const m = addNode({mesh:MESH.sph, mat:matBl, sway:{base:cy*scale, amp:0.04+Math.random()*0.04, freq:0.5+Math.random()*0.3, phase:Math.random()*6.28}});
+    pushTrans(m, [x + cx*scale, cy*scale, z + cz*scale]);
+    pushScale(m, [cr*scale, cr*scale*0.85, cr*scale]);
+  });
+}
+// left & right clusters
+buildSakura(-4.0, -1.2, 1.0);
+buildSakura(-4.2, 1.5, 0.85);
+buildSakura(4.5, -0.5, 0.95);
+buildSakura(4.3, 1.8, 0.9);
+buildSakura(-3.5, 0.0, 0.7); // middle-back
+buildSakura(3.0, 2.6, 0.8);
+buildSakura(-2.0, -3.5, 0.9);
+buildSakura(2.0, -3.0, 0.85);
+
+/* ---------- BAMBOO ---------- */
+function buildBamboo(x,z,n=5){
+  for(let i=0;i<n;i++){
+    const ox = (Math.random()-0.5)*0.5, oz = (Math.random()-0.5)*0.5;
+    const h = 2.4 + Math.random()*1.2;
+    const r = 0.04 + Math.random()*0.015;
+    const st = addNode({mesh:MESH.cyl, mat:MAT.bamboo});
+    pushTrans(st, [x+ox, h/2, z+oz]);
+    pushScale(st, [r, h, r]);
+    // segments
+    for(let s=1;s<4;s++){
+      const seg = addNode({mesh:MESH.tor, mat:MAT.bamboo});
+      pushTrans(seg, [x+ox, h*0.25*s, z+oz]);
+      pushScale(seg, [r*1.1, r*0.6, r*1.1]);
+    }
+    // leaves
+    for(let l=0;l<5;l++){
+      const lf = addNode({mesh:MESH.sph, mat:MAT.bambooLeaf});
+      const ly = h*(0.4+Math.random()*0.55);
+      pushTrans(lf, [x+ox + (Math.random()-0.5)*0.4, ly, z+oz + (Math.random()-0.5)*0.4]);
+      pushScale(lf, [0.12, 0.04, 0.18]);
+    }
+  }
+}
+buildBamboo(-5.5, -0.5, 6);
+buildBamboo(-5.0, 2.0, 5);
+buildBamboo(5.5, -1.0, 6);
+buildBamboo(5.0, 2.5, 5);
+
+/* ---------- STONE LANTERNS ---------- */
+function buildLantern(x,z,s=1){
+  // base
+  const base = addNode({mesh:MESH.cube, mat:MAT.lantern});
+  pushTrans(base, [x, 0.15*s, z]);
+  pushScale(base, [0.55*s, 0.3*s, 0.55*s]);
+  // post
+  const post = addNode({mesh:MESH.cyl, mat:MAT.lantern});
+  pushTrans(post, [x, 0.6*s, z]);
+  pushScale(post, [0.12*s, 0.6*s, 0.12*s]);
+  // mid platform
+  const mid = addNode({mesh:MESH.cube, mat:MAT.lantern});
+  pushTrans(mid, [x, 1.0*s, z]);
+  pushScale(mid, [0.35*s, 0.12*s, 0.35*s]);
+  // light box (with door)
+  const box = addNode({mesh:MESH.cube, mat:MAT.lanternGlow});
+  pushTrans(box, [x, 1.25*s, z]);
+  pushScale(box, [0.32*s, 0.4*s, 0.32*s]);
+  // door
+  const door = addNode({mesh:MESH.cube, mat:MAT.lantern});
+  pushTrans(door, [x, 1.25*s, z+0.16*s]);
+  pushScale(door, [0.14*s, 0.25*s, 0.02*s]);
+  // roof
+  const roof = addNode({mesh:MESH.con, mat:MAT.lantern});
+  pushTrans(roof, [x, 1.6*s, z]);
+  pushScale(roof, [0.55*s, 0.35*s, 0.55*s]);
+  // finial
+  const fin = addNode({mesh:MESH.sph, mat:MAT.lantern});
+  pushTrans(fin, [x, 1.85*s, z]);
+  pushScale(fin, [0.07*s, 0.07*s, 0.07*s]);
+}
+buildLantern(-2.6, 2.5, 1.0);
+buildLantern(2.6, 2.5, 1.0);
+buildLantern(-3.5, 0.3, 0.85);
+buildLantern(3.5, 0.3, 0.85);
+buildLantern(-2.0, 3.6, 0.85);
+buildLantern(2.0, 3.6, 0.85);
+
+/* ---------- BUSHES ---------- */
+function buildBush(x,z,s=1){
+  const m = addNode({mesh:MESH.sph, mat:MAT.bush});
+  pushTrans(m, [x, 0.25*s, z]);
+  pushScale(m, [0.5*s, 0.32*s, 0.5*s]);
+}
+[
+  [-2.8,0.0,0.7], [2.6,0.2,0.7], [-2.5,1.4,0.6], [2.4,1.5,0.6],
+  [-1.5,-1.2,0.55], [1.5,-1.0,0.55], [-1.0,-2.5,0.6], [1.0,-2.3,0.6],
+  [-3.5,-2.0,0.7], [3.2,-1.8,0.7], [-3.8,2.0,0.7], [3.5,1.5,0.7],
+  [0,-3.5,0.7], [-1.0,3.5,0.7], [1.0,3.5,0.7],
+].forEach(([x,z,s])=>buildBush(x,z,s));
+
+/* ---------- ROCKS ---------- */
+function buildRock(x,z,s=1){
+  const m = addNode({mesh:MESH.sph, mat:MAT.rock});
+  pushTrans(m, [x, 0.18*s, z]);
+  pushScale(m, [0.35*s, 0.25*s, 0.28*s]);
+}
+[
+  [-3.0,-1.5,0.7], [3.0,-1.2,0.7], [-2.7,2.6,0.6], [2.8,2.4,0.6],
+  [3.8,0.5,0.5], [-3.8,0.5,0.5], [1.0,3.0,0.4], [-1.0,3.0,0.4],
+  [0.4,-3.2,0.5], [-0.4,-3.2,0.5], [4.0,-0.5,0.4], [-4.0,-0.5,0.4],
+].forEach(([x,z,s])=>buildRock(x,z,s));
+
+/* ---------- STONE PATH ---------- */
+// Big winding stepping-stone path
+function buildPath(){
+  // central main road
+  const main = addNode({mesh:MESH.pl, mat:MAT.path});
+  pushTrans(main, [0, 0.025, 1.5]);
+  pushScale(main, [2.4, 1, 2.5]);
+  // stepping stones
+  const stones = [
+    [-1.0,2.8,0.45], [-0.4,3.0,0.4], [0.2,3.2,0.4], [1.0,3.4,0.4],
+    [-1.5,1.0,0.45], [1.6,0.8,0.45], [-1.8,0.0,0.5], [1.8,-0.2,0.5],
+    [-1.0,3.6,0.35], [0.8,3.6,0.35], [-1.4,-0.5,0.4], [1.4,-0.5,0.4],
+    [-0.5,-1.5,0.4], [0.5,-1.7,0.4], [-0.2,-2.5,0.4], [0.2,-3.0,0.4]
+  ];
+  stones.forEach(([x,z,s])=>{
+    const st = addNode({mesh:MESH.dc, mat:MAT.path});
+    pushTrans(st, [x, 0.03, z]);
+    pushScale(st, [s, 1, s*0.8]);
+  });
+  // railings (low white fences)
+  for(let i=-3;i<=3;i++){
+    for(let s=0;s<2;s++){
+      if(Math.random()<0.5) continue;
+      const r = addNode({mesh:MESH.cube, mat:MAT.lantern});
+      const x = -3.5 + s*7;
+      pushTrans(r, [x, 0.25, i*0.7 - 1]);
+      pushScale(r, [0.08, 0.5, 0.08]);
+    }
+  }
+}
+buildPath();
+
+/* ---------- BRIDGE ---------- */
+function buildBridge(){
+  // arched bridge from (4.2,0,-1) to (4.2,0,1.5) — across pond edge
+  const bridgeStart = [3.8, 0.1, -1.2];
+  const bridgeEnd   = [3.8, 0.1, 1.5];
+  // Build as a series of planks arcing up
+  const segs = 14;
+  for(let i=0;i<segs;i++){
+    const t0 = i/segs, t1 = (i+1)/segs;
+    const y0 = Math.sin(t0*Math.PI)*0.7;
+    const y1 = Math.sin(t1*Math.PI)*0.7;
+    const z0 = bridgeStart[2] + (bridgeEnd[2]-bridgeStart[2])*t0;
+    const z1 = bridgeStart[2] + (bridgeEnd[2]-bridgeStart[2])*t1;
+    // plank
+    const pl = addNode({mesh:MESH.cube, mat:MAT.rail});
+    pushTrans(pl, [bridgeStart[0], 0.1 + (y0+y1)/2, (z0+z1)/2]);
+    pushScale(pl, [0.85, 0.06, (z1-z0)]);
+    // railings
+    for(let s=-1;s<=1;s+=2){
+      const rl = addNode({mesh:MESH.cube, mat:MAT.rail});
+      pushTrans(rl, [bridgeStart[0] + s*0.4, 0.4 + (y0+y1)/2, (z0+z1)/2]);
+      pushScale(rl, [0.05, 0.45, (z1-z0)*0.95]);
+      // top rail
+      const tr = addNode({mesh:MESH.cube, mat:MAT.rail});
+      pushTrans(tr, [bridgeStart[0] + s*0.4, 0.7 + (y0+y1)/2, (z0+z1)/2]);
+      pushScale(tr, [0.05, 0.04, (z1-z0)*0.95]);
+    }
+  }
+}
+buildBridge();
+
+/* ---------- PEOPLE ---------- */
+function buildPerson(x,z, opts={}){
+  const shirt = opts.shirt || MAT.shirtG;
+  const pantsCol = opts.pants || MAT.pants;
+  const skin = MAT.skin;
+  // legs
+  for(let s=-1;s<=1;s+=2){
+    const leg = addNode({mesh:MESH.cyl, mat:pantsCol});
+    pushTrans(leg, [x + s*0.07, 0.32, z]);
+    pushScale(leg, [0.06, 0.32, 0.06]);
+  }
+  // torso
+  const torso = addNode({mesh:MESH.cyl, mat:shirt});
+  pushTrans(torso, [x, 0.72, z]);
+  pushScale(torso, [0.18, 0.32, 0.12]);
+  // head
+  const head = addNode({mesh:MESH.sph, mat:skin});
+  pushTrans(head, [x, 1.06, z]);
+  pushScale(head, [0.12, 0.13, 0.12]);
+  // hair
+  const hair = addNode({mesh:MESH.sph, mat:MAT.hair});
+  pushTrans(hair, [x, 1.13, z]);
+  pushScale(hair, [0.13, 0.07, 0.13]);
+  if(opts.bag){
+    const bag = addNode({mesh:MESH.cube, mat:MAT.bag});
+    pushTrans(bag, [x+0.13, 0.78, z-0.1]);
+    pushScale(bag, [0.06, 0.22, 0.16]);
+    const strap = addNode({mesh:MESH.cube, mat:MAT.bag});
+    pushTrans(strap, [x+0.12, 0.92, z-0.05]);
+    pushScale(strap, [0.04, 0.4, 0.04]);
+  }
+  if(opts.skirt){
+    const sk = addNode({mesh:MESH.con, mat:MAT.skirt});
+    pushTrans(sk, [x, 0.55, z]);
+    pushScale(sk, [0.18, 0.25, 0.12]);
+  }
+}
+buildPerson(-1.0, 1.8, {shirt:MAT.shirtW, skirt:true, bag:true});
+buildPerson(0.0, 2.0, {shirt:MAT.shirtG});
+buildPerson(3.4, 0.6, {shirt:MAT.shirtR, pants:MAT.pants});
+
+/* --------------------------- 6. KOI FISH (instanced) ---------------------- */
+// Build a small fish shape (low-poly)
+function buildFish(){
+  const v = [];
+  const idx = [];
+  // body: stretched ellipsoid
+  const rings = 6, segs = 10;
+  for(let r=0;r<=rings;r++){
+    const t = r/rings;
+    const a = t*Math.PI;
+    const xr = Math.sin(a)*0.18, yr = Math.cos(a)*0.10;
+    for(let s=0;s<=segs;s++){
+      const u = s/segs, th = u*Math.PI*2;
+      const c = Math.cos(th), si = Math.sin(th);
+      const x = (Math.cos(a)*0.55 + 0.05)*c;
+      const y = yr*si*0.7;
+      const z = (Math.cos(a)*0.55 + 0.05)*si;
+      v.push(x, y, z, c*Math.sin(a), si, 0, u, t);
+    }
+  }
+  for(let r=0;r<rings;r++)for(let s=0;s<segs;s++){
+    const a = r*(segs+1)+s, b = a+segs+1;
+    idx.push(a,b,a+1, a+1,b,b+1);
+  }
+  // tail
+  const tailStart = v.length/8;
+  v.push(-0.45, 0, 0,  -1,0,0, 0,0);
+  v.push(-0.75, 0.18, 0, -1,0,0, 1,0);
+  v.push(-0.75, 0, 0.22, -1,0,0, 0,1);
+  v.push(-0.75, 0, -0.22,-1,0,0, 1,1);
+  v.push(-0.7, 0, 0,    -1,0,0, 0.5,0.5);
+  idx.push(tailStart, tailStart+1, tailStart+2, tailStart, tailStart+2, tailStart+3, tailStart, tailStart+4, tailStart+1);
+  return {v:new Float32Array(v), i:new Uint16Array(idx)};
+}
+const FISH_GEO = buildFish();
+const fishMesh = makeMesh(FISH_GEO);
+
+const KOI_N = 16;
+const koiData = [];
+for(let i=0;i<KOI_N;i++){
+  koiData.push({
+    a: Math.random()*Math.PI*2,
+    r: 2.0 + Math.random()*1.6,
+    speed: 0.2 + Math.random()*0.2,
+    y: 0.05 + Math.random()*0.08,
+    phase: Math.random()*Math.PI*2,
+    seed: Math.random()
+  });
+}
+
+/* --------------------------- 7. SAKURA PETALS ----------------------------- */
+const PETAL_N = 220;
+const petalData = new Float32Array(PETAL_N*3);
+const petalVel = new Float32Array(PETAL_N*3);
+const petalSeed = new Float32Array(PETAL_N);
+const petalSize = new Float32Array(PETAL_N);
+for(let i=0;i<PETAL_N;i++){
+  petalData[i*3+0] = (Math.random()-0.5)*16;
+  petalData[i*3+1] = Math.random()*8 - 1;
+  petalData[i*3+2] = (Math.random()-0.5)*16;
+  petalVel[i*3+0] = (Math.random()-0.5)*0.1;
+  petalVel[i*3+1] = -0.4 - Math.random()*0.4;
+  petalVel[i*3+2] = (Math.random()-0.5)*0.1;
+  petalSeed[i] = Math.random();
+  petalSize[i] = 4 + Math.random()*8;
+}
+const petalVB = mkBuffer(petalData);
+const petalVelB = mkBuffer(petalVel);
+const petalSeedB = mkBuffer(petalSeed);
+const petalSizeB = mkBuffer(petalSize);
+
+/* --------------------------- 8. FBO FOR POST ----------------------------- */
+let fbo = null, fbTex = null, fbDepth = null;
+let fboW = 0, fboH = 0;
+function createFBO(w, h){
+  fboW = w; fboH = h;
+  if(fbo) gl.deleteFramebuffer(fbo);
+  if(fbTex) gl.deleteTexture(fbTex);
+  if(fbDepth) gl.deleteRenderbuffer(fbDepth);
+  fbo = gl.createFramebuffer();
+  fbTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, fbTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  fbDepth = gl.createRenderbuffer();
+  gl.bindRenderbuffer(gl.RENDERBUFFER, fbDepth);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, w, h);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fbTex, 0);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, fbDepth);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+// Fullscreen quad
+const quadBuf = mkBuffer(new Float32Array([-1,-1, 1,-1, 1,1, -1,1]));
+
+/* --------------------------- 9. RENDER LOOP ------------------------------- */
+let W=0,H=0;
+function resize(){
+  const dpr = Math.min(2, window.devicePixelRatio||1);
+  W = Math.floor(canvas.clientWidth*dpr);
+  H = Math.floor(canvas.clientHeight*dpr);
+  if(canvas.width!==W || canvas.height!==H){
+    canvas.width = W; canvas.height = H;
+    createFBO(W, H);
+  }
+}
+window.addEventListener("resize", resize);
+
+// mouse parallax
+let mouseX=0, mouseY=0, mouseLX=0, mouseLY=0;
+window.addEventListener("mousemove", e=>{ mouseX = (e.clientX/window.innerWidth)*2-1; mouseY = (e.clientY/window.innerHeight)*2-1; });
+window.addEventListener("touchmove", e=>{ if(e.touches[0]){ mouseX = (e.touches[0].clientX/window.innerWidth)*2-1; mouseY = (e.touches[0].clientY/window.innerHeight)*2-1; }}, {passive:true});
+
+let t0 = performance.now();
+let time = 0;
+let timeAcc = 0;
+let frame = 0;
+
+function setMat(mat){
+  gl.useProgram(prog);
+  gl.uniform3fv(U.base, mat.base);
+  gl.uniform3fv(U.colA, mat.colA);
+  gl.uniform3fv(U.colB, mat.colB);
+  gl.uniform3fv(U.accent, mat.accent);
+  gl.uniform1f(U.pat, mat.pat);
+  gl.uniform1f(U.rough, mat.rough);
+  gl.uniform1f(U.em, mat.em);
+  gl.uniform3fv(U.emCol, mat.emCol);
+  gl.uniform1f(U.shin, mat.shin);
+  gl.uniform1f(U.shad, mat.shad);
+}
+
+function drawMesh(mesh){
+  gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vBuf);
+  gl.enableVertexAttribArray(loc.pos); gl.vertexAttribPointer(loc.pos,3,gl.FLOAT,false,STRIDE,0);
+  gl.enableVertexAttribArray(loc.nor); gl.vertexAttribPointer(loc.nor,3,gl.FLOAT,false,STRIDE,12);
+  gl.enableVertexAttribArray(loc.uv);  gl.vertexAttribPointer(loc.uv,2,gl.FLOAT,false,STRIDE,24);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.iBuf);
+  gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+}
+
+function render(){
+  resize();
+  const now = performance.now();
+  const dt = Math.min(0.05, (now-t0)/1000);
+  t0 = now;
+  time += dt;
+  timeAcc += dt;
+  frame++;
+
+  // smooth mouse
+  mouseLX += (mouseX-mouseLX)*0.05;
+  mouseLY += (mouseY-mouseLY)*0.05;
+
+  /* -------- CAMERA ANIMATION (cinematic orbit) -------- */
+  // slow orbit around pagoda, slight dolly + tilt
+  const orbitT = time*0.045;
+  const camR = 12.5 + Math.sin(time*0.07)*1.2;
+  const camH = 4.2 + Math.sin(time*0.06)*0.4;
+  const camX = Math.cos(orbitT)*camR + mouseLX*0.6;
+  const camZ = Math.sin(orbitT)*camR;
+  const camY = camH + mouseLY*0.3;
+  const camPos = [camX, camY, camZ];
+  const lookAt = [0, 2.4, 0.4];
+  const view = M.lookAt(camPos, lookAt, [0,1,0]);
+  const proj = M.perspective(48*Math.PI/180, W/H, 0.1, 100);
+  const vp = M.mul(proj, view);
+
+  /* -------- LIGHTING -------- */
+  const sunDir = V.norm([0.6, 0.85, 0.35]);
+  const sunCol = [1.05, 0.95, 0.78];   // warm sunlight
+  const ambCol = [0.45, 0.50, 0.62];   // cool sky fill
+  const fillDir = V.norm([-0.4, 0.6, -0.7]);
+  const fillCol = [0.45, 0.40, 0.55];
+  const fogCol = [0.84, 0.78, 0.82];
+  const fogStart = 12, fogEnd = 35;
+
+  /* -------- PASS 1: RENDER SCENE INTO FBO -------- */
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.viewport(0, 0, fboW, fboH);
+  gl.clearColor(fogCol[0], fogCol[1], fogCol[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+
+  // draw solid nodes
+  gl.useProgram(prog);
+  gl.uniform3fv(U.sun, sunDir);
+  gl.uniform3fv(U.sunCol, sunCol);
+  gl.uniform3fv(U.amb, ambCol);
+  gl.uniform3fv(U.fill, fillCol);
+  gl.uniform3fv(U.fillDir, fillDir);
+  gl.uniform3fv(U.cam, camPos);
+  gl.uniform3fv(U.fogCol, fogCol);
+  gl.uniform1f(U.fogS, fogStart);
+  gl.uniform1f(U.fogE, fogEnd);
+  gl.uniform1f(U.time, time);
+
+  for(let i=0;i<nodes.length;i++){
+    const n = nodes[i];
+    // sway animation for cherry blossom clusters
+    let m = n.m;
+    if(n.sway){
+      const off = Math.sin(time*n.sway.freq + n.sway.phase)*n.sway.amp;
+      m = M.translate(n.m, 0, off, 0);
+    }
+    const mvp = M.mul(vp, m);
+    const nmat = M.normalFromModel(m);
+    gl.uniformMatrix4fv(U.mvp, false, mvp);
+    gl.uniformMatrix4fv(U.model, false, m);
+    gl.uniformMatrix4fv(U.nmat, false, nmat);
+    setMat(n.mat);
+    drawMesh(n.mesh);
+  }
+
+  // draw koi
+  gl.useProgram(kProg);
+  gl.uniform3fv(kU.sun, sunDir);
+  gl.uniform3fv(kU.sunCol, sunCol);
+  gl.uniform3fv(kU.amb, ambCol);
+  gl.uniform3fv(kU.cam, camPos);
+  gl.uniform3fv(kU.fogCol, fogCol);
+  gl.uniform1f(kU.fogS, fogStart);
+  gl.uniform1f(kU.fogE, fogEnd);
+  gl.bindBuffer(gl.ARRAY_BUFFER, fishMesh.vBuf);
+  gl.enableVertexAttribArray(kLoc.pos); gl.vertexAttribPointer(kLoc.pos,3,gl.FLOAT,false,STRIDE,0);
+  gl.enableVertexAttribArray(kLoc.nor); gl.vertexAttribPointer(kLoc.nor,3,gl.FLOAT,false,STRIDE,12);
+  gl.enableVertexAttribArray(kLoc.inst); gl.vertexAttribPointer(kLoc.inst,1,gl.FLOAT,false,STRIDE,24);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, fishMesh.iBuf);
+  for(let i=0;i<KOI_N;i++){
+    const k = koiData[i];
+    k.a += k.speed*dt;
+    const cx = 5.5 + Math.cos(k.a)*k.r;
+    const cz = 4.0 + Math.sin(k.a)*k.r*0.7;
+    const tilt = Math.sin(k.a*0.5 + k.phase)*0.15;
+    let m = M.ident();
+    m = M.translate(m, cx, k.y, cz);
+    m = M.rotateY(m, -k.a + Math.PI/2 + Math.sin(k.a*0.3)*0.2);
+    m = M.rotateZ(m, tilt);
+    // wiggle
+    const w = 1 + Math.sin(time*4 + k.phase)*0.03;
+    m = M.scale(m, w, 1, 1);
+    const mvp = M.mul(vp, m);
+    const nmat = M.normalFromModel(m);
+    gl.uniformMatrix4fv(kU.mvp, false, mvp);
+    gl.uniformMatrix4fv(kU.model, false, m);
+    gl.uniformMatrix4fv(kU.nmat, false, nmat);
+    // pass seed via instance attribute
+    gl.vertexAttrib3f(kLoc.inst, k.seed, 0, 0);
+    gl.drawElements(gl.TRIANGLES, fishMesh.count, gl.UNSIGNED_SHORT, 0);
+  }
+
+  // draw petals (points)
+  gl.useProgram(pProg);
+  gl.disable(gl.CULL_FACE);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  const petalM = vp;
+  gl.uniformMatrix4fv(pU.mvp, false, petalM);
+  gl.uniform1f(pU.time, time);
+  gl.bindBuffer(gl.ARRAY_BUFFER, petalVB);
+  gl.enableVertexAttribArray(pLoc.pos); gl.vertexAttribPointer(pLoc.pos,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, petalVelB);
+  gl.enableVertexAttribArray(pLoc.vel); gl.vertexAttribPointer(pLoc.vel,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, petalSeedB);
+  gl.enableVertexAttribArray(pLoc.seed); gl.vertexAttribPointer(pLoc.seed,1,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, petalSizeB);
+  gl.enableVertexAttribArray(pLoc.size); gl.vertexAttribPointer(pLoc.size,1,gl.FLOAT,false,0,0);
+  gl.drawArrays(gl.POINTS, 0, PETAL_N);
+  gl.disable(gl.BLEND);
+  gl.enable(gl.CULL_FACE);
+
+  /* -------- PASS 2: POST-PROCESS -------- */
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, W, H);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(postProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, fbTex);
+  gl.uniform1i(pstU.scene, 0);
+  gl.uniform2f(pstU.res, W, H);
+  gl.uniform1f(pstU.time, time);
+  gl.uniform1f(pstU.focus, 0.35);
+  gl.uniform1f(pstU.dof, 0.5);
+  gl.uniform1f(pstU.vig, 0.85);
+  gl.uniform1f(pstU.grain, 0.025);
+  gl.uniform1f(pstU.bloom, 0.6);
+  gl.uniform2f(pstU.mouse, mouseX, mouseY);
+  gl.uniform2f(pstU.mouseL, mouseLX, mouseLY);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+  gl.enableVertexAttribArray(pstLoc.pos);
+  gl.vertexAttribPointer(pstLoc.pos, 2, gl.FLOAT, false, 0, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 4);
+
+  requestAnimationFrame(render);
+}
+
+resize();
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

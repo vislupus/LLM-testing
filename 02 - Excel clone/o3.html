@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>LiteSheet</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+
+<!-- ===== Styling ===== -->
+<style>
+:root{
+    --ui-bg:#f3f6f9;
+    --ui-border:#c7d0db;
+    --ui-accent:#0078d4;
+    --ui-hover:#dde7f5;
+    --ui-select:#cce0ff;
+    --font: 13px/1.4 "Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box;font-family:var(--font);user-select:none}
+body{margin:0;padding:0;display:flex;flex-direction:column;height:100vh;background:var(--ui-bg)}
+#toolbar{display:flex;gap:.5rem;padding:.4rem;border-bottom:1px solid var(--ui-border);background:#fff}
+#toolbar button{border:1px solid var(--ui-border);background:#fff;padding:.2rem .5rem;border-radius:2px;cursor:pointer}
+#toolbar button:hover{background:var(--ui-hover)}
+#formulaBar{display:flex;border-bottom:1px solid var(--ui-border);background:#fff}
+#cellName{width:5rem;padding:.3rem;border-right:1px solid var(--ui-border);text-align:center;background:#eef3fa}
+#formulaInput{flex:1;padding:.3rem;border:0;font-family:var(--font);outline:none}
+#gridWrapper{flex:1;overflow:auto;position:relative;background:#fff}
+table{border-collapse:separate;border-spacing:0}
+th,td{min-width:80px;height:22px;border:1px solid var(--ui-border);padding:0 4px;white-space:nowrap;overflow:hidden}
+th.colHdr{background:#f0f2f5;font-weight:bold;text-align:center;position:sticky;top:0;z-index:3}
+th.rowHdr{background:#f0f2f5;text-align:right;position:sticky;left:0;z-index:2}
+td.selected{background:var(--ui-select)}
+td.editing{padding:0}
+td.editing input{width:100%;height:100%;border:0;margin:0;outline:0;padding:0 4px}
+.resize-handle{position:absolute;top:0;width:4px;cursor:col-resize;user-select:none}
+#sheetTabs{display:flex;align-items:center;gap:.2rem;padding:.3rem;border-top:1px solid var(--ui-border);background:#fff}
+.sheetTab{padding:.2rem .8rem;border:1px solid var(--ui-border);border-bottom:0;border-radius:3px 3px 0 0;background:#e9edf2;cursor:pointer}
+.sheetTab.active{background:#fff;font-weight:bold;border-bottom:1px solid #fff}
+#addSheet{padding:.2rem .6rem;border:1px solid var(--ui-border);background:#fff;cursor:pointer;border-radius:3px}
+@media(max-width:600px){
+  th,td{min-width:70px}
+}
+</style>
+</head>
+
+<body>
+<!-- ===== Toolbar ===== -->
+<div id="toolbar">
+  <button id="boldBtn"><b>B</b></button>
+  <button id="italicBtn"><i>I</i></button>
+  <input type="color" id="bgColor" title="Cell background"/>
+  <button id="clearBtn">Clear</button>
+  <button id="downloadBtn">Download CSV</button>
+  <label style="cursor:pointer">
+      Upload CSV<input type="file" id="uploadInput" accept=".csv" style="display:none">
+  </label>
+</div>
+
+<!-- ===== Formula Bar ===== -->
+<div id="formulaBar">
+  <div id="cellName">A1</div>
+  <input id="formulaInput" spellcheck="false"/>
+</div>
+
+<!-- ===== Grid ===== -->
+<div id="gridWrapper">
+  <table id="grid"></table>
+</div>
+
+<!-- ===== Sheet Tabs ===== -->
+<div id="sheetTabs">
+  <!-- dynamic --> 
+  <div id="addSheet">＋</div>
+</div>
+
+<!-- ===== Logic ===== -->
+<script>
+(()=>{
+
+/* ---------- Helpers ---------- */
+const LETTERS="ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const colToLabel=i=>LETTERS[Math.floor(i%26)] + (i>=26?colToLabel(Math.floor(i/26)-1):"");
+const labelToCol=s=>{
+    let n=0;for(let i=0;i<s.length;i++)n=n*26+(s.charCodeAt(i)-64);return n-1;
+};
+const rangeExpand=range=>{
+  const [start,end]=range.split(":");
+  if(!end)return [start];
+  const col1= start.match(/[A-Z]+/)[0], row1=+start.match(/\d+/)[0];
+  const col2= end.match(/[A-Z]+/)[0],   row2=+end.match(/\d+/)[0];
+  const c1=labelToCol(col1), c2=labelToCol(col2);
+  const out=[];
+  for(let r=row1;r<=row2;r++)for(let c=c1;c<=c2;c++)out.push(colToLabel(c)+r);
+  return out;
+};
+
+/* ---------- Data Model ---------- */
+let workbook={};
+let activeSheet="Sheet1";
+let rowCount=100,colCount=26;
+function initWorkbook(){
+  workbook["Sheet1"]={cells:{}, formats:{}};
+}
+function getCell(sheet,addr){return workbook[sheet].cells[addr]??{v:"",f:""};}
+function setCell(sheet,addr,formulaOrValue){
+  const cell=workbook[sheet].cells[addr]||(workbook[sheet].cells[addr]={});
+  if(typeof formulaOrValue==="string" && formulaOrValue.startsWith("=")){
+      cell.f=formulaOrValue.slice(1);
+  }else{
+      cell.f="";
+      cell.v=formulaOrValue;
+  }
+}
+function evaluateSheet(sheet){
+  const visited={},cells=workbook[sheet].cells;
+  const getVal=addr=>{
+     if(!(addr in cells))return 0;
+     if("v" in cells[addr] && cells[addr].f==="")return cells[addr].v||0;
+     if(visited[addr]){cells[addr].v="#CYCLE!";return 0;}
+     visited[addr]=1;
+     const expr=parseFormula(cells[addr].f);
+     try{const res=Function("sum,avg,min,max",`return ${expr}`)(sumFn,avgFn,Math.min,Math.max);
+         cells[addr].v=res;
+         return res;
+     }catch(e){cells[addr].v="#ERR";return 0;}
+  };
+  function parseFormula(f){
+     return f.replace(/\s+/g,"")
+      .replace(/([A-Z]+[0-9]+:[A-Z]+[0-9]+)/g,m=>{ // ranges
+          const arr=rangeExpand(m).map(a=>getVal(a));return `[${arr}]`;
+      })
+      .replace(/([A-Z]+[0-9]+)/g,m=>`(${getVal(m)})`)
+      .replace(/\bSUM\(/ig,"sum(")
+      .replace(/\bAVERAGE\(/ig,"avg(")
+      .replace(/\bMIN\(/ig,"min(")
+      .replace(/\bMAX\(/ig,"max(");
+  }
+  const sumFn=arr=>arr.reduce((a,b)=>a+ +b,0);
+  const avgFn=arr=>arr.length?sumFn(arr)/arr.length:0;
+
+  for(const addr in cells) if(cells[addr].f) getVal(addr);
+}
+
+/* ---------- UI Build ---------- */
+const grid = document.getElementById("grid"), wrapper=document.getElementById("gridWrapper");
+function buildGrid(){
+  grid.innerHTML="";
+  const thead=document.createElement("thead");
+  const headRow=document.createElement("tr");
+  headRow.appendChild(document.createElement("th")); // corner
+  for(let c=0;c<colCount;c++){
+      const th=document.createElement("th");th.textContent=colToLabel(c);th.className="colHdr";
+      // resize handle
+      const handle=document.createElement("div");handle.className="resize-handle";
+      handle.addEventListener("mousedown",startColResize);
+      th.style.position="relative";
+      th.appendChild(handle);
+      headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);grid.appendChild(thead);
+
+  const tbody=document.createElement("tbody");
+  for(let r=1;r<=rowCount;r++){
+    const tr=document.createElement("tr");
+    const rowHdr=document.createElement("th");rowHdr.textContent=r;rowHdr.className="rowHdr";
+    tr.appendChild(rowHdr);
+    for(let c=0;c<colCount;c++){
+      const td=document.createElement("td");td.dataset.addr=colToLabel(c)+r;
+      td.addEventListener("mousedown",cellMouseDown);
+      td.addEventListener("dblclick",cellDblClick);
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  grid.appendChild(tbody);
+}
+
+/* ---------- Selection & Editing ---------- */
+let selStart=null,selEnd=null,editingCell=null;
+function clearSelection(){grid.querySelectorAll(".selected").forEach(td=>td.classList.remove("selected"));}
+function paintSelection(){
+  clearSelection();
+  if(!selStart)return;
+  const [c1,r1]=splitAddr(selStart), [c2,r2]=splitAddr(selEnd||selStart);
+  const cc1=labelToCol(c1),cc2=labelToCol(c2);
+  const minC=Math.min(cc1,cc2),maxC=Math.max(cc1,cc2);
+  const minR=Math.min(r1,r2),maxR=Math.max(r1,r2);
+  for(let r=minR;r<=maxR;r++){
+     for(let c=minC;c<=maxC;c++){
+        const td=grid.querySelector(`td[data-addr='${colToLabel(c)+r}']`);
+        td&&td.classList.add("selected");
+     }
+  }
+  document.getElementById("cellName").textContent=selStart;
+  const cell=getCell(activeSheet,selStart);
+  document.getElementById("formulaInput").value=cell.f?`=${cell.f}`:cell.v||"";
+}
+function splitAddr(addr){return [addr.match(/[A-Z]+/)[0], +addr.match(/\d+/)[0]];}
+
+function cellMouseDown(e){
+  const addr=e.currentTarget.dataset.addr;selStart=addr;selEnd=null;paintSelection();
+  document.addEventListener("mousemove",cellMouseMove);
+  document.addEventListener("mouseup",()=>{document.removeEventListener("mousemove",cellMouseMove);},{once:true});
+}
+function cellMouseMove(e){
+  const td=e.target.closest("td");if(!td)return;
+  selEnd=td.dataset.addr;paintSelection();
+}
+function cellDblClick(e){startEditing(e.currentTarget);}
+function startEditing(td){
+  if(editingCell)return;editingCell=td;
+  const addr=td.dataset.addr;const cell=getCell(activeSheet,addr);
+  const inp=document.createElement("input");inp.type="text";inp.value=cell.f?`=${cell.f}`:cell.v||"";
+  td.textContent="";td.classList.add("editing");td.appendChild(inp);inp.focus();
+  inp.addEventListener("keydown",e=>{
+     if(e.key==="Enter"){finishEdit(addr,inp.value);td.classList.remove("editing");editingCell=null;paintSheet();}
+     if(e.key==="Escape"){td.classList.remove("editing");editingCell=null;paintSheet();}
+  });
+}
+document.getElementById("formulaInput").addEventListener("keydown",e=>{
+  if(e.key==="Enter"&&selStart){finishEdit(selStart,e.target.value);paintSheet();}
+});
+function finishEdit(addr,value){
+  setCell(activeSheet,addr,value);
+  evaluateSheet(activeSheet);
+}
+
+/* ---------- Repaint ---------- */
+function paintSheet(){
+  evaluateSheet(activeSheet);
+  grid.querySelectorAll("td").forEach(td=>{
+      const addr=td.dataset.addr;
+      const cell=getCell(activeSheet,addr);
+      td.textContent=cell.f?cell.v:cell.v||"";
+      // formats
+      const fmt=workbook[activeSheet].formats[addr]||{};
+      td.style.fontWeight=fmt.bold?"bold":"";
+      td.style.fontStyle=fmt.italic?"italic":"";
+      td.style.background=fmt.bg||"";
+  });
+  paintSelection();
+}
+
+/* ---------- Column Resize ---------- */
+let resizing=null;
+function startColResize(e){
+   e.stopPropagation();
+   resizing={startX:e.clientX,col:e.target.parentElement};
+   document.addEventListener("mousemove",DoResize);
+   document.addEventListener("mouseup",()=>{resizing=null;document.removeEventListener("mousemove",DoResize);},{once:true});
+}
+function DoResize(e){
+  if(!resizing)return;
+  const delta=e.clientX-resizing.startX;
+  const th=resizing.col;const newW=Math.max(40,(th.offsetWidth+delta));
+  th.style.width=newW+"px";
+  const idx=[...th.parentNode.children].indexOf(th);
+  grid.querySelectorAll(`tr td:nth-child(${idx+1})`).forEach(td=>td.style.width=newW+"px");
+  resizing.startX=e.clientX;
+}
+
+/* ---------- Toolbar actions ---------- */
+function applyFormat(prop,val){
+  if(!selStart)return;
+  const sheet=workbook[activeSheet];
+  const addrs=grid.querySelectorAll("td.selected");
+  addrs.forEach(td=>{
+     const a=td.dataset.addr;
+     sheet.formats[a]=sheet.formats[a]||{};
+     sheet.formats[a][prop]=val;
+  });
+  paintSheet();
+}
+document.getElementById("boldBtn").onclick=()=>applyFormat("bold",v=>!v)(1);
+document.getElementById("italicBtn").onclick=()=>applyFormat("italic",v=>!v)(1);
+document.getElementById("bgColor").oninput=e=>applyFormat("bg",e.target.value);
+document.getElementById("clearBtn").onclick=()=>{
+   if(!selStart)return;
+   grid.querySelectorAll("td.selected").forEach(td=>{
+      const a=td.dataset.addr;delete workbook[activeSheet].cells[a];
+   });
+   paintSheet();
+};
+
+/* ---------- CSV I/O ---------- */
+document.getElementById("downloadBtn").onclick=()=>{
+  const rows=[];
+  for(let r=1;r<=rowCount;r++){
+    const cells=[];
+    for(let c=0;c<colCount;c++){
+      const addr=colToLabel(c)+r;
+      const cell=getCell(activeSheet,addr);
+      cells.push(cell.f?`=${cell.f}`:cell.v||"");
+    }
+    rows.push(cells.join(","));
+  }
+  const blob=new Blob([rows.join("\n")],{type:"text/csv"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+  a.download=activeSheet+".csv";a.click();
+};
+document.getElementById("uploadInput").onchange=e=>{
+  const file=e.target.files[0];if(!file)return;
+  file.text().then(txt=>{
+     const lines=txt.split(/\r?\n/);
+     lines.forEach((line,r)=>{
+       line.split(",").forEach((val,c)=>{
+          if(val){setCell(activeSheet,colToLabel(c)+(r+1),val);}
+       });
+     });
+     paintSheet();
+  });
+};
+
+/* ---------- Sheet Tabs ---------- */
+function buildTabs(){
+   const bar=document.getElementById("sheetTabs");
+   bar.querySelectorAll(".sheetTab").forEach(t=>t.remove());
+   Object.keys(workbook).forEach(name=>{
+      const tab=document.createElement("div");tab.textContent=name;tab.className="sheetTab"+(name===activeSheet?" active":"");
+      tab.ondblclick=()=>{const n=prompt("Rename sheet",name);if(n){workbook[n]=workbook[name];delete workbook[name];activeSheet=n;buildTabs();paintSheet();}};
+      tab.onclick=()=>{activeSheet=name;buildTabs();paintSheet();};
+      bar.insertBefore(tab,document.getElementById("addSheet"));
+   });
+}
+document.getElementById("addSheet").onclick=()=>{
+   let i=1;while(workbook["Sheet"+i])i++;
+   workbook["Sheet"+i]={cells:{},formats:{}};
+   activeSheet="Sheet"+i;buildTabs();paintSheet();
+};
+
+/* ---------- Keyboard nav ---------- */
+document.addEventListener("keydown",e=>{
+  if(editingCell)return;
+  if(!selStart)return;
+  const [col,row]=splitAddr(selStart);
+  let c=labelToCol(col),r=row;
+  if(e.key==="ArrowDown")r++;
+  if(e.key==="ArrowUp")r=Math.max(1,r-1);
+  if(e.key==="ArrowRight")c++;
+  if(e.key==="ArrowLeft")c=Math.max(0,c-1);
+  if(e.key==="Enter")r++;
+  if(e.key==="Tab"){c++;e.preventDefault();}
+  selStart=colToLabel(c)+r;selEnd=null;paintSelection();
+});
+
+/* ---------- Bootstrap ---------- */
+function init(){
+  initWorkbook();
+  buildGrid();
+  buildTabs();
+  selStart="A1";paintSheet();
+}
+init();
+
+})();
+</script>
+
+<!--
+  OPTIONAL:
+  - If you want a prettier color-picker and modal, you can pull in tiny external libs here via CDN,
+    e.g. Pickr.js or SweetAlert2, but the sheet works fine without them.
+  - Likewise, you could add FileSaver.js for CSV download – the Blob trick above avoids that dependency.
+-->
+</body>
+</html>

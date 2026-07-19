@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Diffusion-Limited Aggregation Lab</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --panel: rgba(10, 18, 30, 0.88);
+    --line: rgba(255,255,255,0.12);
+    --text: #e8f2ff;
+    --muted: #9bb0c9;
+    --accent: #61d9ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #04070d; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; color: var(--text); }
+  #app { position: relative; width: 100%; height: 100%; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  .panel {
+    position: absolute; top: 14px; left: 14px; width: min(330px, calc(100vw - 28px));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px 14px 12px; backdrop-filter: blur(12px); box-shadow: 0 12px 36px rgba(0,0,0,.32);
+    user-select: none;
+  }
+  h1 { margin: 0 0 4px; font-size: 18px; letter-spacing: .01em; }
+  .subtitle { color: var(--muted); font-size: 12px; line-height: 1.35; margin-bottom: 12px; }
+  .row { display: grid; grid-template-columns: 112px 1fr 48px; align-items: center; gap: 8px; margin: 8px 0; }
+  .row label { font-size: 12px; color: #cad8e9; }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+  output { font-variant-numeric: tabular-nums; text-align: right; font-size: 12px; color: #8ee8ff; }
+  .buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-top: 11px; }
+  button {
+    border: 1px solid rgba(255,255,255,.13); border-radius: 9px; padding: 8px 7px;
+    color: var(--text); background: rgba(255,255,255,.065); cursor: pointer; font-weight: 650;
+  }
+  button:hover { background: rgba(255,255,255,.11); }
+  button.primary { background: rgba(54, 197, 255, .18); border-color: rgba(74, 211, 255, .32); }
+  .stats { margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+  .stat { font-size: 11px; color: var(--muted); }
+  .stat b { display: block; margin-top: 2px; font-size: 14px; color: var(--text); font-variant-numeric: tabular-nums; }
+  .hint { margin-top: 10px; color: #8095ae; font-size: 10px; line-height: 1.4; }
+  .badge { display:inline-block; padding: 2px 6px; border-radius: 999px; background: rgba(97,217,255,.12); color:#8ee8ff; font-size:10px; margin-left:6px; vertical-align:2px; }
+  @media (max-width: 620px) {
+    .panel { width: 290px; padding: 12px; }
+    .row { grid-template-columns: 98px 1fr 42px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="canvas"></canvas>
+  <section class="panel">
+    <h1>DLA Growth Lab <span class="badge">real-time</span></h1>
+    <div class="subtitle">Random walkers drift toward the aggregate and stick on contact. Each fixed walker is immediately replaced.</div>
+
+    <div class="row"><label for="walkers">Live particles</label><input id="walkers" type="range" min="25" max="500" step="5" value="100"><output id="walkersOut">100</output></div>
+    <div class="row"><label for="speed">Movement speed</label><input id="speed" type="range" min="1" max="12" step="1" value="4"><output id="speedOut">4</output></div>
+    <div class="row"><label for="bias">Inward bias</label><input id="bias" type="range" min="0" max="0.30" step="0.005" value="0.055"><output id="biasOut">0.055</output></div>
+    <div class="row"><label for="size">Particle size</label><input id="size" type="range" min="1.5" max="4.5" step="0.25" value="2.5"><output id="sizeOut">2.50</output></div>
+
+    <div class="buttons">
+      <button id="pause" class="primary">Pause</button>
+      <button id="burst">Add 50</button>
+      <button id="reset">Reset</button>
+    </div>
+
+    <div class="stats">
+      <div class="stat">Fixed particles<b id="fixedStat">1</b></div>
+      <div class="stat">Cluster radius<b id="radiusStat">0 px</b></div>
+      <div class="stat">Attachment rate<b id="rateStat">0.0 /s</b></div>
+      <div class="stat">Frame rate<b id="fpsStat">60</b></div>
+    </div>
+    <div class="hint">Space: pause · R: reset · +/−: speed · B: add walkers. Growth stops automatically 50 px from the nearest canvas edge.</div>
+  </section>
+</div>
+<script>
+(() => {
+  'use strict';
+
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+  const fixedLayer = document.createElement('canvas');
+  const fixedCtx = fixedLayer.getContext('2d', { alpha: true, desynchronized: true });
+
+  const ui = {
+    walkers: document.getElementById('walkers'), walkersOut: document.getElementById('walkersOut'),
+    speed: document.getElementById('speed'), speedOut: document.getElementById('speedOut'),
+    bias: document.getElementById('bias'), biasOut: document.getElementById('biasOut'),
+    size: document.getElementById('size'), sizeOut: document.getElementById('sizeOut'),
+    pause: document.getElementById('pause'), burst: document.getElementById('burst'), reset: document.getElementById('reset'),
+    fixedStat: document.getElementById('fixedStat'), radiusStat: document.getElementById('radiusStat'),
+    rateStat: document.getElementById('rateStat'), fpsStat: document.getElementById('fpsStat')
+  };
+
+  let width = 0, height = 0, dpr = 1;
+  let cx = 0, cy = 0;
+  let particleRadius = 2.5;
+  let touchDistance = particleRadius * 2.05;
+  let cellSize = touchDistance + 0.5;
+  let cols = 0, rows = 0;
+  let occupancy = null;
+  let fixed = [];
+  let walkers = [];
+  let clusterRadius = 0;
+  let running = true;
+  let complete = false;
+  let attachmentsThisWindow = 0;
+  let attachmentsPerSecond = 0;
+  let rateWindowStart = performance.now();
+  let lastTime = performance.now();
+  let fpsSmooth = 60;
+  let frameCounter = 0;
+
+  const edgeStop = 50;
+  const TAU = Math.PI * 2;
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    width = Math.max(320, Math.floor(rect.width));
+    height = Math.max(240, Math.floor(rect.height));
+    dpr = Math.min(2, window.devicePixelRatio || 1);
+
+    canvas.width = Math.floor(width * dpr);
+    canvas.height = Math.floor(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    fixedLayer.width = canvas.width;
+    fixedLayer.height = canvas.height;
+    fixedCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    resetSimulation();
+  }
+
+  function gridIndex(gx, gy) { return gx + gy * cols; }
+  function toGridX(x) { return Math.max(0, Math.min(cols - 1, (x / cellSize) | 0)); }
+  function toGridY(y) { return Math.max(0, Math.min(rows - 1, (y / cellSize) | 0)); }
+
+  function rebuildGrid() {
+    particleRadius = Number(ui.size.value);
+    touchDistance = particleRadius * 2.05;
+    cellSize = touchDistance + 0.75;
+    cols = Math.ceil(width / cellSize);
+    rows = Math.ceil(height / cellSize);
+    occupancy = new Int32Array(cols * rows);
+    occupancy.fill(-1);
+  }
+
+  function addToGrid(index) {
+    const p = fixed[index];
+    const gx = toGridX(p.x), gy = toGridY(p.y);
+    occupancy[gridIndex(gx, gy)] = index;
+  }
+
+  function resetSimulation() {
+    cx = width * 0.5;
+    cy = height * 0.5;
+    fixed = [];
+    walkers = [];
+    clusterRadius = 0;
+    complete = false;
+    attachmentsThisWindow = 0;
+    attachmentsPerSecond = 0;
+    rateWindowStart = performance.now();
+    rebuildGrid();
+    fixedCtx.clearRect(0, 0, width, height);
+    addFixed(cx, cy, true);
+    syncWalkerCount(true);
+    ui.pause.textContent = running ? 'Pause' : 'Resume';
+  }
+
+  function colorForParticle(radius, index) {
+    const maxR = Math.max(1, Math.min(width, height) * 0.5 - edgeStop);
+    const t = Math.min(1, radius / maxR);
+    const hue = 192 + 106 * t + Math.sin(index * 0.035) * 7;
+    const light = 69 - t * 16;
+    return `hsl(${hue} 88% ${light}%)`;
+  }
+
+  function addFixed(x, y, seed = false) {
+    const dx = x - cx, dy = y - cy;
+    const radius = Math.hypot(dx, dy);
+    const index = fixed.length;
+    const p = { x, y, radius };
+    fixed.push(p);
+    addToGrid(index);
+    clusterRadius = Math.max(clusterRadius, radius + particleRadius);
+
+    fixedCtx.beginPath();
+    fixedCtx.arc(x, y, seed ? particleRadius * 1.65 : particleRadius, 0, TAU);
+    fixedCtx.fillStyle = seed ? '#fff4bd' : colorForParticle(radius, index);
+    fixedCtx.shadowColor = seed ? '#ffe27a' : 'rgba(73,205,255,.30)';
+    fixedCtx.shadowBlur = seed ? 10 : 3;
+    fixedCtx.fill();
+    fixedCtx.shadowBlur = 0;
+
+    if (!seed) {
+      attachmentsThisWindow++;
+      const nearestEdge = Math.min(cx, cy, width - cx, height - cy);
+      if (clusterRadius >= nearestEdge - edgeStop) {
+        complete = true;
+        running = false;
+        ui.pause.textContent = 'Complete';
+      }
+    }
+  }
+
+  function spawnWalker() {
+    const nearestEdge = Math.min(cx, cy, width - cx, height - cy);
+    const spawnRadius = Math.min(nearestEdge - edgeStop * 0.45, Math.max(28, clusterRadius + 34));
+    const angle = Math.random() * TAU;
+    const jitter = (Math.random() - 0.5) * 12;
+    return {
+      x: cx + Math.cos(angle) * (spawnRadius + jitter),
+      y: cy + Math.sin(angle) * (spawnRadius + jitter),
+      angle: Math.random() * TAU,
+      trailX: 0,
+      trailY: 0
+    };
+  }
+
+  function respawnWalker(w) {
+    const p = spawnWalker();
+    w.x = p.x; w.y = p.y; w.angle = p.angle; w.trailX = w.x; w.trailY = w.y;
+  }
+
+  function syncWalkerCount(force = false) {
+    const target = Number(ui.walkers.value);
+    if (force) walkers.length = 0;
+    while (walkers.length < target) walkers.push(spawnWalker());
+    if (walkers.length > target) walkers.length = target;
+  }
+
+  function touchesCluster(x, y) {
+    const gx = toGridX(x), gy = toGridY(y);
+    const maxD2 = touchDistance * touchDistance;
+    for (let oy = -1; oy <= 1; oy++) {
+      const yy = gy + oy;
+      if (yy < 0 || yy >= rows) continue;
+      for (let ox = -1; ox <= 1; ox++) {
+        const xx = gx + ox;
+        if (xx < 0 || xx >= cols) continue;
+        const index = occupancy[gridIndex(xx, yy)];
+        if (index < 0) continue;
+        const p = fixed[index];
+        const dx = x - p.x, dy = y - p.y;
+        if (dx * dx + dy * dy <= maxD2) return p;
+      }
+    }
+    return null;
+  }
+
+  function stepWalker(w, moveSteps, inwardBias) {
+    const killRadius = Math.min(cx, cy, width - cx, height - cy) - 6;
+    for (let s = 0; s < moveSteps; s++) {
+      const oldX = w.x, oldY = w.y;
+      let dx = cx - w.x, dy = cy - w.y;
+      const invLen = 1 / (Math.hypot(dx, dy) || 1);
+      dx *= invLen; dy *= invLen;
+
+      // Persistent random walk plus a subtle central drift.
+      w.angle += (Math.random() - 0.5) * 2.35;
+      const randomX = Math.cos(w.angle);
+      const randomY = Math.sin(w.angle);
+      const stepLength = 1.05 + Math.random() * 0.65;
+      w.x += (randomX * (1 - inwardBias) + dx * inwardBias) * stepLength;
+      w.y += (randomY * (1 - inwardBias) + dy * inwardBias) * stepLength;
+
+      const rx = w.x - cx, ry = w.y - cy;
+      const r = Math.hypot(rx, ry);
+      if (r > killRadius || w.x < 2 || w.y < 2 || w.x > width - 2 || w.y > height - 2) {
+        respawnWalker(w);
+        return false;
+      }
+
+      const hit = touchesCluster(w.x, w.y);
+      if (hit) {
+        // Back off along the attempted step to reduce overlap.
+        let ax = w.x, ay = w.y;
+        for (let k = 0; k < 5; k++) {
+          const mx = (ax + oldX) * 0.5;
+          const my = (ay + oldY) * 0.5;
+          if (touchesCluster(mx, my)) { ax = mx; ay = my; }
+          else { w.x = mx; w.y = my; }
+        }
+        addFixed(w.x, w.y);
+        respawnWalker(w);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function update(dt) {
+    if (!running || complete) return;
+    const speed = Number(ui.speed.value);
+    const inwardBias = Number(ui.bias.value);
+    const moveSteps = Math.max(1, Math.round(speed * Math.min(1.6, dt * 60)));
+
+    // Randomized starting index avoids a consistent processing advantage.
+    const start = (Math.random() * walkers.length) | 0;
+    for (let n = 0; n < walkers.length; n++) {
+      const i = (start + n) % walkers.length;
+      stepWalker(walkers[i], moveSteps, inwardBias);
+      if (complete) break;
+    }
+  }
+
+  function drawBackground() {
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(width, height) * 0.72);
+    grad.addColorStop(0, '#0a1727');
+    grad.addColorStop(0.58, '#06101b');
+    grad.addColorStop(1, '#02050a');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, width, height);
+
+    // Faint stop boundary.
+    const maxR = Math.min(cx, cy, width - cx, height - cy) - edgeStop;
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(1, maxR), 0, TAU);
+    ctx.strokeStyle = 'rgba(147, 208, 255, .10)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 7]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  function render() {
+    drawBackground();
+    ctx.drawImage(fixedLayer, 0, 0, width, height);
+
+    // Live walkers remain bright and slightly translucent so their motion is visible.
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < walkers.length; i++) {
+      const w = walkers[i];
+      ctx.beginPath();
+      ctx.arc(w.x, w.y, Math.max(1.15, particleRadius * 0.72), 0, TAU);
+      ctx.fillStyle = 'rgba(128, 224, 255, .72)';
+      ctx.fill();
+    }
+    ctx.restore();
+
+    if (complete) {
+      ctx.fillStyle = 'rgba(2, 7, 13, .58)';
+      ctx.fillRect(0, 0, width, height);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#f2f8ff';
+      ctx.font = '700 30px system-ui, sans-serif';
+      ctx.fillText('Growth boundary reached', width * 0.5, height * 0.5 - 8);
+      ctx.fillStyle = '#9fc8df';
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.fillText('Press R or choose Reset to grow another aggregate.', width * 0.5, height * 0.5 + 22);
+    }
+  }
+
+  function updateStats(now) {
+    if (now - rateWindowStart >= 700) {
+      const seconds = (now - rateWindowStart) / 1000;
+      attachmentsPerSecond = attachmentsThisWindow / seconds;
+      attachmentsThisWindow = 0;
+      rateWindowStart = now;
+    }
+    if ((frameCounter++ & 7) === 0) {
+      ui.fixedStat.textContent = fixed.length.toLocaleString();
+      ui.radiusStat.textContent = `${clusterRadius.toFixed(0)} px`;
+      ui.rateStat.textContent = `${attachmentsPerSecond.toFixed(1)} /s`;
+      ui.fpsStat.textContent = fpsSmooth.toFixed(0);
+    }
+  }
+
+  function loop(now) {
+    const rawDt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
+    lastTime = now;
+    fpsSmooth += ((1 / rawDt) - fpsSmooth) * 0.07;
+    update(rawDt);
+    render();
+    updateStats(now);
+    requestAnimationFrame(loop);
+  }
+
+  function bindRange(input, output, formatter, onInput) {
+    const refresh = () => {
+      output.textContent = formatter(Number(input.value));
+      if (onInput) onInput();
+    };
+    input.addEventListener('input', refresh);
+    refresh();
+  }
+
+  bindRange(ui.walkers, ui.walkersOut, v => String(v), () => syncWalkerCount(false));
+  bindRange(ui.speed, ui.speedOut, v => String(v));
+  bindRange(ui.bias, ui.biasOut, v => v.toFixed(3));
+  bindRange(ui.size, ui.sizeOut, v => v.toFixed(2), () => resetSimulation());
+
+  ui.pause.addEventListener('click', () => {
+    if (complete) return;
+    running = !running;
+    ui.pause.textContent = running ? 'Pause' : 'Resume';
+  });
+  ui.reset.addEventListener('click', resetSimulation);
+  ui.burst.addEventListener('click', () => {
+    const next = Math.min(Number(ui.walkers.max), Number(ui.walkers.value) + 50);
+    ui.walkers.value = String(next);
+    ui.walkersOut.textContent = String(next);
+    syncWalkerCount(false);
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (!complete) {
+        running = !running;
+        ui.pause.textContent = running ? 'Pause' : 'Resume';
+      }
+    } else if (e.key === 'r' || e.key === 'R') {
+      resetSimulation();
+    } else if (e.key === 'b' || e.key === 'B') {
+      ui.burst.click();
+    } else if (e.key === '+' || e.key === '=') {
+      ui.speed.value = String(Math.min(Number(ui.speed.max), Number(ui.speed.value) + 1));
+      ui.speed.dispatchEvent(new Event('input'));
+    } else if (e.key === '-' || e.key === '_') {
+      ui.speed.value = String(Math.max(Number(ui.speed.min), Number(ui.speed.value) - 1));
+      ui.speed.dispatchEvent(new Event('input'));
+    }
+  });
+
+  let resizeTimer = 0;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(resize, 120);
+  });
+
+  resize();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

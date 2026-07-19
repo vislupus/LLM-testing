@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voxel Medieval Fantasy - WebGPU</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+        #ui { position: absolute; top: 20px; left: 20px; color: white; pointer-events: none; text-shadow: 2px 2px 4px rgba(0,0,0,0.8); }
+        .controls { position: absolute; bottom: 20px; left: 20px; color: rgba(255,255,255,0.7); font-size: 12px; pointer-events: none; }
+        .toolbar { position: absolute; top: 20px; right: 20px; pointer-events: all; display: flex; gap: 10px; }
+        button { background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.3); padding: 8px 12px; cursor: pointer; border-radius: 4px; backdrop-filter: blur(5px); }
+        button:hover { background: rgba(255,255,255,0.2); }
+        #crosshair { position: absolute; top: 50%; left: 50%; width: 20px; height: 20px; transform: translate(-50%, -50%); pointer-events: none; mix-blend-mode: difference; }
+        #crosshair::before, #crosshair::after { content: ''; position: absolute; background: white; }
+        #crosshair::before { left: 9px; top: 0; width: 2px; height: 20px; }
+        #crosshair::after { left: 0; top: 9px; width: 20px; height: 2px; }
+        #loading { position: fixed; inset: 0; background: #111; display: flex; align-items: center; justify-content: center; color: gold; font-size: 24px; z-index: 100; flex-direction: column; gap: 20px; }
+        .spinner { width: 50px; height: 50px; border: 5px solid #333; border-top-color: gold; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <div class="spinner"></div>
+        Constructing Voxel Realm...
+    </div>
+    <div id="ui">
+        <h1 style="margin:0; font-weight: 300; letter-spacing: 2px;">ETHERIA</h1>
+        <div id="stats">Voxel World Engine</div>
+    </div>
+    <div class="toolbar">
+        <button onclick="setTime('day')">Day</button>
+        <button onclick="setTime('dusk')">Dusk</button>
+        <button onclick="setTime('night')">Night</button>
+        <button onclick="toggleOrbit()">Orbit Mode</button>
+    </div>
+    <div class="controls">
+        WASD: Move | SPACE: Up | SHIFT: Down | MOUSE: Look | ESC: Unlock
+    </div>
+    <div id="crosshair"></div>
+    <canvas id="gpuCanvas"></canvas>
+
+    <script type="module">
+        // --- Shaders (WGSL) ---
+        const shaderSource = `
+            struct Uniforms {
+                viewProj : mat4x4<f32>,
+                lightDir : vec4<f32>,
+                eyePos : vec4<f32>,
+                fogColor : vec4<f32>,
+                time : f32,
+                dayTime : f32,
+            };
+            @group(0) @binding(0) var<uniform> uniforms : Uniforms;
+
+            struct VertexInput {
+                @location(0) position : vec3<f32>,
+                @location(1) normal : vec3<f32>,
+                @location(2) color : vec3<f32>,
+            };
+
+            struct VertexOutput {
+                @builtin(position) position : vec4<f32>,
+                @location(0) fragPos : vec3<f32>,
+                @location(1) fragNormal : vec3<f32>,
+                @location(2) fragColor : vec3<f32>,
+            };
+
+            @vertex
+            fn vs_main(input : VertexInput) -> VertexOutput {
+                var output : VertexOutput;
+                output.position = uniforms.viewProj * vec4<f32>(input.position, 1.0);
+                output.fragPos = input.position;
+                output.fragNormal = input.normal;
+                output.fragColor = input.color;
+                return output;
+            }
+
+            @fragment
+            fn fs_main(input : VertexOutput) -> @location(0) vec4<f32> {
+                let N = normalize(input.fragNormal);
+                let L = normalize(uniforms.lightDir.xyz);
+                let V = normalize(uniforms.eyePos.xyz - input.fragPos);
+                
+                // Simple lighting
+                let diffuse = max(dot(N, L), 0.1);
+                let ambient = 0.2;
+                
+                // Lava glow effect
+                var glow = 0.0;
+                if (input.fragColor.r > 0.8 && input.fragColor.g < 0.4) {
+                    glow = (sin(uniforms.time * 3.0) * 0.5 + 0.5) * 0.4 + 0.6;
+                }
+
+                // Window glow
+                if (input.fragColor.r > 0.9 && input.fragColor.g > 0.8 && input.fragColor.b < 0.5) {
+                    glow = (sin(uniforms.time * 2.0 + input.fragPos.x) * 0.2 + 0.8);
+                }
+
+                var color = input.fragColor * (diffuse + ambient) + (input.fragColor * glow * 2.0);
+                
+                // Atmospheric Fog
+                let dist = distance(uniforms.eyePos.xyz, input.fragPos);
+                let fogFactor = clamp(exp(-0.005 * dist), 0.0, 1.0);
+                
+                let finalColor = mix(uniforms.fogColor.xyz, color, fogFactor);
+                
+                return vec4<f32>(finalColor, 1.0);
+            }
+        `;
+
+        // --- World Configuration ---
+        const CHUNK_SIZE = 128;
+        const CHUNK_HEIGHT = 64;
+        const voxels = new Uint8Array(CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE);
+        
+        // Block Types
+        const VOID = 0, GRASS = 1, DIRT = 2, STONE = 3, WATER = 4, WOOD = 5, LEAVES = 6, 
+              BRICK = 7, ROOF = 8, LAVA = 9, SNOW = 10, WINDOW = 11, SAND = 12;
+
+        const colors = {
+            [GRASS]: [0.2, 0.5, 0.1], [DIRT]: [0.4, 0.25, 0.1], [STONE]: [0.5, 0.5, 0.55],
+            [WATER]: [0.1, 0.3, 0.8], [WOOD]: [0.35, 0.2, 0.1], [LEAVES]: [0.1, 0.4, 0.1],
+            [BRICK]: [0.6, 0.6, 0.65], [ROOF]: [0.4, 0.1, 0.1], [LAVA]: [1.0, 0.3, 0.0],
+            [SNOW]: [0.95, 0.95, 1.0], [WINDOW]: [1.0, 0.9, 0.3], [SAND]: [0.8, 0.7, 0.4]
+        };
+
+        function setVoxel(x, y, z, type) {
+            if (x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) return;
+            voxels[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_HEIGHT] = type;
+        }
+
+        function getVoxel(x, y, z) {
+            if (x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) return VOID;
+            return voxels[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_HEIGHT];
+        }
+
+        // --- Scene Generation ---
+        function buildWorld() {
+            // 1. Terrain Base
+            for(let x = 0; x < CHUNK_SIZE; x++) {
+                for(let z = 0; z < CHUNK_SIZE; z++) {
+                    const d = Math.sqrt((x-64)**2 + (z-64)**2);
+                    let h = 10 + Math.sin(x/10)*2 + Math.cos(z/12)*3;
+                    
+                    // River
+                    const riverPath = Math.sin(z/20) * 15 + 40;
+                    const distToRiver = Math.abs(x - riverPath);
+                    if (distToRiver < 8) h -= 6 - (distToRiver/2);
+
+                    for(let y = 0; y < h; y++) {
+                        let type = GRASS;
+                        if (y < h - 1) type = DIRT;
+                        if (y < h - 4) type = STONE;
+                        setVoxel(x, y, z, type);
+                    }
+                    // Water level
+                    if (h < 8) {
+                        for(let y = Math.floor(h); y < 8; y++) setVoxel(x, y, z, WATER);
+                    }
+                }
+            }
+
+            // 2. The Volcano
+            const vx = 100, vz = 100;
+            for(let y = 0; y < 45; y++) {
+                const radius = 25 - (y * 0.5);
+                for(let x = vx - radius; x < vx + radius; x++) {
+                    for(let z = vz - radius; z < vz + radius; z++) {
+                        const d = Math.sqrt((x-vx)**2 + (z-vz)**2);
+                        if (d < radius) {
+                            if (d < 5 && y > 35) setVoxel(x, y, z, LAVA);
+                            else if (d > radius - 2) setVoxel(x, y, z, STONE);
+                            else setVoxel(x, y, z, STONE);
+                        }
+                    }
+                }
+            }
+
+            // 3. The Castle
+            const cx = 35, cz = 35, ch = 12;
+            // Main Keep
+            for(let x = cx-8; x <= cx+8; x++) {
+                for(let z = cz-8; z <= cz+8; z++) {
+                    for(let y = ch; y < ch+15; y++) {
+                        const isWall = x === cx-8 || x === cx+8 || z === cz-8 || z === cz+8;
+                        if (isWall) setVoxel(x, y, z, BRICK);
+                        if (y === ch || y === ch+14) setVoxel(x, y, z, BRICK);
+                        if (isWall && y%4 == 0 && (x%3==0 || z%3==0)) setVoxel(x, y, z, WINDOW);
+                    }
+                }
+            }
+            // Corner Towers
+            const towers = [[cx-9, cz-9], [cx+9, cz-9], [cx-9, cz+9], [cx+9, cz+9]];
+            towers.forEach(([tx, tz]) => {
+                for(let y = ch; y < ch+22; y++) {
+                    for(let dx = -2; dx <= 2; dx++) {
+                        for(let dz = -2; dz <= 2; dz++) {
+                            if (Math.abs(dx) + Math.abs(dz) < 4) setVoxel(tx+dx, y, tz+dz, BRICK);
+                        }
+                    }
+                    if (y >= ch+22) { // Conical roof
+                        setVoxel(tx, y, tz, ROOF);
+                    }
+                }
+            });
+
+            // 4. Village
+            for(let i = 0; i < 15; i++) {
+                const vx = 60 + Math.random() * 40;
+                const vz = 20 + Math.random() * 40;
+                const vy = 10;
+                if (getVoxel(vx, vy-1, vz) === GRASS) {
+                    for(let x = -2; x <= 2; x++) {
+                        for(let z = -2; z <= 2; z++) {
+                            for(let y = 0; y < 4; y++) {
+                                const isWall = Math.abs(x) == 2 || Math.abs(z) == 2;
+                                if(isWall) setVoxel(vx+x, vy+y, vz+z, WOOD);
+                                else if(y==0) setVoxel(vx+x, vy+y, vz+z, DIRT);
+                            }
+                            // Roof
+                            for(let y = 4; y < 6; y++) {
+                                if (Math.abs(x) <= 6-y && Math.abs(z) <= 6-y) setVoxel(vx+x, vy+y, vz+z, ROOF);
+                            }
+                        }
+                    }
+                    setVoxel(vx, vy+1, vz+2, VOID); // Door
+                    setVoxel(vx+1, vy+2, vz+2, WINDOW); // Window
+                }
+            }
+        }
+
+        // --- Geometry Generation (Culled Face Meshing) ---
+        function createMesh() {
+            const positions = [];
+            const normals = [];
+            const colorsArr = [];
+
+            const addFace = (x, y, z, faceNormal, type) => {
+                const c = colors[type];
+                const p = [
+                    [ [0,0,1],[1,0,1],[1,1,1],[0,1,1] ], // Front
+                    [ [1,0,0],[0,0,0],[0,1,0],[1,1,0] ], // Back
+                    [ [0,1,1],[1,1,1],[1,1,0],[0,1,0] ], // Top
+                    [ [0,0,0],[1,0,0],[1,0,1],[0,0,1] ], // Bottom
+                    [ [0,0,0],[0,0,1],[0,1,1],[0,1,0] ], // Left
+                    [ [1,0,1],[1,0,0],[1,1,0],[1,1,1] ]  // Right
+                ];
+                const faces = [ [0,0,1],[0,0,-1],[0,1,0],[0,-1,0],[-1,0,0],[1,0,0] ];
+                let faceIdx = faces.findIndex(f => f[0] === faceNormal[0] && f[1] === faceNormal[1] && f[2] === faceNormal[2]);
+                
+                const verts = p[faceIdx];
+                const indices = [0, 1, 2, 0, 2, 3];
+                for(let idx of indices) {
+                    positions.push(verts[idx][0] + x, verts[idx][1] + y, verts[idx][2] + z);
+                    normals.push(...faceNormal);
+                    colorsArr.push(...c);
+                }
+            };
+
+            for(let x = 0; x < CHUNK_SIZE; x++) {
+                for(let y = 0; y < CHUNK_HEIGHT; y++) {
+                    for(let z = 0; z < CHUNK_SIZE; z++) {
+                        const type = getVoxel(x, y, z);
+                        if (type !== VOID) {
+                            if (getVoxel(x, y, z+1) === VOID || (type !== WATER && getVoxel(x,y,z+1) === WATER)) addFace(x, y, z, [0, 0, 1], type);
+                            if (getVoxel(x, y, z-1) === VOID || (type !== WATER && getVoxel(x,y,z-1) === WATER)) addFace(x, y, z, [0, 0, -1], type);
+                            if (getVoxel(x, y+1, z) === VOID || (type !== WATER && getVoxel(x,y+1,z) === WATER)) addFace(x, y, z, [0, 1, 0], type);
+                            if (getVoxel(x, y-1, z) === VOID || (type !== WATER && getVoxel(x,y-1,z) === WATER)) addFace(x, y, z, [0, -1, 0], type);
+                            if (getVoxel(x-1, y, z) === VOID || (type !== WATER && getVoxel(x-1,y,z) === WATER)) addFace(x, y, z, [-1, 0, 0], type);
+                            if (getVoxel(x+1, y, z) === VOID || (type !== WATER && getVoxel(x+1,y,z) === WATER)) addFace(x, y, z, [1, 0, 0], type);
+                        }
+                    }
+                }
+            }
+            return { pos: new Float32Array(positions), norm: new Float32Array(normals), col: new Float32Array(colorsArr) };
+        }
+
+        // --- WebGPU Logic ---
+        let device, pipeline, vertexBuffer, normalBuffer, colorBuffer, uniformBuffer, bindGroup;
+        let camera = { pos: [64, 40, 160], rot: [-0.4, 0], fov: 60 };
+        let keys = {};
+        let time = 0;
+        let dayTime = 1.0;
+        let isOrbit = true;
+
+        async function init() {
+            if (!navigator.gpu) {
+                alert("WebGPU not supported. Please use a modern browser (Chrome/Edge).");
+                return;
+            }
+            const adapter = await navigator.gpu.requestAdapter();
+            device = await adapter.requestDevice();
+
+            const canvas = document.getElementById('gpuCanvas');
+            const context = canvas.getContext('webgpu');
+            const format = navigator.gpu.getPreferredCanvasFormat();
+            canvas.width = window.innerWidth * window.devicePixelRatio;
+            canvas.height = window.innerHeight * window.devicePixelRatio;
+            context.configure({ device, format, alphaMode: 'premultiplied' });
+
+            buildWorld();
+            const mesh = createMesh();
+
+            vertexBuffer = createBuffer(mesh.pos, GPUBufferUsage.VERTEX);
+            normalBuffer = createBuffer(mesh.norm, GPUBufferUsage.VERTEX);
+            colorBuffer = createBuffer(mesh.col, GPUBufferUsage.VERTEX);
+            uniformBuffer = device.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+            const shaderModule = device.createShaderModule({ code: shaderSource });
+            pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: shaderModule,
+                    entryPoint: 'vs_main',
+                    buffers: [
+                        { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+                        { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] },
+                        { arrayStride: 12, attributes: [{ shaderLocation: 2, offset: 0, format: 'float32x3' }] }
+                    ]
+                },
+                fragment: {
+                    module: shaderModule,
+                    entryPoint: 'fs_main',
+                    targets: [{ format }]
+                },
+                primitive: { topology: 'triangle-list', cullMode: 'back' },
+                depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus' }
+            });
+
+            bindGroup = device.createBindGroup({
+                layout: pipeline.getBindGroupLayout(0),
+                entries: [{ binding: 0, resource: { buffer: uniformBuffer } }]
+            });
+
+            document.getElementById('loading').style.display = 'none';
+            requestAnimationFrame(render);
+        }
+
+        function createBuffer(data, usage) {
+            const buffer = device.createBuffer({ size: data.byteLength, usage: usage | GPUBufferUsage.COPY_DST });
+            device.queue.writeBuffer(buffer, 0, data);
+            return buffer;
+        }
+
+        function setTime(mode) {
+            if (mode === 'day') dayTime = 1.0;
+            if (mode === 'dusk') dayTime = 0.4;
+            if (mode === 'night') dayTime = 0.05;
+        }
+
+        window.toggleOrbit = () => isOrbit = !isOrbit;
+
+        // --- Controls ---
+        window.addEventListener('keydown', e => keys[e.code] = true);
+        window.addEventListener('keyup', e => keys[e.code] = false);
+        const canvas = document.getElementById('gpuCanvas');
+        canvas.addEventListener('mousedown', () => canvas.requestPointerLock());
+        window.addEventListener('mousemove', e => {
+            if (document.pointerLockElement === canvas) {
+                camera.rot[1] -= e.movementX * 0.003;
+                camera.rot[0] -= e.movementY * 0.003;
+                camera.rot[0] = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rot[0]));
+                isOrbit = false;
+            }
+        });
+
+        // --- Math & Rendering ---
+        function getMatrix() {
+            const aspect = window.innerWidth / window.innerHeight;
+            const proj = mat4Perspective(camera.fov * Math.PI / 180, aspect, 0.1, 1000.0);
+            
+            let view;
+            if (isOrbit) {
+                const r = 180;
+                const ox = 64 + Math.cos(time * 0.2) * r;
+                const oz = 64 + Math.sin(time * 0.2) * r;
+                const oy = 80 + Math.sin(time * 0.1) * 20;
+                view = mat4LookAt([ox, oy, oz], [64, 20, 64], [0, 1, 0]);
+                camera.pos = [ox, oy, oz];
+            } else {
+                const dir = [
+                    Math.cos(camera.rot[0]) * Math.sin(camera.rot[1]),
+                    Math.sin(camera.rot[0]),
+                    Math.cos(camera.rot[0]) * Math.cos(camera.rot[1])
+                ];
+                view = mat4LookAt(camera.pos, [camera.pos[0] + dir[0], camera.pos[1] + dir[1], camera.pos[2] + dir[2]], [0, 1, 0]);
+            }
+            return mat4Multiply(proj, view);
+        }
+
+        function render() {
+            time += 0.01;
+            
+            // Movement
+            if (!isOrbit && document.pointerLockElement === canvas) {
+                const speed = 0.8;
+                const forward = [Math.sin(camera.rot[1]), 0, Math.cos(camera.rot[1])];
+                const right = [Math.cos(camera.rot[1]), 0, -Math.sin(camera.rot[1])];
+                if (keys['KeyW']) { camera.pos[0] += forward[0]*speed; camera.pos[2] += forward[2]*speed; }
+                if (keys['KeyS']) { camera.pos[0] -= forward[0]*speed; camera.pos[2] -= forward[2]*speed; }
+                if (keys['KeyA']) { camera.pos[0] -= right[0]*speed; camera.pos[2] -= right[2]*speed; }
+                if (keys['KeyD']) { camera.pos[0] += right[0]*speed; camera.pos[2] += right[2]*speed; }
+                if (keys['Space']) camera.pos[1] += speed;
+                if (keys['ShiftLeft']) camera.pos[1] -= speed;
+            }
+
+            const viewProj = getMatrix();
+            const lightDir = [Math.sin(time*0.1), 1.0, Math.cos(time*0.1), 0];
+            const fogBase = [0.5, 0.7, 0.9, 1.0]; // Day fog
+            const nightFog = [0.02, 0.02, 0.05, 1.0];
+            const currentFog = fogBase.map((c, i) => c * dayTime + nightFog[i] * (1.0 - dayTime));
+
+            const uniformData = new Float32Array(32);
+            uniformData.set(viewProj, 0);
+            uniformData.set(lightDir, 16);
+            uniformData.set([...camera.pos, 0], 20);
+            uniformData.set(currentFog, 24);
+            uniformData.set([time, dayTime, 0, 0], 28);
+            device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
+            const commandEncoder = device.createCommandEncoder();
+            const textureView = device.createView ? canvas.getContext('webgpu').getCurrentTexture().createView() : canvas.getContext('webgpu').getCurrentTexture().createView();
+            
+            const depthTexture = device.createTexture({
+                size: [canvas.width, canvas.height],
+                format: 'depth24plus',
+                usage: GPUBufferUsage.RENDER_ATTACHMENT
+            });
+
+            const passEncoder = commandEncoder.beginRenderPass({
+                colorAttachments: [{
+                    view: textureView,
+                    clearValue: { r: currentFog[0], g: currentFog[1], b: currentFog[2], a: 1 },
+                    loadOp: 'clear',
+                    storeOp: 'store'
+                }],
+                depthStencilAttachment: {
+                    view: depthTexture.createView(),
+                    depthClearValue: 1.0,
+                    depthLoadOp: 'clear',
+                    depthStoreOp: 'store'
+                }
+            });
+
+            passEncoder.setPipeline(pipeline);
+            passEncoder.setBindGroup(0, bindGroup);
+            passEncoder.setVertexBuffer(0, vertexBuffer);
+            passEncoder.setVertexBuffer(1, normalBuffer);
+            passEncoder.setVertexBuffer(2, colorBuffer);
+            passEncoder.draw(vertexBuffer.size / 12);
+            passEncoder.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+            requestAnimationFrame(render);
+        }
+
+        // --- Basic Matrix Utils ---
+        function mat4Perspective(fovy, aspect, near, far) {
+            const f = 1.0 / Math.tan(fovy / 2);
+            const nf = 1 / (near - far);
+            return new Float32Array([
+                f / aspect, 0, 0, 0,
+                0, f, 0, 0,
+                0, 0, (far + near) * nf, -1,
+                0, 0, (2 * far * near) * nf, 0
+            ]);
+        }
+
+        function mat4LookAt(eye, center, up) {
+            const z = normalizeVec3([eye[0]-center[0], eye[1]-center[1], eye[2]-center[2]]);
+            const x = normalizeVec3(crossVec3(up, z));
+            const y = crossVec3(z, x);
+            return new Float32Array([
+                x[0], y[0], z[0], 0,
+                x[1], y[1], z[1], 0,
+                x[2], y[2], z[2], 0,
+                -dotVec3(x, eye), -dotVec3(y, eye), -dotVec3(z, eye), 1
+            ]);
+        }
+
+        function mat4Multiply(a, b) {
+            const out = new Float32Array(16);
+            for (let i = 0; i < 4; i++) {
+                for (let j = 0; j < 4; j++) {
+                    out[i * 4 + j] = a[0 * 4 + j] * b[i * 4 + 0] + a[1 * 4 + j] * b[i * 4 + 1] + a[2 * 4 + j] * b[i * 4 + 2] + a[3 * 4 + j] * b[i * 4 + 3];
+                }
+            }
+            return out;
+        }
+
+        function normalizeVec3(v) {
+            const l = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+            return [v[0]/l, v[1]/l, v[2]/l];
+        }
+
+        function crossVec3(a, b) {
+            return [a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]];
+        }
+
+        function dotVec3(a, b) {
+            return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+        }
+
+        init();
+    </script>
+</body>
+</html>

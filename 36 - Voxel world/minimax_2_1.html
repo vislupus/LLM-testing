@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Cinematic Voxel World</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
+        canvas { width: 100%; height: 100vh; display: block; }
+        #ui { position: absolute; top: 20px; left: 20px; color: white; pointer-events: none; text-shadow: 1px 1px 2px black; }
+        .controls { pointer-events: auto; background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; backdrop-filter: blur(5px); }
+        button { background: #444; color: #fff; border: 1px solid #777; padding: 5px 10px; cursor: pointer; margin-right: 5px; font-weight: bold; }
+        button:hover { background: #666; }
+        button.active { background: #d4af37; color: #000; }
+        h1 { margin: 0 0 10px 0; font-size: 18px; color: #d4af37; text-transform: uppercase; letter-spacing: 2px; }
+        p { font-size: 12px; color: #ccc; margin: 5px 0; }
+        .key { color: #fff; font-weight: bold; background: #333; padding: 2px 4px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div class="controls">
+        <h1>Voxel Kingdom</h1>
+        <p><span class="key">WASD</span> Move &nbsp; <span class="key">Space/Shift</span> Up/Down</p>
+        <p><span class="key">Mouse</span> Look (Click to Lock)</p>
+        <p><span class="key">O</span> Toggle Orbit Mode</p>
+        <p><span class="key">P</span> Screenshot</p>
+        <br>
+        <div style="margin-top:10px;">
+            <button onclick="setTime('dawn')">Dawn</button>
+            <button onclick="setTime('day')">Day</button>
+            <button onclick="setTime('dusk')">Dusk</button>
+            <button onclick="setTime('night')">Night</button>
+        </div>
+    </div>
+</div>
+
+<canvas id="gpuCanvas"></canvas>
+
+<script>
+/* 
+   =================================================================
+   ENGINE & MATH LIBRARY (Minimal)
+   =================================================================
+*/
+const Mat4 = {
+    create: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+    perspective: (out, fovy, aspect, near, far) => {
+        const f = 1.0 / Math.tan(fovy / 2);
+        const nf = 1 / (near - far);
+        out[0] = f / aspect; out[1] = 0; out[2] = 0; out[3] = 0;
+        out[4] = 0; out[5] = f; out[6] = 0; out[7] = 0;
+        out[8] = 0; out[9] = 0; out[10] = (far + near) * nf; out[11] = -1;
+        out[12] = 0; out[13] = 0; out[14] = (2 * far * near) * nf; out[15] = 0;
+        return out;
+    },
+    lookAt: (out, eye, center, up) => {
+        let x0, x1, x2, y0, y1, y2, z0, z1, z2, len;
+        let eyex = eye[0], eyey = eye[1], eyez = eye[2];
+        let upx = up[0], upy = up[1], upz = up[2];
+        let centerx = center[0], centery = center[1], centerz = center[2];
+
+        z0 = eyex - centerx; z1 = eyey - centery; z2 = eyez - centerz;
+        len = 1 / Math.hypot(z0, z1, z2);
+        z0 *= len; z1 *= len; z2 *= len;
+
+        x0 = upy * z2 - upz * z1; x1 = upz * z0 - upx * z2; x2 = upx * z1 - upy * z0;
+        len = Math.hypot(x0, x1, x2);
+        if (!len) { x0 = 0; x1 = 0; x2 = 0; } else { len = 1 / len; x0 *= len; x1 *= len; x2 *= len; }
+
+        y0 = z1 * x2 - z2 * x1; y1 = z2 * x0 - z0 * x2; y2 = z0 * x1 - z1 * x0;
+        len = Math.hypot(y0, y1, y2);
+        if (!len) { y0 = 0; y1 = 0; y2 = 0; } else { len = 1 / len; y0 *= len; y1 *= len; y2 *= len; }
+
+        out[0] = x0; out[1] = y0; out[2] = z0; out[3] = 0;
+        out[4] = x1; out[5] = y1; out[6] = z1; out[7] = 0;
+        out[8] = x2; out[9] = y2; out[10] = z2; out[11] = 0;
+        out[12] = -(x0 * eyex + x1 * eyey + x2 * eyez);
+        out[13] = -(y0 * eyex + y1 * eyey + y2 * eyez);
+        out[14] = -(z0 * eyex + z1 * eyey + z2 * eyez);
+        out[15] = 1;
+        return out;
+    },
+    multiply: (out, a, b) => {
+        let a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+        let a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+        let a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+        let a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+        let b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+        out[0] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        out[3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = b[4]; b1 = b[5]; b2 = b[6]; b3 = b[7];
+        out[4] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[5] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[6] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        out[7] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = b[8]; b1 = b[9]; b2 = b[10]; b3 = b[11];
+        out[8] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[9] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[10] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        out[11] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+
+        b0 = b[12]; b1 = b[13]; b2 = b[14]; b3 = b[15];
+        out[12] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[13] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[14] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        out[15] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        return out;
+    },
+    rotateY: (out, a, rad) => {
+        let s = Math.sin(rad), c = Math.cos(rad);
+        let a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+        let a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+        out[0] = a00 * c - a20 * s; out[1] = a01 * c - a21 * s; out[2] = a02 * c - a22 * s; out[3] = a03 * c - a23 * s;
+        out[8] = a00 * s + a20 * c; out[9] = a01 * s + a21 * c; out[10] = a02 * s + a22 * c; out[11] = a03 * s + a23 * c;
+        out[4] = a[4]; out[5] = a[5]; out[6] = a[6]; out[7] = a[7];
+        out[12] = a[12]; out[13] = a[13]; out[14] = a[14]; out[15] = a[15];
+        return out;
+    }
+};
+
+/* 
+   =================================================================
+   CONSTANTS & STATE
+   =================================================================
+*/
+const CHUNK_SIZE = 64; 
+const WORLD_HALF = 32;
+const BLOCK = {
+    AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, WATER: 4, WOOD: 5, LEAVES: 6, 
+    BRICK: 7, ROOF: 8, SAND: 9, LAVA: 10, OBSIDIAN: 11, SNOW: 12, BEDROCK: 13,
+    TORCH: 14, GLASS: 15, COBBLE: 16, WALL: 17, FENCE: 18
+};
+
+// Simple Palette for texture generation
+const PALETTE = {
+    [BLOCK.GRASS]: [106, 163, 74],
+    [BLOCK.DIRT]: [133, 90, 56],
+    [BLOCK.STONE]: [120, 120, 120],
+    [BLOCK.WOOD]: [100, 65, 33],
+    [BLOCK.LEAVES]: [65, 130, 60],
+    [BLOCK.BRICK]: [160, 70, 60],
+    [BLOCK.ROOF]: [70, 40, 30],
+    [BLOCK.SAND]: [210, 200, 130],
+    [BLOCK.LAVA]: [255, 100, 0],
+    [BLOCK.OBSIDIAN]: [20, 20, 30],
+    [BLOCK.SNOW]: [240, 245, 255],
+    [BLOCK.COBBLE]: [80, 80, 80],
+    [BLOCK.TORCH]: [255, 200, 50],
+    [BLOCK.GLASS]: [200, 230, 255, 0.3],
+    [BLOCK.WALL]: [160, 150, 140],
+    [BLOCK.FENCE]: [120, 80, 50]
+};
+
+// Time settings
+const TIMES = {
+    dawn: { sun: [1.0, 0.6, 0.3], fog: [0.8, 0.7, 0.7], ambient: 0.6 },
+    day:  { sun: [1.0, 0.95, 0.9],  fog: [0.6, 0.7, 0.85], ambient: 0.8 },
+    dusk: { sun: [0.8, 0.4, 0.3],  fog: [0.5, 0.4, 0.5], ambient: 0.5 },
+    night:{ sun: [0.2, 0.2, 0.4],  fog: [0.05, 0.05, 0.1], ambient: 0.2 }
+};
+
+let currentTime = 'day';
+let worldData = new Uint8Array((CHUNK_SIZE * 2) ** 3); // Simple single chunk for demo performance
+
+/* 
+   =================================================================
+   WEBGPU SETUP
+   =================================================================
+*/
+const canvas = document.getElementById('gpuCanvas');
+const adapter = await navigator.gpu?.requestAdapter();
+const device = await adapter?.requestDevice();
+const context = canvas.getContext('webgpu');
+const format = navigator.gpu.getPreferredCanvasFormat();
+
+canvas.width = window.innerWidth * window.devicePixelRatio;
+canvas.height = window.innerHeight * window.devicePixelRatio;
+
+context.configure({ device, format, alphaMode: 'premultiplied' });
+
+/* 
+   =================================================================
+   TEXTURE GENERATION
+   =================================================================
+*/
+function createTexture() {
+    const size = 256;
+    const pixels = new Uint8Array(size * size * 4);
+    
+    // Helper to draw block face
+    const drawBlock = (id, offset) => {
+        const [r, g, b, a = 255] = PALETTE[id] || [0,0,0];
+        for(let y=0; y<16; y++) {
+            for(let x=0; x<16; x++) {
+                const idx = (offset + y * size + x) * 4;
+                // Add noise
+                const noise = (Math.random() - 0.5) * 20;
+                pixels[idx] = Math.min(255, Math.max(0, r + noise));
+                pixels[idx+1] = Math.min(255, Math.max(0, g + noise));
+                pixels[idx+2] = Math.min(255, Math.max(0, b + noise));
+                pixels[idx+3] = a;
+            }
+        }
+    };
+
+    // Map IDs to 16x16 tiles in a 256x256 texture
+    // Simple mapping: iterate keys, pack in grid. 
+    // For this demo, we'll use a simpler approach: generate distinct colors for IDs.
+    // Actually, let's do a proper atlas generation procedurally.
+    
+    let idList = Object.keys(PALETTE).map(Number).sort((a,b) => a-b);
+    let tilesX = 16;
+    
+    idList.forEach((id, i) => {
+        let xOff = (i % tilesX) * 16;
+        let yOff = Math.floor(i / tilesX) * 16;
+        let base = yOff * size + xOff;
+        
+        const [r, g, b, a = 255] = PALETTE[id];
+        
+        for(let y=0; y<16; y++) {
+            for(let x=0; x<16; x++) {
+                let isEdge = x===0 || x===15 || y===0 || y===15;
+                let idx = (base + y * size + x) * 4;
+                
+                let noise = (Math.random() - 0.5) * 30;
+                if(id === BLOCK.GRASS && y > 10) { // Dirt bottom
+                    let dr = 133, dg = 90, db = 56;
+                    pixels[idx] = dr+noise; pixels[idx+1]=dg+noise; pixels[idx+2]=db+noise;
+                } else if (id === BLOCK.LEAVES) {
+                    let alpha = 200 + Math.random()*55;
+                    pixels[idx] = r+noise; pixels[idx+1]=g+noise; pixels[idx+2]=b+noise; pixels[idx+3]=alpha;
+                } else if (id === BLOCK.GLASS) {
+                    let alpha = 40 + Math.random()*20;
+                    pixels[idx] = 255; pixels[idx+1]=255; pixels[idx+2]=255; pixels[idx+3]=alpha;
+                } else {
+                    // Basic block shading
+                    let shade = 1.0;
+                    if (isEdge) shade = 0.8;
+                    pixels[idx] = Math.min(255, (r+noise)*shade);
+                    pixels[idx+1] = Math.min(255, (g+noise)*shade);
+                    pixels[idx+2] = Math.min(255, (b+noise)*shade);
+                    pixels[idx+3] = a;
+                }
+            }
+        }
+    });
+
+    const texture = device.createTexture({
+        size: [size, size],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
+    });
+    device.queue.writeTexture({ texture }, pixels, { bytesPerRow: size * 4 }, { width: size, height: size });
+    return { texture, size };
+}
+const textureData = createTexture();
+
+/* 
+   =================================================================
+   WORLD GENERATION (The "Diorama" Logic)
+   =================================================================
+*/
+// A simple noise function
+function noise(x, z) {
+    return Math.sin(x * 0.1) * Math.cos(z * 0.1) * 2 + Math.sin(x * 0.3 + z * 0.2) * 1;
+}
+
+function getBlock(x, y, z) {
+    // Bounds check
+    if (x < -WORLD_HALF || x >= WORLD_HALF || z < -WORLD_HALF || z >= WORLD_HALF || y < 0 || y >= CHUNK_SIZE) return BLOCK.AIR;
+    const idx = (y * (CHUNK_SIZE*2) + (z+WORLD_HALF)) * (CHUNK_SIZE*2) + (x+WORLD_HALF);
+    return worldData[idx];
+}
+
+function setBlock(x, y, z, type) {
+    if (x < -WORLD_HALF || x >= WORLD_HALF || z < -WORLD_HALF || z >= WORLD_HALF || y < 0 || y >= CHUNK_SIZE) return;
+    const idx = (y * (CHUNK_SIZE*2) + (z+WORLD_HALF)) * (CHUNK_SIZE*2) + (x+WORLD_HALF);
+    worldData[idx] = type;
+}
+
+function generateWorld() {
+    const cx = 0, cz = 0; // Center
+
+    // 1. Terrain & River
+    for (let x = -WORLD_HALF; x < WORLD_HALF; x++) {
+        for (let z = -WORLD_HALF; z < WORLD_HALF; z++) {
+            // Create a winding river
+            let river = Math.sin(z * 0.05) * 15 + Math.sin(z * 0.2) * 5;
+            let isRiver = Math.abs(x - river) < 4;
+            
+            // Volcano offset
+            let vDist = Math.sqrt((x-25)**2 + (z-25)**2);
+            let isVolcano = vDist < 12;
+            let isLava = vDist < 4;
+
+            let height = 5;
+            
+            if(isVolcano) {
+                height = Math.floor(20 - (12 - vDist)*1.5); 
+            } else {
+                // Hills
+                height = Math.floor(noise(x, z) + 10 + Math.sin(x*0.1)*Math.cos(z*0.1)*5);
+                if(isRiver) height = 2;
+            }
+
+            // Base layers
+            for(let y=0; y<=height; y++) {
+                let b = BLOCK.STONE;
+                if(y < height-2) b = BLOCK.STONE;
+                else if(y < height) b = BLOCK.COBBLE;
+                else {
+                    if(isVolcano) b = BLOCK.OBSIDIAN;
+                    else if(isLava) b = BLOCK.LAVA;
+                    else if(isRiver) b = BLOCK.WATER;
+                    else b = (height > 15) ? BLOCK.SNOW : BLOCK.GRASS;
+                }
+                setBlock(x, y, z, b);
+            }
+        }
+    }
+
+    // 2. Castle (Main structure)
+    const ccx = 5, ccz = -5;
+    const cs = 10; // Size
+    // Moat
+    for(let x=ccx-cs-4; x<ccx+cs+4; x++){
+        for(let z=ccz-cs-4; z<ccz+cs+4; z++){
+             if(x<ccx-cs || x>ccx+cs || z<ccz-cs || z>ccz+cs) setBlock(x, 3, z, BLOCK.WATER);
+        }
+    }
+    // Hill
+    for(let x=ccx-cs; x<ccx+cs; x++){
+        for(let z=ccz-cs; z<ccz+cs; z++){
+            for(let y=4; y<8; y++) setBlock(x, y, z, BLOCK.COBBLE);
+        }
+    }
+    // Walls
+    const buildWall = (x1, z1, x2, z2, h) => {
+        for(let x=x1; x<=x2; x++) {
+            for(let z=z1; z<=z2; z++) {
+                for(let y=8; y<h; y++) {
+                    let type = (x==x1 || x==x2 || z==z1 || z==z2) ? BLOCK.BRICK : BLOCK.AIR;
+                    if(x%2==0 && y%2==0 && (x==x1||x==x2||z==z1||z==z2)) type = BLOCK.WALL; // Battlements
+                    if(type !== BLOCK.AIR) setBlock(x, y, z, type);
+                }
+            }
+        }
+    };
+    buildWall(ccx-cs, ccz-cs, ccx+cs, ccz+cs, 16);
+    
+    // Towers
+    const towers = [[-cs,-cs], [cs,-cs], [-cs,cs], [cs,cs]];
+    towers.forEach(([ox, oz]) => {
+        for(let y=12; y<22; y++) {
+            for(let bx=-2; bx<=2; bx++) {
+                for(let bz=-2; bz<=2; bz++) {
+                    if(Math.abs(bx)==2 || Math.abs(bz)==2) setBlock(ccx+ox+bx, y, ccz+oz+bz, BLOCK.BRICK);
+                }
+            }
+        }
+        // Roof
+        for(let y=22; y<25; y++) {
+             for(let bx=-2; bx<=2; bx++) {
+                for(let bz=-2; bz<=2; bz++) {
+                    if(Math.abs(bx)+Math.abs(bz) < 3) setBlock(ccx+ox+bx, y, ccz+oz+bz, BLOCK.ROOF);
+                }
+             }
+        }
+    });
+
+    // Keep (Center)
+    for(let x=-3; x<=3; x++) {
+        for(let z=-3; z<=3; z++) {
+            for(let y=8; y<18; y++) setBlock(ccx+x, y, ccz+z, BLOCK.STONE);
+        }
+    }
+    // Courtyard hole
+    for(let x=-2; x<=2; x++) for(let z=-2; z<=2; z++) for(let y=8; y<15; y++) setBlock(ccx+x, y, ccz+z, BLOCK.AIR);
+    // Gate
+    for(let y=8; y<13; y++) setBlock(ccx, y, ccz+cs, BLOCK.AIR);
+    // Bridge
+    for(let x=-2; x<=2; x++) for(let y=8; y<10; y++) setBlock(ccx+x, y, ccz+cs+4, BLOCK.WOOD);
+
+    // 3. Village
+    for(let i=0; i<30; i++) {
+        let vx = (Math.random() * 40) - 30;
+        let vz = (Math.random() * 40) - 5; // Near castle
+        if(Math.abs(vx - (Math.sin(vz * 0.05) * 15)) < 4) continue; // Avoid river
+        if(Math.sqrt((vx-ccx)**2 + (vz-ccz)**2) < 15) continue; // Avoid castle
+        
+        // House
+        let h = Math.floor(Math.random()*3) + 4;
+        for(let x=vx-2; x<=vx+2; x++) {
+            for(let z=vz-2; z<=vz+2; z++) {
+                setBlock(x, h, z, BLOCK.WOOD); // Walls
+                setBlock(x, h+3, z, BLOCK.ROOF); // Roof
+            }
+        }
+        // Door
+        setBlock(vx, h, vz+2, BLOCK.AIR);
+    }
+
+    // 4. Volcano Details
+    // Lava pool is already set.
+    // Ash/Red trees
+    for(let i=0; i<10; i++) {
+        let ax = 25 + (Math.random()*10-5);
+        let az = 25 + (Math.random()*10-5);
+        let dist = Math.sqrt((ax-25)**2 + (az-25)**2);
+        if(dist > 5 && dist < 10) {
+            // Dead tree
+            let h = 3 + Math.floor(Math.random()*3);
+            for(let y=10; y<10+h; y++) setBlock(ax, y, az, BLOCK.OBSIDIAN);
+            setBlock(ax, 10+h, az, BLOCK.LEAVES); // Burnt leaves
+        }
+    }
+}
+
+/* 
+   =================================================================
+   MESHING (Greedy-ish / Face Culling)
+   =================================================================
+*/
+function generateMesh() {
+    const vertices = [];
+    const indices = [];
+    let indexCount = 0;
+
+    // Geometry templates for a cube
+    // Using a simple 4-vertex quad per face, will convert to 6-vertex triangles for flat shading look if needed
+    // But here we do simple 4-vertex quads with normals.
+    
+    const faces = [
+        { d: [0,1,0], n: [0,1,0], u:0, v:0 }, // Top
+        { d: [0,-1,0], n: [0,-1,0], u:0, v:1 }, // Bottom
+        { d: [1,0,0], n: [1,0,0], u:1, v:0 }, // Right
+        { d: [-1,0,0], n: [-1,0,0], u:0, v:0 }, // Left
+        { d: [0,0,1], n: [0,0,1], u:1, v:1 }, // Front
+        { d: [0,0,-1], n: [0,0,-1], u:0, v:1 }  // Back
+    ];
+
+    for (let x = -WORLD_HALF; x < WORLD_HALF; x++) {
+        for (let z = -WORLD_HALF; z < WORLD_HALF; z++) {
+            for (let y = 0; y < CHUNK_SIZE; y++) {
+                const b = getBlock(x,y,z);
+                if (b === BLOCK.AIR) continue;
+                if (b === BLOCK.WATER) continue; // Render water separately or skip for now to save code
+                if (b === BLOCK.LAVA) continue;  // Render lava separately
+
+                // Simple Face Culling
+                faces.forEach(f => {
+                    const nx = x + f.d[0], ny = y + f.d[1], nz = z + f.d[2];
+                    const nb = getBlock(nx, ny, nz);
+                    
+                    // Draw if neighbor is transparent (air, water, lava) or liquid
+                    const isTransparent = (nb === BLOCK.AIR || nb === BLOCK.WATER || nb === BLOCK.LAVA || nb === BLOCK.GLASS);
+                    
+                    // Add faces for water/lava so they have "sides" visible
+                    if (isTransparent) {
+                        // Push Vertices
+                        // Simple logic: Face corners based on normal
+                        // To save code space, we assume unit cube at 0,0,0 then offset
+                        // But we need proper winding.
+                        
+                        // Face offsets
+                        let p = []; 
+                        // Construct quad based on face type
+                        if(f.n[1] === 1) { // Top
+                            p = [[0,1,0], [1,1,0], [1,1,1], [0,1,1]]; // TR, BR, BL, TL
+                        } else if (f.n[1] === -1) { // Bottom
+                            p = [[0,0,1], [1,0,1], [1,0,0], [0,0,0]];
+                        } else if (f.n[0] === 1) { // Right
+                             p = [[1,0,0], [1,1,0], [1,1,1], [1,0,1]];
+                        } else if (f.n[0] === -1) { // Left
+                             p = [[0,0,1], [0,1,1], [0,1,0], [0,0,0]];
+                        } else if (f.n[2] === 1) { // Front
+                             p = [[0,0,1], [0,1,1], [1,1,1], [1,0,1]];
+                        } else { // Back
+                             p = [[1,0,0], [1,1,0], [0,1,0], [0,0,0]];
+                        }
+
+                        // Calculate UVs based on Block ID and Face
+                        // Basic UV mapping logic
+                        let uvBase = [0,0];
+                        // This part is tricky without a full atlas mapper. 
+                        // We will cheat: pass block ID to shader.
+                        
+                        // Add 4 verts
+                        p.forEach(pt => {
+                            vertices.push(x + pt[0], y + pt[1], z + pt[2]); // Pos
+                            vertices.push(f.n[0], f.n[1], f.n[2]); // Normal
+                            // Color ID (Red channel acts as ID)
+                            // We map ID 1-18 to 0.0-1.0 range approx
+                            vertices.push(b / 20.0, 0, 0); 
+                        });
+
+                        // 2 Triangles
+                        indices.push(indexCount, indexCount+1, indexCount+2);
+                        indices.push(indexCount, indexCount+2, indexCount+3);
+                        indexCount += 4;
+                    }
+                });
+            }
+        }
+    }
+
+    return { vertices: new Float32Array(vertices), indices: new Uint32Array(indices) };
+}
+
+// Generate Water Mesh
+function generateWaterMesh() {
+    const vertices = [];
+    const indices = [];
+    let indexCount = 0;
+    const faces = [[0,1,0], [0,-1,0], [1,0,0], [-1,0,0], [0,0,1], [0,0,-1]];
+    
+    for (let x = -WORLD_HALF; x < WORLD_HALF; x++) {
+        for (let z = -WORLD_HALF; z < WORLD_HALF; z++) {
+            for (let y = 0; y < CHUNK_SIZE; y++) {
+                if(getBlock(x,y,z) !== BLOCK.WATER) continue;
+                // Render only top and sides exposed to air
+                if(getBlock(x,y+1,z) === BLOCK.AIR) {
+                     // Top
+                     vertices.push(x, y+1, z, 0,1,0, 0.2, 0, 0);
+                     vertices.push(x+1, y+1, z, 0,1,0, 0.2, 0, 0);
+                     vertices.push(x+1, y+1, z+1, 0,1,0, 0.2, 0, 0);
+                     vertices.push(x, y+1, z+1, 0,1,0, 0.2, 0, 0);
+                     
+                     indices.push(indexCount, indexCount+1, indexCount+2, indexCount, indexCount+2, indexCount+3);
+                     indexCount += 4;
+                }
+            }
+        }
+    }
+    return { vertices: new Float32Array(vertices), indices: new Uint32Array(indices) };
+}
+
+// Generate Lava Mesh
+function generateLavaMesh() {
+    const vertices = [];
+    const indices = [];
+    let indexCount = 0;
+    
+    for (let x = -WORLD_HALF; x < WORLD_HALF; x++) {
+        for (let z = -WORLD_HALF; z < WORLD_HALF; z++) {
+            for (let y = 0; y < CHUNK_SIZE; y++) {
+                if(getBlock(x,y,z) !== BLOCK.LAVA) continue;
+                if(getBlock(x,y+1,z) === BLOCK.AIR) {
+                     vertices.push(x, y+1, z, 0,1,0, 0.5, 0, 0);
+                     vertices.push(x+1, y+1, z, 0,1,0, 0.5, 0, 0);
+                     vertices.push(x+1, y+1, z+1, 0,1,0, 0.5, 0, 0);
+                     vertices.push(x, y+1, z+1, 0,1,0, 0.5, 0, 0);
+                     indices.push(indexCount, indexCount+1, indexCount+2, indexCount, indexCount+2, indexCount+3);
+                     indexCount += 4;
+                }
+            }
+        }
+    }
+    return { vertices: new Float32Array(vertices), indices: new Uint32Array(indices) };
+}
+
+generateWorld();
+const meshData = generateMesh();
+const waterData = generateWaterMesh();
+const lavaData = generateLavaMesh();
+
+/* 
+   =================================================================
+   PIPELINE SETUP
+   =================================================================
+*/
+const shaderCode = `
+struct Uniforms {
+    mvp : mat4x4<f32>,
+    model : mat4x4<f32>,
+    viewPos : vec3<f32>,
+    time : f32,
+    sunDir : vec3<f32>,
+    fogColor : vec3<f32>,
+    fogDensity : f32,
+    ambient : f32,
+    pad : vec3<f32>,
+}
+
+@group(0) @binding(0) var<uniform> uniforms : Uniforms;
+@group(0) @binding(1) var myTexture : texture_2d<f32>;
+@group(0) @binding(2) var mySampler : sampler;
+
+struct VertexOutput {
+    @builtin(position) Position : vec4<f32>,
+    @location(0) vUV : vec2<f32>,
+    @location(1) vNormal : vec3<f32>,
+    @location(2) vColorID : vec3<f32>,
+    @location(3) vWorldPos : vec3<f32>,
+}
+
+@vertex
+fn vs_main(@location(0) pos : vec3<f32>, @location(1) normal : vec3<f32>, @location(2) colorID : vec3<f32>) -> VertexOutput {
+    var output : VertexOutput;
+    let worldPos = (uniforms.model * vec4<f32>(pos, 1.0)).xyz;
+    output.Position = uniforms.mvp * vec4<f32>(pos, 1.0);
+    output.vUV = vec2<f32>(colorID.x * 16.0 / 256.0, 0.0); // Placeholder UV gen
+    output.vNormal = normal;
+    output.vColorID = colorID;
+    output.vWorldPos = worldPos;
+    return output;
+}
+
+@fragment
+fn fs_main(@location(0) vUV : vec2<f32>, @location(1) vNormal : vec3<f32>, @location(2) vColorID : vec3<f32>, @location(3) vWorldPos : vec3<f32>) -> @location(0) vec4<f32> {
+    // Procedural Texture Atlas Lookup based on ColorID.x (Block ID)
+    let blockID = floor(vColorID.x * 20.0 + 0.1);
+    
+    // Simple noise function for texture detail
+    let noise = (vWorldPos.x + vWorldPos.y * 0.5 + vWorldPos.z * 0.2);
+    
+    // Base Colors
+    var baseColor : vec3<f32>;
+    
+    if (blockID == 1.0) { baseColor = vec3<f32>(0.4, 0.6, 0.3); } // Grass
+    else if (blockID == 2.0) { baseColor = vec3<f32>(0.5, 0.3, 0.2); } // Dirt
+    else if (blockID == 3.0 || blockID == 16.0) { baseColor = vec3<f32>(0.5); } // Stone
+    else if (blockID == 4.0) { baseColor = vec3<f32>(0.2, 0.5, 0.8); } // Water
+    else if (blockID == 5.0) { baseColor = vec3<f32>(0.4, 0.25, 0.1); } // Wood
+    else if (blockID == 7.0) { baseColor = vec3<f32>(0.6, 0.3, 0.2); } // Brick
+    else if (blockID == 8.0) { baseColor = vec3<f32>(0.3, 0.15, 0.1); } // Roof
+    else if (blockID == 10.0) { baseColor = vec3<f32>(1.0, 0.4, 0.0); } // Lava
+    else if (blockID == 11.0) { baseColor = vec3<f32>(0.1, 0.1, 0.1); } // Obsidian
+    else if (blockID == 12.0) { baseColor = vec3<f32>(0.9, 0.95, 1.0); } // Snow
+    else if (blockID == 17.0) { baseColor = vec3<f32>(0.6, 0.55, 0.5); } // Wall
+    else { baseColor = vec3<f32>(0.5); }
+    
+    // Water Animation
+    if (blockID == 4.0) {
+        baseColor += vec3<f32>(sin(uniforms.time * 2.0 + vWorldPos.x), cos(uniforms.time + vWorldPos.z), 0.0) * 0.05;
+    }
+    
+    // Lighting
+    let N = normalize(vNormal);
+    let L = normalize(uniforms.sunDir);
+    let diff = max(dot(N, L), 0.0);
+    var light = uniforms.ambient + diff;
+    
+    // Lava glow
+    if(blockID == 10.0) { light = 2.0; baseColor = vec3<f32>(1.0, 0.6, 0.1) + vec3<f32>(sin(uniforms.time * 5.0)*0.2); }
+    
+    var finalColor = baseColor * light;
+    
+    // Fog
+    let dist = distance(uniforms.viewPos, vWorldPos);
+    let fogFactor = 1.0 - exp(-dist * uniforms.fogDensity * 0.05);
+    finalColor = mix(finalColor, uniforms.fogColor, fogFactor);
+
+    return vec4<f32>(finalColor, 1.0);
+}
+`;
+
+const shaderModule = device.createShaderModule({ code: shaderCode });
+
+// Buffers
+const uniformBufferSize = 256; // mat4x4 (64) + mat4 (64) + vec3(12) + f32(4) + vec3(12) + f32(4) + padding
+const uniformBuffer = device.createBuffer({ size: uniformBufferSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+const uniformBufferView = device.createBuffer({ size: uniformBufferSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+// Sampler
+const sampler = device.createSampler({
+    magFilter: 'nearest',
+    minFilter: 'nearest',
+});
+
+// Geometry Buffers (Solid)
+const vertexBuffer = device.createBuffer({
+    size: meshData.vertices.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+});
+device.queue.writeBuffer(vertexBuffer, 0, meshData.vertices);
+
+const indexBuffer = device.createBuffer({
+    size: meshData.indices.byteLength,
+    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST
+});
+device.queue.writeBuffer(indexBuffer, 0, meshData.indices);
+
+// Geometry Buffers (Water)
+const wVertexBuffer = device.createBuffer({ size: waterData.vertices.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+device.queue.writeBuffer(wVertexBuffer, 0, waterData.vertices);
+const wIndexBuffer = device.createBuffer({ size: waterData.indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+device.queue.writeBuffer(wIndexBuffer, 0, waterData.indices);
+
+// Geometry Buffers (Lava)
+const lVertexBuffer = device.createBuffer({ size: lavaData.vertices.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+device.queue.writeBuffer(lVertexBuffer, 0, lavaData.vertices);
+const lIndexBuffer = device.createBuffer({ size: lavaData.indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+device.queue.writeBuffer(lIndexBuffer, 0, lavaData.indices);
+
+// Bind Group Layout
+const bindGroupLayout = device.createBindGroupLayout({
+    entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } }
+    ]
+});
+
+const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+
+const pipeline = device.createRenderPipeline({
+    layout: pipelineLayout,
+    vertex: {
+        module: shaderModule,
+        entryPoint: 'vs_main',
+        buffers: [{
+            arrayStride: 32, // 3 pos + 3 norm + 3 colorID + padding
+            attributes: [
+                { shaderLocation: 0, offset: 0, format: 'float32x3' }, // Pos
+                { shaderLocation: 1, offset: 12, format: 'float32x3' }, // Norm
+                { shaderLocation: 2, offset: 24, format: 'float32x3' }, // ColorID
+            ]
+        }]
+    },
+    fragment: {
+        module: shaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: format }]
+    },
+    primitive: { topology: 'triangle-list', cullMode: 'back' },
+    depthStencil: {
+        depthWriteEnabled: true,
+        depthCompare: 'less',
+        format: 'depth24plus',
+    }
+});
+
+const bindGroup = device.createBindGroup({
+    layout: bindGroupLayout,
+    entries: [
+        { binding: 0, resource: { buffer: uniformBuffer } },
+        { binding: 1, resource: textureData.texture.createView() },
+        { binding: 2, resource: sampler }
+    ]
+});
+
+// Depth Texture
+let depthTexture = device.createTexture({
+    size: [canvas.width, canvas.height],
+    format: 'depth24plus',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT
+});
+
+/* 
+   =================================================================
+   INPUT & CAMERA
+   =================================================================
+*/
+const cam = {
+    x: 0, y: 40, z: -50,
+    pitch: -0.8, yaw: 0,
+    speed: 30,
+    mode: 'fly' // or 'orbit'
+};
+
+let keys = {};
+let mouseLocked = false;
+
+window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if(e.code === 'KeyO') toggleOrbit();
+    if(e.code === 'KeyP') takeScreenshot();
+});
+window.addEventListener('keyup', e => keys[e.code] = false);
+window.addEventListener('mousedown', () => {
+    if(cam.mode === 'fly') canvas.requestPointerLock();
+});
+window.addEventListener('mousemove', e => {
+    if (document.pointerLockElement === canvas && cam.mode === 'fly') {
+        cam.yaw += e.movementX * 0.002;
+        cam.pitch -= e.movementY * 0.002;
+        cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch));
+    }
+});
+
+function toggleOrbit() {
+    cam.mode = cam.mode === 'fly' ? 'orbit' : 'fly';
+    if(cam.mode === 'orbit') document.exitPointerLock();
+}
+
+// Time Control
+window.setTime = (t) => {
+    currentTime = t;
+    const settings = TIMES[t];
+    // Update uniforms immediately (handled in loop)
+};
+
+function takeScreenshot() {
+    const remap = (v) => v; // simplified
+    const url = canvas.toDataURL();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'voxel_kingdom.png';
+    a.click();
+}
+
+/* 
+   =================================================================
+   RENDER LOOP
+   =================================================================
+*/
+let lastTime = performance.now();
+
+function frame(now) {
+    const dt = (now - lastTime) / 1000;
+    lastTime = now;
+
+    // Update Camera
+    if(cam.mode === 'fly') {
+        let forward = [Math.sin(cam.yaw), 0, Math.cos(cam.yaw)];
+        let right = [Math.cos(cam.yaw), 0, -Math.sin(cam.yaw)];
+        
+        if(keys['KeyW']) { cam.x -= forward[0]*cam.speed*dt; cam.z -= forward[2]*cam.speed*dt; }
+        if(keys['KeyS']) { cam.x += forward[0]*cam.speed*dt; cam.z += forward[2]*cam.speed*dt; }
+        if(keys['KeyA']) { cam.x -= right[0]*cam.speed*dt; cam.z -= right[2]*cam.speed*dt; }
+        if(keys['KeyD']) { cam.x += right[0]*cam.speed*dt; cam.z += right[2]*cam.speed*dt; }
+        if(keys['Space']) cam.y += cam.speed*dt;
+        if(keys['ShiftLeft']) cam.y -= cam.speed*dt;
+    } else {
+        // Orbit
+        let t = now * 0.0002;
+        cam.x = Math.sin(t) * 60;
+        cam.z = Math.cos(t) * 60;
+        cam.y = 40;
+        cam.yaw = -t + 1.57;
+    }
+
+    // Matrices
+    const aspect = canvas.width / canvas.height;
+    const projection = Mat4.create();
+    Mat4.perspective(projection, Math.PI/3, aspect, 0.1, 500.0);
+
+    const view = Mat4.create();
+    const target = [cam.x - Math.sin(cam.yaw)*Math.cos(cam.pitch), cam.y + Math.sin(cam.pitch), cam.z - Math.cos(cam.yaw)*Math.cos(cam.pitch)];
+    Mat4.lookAt(view, [cam.x, cam.y, cam.z], target, [0,1,0]);
+
+    const mvp = Mat4.create();
+    Mat4.multiply(mvp, projection, view);
+    
+    const model = Mat4.create(); // Identity
+
+    // Update Uniforms
+    const settings = TIMES[currentTime];
+    // Pack data
+    const uniformData = new Float32Array(64); // Simplified size
+    // Just dump relevant floats into a buffer that we know maps to struct
+    // We need to map the WGSL struct layout manually or use a mapped buffer view.
+    // For this simple demo, we'll write floats at correct offsets assuming std140-ish or just offset 0.
+    // Layout in WGSL:
+    // mvp (64), model (64), viewPos(12), time(4), sunDir(12), fogColor(12), fogDensity(4), ambient(4), pad(12) = 184 bytes ~ 46 floats.
+    
+    // Easier approach: Update MVP only and use global vars for rest in JS? 
+    // No, upload all to keep it strictly WebGPU.
+    
+    // Let's reconstruct the array carefully:
+    let data = new Float32Array([
+        ...mvp, ...model, // 128 bytes (32 floats)
+        cam.x, cam.y, cam.z, // viewPos
+        now/1000, // time
+        ...settings.sun, // sunDir
+        ...settings.fog, // fogColor
+        0.02, // fogDensity
+        settings.ambient, 0,0,0 // padding
+    ]);
+    
+    device.queue.writeBuffer(uniformBuffer, 0, data);
+
+    // Resize check
+    if (canvas.width !== window.innerWidth * window.devicePixelRatio || canvas.height !== window.innerHeight * window.devicePixelRatio) {
+        canvas.width = window.innerWidth * window.devicePixelRatio;
+        canvas.height = window.innerHeight * window.devicePixelRatio;
+        depthTexture.destroy();
+        depthTexture = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: 'depth24plus',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT
+        });
+    }
+
+    const commandEncoder = device.createCommandEncoder();
+    const passEncoder = commandEncoder.beginRenderPass({
+        colorAttachments: [{
+            view: context.getCurrentTexture().createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+        }],
+        depthStencilAttachment: {
+            view: depthTexture.createView(),
+            depthClearValue: 1.0,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+        }
+    });
+
+    passEncoder.setPipeline(pipeline);
+    passEncoder.setBindGroup(0, bindGroup);
+    
+    // Draw Solid
+    passEncoder.setVertexBuffer(0, vertexBuffer);
+    passEncoder.setIndexBuffer(indexBuffer, 'uint32');
+    passEncoder.drawIndexed(meshData.indices.length);
+
+    // Draw Water (Blending)
+    // Need to enable blending in pipeline for this to look nice, but let's skip for code size and single pass
+    // Or just draw without depth write
+    // passEncoder.setVertexBuffer(0, wVertexBuffer);
+    // passEncoder.setIndexBuffer(wIndexBuffer, 'uint32');
+    // passEncoder.drawIndexed(waterData.indices.length);
+
+    // Draw Lava
+    passEncoder.setVertexBuffer(0, lVertexBuffer);
+    passEncoder.setIndexBuffer(lIndexBuffer, 'uint32');
+    passEncoder.drawIndexed(lavaData.indices.length);
+
+    passEncoder.end();
+    device.queue.submit([commandEncoder.finish()]);
+
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+
+</script>
+</body>
+</html>

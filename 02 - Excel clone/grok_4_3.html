@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Excel Clone</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f1f1f1; }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  #toolbar { background: #f8f9fa; padding: 6px 10px; border-bottom: 1px solid #d1d1d1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #formula-bar { display: flex; align-items: center; background: white; border-bottom: 1px solid #d1d1d1; padding: 4px 8px; }
+  #cell-address { width: 80px; padding: 4px; border: 1px solid #ccc; margin-right: 8px; font-weight: bold; }
+  #formula-input { flex: 1; padding: 4px 8px; border: 1px solid #ccc; font-family: monospace; }
+  #grid-container { flex: 1; overflow: auto; background: white; position: relative; }
+  table { border-collapse: collapse; user-select: none; }
+  th, td { border: 1px solid #c0c0c0; min-width: 80px; height: 22px; padding: 0; position: relative; }
+  th { background: #f2f2f2; font-weight: normal; text-align: center; }
+  .row-header { background: #f2f2f2; width: 40px; text-align: center; }
+  .cell { width: 100%; height: 100%; padding: 0 4px; box-sizing: border-box; overflow: hidden; white-space: nowrap; }
+  .cell.selected { background: #d4e6f7 !important; outline: 2px solid #1a73e8; z-index: 2; }
+  .cell.editing { background: white !important; }
+  #sheet-tabs { display: flex; background: #f8f9fa; border-top: 1px solid #d1d1d1; padding: 4px 8px; gap: 2px; }
+  .sheet-tab { padding: 4px 12px; border: 1px solid #ccc; border-bottom: none; cursor: pointer; background: #e8e8e8; }
+  .sheet-tab.active { background: white; border-bottom: 1px solid white; }
+  button { padding: 4px 10px; border: 1px solid #ccc; background: white; cursor: pointer; }
+  button:hover { background: #f0f0f0; }
+  .toolbar-group { display: flex; gap: 4px; align-items: center; padding-right: 12px; border-right: 1px solid #ddd; }
+  input[type="color"] { width: 28px; height: 24px; padding: 0; border: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <div class="toolbar-group">
+      <button onclick="formatBold()">B</button>
+      <button onclick="formatItalic()"><i>I</i></button>
+      <input type="color" id="bg-color" onchange="formatBgColor(this.value)" value="#ffffff">
+    </div>
+    <div class="toolbar-group">
+      <button onclick="clearSelected()">Clear</button>
+      <button onclick="downloadCSV()">Download CSV</button>
+      <button onclick="uploadCSV()">Upload CSV</button>
+    </div>
+    <div class="toolbar-group">
+      <button onclick="addSheet()">+ Sheet</button>
+      <button onclick="renameSheet()">Rename</button>
+      <button onclick="deleteSheet()">Delete</button>
+    </div>
+  </div>
+
+  <div id="formula-bar">
+    <input id="cell-address" readonly>
+    <input id="formula-input" placeholder="Enter value or formula (=SUM(A1:A10))">
+  </div>
+
+  <div id="grid-container"></div>
+
+  <div id="sheet-tabs"></div>
+</div>
+
+<script>
+const COLS = 26;
+const ROWS = 50;
+let sheets = {};
+let currentSheet = 'Sheet1';
+let selected = { r: 0, c: 0 };
+let selectionRange = null;
+let isDragging = false;
+let editingCell = null;
+
+function colToLetter(col) {
+  return String.fromCharCode(65 + col);
+}
+
+function cellRef(r, c) {
+  return colToLetter(c) + (r + 1);
+}
+
+function parseCellRef(ref) {
+  const match = ref.match(/([A-Z]+)(\d+)/);
+  if (!match) return null;
+  const col = match[1].charCodeAt(0) - 65;
+  const row = parseInt(match[2]) - 1;
+  return { r: row, c: col };
+}
+
+function initSheet(name) {
+  if (!sheets[name]) {
+    sheets[name] = {
+      data: Array.from({ length: ROWS }, () => Array(COLS).fill('')),
+      formulas: {},
+      computed: {},
+      styles: {}
+    };
+  }
+}
+
+function getActiveSheet() {
+  return sheets[currentSheet];
+}
+
+function createGrid() {
+  const container = document.getElementById('grid-container');
+  container.innerHTML = '';
+  
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+  
+  // Corner cell
+  const corner = document.createElement('th');
+  corner.className = 'row-header';
+  headerRow.appendChild(corner);
+  
+  for (let c = 0; c < COLS; c++) {
+    const th = document.createElement('th');
+    th.textContent = colToLetter(c);
+    th.style.width = '80px';
+    th.onmousedown = (e) => selectColumn(c, e);
+    headerRow.appendChild(th);
+  }
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+  
+  const tbody = document.createElement('tbody');
+  
+  for (let r = 0; r < ROWS; r++) {
+    const row = document.createElement('tr');
+    
+    const rh = document.createElement('th');
+    rh.className = 'row-header';
+    rh.textContent = r + 1;
+    rh.onmousedown = (e) => selectRow(r, e);
+    row.appendChild(rh);
+    
+    for (let c = 0; c < COLS; c++) {
+      const td = document.createElement('td');
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      cell.dataset.r = r;
+      cell.dataset.c = c;
+      
+      cell.onmousedown = (e) => handleCellMouseDown(r, c, e);
+      cell.onmousemove = (e) => handleCellMouseMove(r, c, e);
+      cell.onmouseup = () => handleCellMouseUp();
+      cell.ondblclick = () => startEdit(r, c);
+      
+      td.appendChild(cell);
+      row.appendChild(td);
+    }
+    tbody.appendChild(row);
+  }
+  table.appendChild(tbody);
+  container.appendChild(table);
+  
+  // Keyboard navigation
+  document.onkeydown = handleKeyDown;
+  
+  // Formula bar handling
+  const formulaInput = document.getElementById('formula-input');
+  formulaInput.onblur = () => commitFormula();
+  formulaInput.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      commitFormula();
+      moveSelection(1, 0);
+    }
+  };
+  
+  renderAllCells();
+  updateSheetTabs();
+}
+
+function renderAllCells() {
+  const sheet = getActiveSheet();
+  document.querySelectorAll('.cell').forEach(cellEl => {
+    const r = parseInt(cellEl.dataset.r);
+    const c = parseInt(cellEl.dataset.c);
+    const val = sheet.computed[cellRef(r, c)] ?? sheet.data[r][c];
+    cellEl.textContent = val;
+    
+    // Apply styles
+    const ref = cellRef(r, c);
+    if (sheet.styles[ref]) {
+      const style = sheet.styles[ref];
+      if (style.bold) cellEl.style.fontWeight = 'bold';
+      if (style.italic) cellEl.style.fontStyle = 'italic';
+      if (style.bg) cellEl.style.backgroundColor = style.bg;
+    }
+  });
+  updateSelection();
+}
+
+function updateSelection() {
+  document.querySelectorAll('.cell').forEach(el => el.classList.remove('selected'));
+  
+  if (selectionRange) {
+    const { start, end } = selectionRange;
+    for (let r = Math.min(start.r, end.r); r <= Math.max(start.r, end.r); r++) {
+      for (let c = Math.min(start.c, end.c); c <= Math.max(start.c, end.c); c++) {
+        const cell = document.querySelector(`.cell[data-r="${r}"][data-c="${c}"]`);
+        if (cell) cell.classList.add('selected');
+      }
+    }
+  } else {
+    const cell = document.querySelector(`.cell[data-r="${selected.r}"][data-c="${selected.c}"]`);
+    if (cell) cell.classList.add('selected');
+  }
+  
+  // Update formula bar
+  document.getElementById('cell-address').value = cellRef(selected.r, selected.c);
+  const sheet = getActiveSheet();
+  const ref = cellRef(selected.r, selected.c);
+  const formula = sheet.formulas[ref] || sheet.data[selected.r][selected.c];
+  document.getElementById('formula-input').value = formula || '';
+}
+
+function handleCellMouseDown(r, c, e) {
+  if (editingCell) return;
+  
+  if (e.shiftKey && selectionRange) {
+    selectionRange.end = { r, c };
+  } else {
+    selected = { r, c };
+    selectionRange = { start: { r, c }, end: { r, c } };
+  }
+  isDragging = true;
+  updateSelection();
+  
+  // Allow inserting cell reference into formula
+  const formulaInput = document.getElementById('formula-input');
+  if (document.activeElement === formulaInput && formulaInput.value.startsWith('=')) {
+    insertCellRefIntoFormula(cellRef(r, c));
+  }
+}
+
+function handleCellMouseMove(r, c) {
+  if (!isDragging) return;
+  selectionRange.end = { r, c };
+  updateSelection();
+}
+
+function handleCellMouseUp() {
+  isDragging = false;
+}
+
+function selectColumn(c, e) {
+  e.preventDefault();
+  selected = { r: 0, c };
+  selectionRange = { start: { r: 0, c }, end: { r: ROWS - 1, c } };
+  updateSelection();
+}
+
+function selectRow(r, e) {
+  e.preventDefault();
+  selected = { r, c: 0 };
+  selectionRange = { start: { r, c: 0 }, end: { r, c: COLS - 1 } };
+  updateSelection();
+}
+
+function handleKeyDown(e) {
+  if (editingCell) return;
+  
+  let moved = false;
+  switch (e.key) {
+    case 'ArrowUp': selected.r = Math.max(0, selected.r - 1); moved = true; break;
+    case 'ArrowDown': selected.r = Math.min(ROWS - 1, selected.r + 1); moved = true; break;
+    case 'ArrowLeft': selected.c = Math.max(0, selected.c - 1); moved = true; break;
+    case 'ArrowRight': selected.c = Math.min(COLS - 1, selected.c + 1); moved = true; break;
+    case 'Enter': moveSelection(1, 0); e.preventDefault(); break;
+    case 'Tab': moveSelection(0, 1); e.preventDefault(); break;
+    case 'Delete': case 'Backspace': clearSelected(); break;
+    case 'F2': startEdit(selected.r, selected.c); e.preventDefault(); break;
+  }
+  
+  if (moved) {
+    selectionRange = { start: { ...selected }, end: { ...selected } };
+    updateSelection();
+    document.getElementById('formula-input').focus();
+    document.getElementById('formula-input').select();
+  }
+}
+
+function moveSelection(dr, dc) {
+  selected.r = Math.max(0, Math.min(ROWS - 1, selected.r + dr));
+  selected.c = Math.max(0, Math.min(COLS - 1, selected.c + dc));
+  selectionRange = { start: { ...selected }, end: { ...selected } };
+  updateSelection();
+}
+
+function startEdit(r, c) {
+  const sheet = getActiveSheet();
+  const ref = cellRef(r, c);
+  const cellEl = document.querySelector(`.cell[data-r="${r}"][data-c="${c}"]`);
+  
+  editingCell = { r, c, el: cellEl };
+  cellEl.classList.add('editing');
+  cellEl.contentEditable = true;
+  cellEl.focus();
+  
+  const formula = sheet.formulas[ref] || sheet.data[r][c];
+  cellEl.textContent = formula || '';
+  
+  cellEl.onblur = () => {
+    commitEdit(r, c, cellEl.textContent);
+    cellEl.contentEditable = false;
+    cellEl.classList.remove('editing');
+    editingCell = null;
+    renderAllCells();
+  };
+  
+  cellEl.onkeydown = (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      cellEl.blur();
+    }
+  };
+}
+
+function commitEdit(r, c, value) {
+  const sheet = getActiveSheet();
+  const ref = cellRef(r, c);
+  
+  if (value.startsWith('=')) {
+    sheet.formulas[ref] = value;
+  } else {
+    delete sheet.formulas[ref];
+    sheet.data[r][c] = value;
+  }
+  recalculateAll();
+  renderAllCells();
+}
+
+function commitFormula() {
+  const formulaInput = document.getElementById('formula-input').value.trim();
+  const sheet = getActiveSheet();
+  const ref = cellRef(selected.r, selected.c);
+  
+  if (formulaInput.startsWith('=')) {
+    sheet.formulas[ref] = formulaInput;
+  } else {
+    delete sheet.formulas[ref];
+    sheet.data[selected.r][selected.c] = formulaInput;
+  }
+  recalculateAll();
+  renderAllCells();
+}
+
+function insertCellRefIntoFormula(ref) {
+  const input = document.getElementById('formula-input');
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  const val = input.value;
+  input.value = val.substring(0, start) + ref + val.substring(end);
+  input.selectionStart = input.selectionEnd = start + ref.length;
+  input.focus();
+}
+
+// Simple formula evaluator
+function evaluateFormula(formula, sheet) {
+  if (!formula.startsWith('=')) return formula;
+  
+  try {
+    let expr = formula.substring(1);
+    
+    // Handle functions
+    expr = expr.replace(/SUM\(([A-Z]+\d+:[A-Z]+\d+)\)/gi, (m, range) => {
+      return calculateRange(range, sheet, 'sum');
+    });
+    expr = expr.replace(/AVERAGE\(([A-Z]+\d+:[A-Z]+\d+)\)/gi, (m, range) => {
+      return calculateRange(range, sheet, 'avg');
+    });
+    expr = expr.replace(/MIN\(([A-Z]+\d+:[A-Z]+\d+)\)/gi, (m, range) => {
+      return calculateRange(range, sheet, 'min');
+    });
+    expr = expr.replace(/MAX\(([A-Z]+\d+:[A-Z]+\d+)\)/gi, (m, range) => {
+      return calculateRange(range, sheet, 'max');
+    });
+    
+    // Replace cell references
+    expr = expr.replace(/[A-Z]+\d+/g, (match) => {
+      const pos = parseCellRef(match);
+      if (!pos) return 0;
+      const val = sheet.computed[match] ?? sheet.data[pos.r][pos.c];
+      return parseFloat(val) || 0;
+    });
+    
+    // Safe eval
+    return Function('"use strict";return (' + expr + ')')();
+  } catch {
+    return '#ERROR';
+  }
+}
+
+function calculateRange(range, sheet, func) {
+  const [startRef, endRef] = range.split(':');
+  const start = parseCellRef(startRef);
+  const end = parseCellRef(endRef);
+  
+  let values = [];
+  for (let r = Math.min(start.r, end.r); r <= Math.max(start.r, end.r); r++) {
+    for (let c = Math.min(start.c, end.c); c <= Math.max(start.c, end.c); c++) {
+      const ref = cellRef(r, c);
+      const val = sheet.computed[ref] ?? sheet.data[r][c];
+      const num = parseFloat(val);
+      if (!isNaN(num)) values.push(num);
+    }
+  }
+  
+  if (func === 'sum') return values.reduce((a, b) => a + b, 0);
+  if (func === 'avg') return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+  if (func === 'min') return Math.min(...values);
+  if (func === 'max') return Math.max(...values);
+  return 0;
+}
+
+function recalculateAll() {
+  const sheet = getActiveSheet();
+  sheet.computed = {};
+  
+  // Simple dependency resolution (two passes)
+  for (let pass = 0; pass < 2; pass++) {
+    Object.keys(sheet.formulas).forEach(ref => {
+      const pos = parseCellRef(ref);
+      if (!pos) return;
+      const result = evaluateFormula(sheet.formulas[ref], sheet);
+      sheet.computed[ref] = result;
+    });
+  }
+}
+
+function formatBold() {
+  applyStyle('bold', true);
+}
+
+function formatItalic() {
+  applyStyle('italic', true);
+}
+
+function formatBgColor(color) {
+  applyStyle('bg', color);
+}
+
+function applyStyle(prop, value) {
+  const sheet = getActiveSheet();
+  if (!selectionRange) return;
+  
+  const { start, end } = selectionRange;
+  for (let r = Math.min(start.r, end.r); r <= Math.max(start.r, end.r); r++) {
+    for (let c = Math.min(start.c, end.c); c <= Math.max(start.c, end.c); c++) {
+      const ref = cellRef(r, c);
+      if (!sheet.styles[ref]) sheet.styles[ref] = {};
+      sheet.styles[ref][prop] = value;
+    }
+  }
+  renderAllCells();
+}
+
+function clearSelected() {
+  const sheet = getActiveSheet();
+  if (!selectionRange) return;
+  
+  const { start, end } = selectionRange;
+  for (let r = Math.min(start.r, end.r); r <= Math.max(start.r, end.r); r++) {
+    for (let c = Math.min(start.c, end.c); c <= Math.max(start.c, end.c); c++) {
+      const ref = cellRef(r, c);
+      sheet.data[r][c] = '';
+      delete sheet.formulas[ref];
+      delete sheet.computed[ref];
+      delete sheet.styles[ref];
+    }
+  }
+  recalculateAll();
+  renderAllCells();
+}
+
+function downloadCSV() {
+  const sheet = getActiveSheet();
+  let csv = '';
+  for (let r = 0; r < ROWS; r++) {
+    let row = [];
+    for (let c = 0; c < COLS; c++) {
+      let val = sheet.data[r][c] || '';
+      if (val.includes(',')) val = `"${val}"`;
+      row.push(val);
+    }
+    csv += row.join(',') + '\n';
+  }
+  
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = currentSheet + '.csv';
+  a.click();
+}
+
+function uploadCSV() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.csv';
+  input.onchange = (e) => {
+    const file = e.target.files[0];
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const sheet = getActiveSheet();
+      const lines = ev.target.result.split('\n');
+      lines.forEach((line, r) => {
+        if (r >= ROWS) return;
+        const cells = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+        cells.forEach((val, c) => {
+          if (c >= COLS) return;
+          sheet.data[r][c] = val.replace(/^"|"$/g, '');
+        });
+      });
+      recalculateAll();
+      renderAllCells();
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+function addSheet() {
+  let name = 'Sheet' + (Object.keys(sheets).length + 1);
+  initSheet(name);
+  currentSheet = name;
+  renderAllCells();
+  updateSheetTabs();
+}
+
+function renameSheet() {
+  const newName = prompt('New sheet name:', currentSheet);
+  if (newName && newName !== currentSheet) {
+    sheets[newName] = sheets[currentSheet];
+    delete sheets[currentSheet];
+    currentSheet = newName;
+    updateSheetTabs();
+  }
+}
+
+function deleteSheet() {
+  if (Object.keys(sheets).length === 1) return alert('Cannot delete last sheet');
+  if (!confirm('Delete sheet?')) return;
+  delete sheets[currentSheet];
+  currentSheet = Object.keys(sheets)[0];
+  renderAllCells();
+  updateSheetTabs();
+}
+
+function updateSheetTabs() {
+  const container = document.getElementById('sheet-tabs');
+  container.innerHTML = '';
+  
+  Object.keys(sheets).forEach(name => {
+    const tab = document.createElement('div');
+    tab.className = 'sheet-tab' + (name === currentSheet ? ' active' : '');
+    tab.textContent = name;
+    tab.onclick = () => {
+      currentSheet = name;
+      renderAllCells();
+      updateSheetTabs();
+    };
+    container.appendChild(tab);
+  });
+}
+
+// Initialize
+initSheet('Sheet1');
+createGrid();
+recalculateAll();
+</script>
+</body>
+</html>

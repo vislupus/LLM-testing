@@ -1,0 +1,1141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Medieval Voxel World — WebGPU</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{overflow:hidden;background:#000;font-family:'Segoe UI',system-ui,sans-serif;color:#e0d6c2}
+canvas{display:block;width:100vw;height:100vh;cursor:crosshair}
+#loading{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0a0f;z-index:100;transition:opacity .8s}
+#loading.hide{opacity:0;pointer-events:none}
+#loading h1{font-size:2.4rem;font-weight:300;letter-spacing:.15em;color:#c8a96e;margin-bottom:.5rem}
+#loading p{color:#7a6f5f;font-size:.95rem}
+#load-bar{width:280px;height:3px;background:#1a1a24;border-radius:2px;margin-top:1.5rem;overflow:hidden}
+#load-fill{height:100%;width:0%;background:linear-gradient(90deg,#c8a96e,#e8c98e);transition:width .3s}
+#ui{position:fixed;inset:0;pointer-events:none;z-index:10}
+#ui>*{pointer-events:auto}
+#top-bar{position:absolute;top:16px;left:16px;display:flex;gap:8px;flex-wrap:wrap}
+.btn{padding:6px 14px;border:1px solid rgba(200,169,110,.3);border-radius:4px;background:rgba(10,10,15,.75);color:#c8a96e;font-size:.8rem;cursor:pointer;backdrop-filter:blur(6px);transition:all .2s;letter-spacing:.05em;user-select:none}
+.btn:hover{background:rgba(200,169,110,.15);border-color:rgba(200,169,110,.6)}
+.btn.active{background:rgba(200,169,110,.2);border-color:#c8a96e;color:#f0dca8}
+#info{position:absolute;bottom:16px;left:16px;font-size:.72rem;color:#5a5040;line-height:1.6;max-width:340px}
+#screenshot-msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(10,10,15,.85);color:#c8a96e;padding:12px 24px;border-radius:6px;font-size:.9rem;opacity:0;transition:opacity .3s;pointer-events:none}
+#screenshot-msg.show{opacity:1}
+#crosshair{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:2px;height:2px;background:rgba(200,169,110,.5);border-radius:1px;pointer-events:none;display:none}
+#time-label{position:absolute;top:16px;right:16px;font-size:.75rem;color:#7a6f5f;text-align:right}
+#fps{position:absolute;bottom:16px;right:16px;font-size:.7rem;color:#4a4030}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="loading"><h1>MEDIEVAL VOXEL WORLD</h1><p>Forging lands with WebGPU...</p><div id="load-bar"><div id="load-fill"></div></div></div>
+<div id="ui">
+  <div id="top-bar">
+    <button class="btn active" data-time="day">Day</button>
+    <button class="btn" data-time="dawn">Dawn</button>
+    <button class="btn" data-time="dusk">Dusk</button>
+    <button class="btn" data-time="night">Night</button>
+    <button class="btn" data-mode="fly">Fly</button>
+    <button class="btn" data-mode="orbit">Orbit</button>
+    <button class="btn" data-mode="screenshot">Screenshot</button>
+  </div>
+  <div id="time-label">High Noon</div>
+  <div id="info">WASD — Move &nbsp;|&nbsp; Mouse — Look &nbsp;|&nbsp; Space/Shift — Up/Down<br>Scroll — Speed &nbsp;|&nbsp; Click canvas to capture mouse</div>
+  <div id="crosshair"></div>
+  <div id="screenshot-msg">Screenshot saved</div>
+  <div id="fps"></div>
+</div>
+<script>
+/* ── Constants ── */
+const WX=160,WY=72,WZ=160,CHUNK=16,WL=13;
+const CX=WX/CHUNK,CZ=WZ/CHUNK;
+const B={AIR:0,STONE:1,DIRT:2,GRASS:3,SAND:4,WOOD:5,LEAVES:6,WATER:7,LAVA:8,SNOW:9,BRICK:10,PLANK:11,COBBLE:12,GLASS:13,TORCH:14,BASALT:15,DEADW:16,REDL:17,FARM:18,CROP:19,REED:20,ROOFD:21,ROOFL:22,MOSS:23,IRON:24,GLOW:25,FLAGR:26,FLAGB:27,WHITE:28,DARK:29};
+const BC={};
+BC[B.STONE]=[.50,.50,.50];BC[B.DIRT]=[.55,.35,.17];BC[B.GRASS]=[.30,.60,.10];
+BC[B.SAND]=[.82,.70,.55];BC[B.WOOD]=[.63,.32,.18];BC[B.LEAVES]=[.13,.55,.13];
+BC[B.WATER]=[.10,.35,.75];BC[B.LAVA]=[1,.30,.0];BC[B.SNOW]=[.92,.92,.97];
+BC[B.BRICK]=[.70,.13,.13];BC[B.PLANK]=[.80,.52,.25];BC[B.COBBLE]=[.56,.54,.52];
+BC[B.GLASS]=[.65,.82,.88];BC[B.TORCH]=[.63,.32,.18];BC[B.BASALT]=[.18,.16,.20];
+BC[B.DEADW]=[.32,.22,.14];BC[B.REDL]=[.50,.08,.04];BC[B.FARM]=[.48,.30,.12];
+BC[B.CROP]=[.55,.70,.10];BC[B.REED]=[.28,.52,.18];BC[B.ROOFD]=[.28,.14,.07];
+BC[B.ROOFL]=[.62,.32,.14];BC[B.MOSS]=[.18,.38,.08];BC[B.IRON]=[.52,.52,.57];
+BC[B.GLOW]=[1,.85,.45];BC[B.FLAGR]=[.78,.10,.10];BC[B.FLAGB]=[.10,.18,.65];
+BC[B.WHITE]=[.88,.85,.80];BC[B.DARK]=[.28,.26,.24];
+const TRANSPARENT=new Set([B.AIR,B.WATER,B.GLASS,B.REED,B.CROP,B.TORCH,B.FLAGR,B.FLAGB,B.LEAVES]);
+const SOLID_WATER=new Set([B.AIR,B.GLASS,B.REED,B.CROP,B.TORCH,B.FLAGR,B.FLAGB,B.LEAVES]);
+
+/* ── Faces (CCW from outside) ── */
+const FACES=[
+  {dir:[0,1,0],c:[[1,1,0],[0,1,0],[0,1,1],[1,1,1]]},   // top +Y
+  {dir:[0,-1,0],c:[[0,0,0],[1,0,0],[1,0,1],[0,0,1]]},   // bot -Y
+  {dir:[1,0,0],c:[[1,0,1],[1,0,0],[1,1,0],[1,1,1]]},    // east +X
+  {dir:[-1,0,0],c:[[0,0,0],[0,0,1],[0,1,1],[0,1,0]]},   // west -X
+  {dir:[0,0,1],c:[[0,0,1],[1,0,1],[1,1,1],[0,1,1]]},    // south +Z
+  {dir:[0,0,-1],c:[[1,0,0],[0,0,0],[0,1,0],[1,1,0]]},   // north -Z
+];
+
+/* ── World data ── */
+const blocks=new Uint8Array(WX*WY*WZ);
+function idx(x,y,z){return x+y*WX+z*WX*WY}
+function gB(x,y,z){return(x<0||x>=WX||y<0||y>=WY||z<0||z>=WZ)?0:blocks[idx(x,y,z)]}
+function sB(x,y,z,t){if(x>=0&&x<WX&&y>=0&&y<WY&&z>=0&&z<WZ)blocks[idx(x,y,z)]=t}
+function fill(x0,y0,z0,x1,y1,z1,t){for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++)for(let z=z0;z<=z1;z++)sB(x,y,z,t)}
+function fillHollow(x0,y0,z0,x1,y1,z1,t){for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++)for(let z=z0;z<=z1;z++)if(x===x0||x===x1||y===y0||y===y1||z===z0||z===z===z1)sB(x,y,z,t)}
+
+/* ── Noise ── */
+function hash(x,y){let n=x*374761393+y*668265263;n=(n^(n>>13))*1274126177;return(n&0x7fffffff)/0x7fffffff}
+function noise2(x,y){const ix=Math.floor(x),iy=Math.floor(y),fx=x-ix,fy=y-iy;const sx=fx*fx*(3-2*fx),sy=fy*fy*(3-2*fy);return hash(ix,iy)*(1-sx)*(1-sy)+hash(ix+1,iy)*sx*(1-sy)+hash(ix,iy+1)*(1-sx)*sy+hash(ix+1,iy+1)*sx*sy}
+function fbm(x,y,oct=5){let v=0,a=1,f=1,m=0;for(let i=0;i<oct;i++){v+=noise2(x*f,y*f)*a;m+=a;a*=.5;f*=2}return v/m}
+
+/* ── Terrain height ── */
+function terrainH(x,z){
+  let h=fbm(x*.015,z*.015)*16+8;
+  // Castle hill
+  const dc=Math.sqrt((x-80)**2+(z-80)**2);
+  if(dc<22)h+=(22-dc)*1.0;
+  if(dc<14)h+=(14-dc)*.6;
+  // Mountains north
+  if(z<40){const f=(40-z)/40;h+=f*20+fbm(x*.04,z*.04,3)*12*f}
+  // Volcano NE
+  const dv=Math.sqrt((x-125)**2+(z-25)**2);
+  if(dv<20)h+=(20-dv)*2.2;
+  // River valley
+  const rz=58+Math.sin(x*.04)*10+Math.sin(x*.07)*4;
+  const dr=Math.abs(z-rz);
+  if(dr<6)h=Math.min(h,WL+2-((6-dr)*.5));
+  // Hills south
+  if(z>120)h+=fbm(x*.03,z*.03,3)*8;
+  return Math.floor(Math.max(h,1));
+}
+
+/* ── Build world ── */
+function buildWorld(){
+  const lf=document.getElementById('load-fill');
+  // Base terrain
+  for(let x=0;x<WX;x++)for(let z=0;z<WZ;z++){
+    const h=terrainH(x,z);
+    for(let y=0;y<WY;y++){
+      if(y===0)sB(x,y,z,B.STONE);
+      else if(y<h-4)sB(x,y,z,B.STONE);
+      else if(y<h)sB(x,y,z,B.DIRT);
+      else if(y===h){
+        if(h<=WL+1&&h>=WL-1)sB(x,y,z,B.SAND);
+        else if(h>38)sB(x,y,z,B.SNOW);
+        else sB(x,y,z,B.GRASS);
+      }else if(y<=WL){
+        sB(x,y,z,B.WATER);
+      }
+    }
+  }
+  lf.style.width='15%';
+
+  // River bed enforcement
+  for(let x=0;x<WX;x++){
+    const rz=58+Math.sin(x*.04)*10+Math.sin(x*.07)*4;
+    for(let z=Math.floor(rz)-5;z<=Math.ceil(rz)+5;z++){
+      if(z<0||z>=WZ)continue;
+      const d=Math.abs(z-rz);
+      if(d<5){
+        for(let y=WL-2;y<=WL;y++)sB(x,y,z,B.WATER);
+        if(d<3)for(let y=WL-3;y<=WL-2;y++)sB(x,y,z,B.SAND);
+      }
+    }
+  }
+  lf.style.width='25%';
+
+  // Trees - forests
+  function placeTree(tx,ty,tz,type){
+    const th=4+Math.floor(hash(tx,tz*7)*3);
+    for(let i=0;i<th;i++)sB(tx,ty+i,tz,B.WOOD);
+    if(type==='pine'){
+      for(let dy=0;dy<5;dy++)for(let dx=-3+dy;dx<=3-dy;dx++)for(let dz=-3+dy;dz<=3-dy;dz++){
+        if(Math.abs(dx)+Math.abs(dz)<=4-dy)sB(tx+dx,ty+th+dy,tz+dz,B.LEAVES);
+      }
+    }else if(type==='dead'){
+      for(let i=0;i<th;i++)sB(tx,ty+i,tz,B.DEADW);
+      for(let dx=-1;dx<=1;dx++)for(let dz=-1;dz<=1;dz++)sB(tx+dx,ty+th,tz+dz,B.REDL);
+    }else{
+      for(let dx=-2;dx<=2;dx++)for(let dy=-1;dy<=2;dy++)for(let dz=-2;dz<=2;dz++){
+        if(dx*dx+dy*dy+dz*dz<7)sB(tx+dx,ty+th+dy,tz+dz,B.LEAVES);
+      }
+    }
+  }
+  // West forest
+  for(let i=0;i<180;i++){
+    const tx=Math.floor(hash(i*3,i*7)*35)+5;
+    const tz=Math.floor(hash(i*11,i*13)*80)+30;
+    const ty=terrainH(tx,tz);
+    if(ty>WL+1&&gB(tx,ty,tz)===B.GRASS)placeTree(tx,ty+1,tz,hash(i,i*3)>.5?'pine':'oak');
+  }
+  // South forest
+  for(let i=0;i<100;i++){
+    const tx=Math.floor(hash(i*5+99,i*9)*50)+90;
+    const tz=Math.floor(hash(i*17+50,i*4)*30)+120;
+    const ty=terrainH(tx,tz);
+    if(ty>WL+1&&gB(tx,ty,tz)===B.GRASS)placeTree(tx,ty+1,tz,hash(i+1,i)>.6?'pine':'oak');
+  }
+  // Volcano dead trees
+  for(let i=0;i<25;i++){
+    const tx=Math.floor(hash(i*7+200,i*11)*16)+117;
+    const tz=Math.floor(hash(i*13+200,i*3)*16)+17;
+    const ty=terrainH(tx,tz);
+    if(ty>WL)placeTree(tx,ty+1,tz,'dead');
+  }
+  lf.style.width='35%';
+
+  // ── Castle ──
+  const CX0=80,CZ0=80;
+  const ch=terrainH(CX0,CZ0);
+  // Terraced hill
+  for(let r=18;r>=0;r--){
+    const level=ch-2+Math.floor(r/3)*2;
+    for(let dx=-r;dx<=r;dx++)for(let dz=-r;dz<=r;dz++){
+      const d=Math.sqrt(dx*dx+dz*dz);
+      if(d<=r+1){
+        const lx=CX0+dx,lz=CZ0+dz;
+        for(let y=terrainH(lx,lz);y<level;y++)sB(lx,y,lz,B.STONE);
+        sB(lx,level,lz,r>10?B.COBBLE:B.GRASS);
+      }
+    }
+  }
+  // Moat
+  for(let dx=-16;dx<=16;dx++)for(let dz=-16;dz<=16;dz++){
+    const d=Math.sqrt(dx*dx+dz*dz);
+    if(d>=13&&d<=15){
+      const mx=CX0+dx,mz=CZ0+dz;
+      for(let y=WL;y<=ch-3;y++)sB(mx,y,mz,B.WATER);
+      sB(mx,ch-4,mz,B.WATER);
+    }
+  }
+  const cBase=ch-1;
+  // Outer walls
+  for(let dx=-10;dx<=10;dx++)for(let dz=-10;dz<=10;dz++){
+    const ax=Math.abs(dx),az=Math.abs(dz);
+    if(ax===10||az===10){
+      for(let y=0;y<7;y++)sB(CX0+dx,cBase+y,CZ0+dz,B.COBBLE);
+      if((dx+dz+100)%2===0)sB(CX0+dx,cBase+7,CZ0+dz,B.COBBLE);
+    }
+    if(ax<=9&&az<=9)sB(CX0+dx,cBase-1,CZ0+dz,B.COBBLE);
+  }
+  // Gate opening (south wall z=-10)
+  for(let dx=-2;dx<=2;dx++)for(let y=0;y<5;y++){
+    sB(CX0+dx,cBase+y,CZ0-10,B.AIR);
+  }
+  // Gate towers
+  for(const[gx,gz]of[[-4,-10],[4,-10]]){
+    for(let dx=-1;dx<=1;dx++)for(let dz=-1;dz<=1;dz++)for(let y=0;y<10;y++)
+      sB(CX0+gx+dx,cBase+y,CZ0+gz+dz,B.COBBLE);
+    sB(CX0+gx,cBase+10,CZ0+gz,B.COBBLE);
+    sB(CX0+gx,cBase+11,CZ0+gz,B.FLAGR);
+    sB(CX0+gx,cBase+8,CZ0+gz,B.TORCH);
+  }
+  // Bridge over moat (south)
+  for(let dz=-15;dz<=-10;dz++)for(let dx=-1;dx<=1;dx++){
+    sB(CX0+dx,cBase-1,CZ0+dz,B.PLANK);
+    if(dz===-15||dz===-10){sB(CX0+dx,cBase,CZ0+dz,B.COBBLE);sB(CX0+dx,cBase+1,CZ0+dz,B.COBBLE);}
+  }
+  // Corner towers
+  for(const[tx,tz]of[[-10,-10],[10,-10],[-10,10],[10,10]]){
+    for(let dx=-1;dx<=1;dx++)for(let dz=-1;dz<=1;dz++)for(let y=0;y<9;y++)
+      sB(CX0+tx+dx,cBase+y,CZ0+tz+dz,B.COBBLE);
+    sB(CX0+tx,cBase+9,CZ0+tz,B.COBBLE);
+    sB(CX0+tx,cBase+10,CZ0+tz,B.FLAGB);
+    // Arrow slits
+    sB(CX0+tx+(tx>0?1:-1),cBase+5,CZ0+tz,B.AIR);
+    sB(CX0+tx,cBase+5,CZ0+tz+(tz>0?1:-1),B.AIR);
+    sB(CX0+tx+(tx>0?1:-1),cBase+6,CZ0+tz,B.AIR);
+  }
+  // Keep (central tower)
+  for(let dx=-3;dx<=3;dx++)for(let dz=-3;dz<=3;dz++){
+    for(let y=0;y<10;y++){
+      if(Math.abs(dx)===3||Math.abs(dz)===3)sB(CX0+dx,cBase+y,CZ0+dz,B.BRICK);
+    }
+    sB(CX0+dx,cBase-1,CZ0+dz,B.PLANK);
+  }
+  // Keep windows (glowing)
+  for(const[y,side]of[[4,1],[4,-1],[6,1],[6,-1]]){
+    for(const[dx,dz]of[[3,0],[-3,0],[0,3],[0,-3]]){
+      if(dx!==0||dz!==0)sB(CX0+dx,cBase+y,CZ0+dz,B.GLOW);
+    }
+  }
+  // Keep roof
+  for(let dy=0;dy<4;dy++){
+    const r=3-dy;
+    for(let dx=-r;dx<=r;dx++)for(let dz=-r;dz<=r;dz++)
+      sB(CX0+dx,cBase+10+dy,CZ0+dz,B.ROOFD);
+  }
+  sB(CX0,cBase+14,CZ0,B.FLAGR);
+  // Chapel (NE corner of courtyard)
+  for(let dx=5;dx<=8;dx++)for(let dz=5;dz<=8;dz++){
+    for(let y=0;y<6;y++)if(dx===5||dx===8||dz===5||dz===8)sB(CX0+dx,cBase+y,CZ0+dz,B.WHITE);
+    sB(CX0+dx,cBase-1,CZ0+dz,B.PLANK);
+  }
+  // Chapel roof + cross
+  for(let dx=5;dx<=8;dx++)for(let dz=5;dz<=8;dz++)sB(CX0+dx,cBase+6,CZ0+dz,B.ROOFL);
+  sB(CX0+6,cBase+7,CZ0+6,B.WHITE);sB(CX0+7,cBase+7,CZ0+6,B.WHITE);
+  sB(CX0+6,cBase+8,CZ0+6,B.GLOW);sB(CX0+7,cBase+8,CZ0+6,B.GLOW);
+  sB(CX0+6,cBase+9,CZ0+6,B.IRON);sB(CX0+6,cBase+10,CZ0+6,B.IRON);sB(CX0+6,cBase+11,CZ0+6,B.IRON);
+  sB(CX0+5,cBase+10,CZ0+6,B.IRON);sB(CX0+7,cBase+10,CZ0+6,B.IRON);
+  // Courtyard features - well
+  for(let dx=-1;dx<=1;dx++)for(let dz=-1;dz<=1;dz++){
+    sB(CX0+dx,cBase,CZ0+2+dz,B.COBBLE);
+    if(Math.abs(dx)===1||Math.abs(dz)===1)sB(CX0+dx,cBase+1,CZ0+2+dz,B.COBBLE);
+  }
+  sB(CX0,cBase+2,CZ0+2,B.WATER);
+  sB(CX0-1,cBase+2,CZ0+2,B.IRON);sB(CX0+1,cBase+2,CZ0+2,B.IRON);
+  sB(CX0-1,cBase+3,CZ0+2,B.IRON);sB(CX0+1,cBase+3,CZ0+2,B.IRON);
+  // Torches on walls
+  for(const p of[[-10,0],[10,0],[0,-10],[0,10],[-10,-5],[10,-5],[-10,5],[10,5]]){
+    sB(CX0+p[0],cBase+5,CZ0+p[1],B.TORCH);
+  }
+  // Garden (SW courtyard)
+  for(let dx=-8;dx<=-5;dx++)for(let dz=5;dz<=8;dz++){
+    sB(CX0+dx,cBase,CZ0+dz,B.FARM);
+    if(hash(dx+99,dz+77)>.5)sB(CX0+dx,cBase+1,CZ0+dz,B.CROP);
+  }
+  lf.style.width='50%';
+
+  // ── Village ──
+  function house(hx,hy,hz,w,d,h,wall,roof,doorZ){
+    for(let x=0;x<w;x++)for(let z=0;z<d;z++)for(let y=0;y<h;y++){
+      if(x===0||x===w-1||z===0||z===d-1){
+        if(doorZ&&z===0&&x===Math.floor(w/2)&&y<2)continue;
+        sB(hx+x,hy+y,hz+z,wall);
+      }
+    }
+    for(let x=0;x<w;x++)for(let z=0;z<d;z++)sB(hx+x,hy-1,hz+z,B.PLANK);
+    // Roof (A-frame along X)
+    const peak=Math.ceil(d/2);
+    for(let i=0;i<peak;i++){
+      for(let x=-1;x<=w;x++){
+        sB(hx+x,hy+h+i,hz-1-i,roof);
+        sB(hx+x,hy+h+i,hz+d+i,roof);
+      }
+    }
+    if(d%2===0){
+      for(let x=-1;x<=w;x++){sB(hx+x,hy+h+peak,hz+d/2-1,roof);sB(hx+x,hy+h+peak,hz+d/2,roof);}
+    }else{
+      for(let x=-1;x<=w;x++)sB(hx+x,hy+h+peak-1,hz+Math.floor(d/2),roof);
+    }
+    // Window
+    if(w>3){
+      sB(hx+1,hy+1,hz+(doorZ?0:d-1),B.GLASS);
+      sB(hx+w-2,hy+1,hz+(doorZ?0:d-1),B.GLASS);
+    }
+    // Torch
+    sB(hx+Math.floor(w/2),hy+2,hz+(doorZ?1:d-2),B.TORCH);
+  }
+
+  // Village layout
+  const villageHouses=[
+    [40,WL+2,85,5,4,4,B.PLANK,B.ROOFL,true],
+    [48,WL+2,86,4,4,4,B.WHITE,B.ROOFD,true],
+    [55,WL+2,83,5,5,4,B.COBBLE,B.ROOFL,true],
+    [38,WL+2,92,4,3,3,B.PLANK,B.ROOFD,true],
+    [45,WL+2,93,5,4,4,B.BRICK,B.ROOFL,true],
+    [52,WL+2,94,4,4,3,B.WHITE,B.ROOFL,true],
+    [60,WL+2,90,6,5,4,B.COBBLE,B.ROOFD,true],
+    [35,WL+2,78,4,3,3,B.PLANK,B.ROOFL,true],
+    [42,WL+2,76,5,4,5,B.BRICK,B.ROOFL,true],
+    [50,WL+2,77,4,4,4,B.WHITE,B.ROOFD,true],
+    [58,WL+1,78,5,5,4,B.PLANK,B.ROOFL,true],
+    [33,WL+2,98,4,3,3,B.COBBLE,B.ROOFL,true],
+    [40,WL+2,99,5,4,4,B.PLANK,B.ROOFD,true],
+    [47,WL+2,100,4,4,3,B.WHITE,B.ROOFL,true],
+    [55,WL+1,100,6,5,5,B.BRICK,B.ROOFD,true],
+    [62,WL+2,97,4,3,4,B.COBBLE,B.ROOFL,true],
+    [30,WL+2,85,4,4,3,B.PLANK,B.ROOFL,true],
+    [65,WL+2,85,5,4,4,B.WHITE,B.ROOFD,true],
+    [37,WL+2,70,4,3,3,B.PLANK,B.ROOFL,true],
+    [44,WL+2,70,5,4,4,B.COBBLE,B.ROOFL,true],
+    [52,WL+2,72,4,4,3,B.WHITE,B.ROOFD,true],
+    [28,WL+2,92,3,3,3,B.PLANK,B.ROOFL,true],
+    [63,WL+2,94,4,3,4,B.BRICK,B.ROOFL,true],
+    [46,WL+2,106,5,4,4,B.PLANK,B.ROOFD,true],
+    [38,WL+2,108,4,3,3,B.WHITE,B.ROOFL,true],
+    [54,WL+2,108,5,5,4,B.COBBLE,B.ROOFD,true],
+  ];
+  for(const h of villageHouses)house(...h);
+
+  // Blacksmith
+  const bsx=60,bsy=WL+2,bsz=76;
+  for(let x=0;x<7;x++)for(let z=0;z<5;z++)for(let y=0;y<5;y++){
+    if(x===0||x===6||z===0||z===4)sB(bsx+x,bsy+y,bsz+z,B.DARK);
+  }
+  for(let x=0;x<7;x++)for(let z=0;z<5;z++)sB(bsx+x,bsy-1,bsz+z,B.COBBLE);
+  for(let x=-1;x<=7;x++){sB(bsx+x,bsy+5,bsz-1,B.ROOFD);sB(bsx+x,bsy+5,bsz+5,B.ROOFD);}
+  sB(bsx+3,bsy+2,bsz+1,B.IRON);sB(bsx+3,bsy+3,bsz+1,B.LAVA); // forge
+  sB(bsx+2,bsy+2,bsz+1,B.TORCH);sB(bsx+4,bsy+2,bsz+1,B.TORCH);
+
+  // Tavern
+  const tx0=34,ty0=WL+2,tz0=82;
+  for(let x=0;x<8;x++)for(let z=0;z<6;z++)for(let y=0;y<5;y++){
+    if(x===0||x===7||z===0||z===5)sB(tx0+x,ty0+y,tz0+z,B.PLANK);
+  }
+  for(let x=0;x<8;x++)for(let z=0;z<6;z++)sB(tx0+x,ty0-1,tz0+z,B.PLANK);
+  for(let x=-1;x<=8;x++){sB(tx0+x,ty0+5,tz0-1,B.ROOFL);sB(tx0+x,ty0+5,tz0+6,B.ROOFL);sB(tx0+x,ty0+6,tz0-2,B.ROOFL);sB(tx0+x,ty0+6,tz0+7,B.ROOFL);}
+  sB(tx0+1,ty0+1,tz0,B.GLASS);sB(tx0+3,ty0+1,tz0,B.GLASS);sB(tx0+5,ty0+1,tz0,B.GLASS);
+  sB(tx0+4,ty0+3,tz0+1,B.GLOW);sB(tx0+2,ty0+3,tz0+1,B.GLOW);
+  sB(tx0+4,ty0+3,tz0+3,B.TORCH);
+
+  // Marketplace stalls
+  for(let i=0;i<5;i++){
+    const sx=42+i*4,sz=88;
+    for(let x=0;x<3;x++)for(let z=0;z<2;z++)sB(sx+x,WL+2,sz+z,B.PLANK);
+    for(let x=0;x<3;x++){sB(sx+x,WL+3,sz,B.PLANK);sB(sx+x,WL+4,sz-1,B.ROOFL);sB(sx+x,WL+4,sz+2,B.ROOFL);}
+  }
+
+  // Chapel in village
+  for(let x=0;x<5;x++)for(let z=0;z<7;z++)for(let y=0;y<6;y++){
+    if(x===0||x===4||z===0||z===6)sB(57+x,WL+2+y,106+z,B.WHITE);
+  }
+  for(let x=0;x<5;x++)for(let z=0;z<7;z++)sB(57+x,WL+1,106+z,B.PLANK);
+  for(let dy=0;dy<4;dy++)for(let x=1-dy;x<=3+dy;x++)sB(57+x,WL+8+dy,106,B.ROOFL);
+  sB(59,WL+12,109,B.IRON);sB(59,WL+13,109,B.IRON);sB(59,WL+14,109,B.IRON);sB(58,WL+13,109,B.IRON);sB(60,WL+13,109,B.IRON);
+  sB(57,WL+4,109,B.GLOW);sB(61,WL+4,109,B.GLOW);
+
+  // Watermill
+  const wmx=70,wmy=WL+2,wmz=62;
+  for(let x=0;x<6;x++)for(let z=0;z<5;z++)for(let y=0;y<5;y++){
+    if(x===0||x===5||z===0||z===4)sB(wmx+x,wmy+y,wmz+z,B.COBBLE);
+  }
+  for(let x=0;x<6;x++)for(let z=0;z<5;z++)sB(wmx+x,wmy-1,wmz+z,B.PLANK);
+  for(let x=-1;x<=6;x++){sB(wmx+x,wmy+5,wmz-1,B.ROOFD);sB(wmx+x,wmy+5,wmz+5,B.ROOFD);}
+  // Water wheel
+  for(let i=0;i<8;i++){
+    const ang=i*Math.PI/4;
+    const wx=Math.round(Math.cos(ang)*3),wy=Math.round(Math.sin(ang)*3);
+    sB(wmx-1,wmy+2+wy,wmz+2+wx,B.PLANK);
+  }
+  sB(wmx-1,wmy+2,wmz+2,B.IRON);
+
+  // Docks + boats
+  for(let z=55;z<=65;z++){
+    for(let x=20;x<=24;x++){
+      sB(x,WL,z,B.PLANK);
+      if(z===55||z===65)sB(x,WL+1,z,B.PLANK);
+    }
+  }
+  // Boats
+  for(const[bx,bz]of[[22,50],[18,52]]){
+    sB(bx,WL,bz,B.PLANK);sB(bx-1,WL,bz,B.PLANK);sB(bx+1,WL,bz,B.PLANK);
+    sB(bx,WL,bz-1,B.PLANK);sB(bx,WL,bz+1,B.PLANK);
+  }
+  lf.style.width='60%';
+
+  // Farms
+  for(let fx=25;fx<38;fx++)for(let fz=100;fz<112;fz++){
+    const ty=terrainH(fx,fz);
+    if(ty>WL+1){sB(fx,ty,fz,B.FARM);if(hash(fx,fz)>.3)sB(fx,ty+1,fz,B.CROP);}
+  }
+  // Fences around farms
+  for(let fx=24;fx<=38;fx++){sB(fx,terrainH(fx,99)+1,99,B.PLANK);sB(fx,terrainH(fx,112)+1,112,B.PLANK);}
+  for(let fz=99;fz<=112;fz++){sB(24,terrainH(24,fz)+1,fz,B.PLANK);sB(38,terrainH(38,fz)+1,fz,B.PLANK);}
+
+  // Wells (village)
+  for(const[wx,wz]of[[48,90],[35,88]]){
+    for(let dx=-1;dx<=1;dx++)for(let dz=-1;dz<=1;dz++){
+      sB(wx+dx,WL+1,wz+dz,B.COBBLE);
+      if(Math.abs(dx)===1||Math.abs(dz)===1)sB(wx+dx,WL+2,wz+dz,B.COBBLE);
+    }
+    sB(wx,WL+1,wz,B.WATER);
+    sB(wx-1,WL+3,wz,B.IRON);sB(wx+1,WL+3,wz,B.IRON);
+  }
+
+  // Carts & barrels
+  for(const[cx,cz]of[[43,87],[56,91]]){
+    const cy=terrainH(cx,cz);
+    sB(cx,cy+1,cz,B.PLANK);sB(cx+1,cy+1,cz,B.PLANK);sB(cx,cy+1,cz+1,B.PLANK);
+    sB(cx,cy+2,cz,B.IRON);
+  }
+  for(const[bx,bz]of[[50,89],[37,84],[60,88]]){
+    const by=terrainH(bx,bz);
+    sB(bx,by+1,bz,B.IRON);sB(bx+1,by+1,bz,B.IRON);
+  }
+  // Lanterns
+  for(const[lx,lz]of[[42,80],[54,80],[48,95],[36,95],[60,95]]){
+    const ly=terrainH(lx,lz);sB(lx,ly+1,lz,B.IRON);sB(lx,ly+2,lz,B.GLOW);
+  }
+
+  // Stone bridge to castle road
+  for(let z=68;z<=74;z++){
+    for(let x=78;x<=82;x++){
+      sB(x,terrainH(x,z),z,B.COBBLE);
+      if(z===68||z===74){sB(x,terrainH(x,z)+1,z,B.COBBLE);}
+    }
+  }
+  lf.style.width='70%';
+
+  // ── Volcano ── */
+  const vx=125,vz=25;
+  const vh=terrainH(vx,vz);
+  // Crater
+  for(let dx=-4;dx<=4;dx++)for(let dz=-4;dz<=4;dz++){
+    if(dx*dx+dz*dz<16){
+      for(let y=vh-4;y<=vh;y++)sB(vx+dx,y,vz+dz,B.LAVA);
+      sB(vx+dx,vh+1,vz+dz,B.LAVA);
+    }
+  }
+  // Lava flows
+  for(let i=0;i<12;i++){
+    const fx=vx-4+Math.floor(hash(i,i*3)*8);
+    const fz=vz+5+i;
+    for(let y=terrainH(fx,fz);y<=WL+2;y++)sB(fx,y,fz,i<4?B.LAVA:B.BASALT);
+  }
+  // Basalt columns around volcano
+  for(let dx=-14;dx<=14;dx++)for(let dz=-14;dz<=14;dz++){
+    const d=Math.sqrt(dx*dx+dz*dz);
+    if(d>5&&d<14&&hash(dx+50,dz+50)>.6){
+      const px=vx+dx,pz=vz+dz,py=terrainH(px,pz);
+      for(let y=py;y<py+2+Math.floor(hash(dx,dz)*3);y++)sB(px,y,pz,B.BASALT);
+    }
+  }
+  // Ancient ruins on volcano slope
+  for(let x=115;x<=119;x++)for(let z=35;z<=38;z++){
+    const ry=terrainH(x,z);
+    if(x===115||x===119||z===35)sB(x,ry+1,z,B.COBBLE);
+    if(x===115||x===119)sB(x,ry+2,z,B.COBBLE);sB(x,ry+3,z,B.COBBLE);
+  }
+  sB(115,terrainH(115,35)+4,35,B.COBBLE);sB(119,terrainH(119,35)+4,35,B.COBBLE);
+
+  // ── Mountains - snow, cliffs, caves, watchtowers ──
+  // Watchtower NW
+  const twx=30,twz=15,twh=terrainH(30,15);
+  for(let dx=-2;dx<=2;dx++)for(let dz=-2;dz<=2;dz++)for(let y=0;y<12;y++){
+    if(Math.abs(dx)===2||Math.abs(dz)===2)sB(twx+dx,twh+y,twz+dz,B.COBBLE);
+  }
+  for(let dx=-2;dx<=2;dx++)for(let dz=-2;dz<=2;dz++)sB(twx+dx,twh+12,twz+dz,B.COBBLE);
+  sB(twx,twh+13,twz,B.TORCH);sB(twx,twh+14,twz,B.FLAGB);
+  // Cave entrance
+  for(let x=50;x<=55;x++)for(let y=terrainH(x,20);y<=terrainH(x,20)+4;y++){
+    if(x>51&&x<54&&y<terrainH(x,20)+3)continue;
+    sB(x,y,20,B.STONE);
+  }
+  sB(52,terrainH(52,20),19,B.AIR);sB(53,terrainH(53,20),19,B.AIR);
+  sB(52,terrainH(52,20)+1,19,B.AIR);sB(53,terrainH(53,20)+1,19,B.AIR);
+
+  // Lookout post NE mountains
+  const lpx=90,lpz=18,lph=terrainH(lpx,lpz);
+  sB(lpx,lph+1,lpz,B.WOOD);sB(lpx,lph+2,lpz,B.WOOD);sB(lpx,lph+3,lpz,B.WOOD);
+  sB(lpx,lph+4,lpz,B.PLANK);sB(lpx-1,lph+4,lpz,B.PLANK);sB(lpx+1,lph+4,lpz,B.PLANK);
+  sB(lpx,lph+4,lpz-1,B.PLANK);sB(lpx,lph+4,lpz+1,B.PLANK);
+  sB(lpx,lph+5,lpz,B.TORCH);
+
+  // Hidden path (torch-lit trail through forest)
+  for(let i=0;i<15;i++){
+    const px=10+Math.floor(i*1.5);
+    const pz=45+Math.floor(hash(i,99)*20);
+    const py=terrainH(px,pz);
+    sB(px,py,pz,B.DIRT);
+    if(i%3===0)sB(px,py+1,pz,B.TORCH);
+  }
+
+  // Reeds along river
+  for(let x=5;x<155;x+=3){
+    const rz=58+Math.sin(x*.04)*10+Math.sin(x*.07)*4;
+    for(const side of[-1,1]){
+      const rz2=rz+side*5;
+      if(rz2>0&&rz2<WZ){
+        const ry=terrainH(x,Math.floor(rz2));
+        if(ry<=WL+1)sB(x,WL+1,Math.floor(rz2),B.REED);
+      }
+    }
+  }
+  lf.style.width='85%';
+
+  // Waterfall (mountain cliff face)
+  for(let y=WL+10;y<=WL+20;y--){
+    sB(70,y,35,B.WATER);
+  }
+  // Pool at base
+  for(let dx=-2;dx<=2;dx++)for(let dz=-2;dz<=2;dz++){
+    sB(70+dx,WL,35+dz,B.WATER);
+  }
+
+  // Cliff face near waterfall
+  for(let x=68;x<=72;x++)for(let y=WL+5;y<=WL+22;y++)sB(x,y,34,B.STONE);
+
+  // Ruins in western forest
+  for(let x=15;x<=19;x++)for(let z=55;z<=58;z++){
+    const ry=terrainH(x,z);
+    if(x===15||x===19)sB(x,ry+1,z,B.MOSS);sB(x,ry+2,z,B.MOSS);
+  }
+  sB(15,terrainH(15,55)+3,55,B.MOSS);sB(19,terrainH(19,55)+3,55,B.MOSS);
+  lf.style.width='95%';
+}
+
+/* ── Color helpers ── */
+function getBlockColor(bt,faceDir,wx,wy,wz){
+  let c=BC[bt];
+  if(!c)return[1,0,1];
+  // Grass top vs side
+  if(bt===B.GRASS){
+    if(faceDir[1]===1)c=[.30,.60,.10];
+    else if(faceDir[1]===-1)c=[.55,.35,.17];
+    else c=[.40,.48,.14]; // side with grass edge
+  }
+  // Color variation
+  const h=hash(wx*3+wy*7,wz*11+wy*13);
+  const v=(h-.5)*.08;
+  return[Math.max(0,Math.min(1,c[0]+v)),Math.max(0,Math.min(1,c[1]+v)),Math.max(0,Math.min(1,c[2]+v))];
+}
+function getBlockLight(wx,wy,wz){
+  // Check proximity to torches/lava/glow
+  let light=.7;
+  for(let dx=-4;dx<=4;dx++)for(let dy=-4;dy<=4;dy++)for(let dz=-4;dz<=4;dz++){
+    const b=gB(wx+dx,wy+dy,wz+dz);
+    const d=Math.sqrt(dx*dx+dy*dy+dz*dz);
+    if(b===B.TORCH&&d<5)light=Math.max(light,1.3-d*.12);
+    if(b===B.LAVA&&d<6)light=Math.max(light,1.5-d*.15);
+    if(b===B.GLOW&&d<4)light=Math.max(light,1.4-d*.2);
+  }
+  return light;
+}
+
+/* ── Chunk meshing ── */
+function meshChunk(cx,cz,waterOnly){
+  const verts=[],inds=[];
+  let vc=0;
+  const x0=cx*CHUNK,z0=cz*CHUNK;
+  for(let lx=0;lx<CHUNK;lx++)for(let ly=0;ly<WY;ly++)for(let lz=0;lz<CHUNK;lz++){
+    const wx=x0+lx,wz=z0+lz;
+    const bt=gB(wx,ly,wz);
+    if(bt===B.AIR)continue;
+    const isWater=bt===B.WATER;
+    const isTransparent=TRANSPARENT.has(bt);
+    if(waterOnly&&!isWater)continue;
+    if(!waterOnly&&isWater)continue;
+    // Special: torch/flag/crop/reed - only render if not in solid pass
+    if(!waterOnly&&(bt===B.TORCH||bt===B.FLAGR||bt===B.FLAGB||bt===B.CROP||bt===B.REED))continue;
+
+    for(const face of FACES){
+      const nx=wx+face.dir[0],ny=ly+face.dir[1],nz=wz+face.dir[2];
+      const nb=gB(nx,ny,nz);
+      const nbTrans=TRANSPARENT.has(nb);
+      const nbIsWater=nb===B.WATER;
+
+      let show=false;
+      if(waterOnly){
+        // Water face shows if adjacent to air or non-water transparent
+        show=nb===B.AIR||(nbTrans&&!nbIsWater);
+      }else{
+        // Solid face shows if adjacent to air/transparent
+        show=nbTrans||nb===B.AIR;
+      }
+      if(!show)continue;
+
+      const color=getBlockColor(bt,face.dir,wx,ly,wz);
+      const light=getBlockLight(wx,ly,wz);
+      const yOff=isWater&&face.dir[1]===1?-.1:0;
+
+      for(const c of face.corners){
+        verts.push(wx+c[0],ly+c[1]+yOff,wz+c[2], face.dir[0],face.dir[1],face.dir[2], color[0],color[1],color[2], light);
+      }
+      inds.push(vc,vc+1,vc+2,vc,vc+2,vc+3);
+      vc+=4;
+    }
+  }
+  return{v:new Float32Array(verts),i:new Uint32Array(inds),vc,ic:inds.length};
+}
+
+/* ── Simple meshes for torch/flag/crop/reed as single quads ── */
+function meshSpecial(cx,cz){
+  const verts=[],inds=[];
+  let vc=0;
+  const x0=cx*CHUNK,z0=cz*CHUNK;
+  for(let lx=0;lx<CHUNK;lx++)for(let ly=0;ly<WY;ly++)for(let lz=0;lz<CHUNK;lz++){
+    const wx=x0+lx,wz=z0+lz;
+    const bt=gB(wx,ly,wz);
+    if(bt!==B.TORCH&&bt!==B.FLAGR&&bt!==B.FLAGB&&bt!==B.CROP&&bt!==B.REED)continue;
+    // Billboard quad facing camera - we'll just do a cross pattern (2 quads)
+    const col=getBlockColor(bt,[0,1,0],wx,ly,wz);
+    const light=bt===B.TORCH?1.5:bt===B.FLAGR?1.0:bt===B.FLAGB?1.0:.8;
+    // Quad 1: XY plane
+    const off=bt===B.CROP?.3:bt===B.REED?.3:.2;
+    const h=bt===B.TORCH?1:bt===B.CROP?1:bt===B.REED?1.5:1;
+    for(const[n,cs]of[[ [0,0,1], [[-off,0,0],[off,0,0],[off,h,0],[-off,h,0]] ],[ [1,0,0], [[0,0,-off],[0,0,off],[0,h,off],[0,h,-off]] ]]){
+      for(const c of cs){
+        verts.push(wx+c[0]+.5,ly+c[1],wz+c[2]+.5, n[0],n[1],n[2], col[0],col[1],col[2], light);
+      }
+      inds.push(vc,vc+1,vc+2,vc,vc+2,vc+3);
+      vc+=4;
+    }
+  }
+  return{v:new Float32Array(verts),i:new Uint32Array(inds),vc,ic:inds.length};
+}
+
+/* ── Math ── */
+function mat4Perspective(fov,aspect,near,far){
+  const f=1/Math.tan(fov/2),nf=1/(near-far);
+  return new Float32Array([f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,2*far*near*nf,0]);
+}
+function mat4LookAt(eye,center,up){
+  let fx=center[0]-eye[0],fy=center[1]-eye[1],fz=center[2]-eye[2];
+  let l=Math.sqrt(fx*fx+fy*fy+fz*fz);fx/=l;fy/=l;fz/=l;
+  let sx=fy*up[2]-fz*up[1],sy=fz*up[0]-fx*up[2],sz=fx*up[1]-fy*up[0];
+  l=Math.sqrt(sx*sx+sy*sy+sz*sz);sx/=l;sy/=l;sz/=l;
+  let ux=sy*fz-sz*fy,uy=sz*fx-sx*fz,uz=sx*fy-sy*fx;
+  return new Float32Array([sx,ux,-fx,0, sy,uy,-fy,0, sz,uz,-fz,0, -(sx*eye[0]+sy*eye[1]+sz*eye[2]),-(ux*eye[0]+uy*eye[1]+uz*eye[2]),-(-fx*eye[0]+-fy*eye[1]+-fz*eye[2]),1]);
+}
+function mat4Mul(a,b){
+  const o=new Float32Array(16);
+  for(let i=0;i<4;i++)for(let j=0;j<4;j++){
+    o[j*4+i]=a[i]*b[j*4]+a[4+i]*b[j*4+1]+a[8+i]*b[j*4+2]+a[12+i]*b[j*4+3];
+  }
+  return o;
+}
+
+/* ── Time of day presets ── */
+const TIME_PRESETS={
+  dawn:{sunDir:[-.3,.5,-.8],sunCol:[1,.7,.4],ambient:.35,fogCol:[.6,.5,.45],fogDen:.012,label:'Dawn'},
+  day:{sunDir:[-.4,.8,-.3],sunCol:[1,.95,.85],ambient:.5,fogCol:[.55,.65,.75],fogDen:.008,label:'High Noon'},
+  dusk:{sunDir:[-.2,.3,.8],sunCol:[1,.5,.25],ambient:.25,fogCol:[.4,.3,.35],fogDen:.015,label:'Dusk'},
+  night:{sunDir:[.2,-.3,.5],sunCol:[.15,.15,.35],ambient:.1,fogCol:[.05,.05,.1],fogDen:.02,label:'Night'},
+};
+let currentTime='day';
+
+/* ── Camera ── */
+const cam={
+  pos:[80,55,130], yaw:Math.PI*.15, pitch:-.35,
+  speed:20, mode:'fly',
+  orbitCenter:[80,25,80], orbitDist:80, orbitAngle:0, orbitSpeed:.15,
+  orbitPitch:-.4,
+};
+const keys={};
+let mouseCaptured=false;
+
+/* ── Init WebGPU ── */
+async function init(){
+  const loadFill=document.getElementById('load-fill');
+  if(!navigator.gpu){document.body.innerHTML='<div style="padding:40px;color:#c8a96e;font-size:1.2rem">WebGPU is not supported in your browser. Please use Chrome 113+ or Edge 113+.</div>';return;}
+
+  const adapter=await navigator.gpu.requestAdapter();
+  if(!adapter){document.body.innerHTML='<div style="padding:40px;color:#c8a96e">Failed to get GPU adapter.</div>';return;}
+  const device=await adapter.requestDevice();
+  const canvas=document.getElementById('c');
+  const ctx=canvas.getContext('webgpu');
+  const fmt=navigator.gpu.getPreferredCanvasFormat();
+
+function resize(){
+canvas.width=window.innerWidthdevice.pixelRatio;
+canvas.height=window.innerHeightdevice.pixelRatio;
+ctx.configure({device,format:fmt,alphaMode:'opaque'});
+}
+resize();
+window.addEventListener('resize',resize);
+
+loadFill.style.width='10%';
+
+// Build world
+buildWorld();
+loadFill.style.width='50%';
+
+// Shaders
+const shaderCode=`
+struct Uniforms{
+mvp:mat4x4<f32>,
+eye:vec4<f32>,
+sunDir:vec4<f32>,
+sunCol:vec4<f32>,
+ambient:f32,
+fogDen:f32,
+fogCol:vec3<f32>,
+time:f32,
+waterMode:f32,
+}
+@group(0) @binding(0) var<uniform> u:Uniforms;
+
+struct VIn{
+@location(0) pos:vec3<f32>,
+@location(1) norm:vec3<f32>,
+@location(2) col:vec3<f32>,
+@location(3) lit:f32,
+}
+struct VOut{
+@builtin(position) pos:vec4<f32>,
+@location(0) wpos:vec3<f32>,
+@location(1) wnorm:vec3<f32>,
+@location(2) col:vec3<f32>,
+@location(3) lit:f32,
+}
+
+@vertex fn vs(v:VIn)->VOut{
+var o:VOut;
+o.pos=u.mvp*vec4<f32>(v.pos,1.0);
+o.wpos=v.pos;
+o.wnorm=v.norm;
+o.col=v.col;
+o.lit=v.lit;
+return o;
+}
+
+@fragment fn fs(o:VOut)->@location(0) vec4<f32>{
+var n=normalize(o.wnorm);
+let sd=normalize(u.sunDir.xyz);
+let ndl=dot(n,sd);
+let diff=clamp(ndl,0.0,1.0);
+var li=u.ambient+diffu.sunCol.xyz;
+li=lio.lit;
+
+// Torch flicker
+let flicker=1.0+sin(u.time8.0+o.wpos.x3.7)0.04+sin(u.time12.0+o.wpos.z*2.3)0.03;
+if(o.lit>1.1){li=liflicker;}
+
+var c=o.col*li;
+
+// Fog
+let dd=length(o.wpos-u.eye.xyz);
+let ff=clamp(1.0-exp(-u.fogDendddd),0.0,1.0);
+c=mix(c,u.fogCol,ff);
+
+// Water
+if(u.waterMode>0.5){
+let wave=sin(o.wpos.x0.8+u.time2.0)0.03+cos(o.wpos.z0.6+u.time*1.5)*0.02;
+let wc=vec3<f32>(0.1,0.35,0.75)+vec3<f32>(wave);
+let spec=pow(clamp(dot(reflect(-sd,n),normalize(u.eye.xyz-o.wpos)),0.0,1.0),32.0)0.4;
+c=wcli+vec3<f32>(spec)*u.sunCol.xyz;
+c=mix(c,u.fogCol,ff);
+return vec4<f32>(c,0.7);
+}
+
+// Lava glow
+if(o.col.r>0.9 && o.col.g<0.4){
+c=c+vec3<f32>(0.3,0.1,0.0)*flicker;
+}
+
+// Tone mapping (simple Reinhard)
+c=c/(1.0+c);
+
+// Vignette
+let vp=o.pos.xy/o.pos.w;
+let vig=1.0-dot(vp0.5,vp0.5)0.3;
+c=cclamp(vig,0.0,1.0);
+
+return vec4<f32>(c,1.0);
+}
+`;
+
+const shaderModule=device.createShaderModule({code:shaderCode});
+
+// Pipeline layout
+const bindLayout=device.createBindGroupLayout({
+entries:[{binding:0,visibility:GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT,buffer:{type:'uniform'}}]
+});
+const pipelineLayout=device.createPipelineLayout({bindGroupLayouts:[bindLayout]});
+
+// Uniform buffer
+const uniformBuf=device.createBuffer({size:160,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+const bindGroup=device.createBindGroup({layout:bindLayout,entries:[{binding:0,resource:{buffer:uniformBuf}}]});
+
+loadFill.style.width='55%';
+
+// Create pipelines
+function makePipeline(blend, topology='triangle-list'){
+return device.createRenderPipeline({
+layout:pipelineLayout,
+vertex:{
+module:shaderModule,entryPoint:'vs',
+buffers:[{
+arrayStride:40,
+attributes:[
+{shaderLocation:0,offset:0,format:'float32x3'},
+{shaderLocation:1,offset:12,format:'float32x3'},
+{shaderLocation:2,offset:24,format:'float32x3'},
+{shaderLocation:3,offset:36,format:'float32'},
+]
+}]
+},
+fragment:{
+module:shaderModule,entryPoint:'fs',
+targets:[{
+format:fmt,
+blend:blend,
+writeMask:0xF,
+}]
+},
+primitive:{topology,cullMode:'back',frontFace:'ccw'},
+depthStencil:{format:'depth24plus',depthWriteEnabled:true,depthCompare:'less'},
+});
+}
+
+const solidPipeline=makePipeline({
+color:{srcFactor:'one',dstFactor:'zero',operation:'add'},
+alpha:{srcFactor:'one',dstFactor:'zero',operation:'add'},
+});
+const waterPipeline=makePipeline({
+color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha',operation:'add'},
+alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha',operation:'add'},
+});
+const specialPipeline=makePipeline({
+color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha',operation:'add'},
+alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha',operation:'add'},
+},'triangle-list');
+
+// Depth texture
+let depthTex=device.createTexture({size:[canvas.width,canvas.height],format:'depth24plus',usage:GPUTextureUsage.RENDER_ATTACHMENT});
+
+loadFill.style.width='60%';
+
+// Mesh chunks
+const chunkMeshes={};
+function buildChunkMesh(cx,cz){
+const solid=meshChunk(cx,cz,false);
+const water=meshChunk(cx,cz,true);
+const special=meshSpecial(cx,cz);
+const entry={solid:null,water:null,special:null};
+if(solid.ic>0){
+const vb=device.createBuffer({size:solid.v.byteLength,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+const ib=device.createBuffer({size:solid.i.byteLength,usage:GPUBufferUsage.INDEX|GPUBufferUsage.COPY_DST});
+device.queue.writeBuffer(vb,0,solid.v);
+device.queue.writeBuffer(ib,0,solid.i);
+entry.solid={vb,ib,ic:solid.ic};
+}
+if(water.ic>0){
+const vb=device.createBuffer({size:water.v.byteLength,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+const ib=device.createBuffer({size:water.i.byteLength,usage:GPUBufferUsage.INDEX|GPUBufferUsage.COPY_DST});
+device.queue.writeBuffer(vb,0,water.v);
+device.queue.writeBuffer(ib,0,water.i);
+entry.water={vb,ib,ic:water.ic};
+}
+if(special.ic>0){
+const vb=device.createBuffer({size:special.v.byteLength,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+const ib=device.createBuffer({size:special.i.byteLength,usage:GPUBufferUsage.INDEX|GPUBufferUsage.COPY_DST});
+device.queue.writeBuffer(vb,0,special.v);
+device.queue.writeBuffer(ib,0,special.i);
+entry.special={vb,ib,ic:special.ic};
+}
+chunkMeshes[cx+','+cz]=entry;
+}
+
+for(let cx=0;cx<CX;cx++)for(let cz=0;cz<CZ;cz++){
+buildChunkMesh(cx,cz);
+const pct=60+Math.floor((cxCZ+cz)/(CXCZ)*35);
+loadFill.style.width=pct+'%';
+}
+
+loadFill.style.width='98%';
+
+// Hide loading
+setTimeout(()=>{
+document.getElementById('loading').classList.add('hide');
+setTimeout(()=>document.getElementById('loading').style.display='none',800);
+},300);
+
+// Input
+document.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;});
+document.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
+
+canvas.addEventListener('click',()=>{
+if(!mouseCaptured){
+canvas.requestPointerLock();
+}
+});
+document.addEventListener('pointerlockchange',()=>{
+mouseCaptured=document.pointerLockElement===canvas;
+document.getElementById('crosshair').style.display=mouseCaptured?'block':'none';
+});
+document.addEventListener('mousemove',e=>{
+if(!mouseCaptured)return;
+cam.yaw+=e.movementX*.002;
+cam.pitch=Math.max(-Math.PI/2+.01,Math.min(Math.PI/2-.01,cam.pitch-e.movementY*.002));
+});
+canvas.addEventListener('wheel',e=>{
+cam.speed=Math.max(2,Math.min(80,cam.speed-e.deltaY*.05));
+});
+
+// Time buttons
+document.querySelectorAll('[data-time]').forEach(btn=>{
+btn.addEventListener('click',()=>{
+currentTime=btn.dataset.time;
+document.querySelectorAll('[data-time]').forEach(b=>b.classList.remove('active'));
+btn.classList.add('active');
+document.getElementById('time-label').textContent=TIME_PRESETS[currentTime].label;
+});
+});
+
+// Mode buttons
+document.querySelectorAll('[data-mode]').forEach(btn=>{
+btn.addEventListener('click',()=>{
+cam.mode=btn.dataset.mode;
+document.querySelectorAll('[data-mode]').forEach(b=>b.classList.remove('active'));
+btn.classList.add('active');
+if(cam.mode==='orbit'){
+cam.orbitAngle=Math.atan2(cam.pos[2]-cam.orbitCenter[2],cam.pos[0]-cam.orbitCenter[0]);
+cam.orbitDist=Math.sqrt((cam.pos[0]-cam.orbitCenter[0])**2+(cam.pos[2]-cam.orbitCenter[2])*2);
+cam.orbitPitch=cam.pitch;
+}
+if(cam.mode==='screenshot'){
+// High angle cinematic view
+cam.pos=[80,70,130];
+cam.yaw=Math.PI.15;
+cam.pitch=-.45;
+cam.mode='fly';
+document.querySelectorAll('[data-mode]').forEach(b=>b.classList.remove('active'));
+document.querySelector('[data-mode="fly"]').classList.add('active');
+// Flash message
+const msg=document.getElementById('screenshot-msg');
+msg.classList.add('show');
+setTimeout(()=>msg.classList.remove('show'),1500);
+}
+});
+});
+
+// Render loop
+let lastTime=0;
+let fpsArr=[];
+
+function frame(now){
+requestAnimationFrame(frame);
+const dt=Math.min((now-lastTime)/1000,.1);
+lastTime=now;
+
+// FPS counter
+fpsArr.push(now);
+while(fpsArr.length>0&&fpsArr[0]<now-1000)fpsArr.shift();
+document.getElementById('fps').textContent=fpsArr.length+' FPS';
+
+// Camera update
+if(cam.mode==='fly'&&mouseCaptured){
+const spd=cam.speed*dt;
+const fwd=[Math.sin(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),Math.cos(cam.yaw)*Math.cos(cam.pitch)];
+const right=[Math.sin(cam.yaw+Math.PI/2),0,Math.cos(cam.yaw+Math.PI/2)];
+if(keys['w']){cam.pos[0]+=fwd[0]*spd;cam.pos[1]+=fwd[1]*spd;cam.pos[2]+=fwd[2]*spd;}
+if(keys['s']){cam.pos[0]-=fwd[0]*spd;cam.pos[1]-=fwd[1]*spd;cam.pos[2]-=fwd[2]*spd;}
+if(keys['a']){cam.pos[0]-=right[0]*spd;cam.pos[2]-=right[2]*spd;}
+if(keys['d']){cam.pos[0]+=right[0]*spd;cam.pos[2]+=right[2]*spd;}
+if(keys[' '])cam.pos[1]+=spd;
+if(keys['shift'])cam.pos[1]-=spd;
+// Clamp
+cam.pos[0]=Math.max(1,Math.min(WX-1,cam.pos[0]));
+cam.pos[1]=Math.max(2,Math.min(WY-2,cam.pos[1]));
+cam.pos[2]=Math.max(1,Math.min(WZ-1,cam.pos[2]));
+}else if(cam.mode==='orbit'){
+cam.orbitAngle+=cam.orbitSpeed*dt;
+cam.pos[0]=cam.orbitCenter[0]+Math.cos(cam.orbitAngle)*cam.orbitDist;
+cam.pos[1]=cam.orbitCenter[1]+Math.sin(cam.orbitPitch)*cam.orbitDist;
+cam.pos[2]=cam.orbitCenter[2]+Math.sin(cam.orbitAngle)*cam.orbitDist;
+cam.yaw=cam.orbitAngle+Math.PI;
+cam.pitch=cam.orbitPitch;
+}
+
+// Time preset interpolation
+const tp=TIME_PRESETS[currentTime];
+
+// Matrices
+const aspect=canvas.width/canvas.height;
+const proj=mat4Perspective(Math.PI/3,aspect,.5,500);
+const fwd=[Math.sin(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),Math.cos(cam.yaw)*Math.cos(cam.pitch)];
+const center=[cam.pos[0]+fwd[0],cam.pos[1]+fwd[1],cam.pos[2]+fwd[2]];
+const view=mat4LookAt(cam.pos,center,[0,1,0]);
+const mvp=mat4Mul(proj,view);
+
+// Uniform data
+const ud=new Float32Array(40);
+ud.set(mvp,0); // 0-15: mvp
+ud[16]=cam.pos[0];ud[17]=cam.pos[1];ud[18]=cam.pos[2];ud[19]=0; // eye
+ud[20]=tp.sunDir[0];ud[21]=tp.sunDir[1];ud[22]=tp.sunDir[2];ud[23]=0; // sunDir
+ud[24]=tp.sunCol[0];ud[25]=tp.sunCol[1];ud[26]=tp.sunCol[2];ud[27]=0; // sunCol
+ud[28]=tp.ambient; // ambient
+ud[29]=tp.fogDen; // fogDen
+ud[30]=tp.fogCol[0];ud[31]=tp.fogCol[1];ud[32]=tp.fogCol[2]; // fogCol
+ud[33]=now/1000; // time
+ud[34]=0; // waterMode (set per pass)
+device.queue.writeBuffer(uniformBuf,0,ud);
+
+// Resize depth if needed
+if(depthTex.width!==canvas.width||depthTex.height!==canvas.height){
+depthTex.destroy();
+depthTex=device.createTexture({size:[canvas.width,canvas.height],format:'depth24plus',usage:GPUTextureUsage.RENDER_ATTACHMENT});
+}
+
+const commandEncoder=device.createCommandEncoder();
+
+// ── Pass 1: Solid blocks ──
+{
+const pass=commandEncoder.beginRenderPass({
+colorAttachments:[{
+view:ctx.getCurrentTexture().createView(),
+clearValue:{r:tp.fogCol[0],g:tp.fogCol[1],b:tp.fogCol[2],a:1},
+loadOp:'clear',storeOp:'store',
+}],
+depthStencilAttachment:{
+view:depthTex.createView(),
+depthClearValue:1,depthLoadOp:'clear',depthStoreOp:'store',
+}
+});
+pass.setPipeline(solidPipeline);
+pass.setBindGroup(0,bindGroup);
+for(let cx=0;cx<CX;cx++)for(let cz=0;cz<CZ;cz++){
+const m=chunkMeshes[cx+','+cz];
+if(!m||!m.solid)continue;
+// Frustum cull (simple distance)
+const ccx=cx*CHUNK+8,ccz=cz*CHUNK+8;
+const dx=ccx-cam.pos[0],dz=ccz-cam.pos[2];
+if(dx*dx+dz*dz>180*180)continue;
+pass.setVertexBuffer(0,m.solid.vb);
+pass.setIndexBuffer(m.solid.ib,'uint32');
+pass.drawIndexed(m.solid.ic);
+}
+// Special (torches, crops, flags)
+pass.setPipeline(specialPipeline);
+for(let cx=0;cx<CX;cx++)for(let cz=0;cz<CZ;cz++){
+const m=chunkMeshes[cx+','+cz];
+if(!m||!m.special)continue;
+const ccx=cx*CHUNK+8,ccz=cz*CHUNK+8;
+const dx=ccx-cam.pos[0],dz=ccz-cam.pos[2];
+if(dx*dx+dz*dz>180*180)continue;
+pass.setVertexBuffer(0,m.special.vb);
+pass.setIndexBuffer(m.special.ib,'uint32');
+pass.drawIndexed(m.special.ic);
+}
+pass.end();
+}
+
+// ── Pass 2: Water (blended, writes depth) ──
+{
+const pass=commandEncoder.beginRenderPass({
+colorAttachments:[{
+view:ctx.getCurrentTexture().createView(),
+clearValue:{r:0,g:0,b:0,a:0},
+loadOp:'load',storeOp:'store',
+}],
+depthStencilAttachment:{
+view:depthTex.createView(),
+depthClearValue:1,depthLoadOp:'load',depthStoreOp:'store',
+}
+});
+pass.setPipeline(waterPipeline);
+// Set waterMode uniform
+const wud=new Float32Array(ud);
+wud[34]=1;
+device.queue.writeBuffer(uniformBuf,0,wud);
+pass.setBindGroup(0,bindGroup);
+for(let cx=0;cx<CX;cx++)for(let cz=0;cz<CZ;cz++){
+const m=chunkMeshes[cx+','+cz];
+if(!m||!m.water)continue;
+const ccx=cx*CHUNK+8,ccz=cz*CHUNK+8;
+const dx=ccx-cam.pos[0],dz=ccz-cam.pos[2];
+if(dx*dx+dz*dz>180*180)continue;
+pass.setVertexBuffer(0,m.water.vb);
+pass.setIndexBuffer(m.water.ib,'uint32');
+pass.drawIndexed(m.water.ic);
+}
+pass.end();
+}
+
+// Restore non-water uniform
+device.queue.writeBuffer(uniformBuf,0,ud);
+
+device.queue.submit([commandEncoder.finish()]);
+}
+
+requestAnimationFrame(frame);
+}
+
+init();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Voxelheim • WebGPU</title>
+<style>
+  body{margin:0;overflow:hidden;background:#0a0a0f;color:#ddd;font-family:system-ui}
+  canvas{display:block}
+  #ui{position:absolute;top:12px;left:12px;display:flex;gap:8px;flex-wrap:wrap}
+  button{background:#222;border:1px solid #555;color:#ddd;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:13px}
+  button:hover{background:#333}
+  #info{position:absolute;bottom:12px;left:12px;font-size:12px;opacity:.7}
+  #crosshair{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:8px;height:8px;border:1px solid #fff;border-radius:50%;pointer-events:none;opacity:.4}
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<div id="ui">
+  <button onclick="setTime(0)">Dawn</button>
+  <button onclick="setTime(1)">Day</button>
+  <button onclick="setTime(2)">Dusk</button>
+  <button onclick="setTime(3)">Night</button>
+  <button onclick="toggleOrbit()">Orbit</button>
+  <button onclick="screenshot()">Screenshot</button>
+</div>
+<div id="crosshair"></div>
+<div id="info">WASD + Mouse • Space/C • Scroll = Fly • Q/E = Up/Down • P = Pointer Lock</div>
+
+<script type="module">
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('webgpu');
+
+if (!navigator.gpu) {
+  document.body.innerHTML = '<h1>WebGPU not supported</h1>';
+  throw new Error('WebGPU unsupported');
+}
+
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+
+const format = navigator.gpu.getPreferredCanvasFormat();
+ctx.configure({ device, format, alphaMode: 'opaque' });
+
+let WIDTH = canvas.width, HEIGHT = canvas.height;
+
+// ==================== CAMERA ====================
+let camera = {
+  pos: [68, 92, -54],
+  yaw: -2.8,
+  pitch: -0.65,
+  fov: 60 * Math.PI / 180
+};
+
+let orbit = false;
+let orbitAngle = 0;
+let keys = {};
+let mouseDown = false;
+let lastX = 0, lastY = 0;
+
+function updateCamera(dt) {
+  const speed = keys['Shift'] ? 120 : 48;
+  const forward = [Math.cos(camera.yaw) * Math.cos(camera.pitch), Math.sin(camera.pitch), Math.sin(camera.yaw) * Math.cos(camera.pitch)];
+  const right = [Math.cos(camera.yaw + Math.PI/2), 0, Math.sin(camera.yaw + Math.PI/2)];
+
+  let move = [0,0,0];
+  if (keys['w']) move = move.map((v,i) => v + forward[i]);
+  if (keys['s']) move = move.map((v,i) => v - forward[i]);
+  if (keys['a']) move = move.map((v,i) => v - right[i]);
+  if (keys['d']) move = move.map((v,i) => v + right[i]);
+  if (keys[' ']) move[1] += 1;
+  if (keys['c']) move[1] -= 1;
+
+  const len = Math.hypot(...move);
+  if (len > 0) {
+    const s = speed * dt / len;
+    camera.pos = camera.pos.map((v,i) => v + move[i] * s);
+  }
+
+  if (orbit) {
+    orbitAngle += dt * 0.25;
+    const r = 95;
+    camera.pos = [68 + Math.cos(orbitAngle) * r, 78 + Math.sin(orbitAngle * 0.6) * 18, -54 + Math.sin(orbitAngle) * r];
+    camera.yaw = orbitAngle + Math.PI;
+    camera.pitch = -0.35;
+  }
+}
+
+// ==================== VOXEL DATA ====================
+const CHUNK_SIZE = 32;
+const voxels = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE);
+const chunkPos = [0,0,0];
+
+function setVoxel(x,y,z, id) {
+  if (x<0||x>=CHUNK_SIZE||y<0||y>=CHUNK_SIZE||z<0||z>=CHUNK_SIZE) return;
+  voxels[x + z*CHUNK_SIZE + y*CHUNK_SIZE*CHUNK_SIZE] = id;
+}
+
+function buildWorld() {
+  voxels.fill(0);
+  // Ground + hills
+  for (let x = 0; x < CHUNK_SIZE; x++) {
+    for (let z = 0; z < CHUNK_SIZE; z++) {
+      const h = 6 + Math.sin(x*0.2)*3 + Math.cos(z*0.25)*4 + (x>18&&z>12?12:0);
+      for (let y = 0; y < Math.min(h, CHUNK_SIZE-1); y++) {
+        setVoxel(x,y,z, y < 2 ? 1 : (y < 5 ? 2 : 3)); // stone, dirt, grass
+      }
+    }
+  }
+
+  // Castle hill + castle (simplified but recognizable)
+  for (let x=18;x<30;x++) for (let z=10;z<23;z++) {
+    const h = 18 + (x>21&&x<27&&z>13&&z<20 ? 6 : 0);
+    for (let y=6; y<h; y++) setVoxel(x,y,z,1);
+  }
+  // Castle walls
+  for (let x=19;x<29;x++) { setVoxel(x,18,11,4); setVoxel(x,18,22,4); }
+  for (let z=11;z<23;z++) { setVoxel(19,18,z,4); setVoxel(29,18,z,4); }
+  // Towers
+  for (let tx of [20,27]) for (let tz of [12,21]) {
+    for (let y=18;y<26;y++) for (let dx=0;dx<3;dx++) for (let dz=0;dz<3;dz++) setVoxel(tx+dx,y,tz+dz,4);
+  }
+  // Keep
+  for (let x=22;x<26;x++) for (let z=14;z<19;z++) for (let y=18;y<28;y++) setVoxel(x,y,z,5);
+
+  // River
+  for (let x=0;x<32;x++) {
+    const z = 4 + Math.sin(x*0.3)*2.5 | 0;
+    for (let dz=-1;dz<=1;dz++) setVoxel(x,5,z+dz,6); // water
+  }
+
+  // Village houses
+  const houses = [[4,8],[8,9],[5,15],[10,18],[14,6],[25,4],[3,20],[12,24]];
+  houses.forEach(([hx,hz],i) => {
+    const h = 5 + (i%3);
+    for (let x=hx;x<hx+4;x++) for (let z=hz;z<hz+3;z++) for (let y=6;y<6+h;y++) setVoxel(x,y,z, i%2?3:7);
+    setVoxel(hx+1,6+h,hz+1,8); // roof
+  });
+
+  // Trees
+  for (let i=0;i<28;i++) {
+    const x = (Math.random()*30)|0, z=(Math.random()*30)|0;
+    if (voxels[x + z*CHUNK_SIZE + 5*CHUNK_SIZE*CHUNK_SIZE] === 0) {
+      const th = 4 + (Math.random()*3|0);
+      for (let y=6;y<6+th;y++) setVoxel(x,y,z,9);
+      for (let dx=-1;dx<=1;dx++) for (let dz=-1;dz<=1;dz++) setVoxel(x+dx,6+th,z+dz,10);
+    }
+  }
+}
+buildWorld();
+
+// ==================== MESHING (simple face culling) ====================
+function generateMesh() {
+  const positions = [], colors = [], indices = [];
+  let idx = 0;
+  const dirs = [[0,1,0],[0,-1,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]];
+  const colorMap = [
+    [0.4,0.4,0.45],   // stone
+    [0.55,0.42,0.3],  // dirt
+    [0.35,0.65,0.3],  // grass
+    [0.6,0.6,0.65],   // wall
+    [0.7,0.65,0.6],   // keep
+    [0.2,0.5,0.85],   // water
+    [0.75,0.6,0.35],  // wood
+    [0.4,0.3,0.2],    // roof
+    [0.15,0.45,0.15], // leaves
+    [0.9,0.85,0.6]    // torch
+  ];
+
+  for (let x=0;x<CHUNK_SIZE;x++) for (let y=0;y<CHUNK_SIZE;y++) for (let z=0;z<CHUNK_SIZE;z++) {
+    const id = voxels[x+z*CHUNK_SIZE + y*CHUNK_SIZE*CHUNK_SIZE];
+    if (!id) continue;
+    const c = colorMap[id-1] || [1,1,1];
+
+    for (let d=0;d<6;d++) {
+      const [dx,dy,dz] = dirs[d];
+      const nx=x+dx, ny=y+dy, nz=z+dz;
+      let visible = true;
+      if (nx>=0&&nx<CHUNK_SIZE&&ny>=0&&ny<CHUNK_SIZE&&nz>=0&&nz<CHUNK_SIZE) {
+        visible = voxels[nx+nz*CHUNK_SIZE+ny*CHUNK_SIZE*CHUNK_SIZE] === 0;
+      }
+      if (!visible) continue;
+
+      const verts = [];
+      if (d===0) verts.push([x,y+1,z],[x+1,y+1,z],[x+1,y+1,z+1],[x,y+1,z+1]);
+      else if (d===1) verts.push([x,y,z+1],[x+1,y,z+1],[x+1,y,z],[x,y,z]);
+      else if (d===2) verts.push([x+1,y,z],[x+1,y+1,z],[x+1,y+1,z+1],[x+1,y,z+1]);
+      else if (d===3) verts.push([x,y,z+1],[x,y+1,z+1],[x,y+1,z],[x,y,z]);
+      else if (d===4) verts.push([x,y,z+1],[x+1,y,z+1],[x+1,y+1,z+1],[x,y+1,z+1]);
+      else verts.push([x,y,z],[x+1,y,z],[x+1,y+1,z],[x,y+1,z]);
+
+      const base = idx;
+      verts.forEach(v => {
+        positions.push(...v);
+        colors.push(...c);
+      });
+      indices.push(base,base+1,base+2, base,base+2,base+3);
+      idx += 4;
+    }
+  }
+  return {positions: new Float32Array(positions), colors: new Float32Array(colors), indices: new Uint32Array(indices)};
+}
+
+const mesh = generateMesh();
+
+// ==================== GPU BUFFERS ====================
+const posBuffer = device.createBuffer({size: mesh.positions.byteLength, usage: GPUBufferUsage.VERTEX, mappedAtCreation:true});
+new Float32Array(posBuffer.getMappedRange()).set(mesh.positions);
+posBuffer.unmap();
+
+const colBuffer = device.createBuffer({size: mesh.colors.byteLength, usage: GPUBufferUsage.VERTEX, mappedAtCreation:true});
+new Float32Array(colBuffer.getMappedRange()).set(mesh.colors);
+colBuffer.unmap();
+
+const idxBuffer = device.createBuffer({size: mesh.indices.byteLength, usage: GPUBufferUsage.INDEX, mappedAtCreation:true});
+new Uint32Array(idxBuffer.getMappedRange()).set(mesh.indices);
+idxBuffer.unmap();
+
+const uniformBuffer = device.createBuffer({size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
+
+// ==================== SHADERS ====================
+const shader = device.createShaderModule({
+  code: `
+struct Uniforms {
+  viewProj : mat4x4<f32>,
+  sunDir   : vec3<f32>,
+  time     : f32,
+  fogColor : vec3<f32>,
+};
+@group(0) @binding(0) var<uniform> u : Uniforms;
+
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) color : vec3<f32>,
+  @location(1) worldPos : vec3<f32>,
+};
+
+@vertex
+fn vs(@location(0) pos: vec3<f32>, @location(1) color: vec3<f32>) -> VSOut {
+  var out : VSOut;
+  out.pos = u.viewProj * vec4<f32>(pos, 1.0);
+  out.color = color;
+  out.worldPos = pos;
+  return out;
+}
+
+@fragment
+fn fs(in: VSOut) -> @location(0) vec4<f32> {
+  let N = normalize(vec3<f32>(0.0,1.0,0.0)); // simple
+  let diff = max(dot(N, normalize(u.sunDir)), 0.2);
+  let fog = clamp((length(in.worldPos) - 40.0) / 120.0, 0.0, 1.0);
+  var col = in.color * (diff * 0.9 + 0.35);
+  col = mix(col, u.fogColor, fog * 0.7);
+  return vec4<f32>(col, 1.0);
+}`
+});
+
+const pipeline = device.createRenderPipeline({
+  layout: 'auto',
+  vertex: { module: shader, entryPoint: 'vs', buffers: [
+    { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+    { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] }
+  ]},
+  fragment: { module: shader, entryPoint: 'fs', targets: [{ format }] },
+  primitive: { topology: 'triangle-list' },
+  depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' }
+});
+
+const bindGroup = device.createBindGroup({
+  layout: pipeline.getBindGroupLayout(0),
+  entries: [{ binding: 0, resource: { buffer: uniformBuffer } }]
+});
+
+const depthTexture = device.createTexture({size: [WIDTH, HEIGHT], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT});
+
+// ==================== RENDER LOOP ====================
+let timeOfDay = 1;
+let lastTime = performance.now();
+
+function setTime(t) {
+  timeOfDay = t;
+}
+
+function toggleOrbit() {
+  orbit = !orbit;
+}
+
+function screenshot() {
+  const link = document.createElement('a');
+  link.download = 'voxelheim.png';
+  link.href = canvas.toDataURL();
+  link.click();
+}
+
+function render() {
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.1);
+  lastTime = now;
+
+  updateCamera(dt);
+
+  const aspect = WIDTH / HEIGHT;
+  const proj = mat4Perspective(camera.fov, aspect, 0.1, 400);
+  const view = mat4LookAt(camera.pos, [
+    camera.pos[0] + Math.cos(camera.yaw)*Math.cos(camera.pitch),
+    camera.pos[1] + Math.sin(camera.pitch),
+    camera.pos[2] + Math.sin(camera.yaw)*Math.cos(camera.pitch)
+  ], [0,1,0]);
+  const viewProj = mat4Multiply(proj, view);
+
+  const sunDirs = [[0.4,0.9,0.3], [0.3,0.95,0.2], [-0.6,0.4,0.7], [-0.2,0.1,-0.9]];
+  const fogColors = [[0.9,0.75,0.6], [0.6,0.75,0.95], [0.95,0.65,0.5], [0.1,0.12,0.2]];
+  const sun = sunDirs[timeOfDay];
+  const fog = fogColors[timeOfDay];
+
+  device.queue.writeBuffer(uniformBuffer, 0, new Float32Array([
+    ...viewProj, 0,0,0,0,
+    ...sun, 0,
+    now * 0.001,
+    ...fog, 0
+  ]).buffer);
+
+  const encoder = device.createCommandEncoder();
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{
+      view: ctx.getCurrentTexture().createView(),
+      loadOp: 'clear',
+      storeOp: 'store',
+      clearValue: fog
+    }],
+    depthStencilAttachment: {
+      view: depthTexture.createView(),
+      depthLoadOp: 'clear',
+      depthStoreOp: 'store',
+      depthClearValue: 1.0
+    }
+  });
+
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindGroup);
+  pass.setVertexBuffer(0, posBuffer);
+  pass.setVertexBuffer(1, colBuffer);
+  pass.setIndexBuffer(idxBuffer, 'uint32');
+  pass.drawIndexed(mesh.indices.length);
+  pass.end();
+
+  device.queue.submit([encoder.finish()]);
+  requestAnimationFrame(render);
+}
+
+// Matrix helpers (minimal)
+function mat4Perspective(fov, aspect, near, far) {
+  const f = 1 / Math.tan(fov / 2);
+  return [
+    f / aspect, 0, 0, 0,
+    0, f, 0, 0,
+    0, 0, (far + near) / (near - far), -1,
+    0, 0, (2 * far * near) / (near - far), 0
+  ];
+}
+function mat4LookAt(eye, center, up) {
+  // Simplified lookAt
+  const z = normalize(sub(eye, center));
+  const x = normalize(cross(up, z));
+  const y = cross(z, x);
+  return [
+    x[0], y[0], z[0], 0,
+    x[1], y[1], z[1], 0,
+    x[2], y[2], z[2], 0,
+    -dot(x,eye), -dot(y,eye), -dot(z,eye), 1
+  ];
+}
+function normalize(v){const l=Math.hypot(...v);return v.map(x=>x/l)}
+function sub(a,b){return a.map((x,i)=>x-b[i])}
+function cross(a,b){return [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]}
+function dot(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]}
+function mat4Multiply(a,b){
+  const r=[];for(let i=0;i<4;i++)for(let j=0;j<4;j++)r[i*4+j]=a[i*4]*b[j]+a[i*4+1]*b[4+j]+a[i*4+2]*b[8+j]+a[i*4+3]*b[12+j];
+  return r;
+}
+
+// ==================== CONTROLS ====================
+window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+canvas.addEventListener('mousedown', e => { mouseDown = true; lastX = e.clientX; lastY = e.clientY; });
+window.addEventListener('mouseup', () => mouseDown = false);
+window.addEventListener('mousemove', e => {
+  if (!mouseDown && !document.pointerLockElement) return;
+  const dx = e.movementX ?? (e.clientX - lastX);
+  const dy = e.movementY ?? (e.clientY - lastY);
+  camera.yaw += dx * 0.0025;
+  camera.pitch = Math.max(-1.5, Math.min(1.5, camera.pitch - dy * 0.0025));
+  lastX = e.clientX; lastY = e.clientY;
+});
+
+canvas.addEventListener('click', () => {
+  if (!document.pointerLockElement) canvas.requestPointerLock();
+});
+
+window.addEventListener('wheel', e => {
+  camera.pos[1] += e.deltaY * -0.08;
+});
+
+window.addEventListener('resize', () => {
+  WIDTH = window.innerWidth;
+  HEIGHT = window.innerHeight;
+  canvas.width = WIDTH;
+  canvas.height = HEIGHT;
+  // Note: depth texture would need resize in real code
+});
+
+render();
+console.log('%c[Voxelheim] WebGPU voxel world ready', 'color:#666');
+</script>
+</body>
+</html>

@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voxel Fantasy World</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; }
+canvas { display: block; width: 100vw; height: 100vh; }
+#ui { position: fixed; top: 15px; left: 15px; z-index: 10; color: #fff; }
+#ui button { background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.3); color: #fff; padding: 6px 12px; margin: 2px; cursor: pointer; border-radius: 4px; font-size: 13px; }
+#ui button:hover { background: rgba(255,255,255,0.2); }
+#ui button.active { background: rgba(100,180,255,0.4); border-color: rgba(100,180,255,0.8); }
+#info { position: fixed; bottom: 15px; left: 15px; z-index: 10; color: rgba(255,255,255,0.7); font-size: 12px; }
+#loading { position: fixed; inset: 0; background: #000; display: flex; align-items: center; justify-content: center; z-index: 100; flex-direction: column; }
+#loading h1 { color: #8BC34A; font-size: 32px; margin-bottom: 20px; }
+#loading .bar { width: 300px; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
+#loading .fill { height: 100%; background: #8BC34A; width: 0%; transition: width 0.3s; }
+#loading p { color: #aaa; margin-top: 10px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="loading"><h1>⛏️ Voxel Fantasy World</h1><div class="bar"><div class="fill" id="loadFill"></div></div><p id="loadText">Initializing WebGPU...</p></div>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div><button id="btnFly" class="active">Fly Mode</button><button id="btnOrbit">Orbit</button><button id="btnWalk">Walk</button></div>
+  <div style="margin-top:8px"><button id="btnDawn">🌅 Dawn</button><button id="btnDay" class="active">☀️ Day</button><button id="btnDusk">🌇 Dusk</button><button id="btnNight">🌙 Night</button></div>
+  <div style="margin-top:8px"><button id="btnBloom" class="active">Bloom</button><button id="btnSS">📷 Screenshot</button></div>
+</div>
+<div id="info">WASD/Arrows: Move | Mouse: Look | Space/Shift: Up/Down | R: Reset View | Click canvas to capture mouse</div>
+
+<script type="wgsl" id="wgsl">
+// VERTEX SHADER
+struct Vars {
+  proj: mat4x4f,
+  view: mat4x4f,
+  camPos: vec4f,
+  time: f32,
+  tod: f32,
+  _pad: vec3f
+};
+
+struct Out {
+  @builtin(position) pos: vec4f,
+  @location(0) normal: vec3f,
+  @location(1) color: vec3f,
+  @location(2) ao: f32,
+  @location(3) worldPos: vec3f,
+  @location(4) light: vec3f,
+};
+
+@group(0) @binding(0) var<uniform> vars: Vars;
+
+@vertex fn vs(@location(0) pos: vec3f, @location(1) normal: vec3f, @location(2) color: vec3f, @location(3) ao: f32, @location(4) light: vec3f) -> Out {
+  var o: Out;
+  o.worldPos = pos;
+  o.pos = vars.proj * vars.view * vec4f(pos, 1.0);
+  o.normal = normal;
+  o.color = color;
+  o.ao = ao;
+  o.light = light;
+  return o;
+}
+
+@fragment fn fs(@location(0) normal: vec3f, @location(1) color: vec3f, @location(2) ao: f32, @location(3) worldPos: vec3f, @location(4) light: vec3f) -> @location(0) vec4f {
+  let sunDir = normalize(vec3f(0.5, 0.7, 0.3));
+  let diff = max(dot(normalize(normal), sunDir), 0.0);
+  let amb = 0.35 + 0.15 * sin(vars.tod);
+  let todBright = mix(0.25, 1.0, smoothstep(0.0, 1.0, sin(vars.tod * 3.14159 * 2.0 - 1.57)));
+  let todColor = mix(vec3f(0.15, 0.2, 0.4), vec3f(1.0, 0.95, 0.85), todBright);
+  let sunColor = mix(vec3f(0.3, 0.4, 0.7), vec3f(1.0, 0.85, 0.6), todBright);
+  let fogDist = length(worldPos - vars.camPos.xyz) / 256.0;
+  let fog = clamp(fogDist * fogDist, 0.0, 1.0);
+  let fogColor = mix(vec3f(0.05, 0.08, 0.15), vec3f(0.65, 0.75, 0.9), todBright);
+  let lit = color * (amb + diff * 0.7) * sunColor * light * todBright + color * 0.1 * todBright;
+  let finalCol = mix(lit, fogColor, fog);
+  let vignette = 1.0 - 0.4 * length((vars.proj * vars.view * vec4f(worldPos, 1.0)).xy / (vars.proj * vars.view * vec4f(worldPos, 1.0)).w);
+  return vec4f(finalCol * vignette, 1.0);
+}
+</script>
+
+<script type="wgsl" id="wgsl-post">
+struct PostVars {
+  aspect: f32,
+  time: f32,
+  _pad: vec2f
+};
+
+@group(0) @binding(0) var s: sampler;
+@group(0) @binding(1) var t: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> pv: PostVars;
+
+@fragment fn fs(@builtin(position) coord: vec4f) -> @location(0) vec4f {
+  let uv = coord.xy / vec2f(1920.0, 1080.0);
+  let bloom = textureSample(t, s, uv).rgb * 0.15;
+  let col = textureSample(t, s, uv).rgb + bloom;
+  let toneMapped = col / (col + vec3f(1.0));
+  let vig = 1.0 - 0.5 * pow(length(uv - 0.5) * 1.4, 2.0);
+  return vec4f(toneMapped * vig, 1.0);
+}
+</script>
+
+<script type="module">
+const canvas = document.getElementById('c');
+const loadFill = document.getElementById('loadFill');
+const loadText = document.getElementById('loadText');
+
+let W, H, device, ctx, pipeline, postPipeline, uniformBuf, postUniformBuf;
+let camMode = 'fly', todMode = 1, enableBloom = true;
+let camPos = [0, 80, 120], camYaw = -0.3, camPitch = -0.4;
+let keys = {}, mouseX = 0, mouseY = 0, locked = false;
+let time = 0, tod = 0.5;
+let vertexBuf, indexBuf, indexCount = 0;
+
+const BLOCK = { AIR:0, GRASS:1, DIRT:2, STONE:3, WATER:4, WOOD:5, LEAVES:6, SAND:7, SNOW:8, BRICK:9, PLANK:10, GLASS:11, LAVA:12, BASALT:13, REED:14, TORCH:15, FLAG:16, LAMP:17 };
+
+const colors = {
+  [BLOCK.GRASS]: [0.35, 0.6, 0.2], [BLOCK.DIRT]: [0.45, 0.3, 0.15], [BLOCK.STONE]: [0.5, 0.5, 0.5],
+  [BLOCK.WATER]: [0.2, 0.4, 0.7], [BLOCK.WOOD]: [0.4, 0.25, 0.1], [BLOCK.LEAVES]: [0.2, 0.5, 0.15],
+  [BLOCK.SAND]: [0.8, 0.7, 0.4], [BLOCK.SNOW]: [0.9, 0.92, 0.95], [BLOCK.BRICK]: [0.6, 0.3, 0.2],
+  [BLOCK.PLANK]: [0.65, 0.45, 0.25], [BLOCK.GLASS]: [0.6, 0.8, 0.9], [BLOCK.LAVA]: [1.0, 0.3, 0.05],
+  [BLOCK.BASALT]: [0.2, 0.15, 0.2], [BLOCK.REED]: [0.4, 0.55, 0.25], [BLOCK.TORCH]: [1.0, 0.7, 0.2],
+  [BLOCK.FLAG]: [0.8, 0.15, 0.1], [BLOCK.LAMP]: [1.0, 0.85, 0.4]
+};
+
+const world = new Uint8Array(256*256*64);
+const getBlock = (x,y,z) => x<0||x>=256||y<0||y>=64||z<0||z>=256 ? 0 : world[x + y*256 + z*16384];
+const setBlock = (x,y,z,b) => { if(x>=0&&x<256&&y>=0&&y<64&&z>=0&&z<256) world[x + y*256 + z*16384] = b; };
+
+function setProgress(p, t) { loadFill.style.width = p+'%'; loadText.textContent = t; }
+
+function generateWorld() {
+  setProgress(5, 'Generating terrain...');
+  
+  // Height map
+  const hmap = new Float32Array(256*256);
+  for(let x=0;x<256;x++) for(let z=0;z<256;z++) {
+    let h = 0;
+    // Large features
+    h += Math.sin(x*0.02)*8 + Math.cos(z*0.025)*6;
+    h += Math.sin(x*0.05+z*0.03)*4;
+    // Hills
+    h += Math.sin(x*0.01)*12 + Math.cos(z*0.012)*10;
+    // Castle hill
+    let cd = Math.sqrt((x-128)**2 + (z-128)**2);
+    if(cd < 50) h = Math.max(h, 25 - cd*0.3);
+    if(cd < 30) h = Math.max(h, 35 - cd*0.5);
+    // Volcano
+    let vd = Math.sqrt((x-220)**2 + (z-220)**2);
+    if(vd < 40) h = Math.max(h, 45 - vd*0.8);
+    if(vd < 15) h = Math.max(h, 55 - vd*1.5);
+    // Mountains (snowy)
+    let md = Math.sqrt((x-40)**2 + (z-40)**2);
+    if(md < 35) h = Math.max(h, 50 - md*1.0);
+    if(md > 25 && md < 55) h = Math.max(h, 35 - Math.abs(md-40)*0.5);
+    
+    hmap[x+z*256] = Math.max(1, Math.min(60, Math.floor(h + 18)));
+  }
+
+  setProgress(20, 'Building terrain...');
+  
+  // Fill terrain
+  for(let x=0;x<256;x++) for(let z=0;z<256;z++) {
+    let h = hmap[x+z*256];
+    for(let y=0;y<h;y++) {
+      if(y === h-1) setBlock(x,y,z, h > 40 ? BLOCK.SNOW : h > 30 ? BLOCK.GRASS : BLOCK.GRASS);
+      else if(y > h-5) setBlock(x,y,z, h > 40 ? BLOCK.STONE : BLOCK.DIRT);
+      else setBlock(x,y,z, BLOCK.STONE);
+    }
+    // Water level
+    for(let y=h;y<15;y++) setBlock(x,y,z, BLOCK.WATER);
+  }
+
+  setProgress(35, 'Creating river...');
+  
+  // River
+  for(let x=0;x<256;x++) {
+    let rz = Math.floor(180 + Math.sin(x*0.03)*20 + Math.sin(x*0.07)*10);
+    for(let w=-4;w<=4;w++) {
+      let zz = rz+w;
+      if(zz>=0&&zz<256) {
+        for(let y=0;y<64;y++) {
+          if(getBlock(x,y,zz) !== BLOCK.AIR || y < 14) {
+            if(y < 14) setBlock(x,y,zz, BLOCK.WATER);
+          }
+        }
+      }
+    }
+  }
+
+  setProgress(40, 'Building castle...');
+  
+  // Castle base (terraced hill)
+  const cx=128, cz=128;
+  for(let y=15;y<28;y++) {
+    let r = 22 - (y-15)*0.6;
+    for(let dx=-25;dx<=25;dx++) for(let dz=-25;dz<=25;dz++) {
+      if(dx*dx+dz*dz < r*r) {
+        let yy = 15 + (25-Math.sqrt(dx*dx+dz*dz))/5;
+        for(let y2=15;y2<Math.floor(yy);y2++) setBlock(cx+dx,y2,cz+dz, BLOCK.STONE);
+      }
+    }
+  }
+
+  // Moat
+  for(let a=0;a<Math.PI*2;a+=0.1) {
+    let r = 28;
+    let mx = Math.floor(cx + Math.cos(a)*r);
+    let mz = Math.floor(cz + Math.sin(a)*r);
+    for(let dx=-2;dx<=2;dx++) for(let dz=-2;dz<=2;dz++) {
+      for(let y=14;y<18;y++) setBlock(mx+dx,y,mz+dz, BLOCK.WATER);
+    }
+  }
+
+  // Castle walls
+  for(let y=28;y<38;y++) {
+    for(let a=0;a<Math.PI*2;a+=0.15) {
+      let r = 22;
+      let wx = Math.floor(cx + Math.cos(a)*r);
+      let wz = Math.floor(cz + Math.sin(a)*r);
+      setBlock(wx,y,wz, BLOCK.STONE);
+      // Battlements
+      if(y===37 && Math.floor(a*6)%2===0) setBlock(wx,y+1,wz, BLOCK.STONE);
+    }
+  }
+
+  // Towers at cardinal points
+  [[0,0],[0,Math.PI/2],[Math.PI,0],[Math.PI,Math.PI*1.5]].forEach(([ax,az]) => {
+    let tx = Math.floor(cx + Math.cos(ax+az)*22);
+    let tz = Math.floor(cz + Math.sin(ax+az)*22);
+    for(let y=28;y<42;y++) {
+      for(let dx=-3;dx<=3;dx++) for(let dz=-3;dz<=3;dz++) {
+        if(Math.abs(dx)===3||Math.abs(dz)===3) setBlock(tx+dx,y,tz+dz, BLOCK.STONE);
+      }
+    }
+    // Tower top
+    for(let dx=-4;dx<=4;dx++) for(let dz=-4;dz<=4;dz++) {
+      if(dx*dx+dz*dz<=18) setBlock(tx+dx,42,tz+dz, BLOCK.STONE);
+    }
+    // Flag
+    for(let y=43;y<48;y++) setBlock(tx,y,tz, BLOCK.WOOD);
+    setBlock(tx+1,47,tz, BLOCK.FLAG);
+    setBlock(tx+2,47,tz, BLOCK.FLAG);
+  });
+
+  // Gate
+  for(let y=28;y<36;y++) {
+    for(let x=-4;x<=4;x++) {
+      if(Math.abs(x)<2 && y<32) continue; // gate opening
+      setBlock(cx+x,y,cz+22, BLOCK.STONE);
+    }
+  }
+  // Gate towers
+  for(let y=28;y<40;y++) {
+    for(let dx=-5;dx<=-3;dx++) setBlock(cx+dx,y,cz+22, BLOCK.STONE);
+    for(let dx=3;dx<=5;dx++) setBlock(cx+dx,y,cz+22, BLOCK.STONE);
+  }
+
+  // Bridge over moat
+  for(let z=22;z<32;z++) for(let x=-3;x<=3;x++) {
+    setBlock(cx+x,16,cz+z, BLOCK.STONE);
+    if(Math.abs(x)===3) setBlock(cx+x,17,cz+z, BLOCK.STONE);
+  }
+
+  // Courtyard
+  for(let x=-15;x<=15;x++) for(let z=-15;z<=15;z++) {
+    if(x*x+z*z < 200) setBlock(cx+x,28,cz+z, BLOCK.PLANK);
+  }
+
+  // Royal keep
+  for(let y=28;y<38;y++) for(let x=-8;x<=8;x++) for(let z=-8;z<=8;z++) {
+    if(Math.abs(x)===8||Math.abs(z)===8||y===37) setBlock(cx+x,y,cz+z, BLOCK.BRICK);
+    // Glowing windows
+    if((Math.abs(x)===8||Math.abs(z)===8) && y===31 && (x%4===0||z%4===0)) setBlock(cx+x,y,cz+z, BLOCK.GLASS);
+  }
+
+  // Chapel
+  for(let y=28;y<34;y++) for(let x=-5;x<=5;x++) for(let z=-8;z<=8;z++) {
+    if(Math.abs(x)===5||Math.abs(z)===8||y===33) setBlock(cx+45+x,y,cz+z, BLOCK.STONE);
+    if((Math.abs(x)===5||Math.abs(z)===8) && y===30) setBlock(cx+45+x,y,cz+z, BLOCK.GLASS);
+  }
+  // Chapel spire
+  for(let y=34;y<42;y++) setBlock(cx+45,y,cz, BLOCK.STONE);
+
+  // Gardens
+  for(let x=-12;x<12;x++) for(let z=8;z<18;z++) {
+    if((x+z)%4===0) setBlock(cx+x,28,cz+z, BLOCK.LEAVES);
+  }
+
+  // Torches on walls
+  for(let a=0;a<Math.PI*2;a+=1.5) {
+    let tx = Math.floor(cx + Math.cos(a)*22);
+    let tz = Math.floor(cz + Math.sin(a)*22);
+    setBlock(tx,30,tz, BLOCK.TORCH);
+  }
+
+  setProgress(50, 'Building village...');
+  
+  // Village houses along river
+  const housePositions = [];
+  for(let i=0;i<30;i++) {
+    let hx = 60 + (i%6)*25 + Math.sin(i*2.3)*8;
+    let hz = 170 + Math.floor(i/6)*20 + Math.cos(i*1.7)*8;
+    hx = Math.floor(Math.max(10, Math.min(240, hx)));
+    hz = Math.floor(Math.max(10, Math.min(240, hz)));
+    let hh = hmap[hx+hz*256] || 18;
+    if(hh < 16) hh = 16;
+    housePositions.push({x:hx, z:hz, y:hh});
+    
+    // House
+    let hw = 3+Math.floor(Math.random()*3);
+    let hd = 3+Math.floor(Math.random()*2);
+    let ht = 4+Math.floor(Math.random()*3);
+    for(let y=hh;y<hh+ht;y++) for(let x=-hw;x<=hw;x++) for(let z=-hd;z<=hd;z++) {
+      if(Math.abs(x)===hw||Math.abs(z)===hd||y===hh+ht-1) {
+        let mat = i%5===0 ? BLOCK.BRICK : BLOCK.PLANK;
+        setBlock(hx+x,y,hz+z, mat);
+        // Window
+        if(y===hh+1 && (Math.abs(x)===hw||Math.abs(z)===hd) && (x+z)%3===0) setBlock(hx+x,y,hz+z, BLOCK.GLASS);
+      }
+    }
+    // Door
+    setBlock(hx,hh,hz+hd, BLOCK.AIR);
+    setBlock(hx,hh+1,hz+hd, BLOCK.AIR);
+    // Roof
+    for(let x=-hw-1;x<=hw+1;x++) for(let z=-hd-1;z<=hd+1;z++) {
+      if(Math.abs(x)+Math.abs(z) <= hw+hd) setBlock(hx+x,hh+ht,hz+z, BLOCK.WOOD);
+    }
+  }
+
+  // Marketplace
+  let mx=120, mz=185, my=hmap[mx+mz*256]||18;
+  for(let x=-6;x<=6;x++) for(let z=-4;z<=4;z++) setBlock(mx+x,my,mz+z, BLOCK.STONE);
+  // Market stalls
+  for(let i=0;i<4;i++) {
+    let sx=mx-6+i*4, sz=mz;
+    for(let y=my+1;y<my+4;y++) setBlock(sx,y,sz, BLOCK.WOOD);
+    for(let x=-1;x<=1;x++) setBlock(sx+x,my+4,sz, BLOCK.BRICK);
+  }
+
+  // Blacksmith
+  let bx=140, bz=190, by=hmap[bx+bz*256]||18;
+  for(let y=by;y<by+5;y++) for(let x=-4;x<=4;x++) for(let z=-4;z<=4;z++) {
+    if(Math.abs(x)===4||Math.abs(z)===4||y===by+4) setBlock(bx+x,y,bz+z, BLOCK.STONE);
+  }
+  setBlock(bx+4,by+2,bz, BLOCK.LAVA); // forge
+
+  // Tavern
+  let tx=100, tz=195, ty=hmap[tx+tz*256]||18;
+  for(let y=ty;y<ty+6;y++) for(let x=-6;x<=6;x++) for(let z=-5;z<=5;z++) {
+    if(Math.abs(x)===6||Math.abs(z)===5||y===ty+5) setBlock(tx+x,y,tz+z, BLOCK.BRICK);
+    if((Math.abs(x)===6||Math.abs(z)===5)&&y===ty+2&&x%3===0) setBlock(tx+x,y,tz+z, BLOCK.GLASS);
+  }
+
+  // Village chapel
+  let vx=80, vz=175, vy=hmap[vx+vz*256]||18;
+  for(let y=vy;y<vy+7;y++) for(let x=-4;x<=4;x++) for(let z=-6;z<=6;z++) {
+    if(Math.abs(x)===4||Math.abs(z)===6||y===vy+6) setBlock(vx+x,y,vz+z, BLOCK.STONE);
+    if((Math.abs(x)===4||Math.abs(z)===6)&&y===vy+3) setBlock(vx+x,y,vz+z, BLOCK.GLASS);
+  }
+  for(let y=vy+7;y<vy+14;y++) setBlock(vx,y,vz, BLOCK.STONE);
+
+  // Farms
+  for(let x=150;x<180;x+=4) for(let z=200;z<220;z+=4) {
+    setBlock(x,16,z, BLOCK.GRASS);
+    setBlock(x,17,z, i%3===0 ? BLOCK.LEAVES : BLOCK.GRASS);
+  }
+
+  // Docks
+  for(let x=60;x<90;x++) {
+    setBlock(x,15,185, BLOCK.WOOD);
+    if(x%5===0) setBlock(x,14,185, BLOCK.WOOD);
+  }
+  // Boats
+  for(let x=65;x<70;x++) setBlock(x,14,182, BLOCK.WOOD);
+
+  // Watermill
+  let wmx=160, wmz=195, wmy=16;
+  for(let y=wmy;y<wmy+6;y++) for(let x=-3;x<=3;x++) for(let z=-3;z<=3;z++) {
+    if(Math.abs(x)===3||Math.abs(z)===3||y===wmy+5) setBlock(wmx+x,y,wmz+z, BLOCK.STONE);
+  }
+
+  // Stone bridge to castle
+  for(let z=148;z<170;z++) for(let x=-2;x<=2;x++) {
+    setBlock(128+x,15,z, BLOCK.STONE);
+  }
+
+  // Fences
+  for(let i=0;i<20;i++) {
+    setBlock(100+i,16,210, BLOCK.WOOD);
+    if(i%3===0) setBlock(100+i,17,210, BLOCK.WOOD);
+  }
+
+  // Wells
+  [[90,200],[110,205],[130,195]].forEach(([wx,wz]) => {
+    let wy = hmap[wx+wz*256]||18;
+    for(let x=-1;x<=1;x++) for(let z=-1;z<=1;z++) setBlock(wx+x,wy,wz+z, BLOCK.STONE);
+    setBlock(wx,wy,wz, BLOCK.WATER);
+  });
+
+  // Barrels and carts
+  for(let i=0;i<8;i++) {
+    setBlock(105+i*5,16,190, BLOCK.WOOD);
+    setBlock(105+i*5,17,190, BLOCK.WOOD);
+  }
+
+  // Lanterns
+  for(let i=0;i<10;i++) {
+    setBlock(80+i*12,17,185, BLOCK.LAMP);
+  }
+
+  setProgress(65, 'Creating volcano...');
+  
+  // Volcano
+  let vx2=220, vz2=220;
+  for(let x=-35;x<=35;x++) for(let z=-35;z<=35;z++) {
+    let dist = Math.sqrt(x*x+z*z);
+    let vh = 48 - dist*1.2;
+    for(let y=18;y<vh;y++) {
+      let mat = dist < 12 ? BLOCK.LAVA : dist < 20 ? BLOCK.BASALT : BLOCK.STONE;
+      setBlock(vx2+x,y,vz2+z, mat);
+    }
+    // Crater rim
+    if(dist > 8 && dist < 15) setBlock(vx2+x,Math.floor(vh),vz2+z, BLOCK.BASALT);
+  }
+  // Lava flow
+  for(let i=0;i<15;i++) {
+    let lx = vx2 - 10 + i;
+    let lz = vz2 + 5 + i*0.5;
+    for(let y=15;y<30;y++) setBlock(Math.floor(lx),y,Math.floor(lz), BLOCK.LAVA);
+  }
+  // Dead trees near volcano
+  for(let i=0;i<12;i++) {
+    let tx3 = vx2 + 25 + Math.random()*20 - 10;
+    let tz3 = vz2 + 25 + Math.random()*20 - 10;
+    let ty3 = hmap[Math.floor(tx3)+Math.floor(tz3)*256]||18;
+    for(let y=0;y<6;y++) setBlock(Math.floor(tx3),ty3+y,Math.floor(tz3), BLOCK.WOOD);
+  }
+
+  // Ancient ruins near volcano
+  for(let x=-8;x<=8;x++) for(let z=-8;z<=8;z++) {
+    if((x%4===0||z%4===0) && Math.random()>0.3) {
+      setBlock(vx2+50+x,18,vz2+30+z, BLOCK.STONE);
+      if(Math.random()>0.5) setBlock(vx2+50+x,19,vz2+30+z, BLOCK.STONE);
+    }
+  }
+
+  setProgress(75, 'Adding forests...');
+  
+  // Forests
+  for(let x=10;x<240;x+=3) for(let z=10;z<240;z+=3) {
+    let hh = hmap[x+z*256]||18;
+    if(hh > 15 && hh < 35 && Math.random() < 0.3) {
+      let distCastle = Math.sqrt((x-128)**2+(z-128)**2);
+      if(distCastle > 40) {
+        for(let y=0;y<5+Math.random()*4;y++) setBlock(x,hh+y,z, BLOCK.WOOD);
+        for(let dx=-2;dx<=2;dx++) for(let dz=-2;dz<=2;dz++) for(let dy=3;dy<7;dy++) {
+          if(dx*dx+dz*dz+dy*dy < 8) setBlock(x+dx,hh+dy,z+dz, BLOCK.LEAVES);
+        }
+      }
+    }
+  }
+
+  // Reeds near water
+  for(let x=0;x<256;x+=2) for(let z=0;z<256;z+=2) {
+    let hh = hmap[x+z*256]||18;
+    if(hh <= 16 && hh >= 14) {
+      if(Math.random() < 0.4) {
+        for(let y=hh;y<hh+3;y++) setBlock(x,y,z, BLOCK.REED);
+      }
+    }
+  }
+
+  // Ruins scattered
+  for(let i=0;i<5;i++) {
+    let rx = 30 + Math.random()*200;
+    let rz = 30 + Math.random()*200;
+    let ry = hmap[Math.floor(rx)+Math.floor(rz)*256]||18;
+    for(let x=0;x<6;x++) for(let z=0;z<6;z++) {
+      if((x===0||x===5||z===0||z===5) && Math.random()>0.2) {
+        setBlock(Math.floor(rx+x),ry,Math.floor(rz+z), BLOCK.STONE);
+        if(Math.random()>0.5) setBlock(Math.floor(rx+x),ry+1,Math.floor(rz+z), BLOCK.STONE);
+      }
+    }
+  }
+
+  // Cliffs
+  for(let x=50;x<80;x++) for(let z=10;z<40;z++) {
+    let hh = hmap[x+z*256]||18;
+    if(hh > 35) {
+      for(let y=hh-10;y<hh;y++) setBlock(x,y,z, BLOCK.STONE);
+    }
+  }
+
+  // Watchtowers
+  [[30,60],[200,50],[50,200],[180,10]].forEach(([wx,wz]) => {
+    let wy = hmap[wx+wz*256]||18;
+    for(let y=wy;y<wy+12;y++) for(let x=-2;x<=2;x++) for(let z=-2;z<=2;z++) {
+      if(Math.abs(x)===2||Math.abs(z)===2||y===wy+11) setBlock(wx+x,y,wz+z, BLOCK.STONE);
+    }
+    for(let y=wy+8;y<wy+14;y++) setBlock(wx,y,wz, BLOCK.TORCH);
+  });
+
+  // Paths
+  for(let x=60;x<130;x++) {
+    let pz = 185 + Math.sin(x*0.05)*10;
+    setBlock(Math.floor(x),15,Math.floor(pz), BLOCK.DIRT);
+    setBlock(Math.floor(x)+1,15,Math.floor(pz), BLOCK.DIRT);
+  }
+
+  setProgress(85, 'Building mesh...');
+}
+
+function buildMesh() {
+  const verts = [], indices = [];
+  let vi = 0;
+  
+  const faces = [
+    {dir:[1,0,0], corners:[[0,1,1],[0,0,1],[0,0,0],[0,1,0]], normal:[1,0,0]},
+    {dir:[-1,0,0], corners:[[0,1,0],[0,0,0],[0,0,1],[0,1,1]], normal:[-1,0,0]},
+    {dir:[0,1,0], corners:[[0,0,0],[1,0,0],[1,0,1],[0,0,1]], normal:[0,1,0]},
+    {dir:[0,-1,0], corners:[[0,1,1],[1,1,1],[1,1,0],[0,1,0]], normal:[0,-1,0]},
+    {dir:[0,0,1], corners:[[0,1,0],[1,1,0],[1,0,0],[0,0,0]], normal:[0,0,1]},
+    {dir:[0,0,-1], corners:[[1,1,0],[0,1,0],[0,0,0],[1,0,0]], normal:[0,0,-1]},
+  ];
+
+  for(let x=0;x<256;x++) for(let y=0;y<64;y++) for(let z=0;z<256;z++) {
+    let b = getBlock(x,y,z);
+    if(b === BLOCK.AIR) continue;
+    
+    let light = 1.0;
+    if(b === BLOCK.TORCH || b === BLOCK.LAVA || b === BLOCK.LAMP) light = 1.5;
+    
+    let c = colors[b] || [0.5,0.5,0.5];
+    // Color variation
+    let v = (Math.sin(x*12.9898+z*78.233)*43758.5453)%1;
+    if(v < 0) v += 1;
+    let cv = 0.9 + v*0.2;
+    
+    for(let f of faces) {
+      let nx=x+f.dir[0], ny=y+f.dir[1], nz=z+f.dir[2];
+      let nb = getBlock(nx,ny,nz);
+      let draw = false;
+      if(nb === BLOCK.AIR) draw = true;
+      if(b === BLOCK.WATER && nb !== BLOCK.WATER) draw = false; // don't draw water faces next to water
+      if(b === BLOCK.WATER && nb === BLOCK.AIR) draw = true;
+      if(b === BLOCK.GLASS) draw = true;
+      
+      if(draw) {
+        let ao = 0.8;
+        if(y > 0) {
+          let above = getBlock(x,y+1,z);
+          if(above !== BLOCK.AIR && above !== BLOCK.WATER) ao = 0.5;
+        }
+        // Simple AO
+        let aoCorners = 1.0;
+        if(f.dir[1] === 1) {
+          let s1 = getBlock(x+f.corners[0][0],y+1,z+f.corners[0][2]);
+          let s2 = getBlock(x+f.corners[2][0],y+1,z+f.corners[2][2]);
+          let corner = getBlock(x+f.corners[0][0]+f.corners[2][0]-x,y+1,z+f.corners[0][2]+f.corners[2][2]-z);
+          aoCorners = (s1===BLOCK.AIR?1:0) + (s2===BLOCK.AIR?1:0) + (corner===BLOCK.AIR?1:0);
+          ao = aoCorners > 1 ? 1.0 : aoCorners > 0 ? 0.7 : 0.4;
+        }
+        
+        let nc = [c[0]*cv, c[1]*cv, c[2]*cv];
+        for(let ci=0;ci<4;ci++) {
+          verts.push(
+            x+f.corners[ci][0], y+f.corners[ci][1], z+f.corners[ci][2],
+            f.normal[0], f.normal[1], f.normal[2],
+            nc[0], nc[1], nc[2],
+            ao, light
+          );
+        }
+        indices.push(vi, vi+1, vi+2, vi, vi+2, vi+3);
+        vi += 4;
+      }
+    }
+  }
+
+  // Create buffers
+  const vertData = new Float32Array(verts);
+  const indexData = new Uint32Array(indices);
+  indexCount = indices.length;
+
+  vertexBuf = device.createBuffer({ size: vertData.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  indexBuf = device.createBuffer({ size: indexData.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(vertexBuf, 0, vertData);
+  device.queue.writeBuffer(indexBuf, 0, indexData);
+}
+
+async function init() {
+  if(!navigator.gpu) { alert('WebGPU not supported'); return; }
+  
+  const adapter = await navigator.gpu.requestAdapter();
+  device = await adapter.requestDevice();
+  ctx = canvas.getContext('webgpu');
+  
+  const fmt = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format: fmt, alphaMode: 'premultiplied' });
+  
+  setProgress(10, 'Setting up WebGPU...');
+  generateWorld();
+  
+  setProgress(90, 'Compiling shaders...');
+  
+  const vsModule = device.createShaderModule({ code: document.getElementById('wgsl').textContent });
+  const psModule = device.createShaderModule({ code: document.getElementById('wgsl-post').textContent });
+  
+  // Main render target
+  const rtTexture = device.createTexture({ size: [1920, 1080], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+  
+  uniformBuf = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  postUniformBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  
+  const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+  
+  const bgl = device.createBindGroupLayout({ entries: [
+    { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
+  ]});
+  
+  const postBgl = device.createBindGroupLayout({ entries: [
+    { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+    { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
+  ]});
+  
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+  const postPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [postBgl] });
+  
+  buildMesh();
+  
+  pipeline = device.createRenderPipeline({
+    layout: pipelineLayout,
+    vertex: { module: vsModule, entryPoint: 'vs', buffers: [{ arrayStride: 52, attributes: [
+      { location: 0, offset: 0, format: 'float32x3' },
+      { location: 1, offset: 12, format: 'float32x3' },
+      { location: 2, offset: 24, format: 'float32x3' },
+      { location: 3, offset: 36, format: 'float32' },
+      { location: 4, offset: 40, format: 'float32x3' }
+    ]}]},
+    fragment: { module: vsModule, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
+    primitive: { topology: 'triangle-list' },
+    depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' }
+  });
+  
+  const postVsModule = device.createShaderModule({ code: `
+    struct VOut { @builtin(position) pos: vec4f };
+    @vertex fn vs(@builtin(vertex_index) vi: u32) -> VOut {
+      var p = array<vec2f,6>(vec2f(-1,-1),vec2f(1,-1),vec2f(1,1),vec2f(-1,-1),vec2f(1,1),vec2f(-1,1));
+      var o: VOut; o.pos = vec4f(p[vi], 0, 1); return o;
+    }
+  `});
+  
+  postPipeline = device.createRenderPipeline({
+    layout: postPipelineLayout,
+    vertex: { module: postVsModule, entryPoint: 'vs' },
+    fragment: { module: psModule, entryPoint: 'fs', targets: [{ format: fmt }] },
+    primitive: { topology: 'triangle-list' }
+  });
+  
+  const bg = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: uniformBuf } }] });
+  const postBg = device.createBindGroup({ layout: postBgl, entries: [
+    { binding: 0, resource: sampler },
+    { binding: 1, resource: rtTexture.createView() },
+    { binding: 2, resource: { buffer: postUniformBuf } }
+  ]});
+  
+  const depthTex = device.createTexture({ size: [1920, 1080], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+  
+  setProgress(100, 'Ready!');
+  await new Promise(r => setTimeout(r, 500));
+  document.getElementById('loading').style.display = 'none';
+  
+  // Input
+  canvas.addEventListener('click', () => canvas.requestPointerLock());
+  document.addEventListener('pointerlockchange', () => {
+    locked = document.pointerLockElement === canvas;
+  });
+  document.addEventListener('mousemove', e => {
+    if(!locked) return;
+    camYaw += e.movementX * 0.002;
+    camPitch += e.movementY * 0.002;
+    camPitch = Math.max(-1.5, Math.min(1.5, camPitch));
+  });
+  document.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+  document.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+  
+  // UI
+  document.getElementById('btnFly').onclick = () => { camMode='fly'; updateBtns(); };
+  document.getElementById('btnOrbit').onclick = () => { camMode='orbit'; updateBtns(); };
+  document.getElementById('btnWalk').onclick = () => { camMode='walk'; updateBtns(); };
+  document.getElementById('btnDawn').onclick = () => { todMode=0; updateBtns(); };
+  document.getElementById('btnDay').onclick = () => { todMode=1; updateBtns(); };
+  document.getElementById('btnDusk').onclick = () => { todMode=2; updateBtns(); };
+  document.getElementById('btnNight').onclick = () => { todMode=3; updateBtns(); };
+  document.getElementById('btnBloom').onclick = function() { enableBloom=!enableBloom; this.classList.toggle('active'); };
+  document.getElementById('btnSS').onclick = () => {
+    const blob = await rtTexture.exportToBlob({ format: 'image/png' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'voxel_world.png';
+    a.click();
+  };
+  
+  function updateBtns() {
+    ['btnFly','btnOrbit','btnWalk'].forEach((id,i) => {
+      document.getElementById(id).classList.toggle('active', ['fly','orbit','walk'][i]===camMode);
+    });
+    ['btnDawn','btnDay','btnDusk','btnNight'].forEach((id,i) => {
+      document.getElementById(id).classList.toggle('active', i===todMode);
+    });
+  }
+  
+  // Resize
+  const resize = () => {
+    W = canvas.clientWidth * devicePixelRatio;
+    H = canvas.clientHeight * devicePixelRatio;
+    canvas.width = W;
+    canvas.height = H;
+    ctx.configure({ device, format: fmt });
+  };
+  window.addEventListener('resize', resize);
+  resize();
+  
+  // Animation
+  let lastTime = performance.now();
+  function frame(t) {
+    let dt = Math.min((t - lastTime) / 1000, 0.1);
+    lastTime = t;
+    time += dt;
+    
+    // TOD progression
+    let targetTod = [0.25, 0.5, 0.75, 0.0][todMode];
+    tod += (targetTod - tod) * dt * 0.5;
+    
+    // Camera
+    let speed = camMode === 'walk' ? 15 : 30;
+    let forward = [Math.sin(camYaw)*Math.cos(camPitch), Math.sin(camPitch), Math.cos(camYaw)*Math.cos(camPitch)];
+    let right = [Math.cos(camYaw), 0, -Math.sin(camYaw)];
+    
+    if(camMode === 'orbit') {
+      let radius = 80;
+      camPos[0] = 128 + Math.sin(time*0.3)*radius;
+      camPos[1] = 60 + Math.sin(time*0.2)*20;
+      camPos[2] = 128 + Math.cos(time*0.3)*radius;
+      forward = [128-camPos[0], 30-camPos[1], 128-camPos[2]];
+      let len = Math.sqrt(forward[0]**2+forward[1]**2+forward[2]**2);
+      forward = forward.map(f => f/len);
+    } else {
+      let move = [0,0,0];
+      if(keys['w']||keys['arrowup']) move[0]+=forward[0], move[1]+=forward[1], move[2]+=forward[2];
+      if(keys['s']||keys['arrowdown']) move[0]-=forward[0], move[1]-=forward[1], move[2]-=forward[2];
+      if(keys['a']||keys['arrowleft']) move[0]-=right[0], move[1]-=right[1], move[2]-=right[2];
+      if(keys['d']||keys['arrowright']) move[0]+=right[0], move[1]+=right[1], move[2]+=right[2];
+      if(keys[' ']) move[1] += 1;
+      if(keys['shift']) move[1] -= 1;
+      if(keys['r']) { camPos=[0,80,120]; camYaw=-0.3; camPitch=-0.4; }
+      
+      let ml = Math.sqrt(move[0]**2+move[1]**2+move[2]**2);
+      if(ml > 0) {
+        move = move.map(m => m/ml*speed*dt);
+        camPos[0] += move[0];
+        camPos[1] += move[1];
+        camPos[2] += move[2];
+      }
+      if(camMode === 'walk') {
+        let groundY = hmap[Math.floor(camPos[0])+Math.floor(camPos[2])*256] || 18;
+        if(camPos[1] < groundY+2) camPos[1] = groundY+2;
+      }
+    }
+    
+    // Matrices
+    let aspect = W / H;
+    let fov = 1.2;
+    let f = 1 / Math.tan(fov/2);
+    let proj = new Float32Array([
+      f/aspect, 0, 0, 0,
+      0, f, 0, 0,
+      0, 0, -0.01, -1,
+      0, 0, -0.02, 0
+    ]);
+    
+    let eye = camPos;
+    let target = [eye[0]+forward[0], eye[1]+forward[1], eye[2]+forward[2]];
+    let up = [0,1,0];
+    
+    let zx = eye[0]-target[0], zy = eye[1]-target[1], zz = eye[2]-target[2];
+    let zl = Math.sqrt(zx*zx+zy*zy+zz*zz);
+    zx/=zl; zy/=zl; zz/=zl;
+    
+    let xx = up[1]*zz-up[2]*zy, xy = up[2]*zx-up[0]*zz, xz = up[0]*zy-up[1]*zx;
+    let xl = Math.sqrt(xx*xx+xy*xy+xz*xz);
+    xx/=xl; xy/=xl; xz/=xl;
+    
+    let yx = zy*xz-zz*xy, yy = zz*xx-zx*xz, yz = zx*xy-zy*xx;
+    
+    let view = new Float32Array([
+      xx, yx, zx, 0,
+      xy, yy, zy, 0,
+      xz, yz, zz, 0,
+      -(xx*eye[0]+xy*eye[1]+xz*eye[2]),
+      -(yx*eye[0]+yy*eye[1]+yz*eye[2]),
+      -(zx*eye[0]+zy*eye[1]+zz*eye[2]),
+      1
+    ]);
+    
+    // Update uniforms
+    let uData = new Float32Array(20);
+    uData.set(proj, 0);
+    uData.set(view, 16);
+    uData[16] = camPos[0]; uData[17] = camPos[1]; uData[18] = camPos[2]; uData[19] = time;
+    // Wait, need to properly structure
+    
+    let uBuf = new ArrayBuffer(80);
+    let uF = new Float32Array(uBuf);
+    uF.set(proj, 0);
+    uF.set(view, 16);
+    uF[16] = camPos[0]; uF[17] = camPos[1]; uF[18] = camPos[2]; uF[19] = time;
+    uF[18] = tod;
+    device.queue.writeBuffer(uniformBuf, 0, uBuf);
+    
+    let pBuf = new ArrayBuffer(16);
+    let pF = new Float32Array(pBuf);
+    pF[0] = aspect; pF[1] = time;
+    device.queue.writeBuffer(postUniformBuf, 0, pBuf);
+    
+    // Render
+    const encoder = device.createCommandEncoder();
+    
+    // Main pass
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: rtTexture.createView(), clearValue: {r:0.1,g:0.15,b:0.3,a:1}, loadOp: 'clear', storeOp: 'store' }],
+      depthStencilAttachment: { view: depthTex.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bg);
+    pass.setVertexBuffer(0, vertexBuf);
+    pass.setIndexBuffer(indexBuf, 'uint32');
+    pass.drawIndexed(indexCount);
+    pass.end();
+    
+    // Post pass
+    const postPass = encoder.beginRenderPass({
+      colorAttachments: [{ view: ctx.getCurrentTexture().createView(), clearValue: {r:0,g:0,b:0,a:1}, loadOp: 'clear', storeOp: 'store' }]
+    });
+    postPass.setPipeline(postPipeline);
+    postPass.setBindGroup(0, postBg);
+    postPass.draw(6);
+    postPass.end();
+    
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(frame);
+  }
+  
+  requestAnimationFrame(frame);
+}
+
+init();
+</script>
+</body>
+</html>

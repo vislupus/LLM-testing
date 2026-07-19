@@ -26,8 +26,8 @@ function csvq(s){ gsub(/"/, "\"\"", s); return "\"" s "\"" }
 
 BEGIN {
   prompt=0; in_table=0; need_sep=0;
-  # Always output exactly 31 prompt columns as requested
-  P=31;
+  # Always output exactly 6 prompt columns as requested
+  P=6;
 
   # Clear output files
   close(OUTCSV); close(OUTMD);
