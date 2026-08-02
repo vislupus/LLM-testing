@@ -1230,193 +1230,47 @@ Testing different LLMs to do software tasks
 ### 32 - SVG pagoda with dragon
 **Create a complex standalone SVG illustration of a traditional Chinese pagoda in a beautiful garden. The pagoda should have 7 or 8 floors, inspired by important classical Chinese pagoda architecture. It should be symmetrical, elegant, and highly detailed. The SVG must include layered roofs with curved eaves, decorative tiles, wooden beams, balconies, lanterns, windows, carved ornaments, and traditional Chinese architectural details. Around the pagoda, draw a large Chinese dragon coiling gracefully around the structure. The dragon should have a serpentine body, scales, horns, whiskers, claws, flowing mane, and an expressive face. It should wrap around the pagoda without hiding the entire building. Place the pagoda in a peaceful garden with rocks, bamboo, pine trees, flowers, a small pond, clouds, mist, and decorative pathways. Use gradients, shadows, patterns, and fine line details to make the SVG visually rich and complex. The final result should be a single valid SVG file, scalable, cleanly structured, and readable. Use only SVG elements, no external images. Style: detailed vector art, elegant Chinese fantasy atmosphere, balanced composition, rich colors, gold and red accents, ornamental but clean.**
 
-| Model                 | Score    |
-| --------------------- | -------- |
-| **Gemini 3.1**        | **0/10** |
-| **Gemini 3**          | **0/10** |
-| **Gemini 2.5**        | **0/10** |
-| **ChatGPT 5.5**       | **0/10** |
-| **ChatGPT 5.4**       | **0/10** |
-| **ChatGPT 5.2**       | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **ChatGPT 5**         | **0/10** |
-| **Grok 4.2**          | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.7**   | **0/10** |
-| **Claude Opus 4.6**   | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
-| **Claude Opus 4.1**   | **0/10** |
-| **Glm 5.1**           | **0/10** |
-| **Glm 5**             | **0/10** |
-| **Glm 4.7**           | **0/10** |
-| **Glm 4.6**           | **0/10** |
-| **Kimi K2.6**         | **0/10** |
-| **Kimi K2.5**         | **0/10** |
-| **Kimi K2 Turbo**     | **0/10** |
-| **Deepseek 4**        | **0/10** |
-| **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.7**      | **0/10** |
-| **Мinimax m2.5**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
-| **Qwen 3.6 Max**      | **0/10** |
-| **Qwen 3.6**          | **0/10** |
-| **Qwen 3.5**          | **0/10** |
-| **MiMo-V2**           | **0/10** |
-| **Trinity**           | **2/10** |
-
 ---
 
 ### 33 - SVG infographic
 **Create a single-page static SVG infographic about Japan, 1200×1800, with no JavaScript, no external assets, and no raster images. Use a modern editorial style with an interesting soft background, subtle waves, cards, icons, gradients, labels, and a clean hierarchy. Layout: top title “Japan at a glance”; first row: a stylized map of Japan on the left with the four largest cities placed approximately correctly and labeled: Tokyo, Yokohama, Osaka, Nagoya; on the right, a short explanatory text about Japan. Under this row, add one full-width paragraph. Next row: text on the left and a bar chart on the right showing Japan’s nominal GDP in current US$ trillions for 2015–2024: 2015 4.44, 2016 5.00, 2017 4.93, 2018 5.04, 2019 5.12, 2020 5.05, 2021 5.04, 2022 4.26, 2023 4.21, 2024 4.03. Bottom row: a pie/donut chart on the left for population composition by nationality/ethnic grouping: Japanese 97.5%, Chinese 0.6%, Vietnamese 0.4%, South Korean 0.3%, Other 1.2%; on the right, text about what to visit in Japan: Tokyo, Kyoto, Osaka, Hiroshima/Miyajima, Mount Fuji/Hakone, and Hokkaido. Add legends, concise captions, and a small source note. Final output must be only one valid static SVG document.**
-
-| Model                 | Score    |
-| --------------------- | -------- |
-| **Gemini 3.1**        | **0/10** |
-| **Gemini 3**          | **0/10** |
-| **Gemini 2.5**        | **0/10** |
-| **ChatGPT 5.5**       | **0/10** |
-| **ChatGPT 5.4**       | **0/10** |
-| **ChatGPT 5.2**       | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **ChatGPT 5**         | **0/10** |
-| **Grok 4.2**          | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.7**   | **0/10** |
-| **Claude Opus 4.6**   | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
-| **Claude Opus 4.1**   | **0/10** |
-| **Glm 5.1**           | **0/10** |
-| **Glm 5**             | **0/10** |
-| **Glm 4.7**           | **0/10** |
-| **Glm 4.6**           | **0/10** |
-| **Kimi K2.6**         | **0/10** |
-| **Kimi K2.5**         | **0/10** |
-| **Kimi K2 Turbo**     | **0/10** |
-| **Deepseek 4**        | **0/10** |
-| **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.7**      | **0/10** |
-| **Мinimax m2.5**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
-| **Qwen 3.6 Max**      | **0/10** |
-| **Qwen 3.6**          | **0/10** |
-| **Qwen 3.5**          | **0/10** |
-| **MiMo-V2**           | **0/10** |
-| **Trinity**           | **0/10** |
 
 ---
 
 ### 34 - SVG learning interface
 **Create a single-page static SVG drag-and-drop learning interface for flower anatomy, fully self-contained with no JavaScript, no external assets, and no images. The SVG must simulate interactivity using only structure, layers, visibility toggles, and anchor-based navigation. Design a 1800×1200 SVG styled like a modern textbook UI with soft background gradients, clean typography, and clear educational hierarchy. The screen shows a detailed vector illustration of a flower with arrows pointing to labeled target areas for parts such as petal, sepal, stamen, pistil, anther, filament, ovary, style, stigma, receptacle. Include at least 10 draggable-style label tiles (petal, sepal, stamen, pistil, anther, filament, ovary, style, stigma, receptacle) presented in a word bank as rounded SVG buttons. The layout must include a top title “Flower Anatomy Drag & Drop”, a central diagram area with the flower and empty label slots, a right-side instruction panel explaining the task, and a bottom or side word bank containing the labels. Simulated interactivity must include at least three buttons: Hint, Check Answer, Reset. Each button opens a hidden SVG popup panel implemented with <g> groups toggled via internal links or viewBox shifts. Each popup must have a close button. Add arrows connecting labels to flower parts, with clean infographic styling. Include a small extra educational inset diagram showing pollination or plant reproduction. The entire output must be a single valid SVG document only, fully static, visually rich, and structured to resemble a professional educational tool, with no JavaScript or external dependencies.**
 
-| Model                 | Score    |
-| --------------------- | -------- |
-| **Gemini 3.1**        | **0/10** |
-| **Gemini 3**          | **0/10** |
-| **Gemini 2.5**        | **0/10** |
-| **ChatGPT 5.5**       | **0/10** |
-| **ChatGPT 5.4**       | **0/10** |
-| **ChatGPT 5.2**       | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **ChatGPT 5**         | **0/10** |
-| **Grok 4.2**          | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.7**   | **0/10** |
-| **Claude Opus 4.6**   | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
-| **Claude Opus 4.1**   | **0/10** |
-| **Glm 5.1**           | **0/10** |
-| **Glm 5**             | **0/10** |
-| **Glm 4.7**           | **0/10** |
-| **Glm 4.6**           | **0/10** |
-| **Kimi K2.6**         | **0/10** |
-| **Kimi K2.5**         | **0/10** |
-| **Kimi K2 Turbo**     | **0/10** |
-| **Deepseek 4**        | **0/10** |
-| **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.7**      | **0/10** |
-| **Мinimax m2.5**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
-| **Qwen 3.6 Max**      | **0/10** |
-| **Qwen 3.6**          | **0/10** |
-| **Qwen 3.5**          | **0/10** |
-| **MiMo-V2**           | **0/10** |
-| **Trinity**           | **0/10** |
-
 ---
 
 ### 35 - Biological cell simulation
 **Create a complete 3D WebGPU educational simulation of the interior of a eukaryotic biological cell. The simulation should visualize a detailed 3D cell environment with a semi-transparent cell membrane, nucleus, nucleolus, mitochondria, endoplasmic reticulum, Golgi apparatus, ribosomes, lysosomes, vesicles, cytoskeleton microtubules, centrosomes, and chromosomes. Use realistic but stylized scientific visualization, suitable for education. Particles should represent proteins, RNA, vesicles, enzymes, and signaling molecules. Their movement should follow biologically inspired pathways: protein synthesis by ribosomes, transport through the rough endoplasmic reticulum, vesicle transfer to the Golgi apparatus, secretion toward the cell membrane, mitochondrial energy production, and intracellular transport along microtubules. Include a mitosis mode showing the stages of cell division: interphase, prophase, metaphase, anaphase, telophase, and cytokinesis. Animate chromosome condensation, spindle fiber formation, chromosome alignment, chromosome separation, and cell division. Use WebGPU for rendering and animation. The result should be a single working HTML file containing HTML, CSS, and JavaScript. Do not use external libraries or external assets unless absolutely necessary. Include interactive camera controls, pause/play, speed control, toggles for organelles, and educational annotations that explain what each organelle and process does. The interface should include labels, tooltips, a timeline of cell processes, and a small legend for particle types. The visual style should be high-quality 3D scientific animation: semi-transparent materials, glowing particles, smooth motion, depth, lighting, shadows, and clear color coding. Also include comments in the code explaining the WebGPU setup, rendering pipeline, simulation loop, particle movement system, biological model assumptions, and limitations of the simulation.**
-
-| Model                 | Score    |
-| --------------------- | -------- |
-| **Gemini 3.1**        | **0/10** |
-| **Gemini 3**          | **0/10** |
-| **Gemini 2.5**        | **0/10** |
-| **ChatGPT 5.5**       | **0/10** |
-| **ChatGPT 5.4**       | **0/10** |
-| **ChatGPT 5.2**       | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **ChatGPT 5**         | **0/10** |
-| **Grok 4.2**          | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.7**   | **0/10** |
-| **Claude Opus 4.6**   | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
-| **Claude Opus 4.1**   | **0/10** |
-| **Glm 5.1**           | **0/10** |
-| **Glm 5**             | **0/10** |
-| **Glm 4.7**           | **0/10** |
-| **Glm 4.6**           | **0/10** |
-| **Kimi K2.6**         | **0/10** |
-| **Kimi K2.5**         | **0/10** |
-| **Kimi K2 Turbo**     | **0/10** |
-| **Deepseek 4**        | **0/10** |
-| **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.7**      | **0/10** |
-| **Мinimax m2.5**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
-| **Qwen 3.6 Max**      | **0/10** |
-| **Qwen 3.6**          | **0/10** |
-| **Qwen 3.5**          | **0/10** |
-| **MiMo-V2**           | **0/10** |
-| **Trinity**           | **0/10** |
 
 ---
 
 ### 36 - Voxel world
 **Create or improve a single self-contained HTML file that renders a cinematic Minecraft-inspired medieval fantasy voxel world using pure WebGPU, without external engines. Make it smooth and fully explorable with chunked voxel terrain, optimized hidden-face meshing, fly/walk camera controls, mouse and keyboard navigation, dramatic aerial starting view, cinematic orbit mode, and showcase screenshot mode. Design a handcrafted miniature diorama with a large castle on a terraced hill, moat, bridge, gates, walls, towers, battlements, chapel, royal keep, courtyard, flags, gardens, glowing windows, and torches. Add a dense medieval village by a wide curved river with 25–35 varied houses, curved streets, marketplace, blacksmith, tavern, chapel, farms, docks, boats, watermill, fences, wells, carts, barrels, lanterns, and a stone bridge to the castle road. Surround it with animated reflective water, waterfalls, reeds, varied forests, ruins, caves, cliffs, hills, hidden paths, snowy mountains, mist, lookout posts, watchtowers, and a dramatic volcano with basalt, glowing lava, smoke, ash, dead trees, red lighting, and ancient ruins. Improve the atmosphere with dawn/day/dusk/night buttons, warm sunlight, shadows, fog, atmospheric perspective, color variation, glowing lights, flickering fire, flowing water, moving flags, drifting clouds, birds, optional bloom, tone mapping, and vignette. The final scene should feel coherent, handcrafted, colorful but slightly realistic, impressive immediately on load, and fully explorable like a rich low-poly voxel fantasy map.**
 
-| Model                 | Score    |
-| --------------------- | -------- |
-| **Gemini 3.1**        | **0/10** |
-| **Gemini 3**          | **0/10** |
-| **Gemini 2.5**        | **0/10** |
-| **ChatGPT 5.5**       | **0/10** |
-| **ChatGPT 5.4**       | **0/10** |
-| **ChatGPT 5.2**       | **0/10** |
-| **ChatGPT 5.1**       | **0/10** |
-| **ChatGPT 5**         | **0/10** |
-| **Grok 4.2**          | **0/10** |
-| **Grok 4.1**          | **0/10** |
-| **Claude Opus 4.7**   | **0/10** |
-| **Claude Opus 4.6**   | **0/10** |
-| **Claude Opus 4.5**   | **0/10** |
-| **Claude Opus 4.1**   | **0/10** |
-| **Glm 5.1**           | **0/10** |
-| **Glm 5**             | **0/10** |
-| **Glm 4.7**           | **0/10** |
-| **Glm 4.6**           | **0/10** |
-| **Kimi K2.6**         | **0/10** |
-| **Kimi K2.5**         | **0/10** |
-| **Kimi K2 Turbo**     | **0/10** |
-| **Deepseek 4**        | **0/10** |
-| **Deepseek 3.2**      | **0/10** |
-| **Мinimax m2.7**      | **0/10** |
-| **Мinimax m2.5**      | **0/10** |
-| **Мinimax m2.1**      | **0/10** |
-| **Qwen 3.6 Max**      | **0/10** |
-| **Qwen 3.6**          | **0/10** |
-| **Qwen 3.5**          | **0/10** |
-| **MiMo-V2**           | **0/10** |
-| **Trinity**           | **0/10** |
+---
 
+### 37 - Excalidraw diagram
+**Generate an accurate, visually engaging Excalidraw diagram that clearly explains how Japanese grammar works, including sentence structure, particles, verb and adjective conjugations, and politeness levels. Make it highly visual and logically organized—not just a collection of bullet points or disconnected mini-diagrams. Someone should be able to understand the core system of Japanese grammar simply by looking at it. Provide both a high-resolution PNG export and the editable Excalidraw working file.**
+
+---
+
+### 38 - Constraction simulation
+**Build a general-purpose interactive simulation app where users can create, customize, and test different structures, objects, and systems under configurable conditions such as weight, pressure, movement, wind, rain, and other forces, with clear visual feedback showing stress, weak points, performance, and possible failures. The program should provide an intuitive visual interface, real-time simulation controls, adjustable parameters, and clear analysis of how each design reacts under different conditions. The final result must be a polished, fully working application contained in a single self-contained HTML file with all CSS and JavaScript embedded, requiring no additional files or setup.**
+
+---
+
+### 39 - HyperFrames video
+**Create a 16:9, 90-second cinematic promo video for a 14-day journey through Japan using HyperFrames https://github.com/heygen-com/hyperframes. Feature Tokyo, Nikko, Kyoto, Nara, Osaka, Himeji, Hiroshima, and Miyajima with beautiful images. Use elegant Japanese-inspired design, red and white accents, washi textures, sakura, and clean typography. Add dynamic maps, parallax, kinetic titles, smooth transitions, and subtle calligraphy animations. Generate original Japanese-inspired music and ambient sound effects. Keep captions short and inspiring. End with “14 Days. One Extraordinary Japan.” Render as a polished 1080p MP4.**
+
+---
+
+### 40 - Reveal presentation
+**Create a modern Reveal.js https://github.com/hakimel/reveal.js presentation that works as a cinematic storyboard for an original animated short film. Use a 16:9 format with 10–15 slides, where each slide shows one scene and moves the story forward. Make every slide look like a frame from a beautifully art-directed animated film, with full-screen visuals, strong composition, atmospheric lighting, consistent characters, and minimal text. Add a small scene label with the location, shot type, camera movement, and duration. Include speaker notes for each slide describing the action, emotion, camera, sound, transition, and an AI image-generation prompt. Use subtle Reveal.js transitions and return complete HTML, CSS, and JavaScript code that can be edited, presented, and exported to PDF.**
+
+---
+
+### 41 - Civilisation simulation
+**Build an agent-based civilisation simulation in a single HTML file using p5.js. Create a large procedural world map that fills most of the screen, with terrain, climate zones, resources, settlements, tribes, trade routes, wars, technology, diseases, and autonomous agents with evolving traits and memory. Add controls for pause, reset, map view, maximum population, and simulation speed from 1× to 20×. Include buttons to trigger epidemics, droughts, floods, extreme heat, extreme cold, insect attacks, boredom, migration, trade enthusiasm, and war desire. Allow users to add foreign agents with very different genomes, cultures, technologies, and behaviours. Show live statistics for population, economy, wars, trade, traits, and technology progress. Make cities grow naturally around valuable resources, while alliances, rivalries, plagues, and technological breakthroughs emerge from agent behaviour. Keep the interface clear, responsive, visually engaging, and optimised for large populations. Add zoom, pan, overlays, labels, and event notifications so the user can inspect important changes across the world. Ensure the simulation remains fully autonomous and continues to evolve even when no manual events are triggered.**

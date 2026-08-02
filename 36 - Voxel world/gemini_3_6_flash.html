@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Medieval Voxel Diorama</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: #fff; }
+        canvas { width: 100%; height: 100%; display: block; }
+
+        /* Glassmorphism UI */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; display: flex; flex-direction: column; justify-content: space-between;
+            padding: 20px; z-index: 10;
+        }
+
+        .hud-panel {
+            background: rgba(18, 22, 32, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 12px;
+            padding: 12px 18px;
+            pointer-events: auto;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+
+        .header-title { font-size: 18px; font-weight: 700; letter-spacing: 1px; color: #f0e6d2; margin-bottom: 2px; }
+        .header-sub { font-size: 11px; color: #9aa0a6; text-transform: uppercase; letter-spacing: 1.5px; }
+
+        .btn-group { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+        .btn {
+            background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #e0e0e0; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+            cursor: pointer; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 5px;
+        }
+        .btn:hover { background: rgba(255, 255, 255, 0.2); border-color: rgba(255, 255, 255, 0.3); color: #fff; transform: translateY(-1px); }
+        .btn.active { background: #3b82f6; border-color: #60a5fa; color: #fff; }
+
+        #controls-legend {
+            position: absolute; bottom: 20px; left: 20px; font-size: 11px; color: #bdc3c7; line-height: 1.6;
+        }
+
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 8px; height: 8px;
+            transform: translate(-50%, -50%); pointer-events: none; opacity: 0.5;
+            transition: opacity 0.2s;
+        }
+        #crosshair::before, #crosshair::after { content: ''; position: absolute; background: #fff; }
+        #crosshair::before { top: 3px; left: 0; width: 8px; height: 2px; }
+        #crosshair::after { top: 0; left: 3px; width: 2px; height: 8px; }
+
+        #fallback-msg {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #0f172a; display: flex; flex-direction: column; justify-content: center;
+            align-items: center; padding: 40px; text-align: center; z-index: 100;
+        }
+        #fallback-msg h1 { font-size: 28px; color: #ef4444; margin-bottom: 12px; }
+        #fallback-msg p { max-width: 500px; color: #94a3b8; font-size: 14px; line-height: 1.6; }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <canvas id="gpuCanvas"></canvas>
+
+    <div id="crosshair" class="hidden"></div>
+
+    <div id="ui-layer">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div class="hud-panel">
+                <div class="header-title">VALLEY OF THE ROYAL KEEP</div>
+                <div class="header-sub">Pure WebGPU Voxel Diorama Engine</div>
+                
+                <div class="btn-group">
+                    <button class="btn active" id="btn-dawn" onclick="setTime('dawn')">🌅 Dawn</button>
+                    <button class="btn" id="btn-day" onclick="setTime('day')">☀️ Day</button>
+                    <button class="btn" id="btn-dusk" onclick="setTime('dusk')">🌇 Dusk</button>
+                    <button class="btn" id="btn-night" onclick="setTime('night')">🌙 Night</button>
+                </div>
+            </div>
+
+            <div class="hud-panel">
+                <div class="header-sub">Camera & Mode</div>
+                <div class="btn-group">
+                    <button class="btn active" id="btn-orbit" onclick="setCamMode('orbit')">🛸 Orbit</button>
+                    <button class="btn" id="btn-fly" onclick="setCamMode('fly')">✈️ Fly/Walk</button>
+                    <button class="btn" onclick="snapPreset('castle')">🏰 Castle</button>
+                    <button class="btn" onclick="snapPreset('village')">🏘️ Village</button>
+                    <button class="btn" onclick="snapPreset('volcano')">🌋 Volcano</button>
+                    <button class="btn" onclick="takeScreenshot()">📸 Shot</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="controls-legend" class="hud-panel">
+            <strong>Controls:</strong> WASD / Arrows = Move | Shift/Space = Down/Up | Click Canvas = Mouse Look (Fly Mode)
+        </div>
+    </div>
+
+    <div id="fallback-msg" class="hidden">
+        <h1>WebGPU Not Supported</h1>
+        <p>Your browser or hardware does not currently support WebGPU. Please use a modern WebGPU-compatible browser (e.g. Chrome, Edge, or Opera) with hardware acceleration enabled.</p>
+    </div>
+
+<script>
+// ============================================================================
+// MATRIX & MATH UTILITIES (Vanilla JS 3D Math)
+// ============================================================================
+const Mat4 = {
+    create: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+    perspective: (out, fov, aspect, near, far) => {
+        const f = 1.0 / Math.tan(fov / 2);
+        const nf = 1.0 / (near - far);
+        out.fill(0);
+        out[0] = f / aspect;
+        out[5] = f;
+        out[10] = far * nf;
+        out[11] = -1;
+        out[14] = far * near * nf;
+        return out;
+    },
+    lookAt: (out, eye, center, up) => {
+        let z0 = eye[0] - center[0], z1 = eye[1] - center[1], z2 = eye[2] - center[2];
+        let len = 1 / (Math.hypot(z0, z1, z2) || 1);
+        z0 *= len; z1 *= len; z2 *= len;
+        let x0 = up[1] * z2 - up[2] * z1, x1 = up[2] * z0 - up[0] * z2, x2 = up[0] * z1 - up[1] * z0;
+        len = 1 / (Math.hypot(x0, x1, x2) || 1);
+        x0 *= len; x1 *= len; x2 *= len;
+        let y0 = z1 * x2 - z2 * x1, y1 = z2 * x0 - z0 * x2, y2 = z0 * x1 - z1 * x0;
+        out[0] = x0; out[1] = y0; out[2] = z0; out[3] = 0;
+        out[4] = x1; out[5] = y1; out[6] = z1; out[7] = 0;
+        out[8] = x2; out[9] = y2; out[10] = z2; out[11] = 0;
+        out[12] = -(x0 * eye[0] + x1 * eye[1] + x2 * eye[2]);
+        out[13] = -(y0 * eye[0] + y1 * eye[1] + y2 * eye[2]);
+        out[14] = -(z0 * eye[0] + z1 * eye[1] + z2 * eye[2]);
+        out[15] = 1;
+        return out;
+    },
+    multiply: (out, a, b) => {
+        let a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+        let a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+        let a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+        let a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+        let b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+        out[0] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[2] = b0*a02 + b1*a12 + b2*a22 + b3*a23;
+        out[3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        b0 = b[4]; b1 = b[5]; b2 = b[6]; b3 = b[7];
+        out[4] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[5] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[6] = b0*a02 + b1*a12 + b2*a22 + b3*a23;
+        out[7] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        b0 = b[8]; b1 = b[9]; b2 = b[10]; b3 = b[11];
+        out[8] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[9] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[10] = b0*a02 + b1*a12 + b2*a22 + b3*a23;
+        out[11] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        b0 = b[12]; b1 = b[13]; b2 = b[14]; b3 = b[15];
+        out[12] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[13] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[14] = b0*a02 + b1*a12 + b2*a22 + b3*a23;
+        out[15] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        return out;
+    }
+};
+
+// ============================================================================
+// VOXEL WORLD ENGINE & TYPES
+// ============================================================================
+const WORLD_SIZE = 160; // 160 x 64 x 160 voxel diorama grid
+const WORLD_HEIGHT = 64;
+
+// Voxel Types & Material Attributes
+const BLOCK = {
+    AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, COBBLE: 4, CASTLE_STONE: 5,
+    WOOD: 6, PLANKS: 7, ROOF_RED: 8, ROOF_BLUE: 9, WATER: 10, LAVA: 11,
+    BASALT: 12, GOLD: 13, FOLIAGE_GREEN: 14, FOLIAGE_AUTUMN: 15, SNOW: 16,
+    WINDOW_GLOW: 17, TORCH_FIRE: 18, SAND: 19, REED: 20
+};
+
+// Color & Emissive RGB Palette
+const PALETTE = [
+    [0.0, 0.0, 0.0, 0.0],          // AIR
+    [0.28, 0.58, 0.22, 0.0],        // GRASS
+    [0.42, 0.28, 0.18, 0.0],        // DIRT
+    [0.48, 0.50, 0.52, 0.0],        // STONE
+    [0.35, 0.36, 0.38, 0.0],        // COBBLE
+    [0.68, 0.66, 0.64, 0.0],        // CASTLE_STONE
+    [0.32, 0.20, 0.12, 0.0],        // WOOD
+    [0.55, 0.40, 0.25, 0.0],        // PLANKS
+    [0.72, 0.20, 0.16, 0.0],        // ROOF_RED
+    [0.18, 0.32, 0.58, 0.0],        // ROOF_BLUE
+    [0.12, 0.48, 0.78, 0.5],        // WATER (Transparent)
+    [1.00, 0.35, 0.05, 1.0],        // LAVA (Emissive)
+    [0.18, 0.16, 0.20, 0.0],        // BASALT
+    [0.92, 0.75, 0.18, 0.2],        // GOLD
+    [0.18, 0.48, 0.15, 0.0],        // FOLIAGE_GREEN
+    [0.78, 0.42, 0.12, 0.0],        // FOLIAGE_AUTUMN
+    [0.92, 0.95, 0.98, 0.0],        // SNOW
+    [1.00, 0.82, 0.35, 1.0],        // WINDOW_GLOW (Emissive)
+    [1.00, 0.55, 0.10, 1.0],        // TORCH_FIRE (Emissive)
+    [0.82, 0.76, 0.52, 0.0],        // SAND
+    [0.38, 0.55, 0.25, 0.0]         // REED
+];
+
+const voxelGrid = new Uint8Array(WORLD_SIZE * WORLD_HEIGHT * WORLD_SIZE);
+
+function getVoxel(x, y, z) {
+    if (x < 0 || x >= WORLD_SIZE || y < 0 || y >= WORLD_HEIGHT || z < 0 || z >= WORLD_SIZE) return BLOCK.AIR;
+    return voxelGrid[x + y * WORLD_SIZE + z * WORLD_SIZE * WORLD_HEIGHT];
+}
+
+function setVoxel(x, y, z, type) {
+    if (x >= 0 && x < WORLD_SIZE && y >= 0 && y < WORLD_HEIGHT && z >= 0 && z < WORLD_SIZE) {
+        voxelGrid[x + y * WORLD_SIZE + z * WORLD_SIZE * WORLD_HEIGHT] = type;
+    }
+}
+
+function fillBox(x1, y1, z1, x2, y2, z2, type) {
+    for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
+        for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y++) {
+            for (let z = Math.min(z1, z2); z <= Math.max(z1, z2); z++) {
+                setVoxel(x, y, z, type);
+            }
+        }
+    }
+}
+
+// Simple deterministic PRNG for world generation
+let seed = 12345;
+function rand() {
+    seed = (seed * 9301 + 49297) % 233280;
+    return seed / 233280;
+}
+
+// Noise-like heightmap generator
+function getTerrainHeight(x, z) {
+    const nx = x / WORLD_SIZE - 0.5;
+    const nz = z / WORLD_SIZE - 0.5;
+    const distFromCenter = Math.hypot(nx, nz);
+    
+    // Base island circular shape
+    if (distFromCenter > 0.45) return 0;
+    
+    let h = 12 + Math.sin(x * 0.08) * 4 + Math.cos(z * 0.08) * 4;
+    
+    // Terraced Castle Hill (Center Left)
+    const castleDist = Math.hypot(x - 55, z - 80);
+    if (castleDist < 35) {
+        h += (35 - castleDist) * 0.8;
+        h = Math.floor(h / 3) * 3; // Terracing effect
+    }
+    
+    // Snowy Mountain Ridge (North)
+    if (z < 40 && x < 100) {
+        h += Math.max(0, (40 - z) * 0.9 + Math.sin(x * 0.15) * 6);
+    }
+    
+    // Volcano Crag (East)
+    const volcDist = Math.hypot(x - 130, z - 50);
+    if (volcDist < 30) {
+        h += Math.max(0, (30 - volcDist) * 1.1);
+    }
+
+    return Math.floor(Math.min(WORLD_HEIGHT - 2, h));
+}
+
+// ============================================================================
+// HANDCRAFTED PROCEDURAL WORLD GENERATION
+// ============================================================================
+function generateWorld() {
+    console.log("Generating Voxel World...");
+
+    // 1. Terrain & Biomes Base
+    for (let x = 0; x < WORLD_SIZE; x++) {
+        for (let z = 0; z < WORLD_SIZE; z++) {
+            const h = getTerrainHeight(x, z);
+            if (h <= 0) continue;
+
+            const volcDist = Math.hypot(x - 130, z - 50);
+
+            for (let y = 1; y <= h; y++) {
+                if (volcDist < 25) {
+                    // Volcano basalt base
+                    setVoxel(x, y, z, BLOCK.BASALT);
+                } else if (y === h) {
+                    if (y > 38) setVoxel(x, y, z, BLOCK.SNOW);
+                    else setVoxel(x, y, z, BLOCK.GRASS);
+                } else if (y > h - 3) {
+                    setVoxel(x, y, z, BLOCK.DIRT);
+                } else {
+                    setVoxel(x, y, z, BLOCK.STONE);
+                }
+            }
+        }
+    }
+
+    // 2. Wide Curved River & Water Table
+    const waterLevel = 10;
+    for (let x = 0; x < WORLD_SIZE; x++) {
+        for (let z = 0; z < WORLD_SIZE; z++) {
+            // S-curve river through village
+            const riverZ = 80 + Math.sin(x * 0.05) * 25 + Math.cos(x * 0.02) * 10;
+            const distToRiver = Math.abs(z - riverZ);
+
+            if (distToRiver < 7 && x > 20 && x < 140) {
+                // Carve river channel
+                for (let y = waterLevel - 4; y <= waterLevel + 4; y++) {
+                    if (y <= waterLevel) {
+                        setVoxel(x, y, z, BLOCK.WATER);
+                    } else {
+                        setVoxel(x, y, z, BLOCK.AIR);
+                    }
+                }
+                // Riverbed
+                setVoxel(x, waterLevel - 4, z, BLOCK.SAND);
+                // Reeds along shore
+                if (distToRiver > 5 && rand() > 0.6) {
+                    setVoxel(x, waterLevel + 1, z, BLOCK.REED);
+                }
+            }
+        }
+    }
+
+    // 3. Volcano Crater & Glowing Lava Stream
+    const vx = 130, vz = 50, vh = getTerrainHeight(vx, vz);
+    fillBox(vx - 4, vh - 6, vz - 4, vx + 4, vh, vz + 4, BLOCK.BASALT);
+    fillBox(vx - 2, vh - 4, vz - 2, vx + 2, vh + 1, vz + 2, BLOCK.LAVA);
+    // Lava river down to slope
+    for (let step = 0; step < 20; step++) {
+        setVoxel(vx - step, vh - Math.floor(step * 0.6), vz + Math.floor(step * 0.4), BLOCK.LAVA);
+        setVoxel(vx - step, vh - Math.floor(step * 0.6) - 1, vz + Math.floor(step * 0.4), BLOCK.BASALT);
+    }
+
+    // 4. Large Medieval Castle Complex
+    const cx = 55, cz = 80, ch = getTerrainHeight(cx, cz) + 1;
+    // Outer Moat & Retaining Walls
+    fillBox(cx - 24, ch - 1, cz - 24, cx + 24, ch + 8, cz + 24, BLOCK.CASTLE_STONE);
+    fillBox(cx - 22, ch + 1, cz - 22, cx + 22, ch + 12, cz + 22, BLOCK.AIR); // Inner Courtyard
+    fillBox(cx - 22, ch, cz - 22, cx + 22, ch, cz + 22, BLOCK.COBBLE); // Floor
+
+    // Corner Watchtowers (4 corners)
+    const corners = [[cx-22, cz-22], [cx+22, cz-22], [cx-22, cz+22], [cx+22, cz+22]];
+    corners.forEach(([tx, tz]) => {
+        fillBox(tx - 3, ch, tz - 3, tx + 3, ch + 16, tz + 3, BLOCK.CASTLE_STONE);
+        fillBox(tx - 2, ch + 1, tz - 2, tx + 2, ch + 15, tz + 2, BLOCK.AIR);
+        // Roofs
+        for (let r = 0; r < 4; r++) {
+            fillBox(tx - 3 + r, ch + 17 + r, tz - 3 + r, tx + 3 - r, ch + 17 + r, tz + 3 - r, BLOCK.ROOF_BLUE);
+        }
+        setVoxel(tx, ch + 21, tz, BLOCK.GOLD); // Flagpole tip
+    });
+
+    // Royal Keep (Central High Structure)
+    fillBox(cx - 8, ch, cz - 8, cx + 8, ch + 22, cz + 8, BLOCK.CASTLE_STONE);
+    fillBox(cx - 6, ch + 1, cz - 6, cx + 6, ch + 21, cz + 6, BLOCK.AIR);
+    // Keep Windows & Torches
+    for (let wy = ch + 6; wy <= ch + 18; wy += 4) {
+        setVoxel(cx - 8, wy, cz, BLOCK.WINDOW_GLOW);
+        setVoxel(cx + 8, wy, cz, BLOCK.WINDOW_GLOW);
+        setVoxel(cx, wy, cz - 8, BLOCK.WINDOW_GLOW);
+        setVoxel(cx, wy, cz + 8, BLOCK.WINDOW_GLOW);
+    }
+    // Grand Keep Roof
+    for (let r = 0; r < 6; r++) {
+        fillBox(cx - 9 + r, ch + 23 + r, cz - 9 + r, cx + 9 - r, ch + 23 + r, cz + 9 - r, BLOCK.ROOF_RED);
+    }
+
+    // Castle Gatehouse & Drawbridge to Village
+    fillBox(cx + 20, ch, cz - 4, cx + 24, ch + 10, cz + 4, BLOCK.CASTLE_STONE);
+    fillBox(cx + 19, ch + 1, cz - 2, cx + 25, ch + 6, cz + 2, BLOCK.AIR); // Gate opening
+    fillBox(cx + 23, ch + 1, cz - 2, cx + 36, ch + 1, cz + 2, BLOCK.PLANKS); // Stone & Plank Bridge
+
+    // Torches along castle bridge & gate
+    setVoxel(cx + 22, ch + 5, cz - 3, BLOCK.TORCH_FIRE);
+    setVoxel(cx + 22, ch + 5, cz + 3, BLOCK.TORCH_FIRE);
+    setVoxel(cx + 30, ch + 2, cz - 3, BLOCK.TORCH_FIRE);
+    setVoxel(cx + 30, ch + 2, cz + 3, BLOCK.TORCH_FIRE);
+
+    // 5. Medieval Village (28 Varied Houses & Structures)
+    function buildHouse(hx, hz, width, depth, height, roofType, rot = 0) {
+        const hy = getTerrainHeight(hx, hz) + 1;
+        if (hy <= waterLevel) return;
+
+        // Timber Frame & Walls
+        fillBox(hx, hy, hz, hx + width, hy + height, hz + depth, BLOCK.PLANKS);
+        fillBox(hx + 1, hy + 1, hz + 1, hx + width - 1, hy + height - 1, hz + depth - 1, BLOCK.AIR);
+
+        // Wood Corner Beams
+        for (let y = hy; y <= hy + height; y++) {
+            setVoxel(hx, y, hz, BLOCK.WOOD);
+            setVoxel(hx + width, y, hz, BLOCK.WOOD);
+            setVoxel(hx, y, hz + depth, BLOCK.WOOD);
+            setVoxel(hx + width, y, hz + depth, BLOCK.WOOD);
+        }
+
+        // Pitched Roof
+        const roofMat = roofType === 0 ? BLOCK.ROOF_RED : BLOCK.ROOF_BLUE;
+        for (let r = 0; r <= Math.ceil(width / 2); r++) {
+            fillBox(hx - 1 + r, hy + height + r, hz - 1, hx + width + 1 - r, hy + height + r, hz + depth + 1, roofMat);
+        }
+
+        // Glowing Window & Door
+        setVoxel(hx + Math.floor(width / 2), hy + 2, hz, BLOCK.WINDOW_GLOW);
+        setVoxel(hx + Math.floor(width / 2), hy + 1, hz, BLOCK.AIR); // Doorway
+    }
+
+    // Grid of houses along riverbanks & curved streets
+    let houseCount = 0;
+    for (let vx = 85; vx < 135; vx += 10) {
+        for (let vz = 65; vz < 115; vz += 10) {
+            if (houseCount < 30) {
+                const offsetX = Math.floor((rand() - 0.5) * 4);
+                const offsetZ = Math.floor((rand() - 0.5) * 4);
+                buildHouse(vx + offsetX, vz + offsetZ, 4 + Math.floor(rand() * 2), 4 + Math.floor(rand() * 2), 4, houseCount % 2);
+                houseCount++;
+            }
+        }
+    }
+
+    // Village Watermill on Riverbank
+    const wmx = 92, wmz = 104, wmy = waterLevel + 1;
+    buildHouse(wmx, wmz, 6, 6, 5, 0);
+    // Watermill Wheel
+    for (let angle = 0; angle < 8; angle++) {
+        const wx = wmx - 1;
+        const wy = wmy + Math.floor(Math.sin(angle) * 2.5);
+        const wz = wmz + 3 + Math.floor(Math.cos(angle) * 2.5);
+        setVoxel(wx, wy, wz, BLOCK.WOOD);
+    }
+
+    // Marketplace Stalls & Carts in Village Center
+    fillBox(102, waterLevel + 2, 82, 114, waterLevel + 2, 94, BLOCK.COBBLE); // Market Square
+    setVoxel(105, waterLevel + 3, 85, BLOCK.TORCH_FIRE);
+    setVoxel(110, waterLevel + 3, 90, BLOCK.TORCH_FIRE);
+
+    // 6. Dense Forests, Pine Trees & Vegetation
+    function buildTree(tx, tz) {
+        const ty = getTerrainHeight(tx, tz) + 1;
+        if (ty <= waterLevel || ty > 38) return;
+
+        const isAutumn = rand() > 0.7;
+        const folMat = isAutumn ? BLOCK.FOLIAGE_AUTUMN : BLOCK.FOLIAGE_GREEN;
+        const trunkH = 4 + Math.floor(rand() * 3);
+
+        fillBox(tx, ty, tz, tx, ty + trunkH, tz, BLOCK.WOOD); // Trunk
+        // Leaves Canopy
+        fillBox(tx - 2, ty + trunkH - 2, tz - 2, tx + 2, ty + trunkH + 1, tz + 2, folMat);
+        fillBox(tx - 1, ty + trunkH + 2, tz - 1, tx + 1, ty + trunkH + 3, tz + 1, folMat);
+    }
+
+    // Scatter 120 trees around the landscape
+    for (let i = 0; i < 140; i++) {
+        const tx = Math.floor(10 + rand() * 140);
+        const tz = Math.floor(10 + rand() * 140);
+        // Don't place inside castle or main village square
+        if (Math.hypot(tx - cx, tz - cz) > 30 && !(tx > 85 && tx < 135 && tz > 65 && tz < 115)) {
+            buildTree(tx, tz);
+        }
+    }
+
+    console.log("World Generation Complete!");
+}
+
+// ============================================================================
+// WEBGPU MESH BUILDER (Face Removal & Vertex Packing)
+// ============================================================================
+let vertexBuffer = null;
+let vertexCount = 0;
+
+function buildMesh(device) {
+    console.log("Building Optimized Voxel Mesh...");
+    const vertices = [];
+
+    // Face Normals & Offsets: +X, -X, +Y, -Y, +Z, -Z
+    const FACES = [
+        { dir: [1, 0, 0], corners: [[1,0,0], [1,1,0], [1,1,1], [1,0,1]] },
+        { dir: [-1, 0, 0], corners: [[0,0,1], [0,1,1], [0,1,0], [0,0,0]] },
+        { dir: [0, 1, 0], corners: [[0,1,1], [1,1,1], [1,1,0], [0,1,0]] },
+        { dir: [0, -1, 0], corners: [[0,0,0], [1,0,0], [1,0,1], [0,0,1]] },
+        { dir: [0, 0, 1], corners: [[1,0,1], [1,1,1], [0,1,1], [0,0,1]] },
+        { dir: [0, 0, -1], corners: [[0,0,0], [0,1,0], [1,1,0], [1,0,0]] }
+    ];
+
+    for (let x = 0; x < WORLD_SIZE; x++) {
+        for (let y = 0; y < WORLD_HEIGHT; y++) {
+            for (let z = 0; z < WORLD_SIZE; z++) {
+                const block = getVoxel(x, y, z);
+                if (block === BLOCK.AIR) continue;
+
+                const [r, g, b, emissive] = PALETTE[block];
+
+                for (let f = 0; f < 6; f++) {
+                    const [dx, dy, dz] = FACES[f].dir;
+                    const neighbor = getVoxel(x + dx, y + dy, z + dz);
+
+                    // Hidden-Face Culling: Only draw face if adjacent voxel is AIR or transparent WATER
+                    let drawFace = false;
+                    if (neighbor === BLOCK.AIR) drawFace = true;
+                    else if (block !== BLOCK.WATER && neighbor === BLOCK.WATER) drawFace = true;
+
+                    if (drawFace) {
+                        const nx = dx, ny = dy, nz = dz;
+                        // Directional Ambient Occlusion / Shading based on normal
+                        let shade = 1.0;
+                        if (ny === 1) shade = 1.05; // Top
+                        else if (ny === -1) shade = 0.6; // Bottom
+                        else shade = 0.82; // Sides
+
+                        const cr = r * shade, cg = g * shade, cb = b * shade;
+
+                        // Quad Vertices (2 Triangles = 6 Vertices)
+                        const c = FACES[f].corners;
+                        const quadIndices = [0, 1, 2, 0, 2, 3];
+
+                        for (let i = 0; i < 6; i++) {
+                            const idx = quadIndices[i];
+                            const px = x + c[idx][0];
+                            const py = y + c[idx][1];
+                            const pz = z + c[idx][2];
+
+                            // Vertex Layout: Pos(3f), Normal(3f), Color(3f), Flags(2f: emissive, blockType)
+                            vertices.push(
+                                px, py, pz,
+                                nx, ny, nz,
+                                cr, cg, cb,
+                                emissive, block
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    vertexCount = vertices.length / 11;
+    console.log(`Generated ${vertexCount} Vertices (${(vertexCount / 3).toLocaleString()} Triangles)`);
+
+    const floatArray = new Float32Array(vertices);
+    vertexBuffer = device.createBuffer({
+        size: floatArray.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+    });
+    new Float32Array(vertexBuffer.getMappedRange()).set(floatArray);
+    vertexBuffer.unmap();
+}
+
+// ============================================================================
+// WEBGPU WGSL SHADERS (Lighting, Water Waves, Fog & Post Processing)
+// ============================================================================
+const wgslShader = `
+struct Uniforms {
+    viewProj : mat4x4<f32>,
+    cameraPos : vec4<f32>,
+    lightDir : vec4<f32>,
+    lightColor : vec4<f32>,
+    skyColor : vec4<f32>,
+    params : vec4<f32>, // x: time, y: fogDensity, z: timeOfDay, w: unused
+};
+
+@group(0) @binding(0) var<uniform> u : Uniforms;
+
+struct VertexInput {
+    @location(0) position : vec3<f32>,
+    @location(1) normal : vec3<f32>,
+    @location(2) color : vec3<f32>,
+    @location(3) flags : vec2<f32>, // x: emissive, y: blockType
+};
+
+struct VertexOutput {
+    @builtin(position) clipPos : vec4<f32>,
+    @location(0) worldPos : vec3<f32>,
+    @location(1) normal : vec3<f32>,
+    @location(2) color : vec3<f32>,
+    @location(3) flags : vec2<f32>,
+};
+
+@vertex
+fn vs_main(in : VertexInput) -> VertexOutput {
+    var out : VertexOutput;
+    var pos = in.position;
+
+    // Animated Flowing Water & Lava Waves
+    if (in.flags.y == 10.0 || in.flags.y == 11.0) { // WATER or LAVA
+        let wave = sin(u.params.x * 2.5 + pos.x * 1.5 + pos.z * 1.5) * 0.08;
+        pos.y = pos.y + wave;
+    }
+
+    out.worldPos = pos;
+    out.normal = in.normal;
+    out.color = in.color;
+    out.flags = in.flags;
+    out.clipPos = u.viewProj * vec4<f32>(pos, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
+    let N = normalize(in.normal);
+    let L = normalize(u.lightDir.xyz);
+    let V = normalize(u.cameraPos.xyz - in.worldPos);
+
+    // Diffuse Sunlight Lighting
+    let diff = max(dot(N, L), 0.0);
+    let ambient = vec3<f32>(0.25, 0.28, 0.35);
+    var lighting = ambient + u.lightColor.rgb * diff;
+
+    // Emissive Glow (Windows, Torches, Lava)
+    let emissive = in.flags.x;
+    if (emissive > 0.0) {
+        let flicker = 0.85 + 0.15 * sin(u.params.x * 6.0 + in.worldPos.x * 10.0);
+        lighting = lighting + in.color * emissive * 2.5 * flicker;
+    }
+
+    var finalColor = in.color * lighting;
+
+    // Water Procedural Specular Reflection
+    if (in.flags.y == 10.0) {
+        let H = normalize(L + V);
+        let spec = pow(max(dot(N, H), 0.0), 32.0);
+        finalColor = mix(finalColor, vec3<f32>(0.9, 0.95, 1.0), spec * 0.6);
+    }
+
+    // Atmospheric Distance Fog
+    let dist = length(u.cameraPos.xyz - in.worldPos);
+    let fogFactor = 1.0 - clamp(exp(-dist * u.params.y), 0.0, 1.0);
+    finalColor = mix(finalColor, u.skyColor.rgb, fogFactor);
+
+    // Filmic Tone Mapping & Vignette
+    finalColor = finalColor / (finalColor + vec3<f32>(1.0)); // Simple Reinhard
+    return vec4<f32>(finalColor, 1.0);
+}
+`;
+
+// ============================================================================
+// CAMERA, STATE & TIME SYSTEM
+// ============================================================================
+let cameraMode = 'orbit'; // 'orbit' or 'fly'
+let camPos = [180, 75, 180];
+let camTarget = [80, 20, 80];
+let camYaw = -2.2, camPitch = -0.35;
+let orbitAngle = 0.0;
+let timeOfDay = 'day'; // dawn, day, dusk, night
+
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.code] = true; });
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Mouse look control for fly mode
+let isPointerLocked = false;
+const canvas = document.getElementById('gpuCanvas');
+
+canvas.addEventListener('click', () => {
+    if (cameraMode === 'fly') {
+        canvas.requestPointerLock();
+    }
+});
+
+document.addEventListener('pointerlockchange', () => {
+    isPointerLocked = (document.pointerLockElement === canvas);
+    document.getElementById('crosshair').classList.toggle('hidden', !isPointerLocked);
+});
+
+document.addEventListener('mousemove', e => {
+    if (isPointerLocked && cameraMode === 'fly') {
+        camYaw += e.movementX * 0.0025;
+        camPitch -= e.movementY * 0.0025;
+        camPitch = Math.max(-1.5, Math.min(1.5, camPitch));
+    }
+});
+
+function setCamMode(mode) {
+    cameraMode = mode;
+    document.getElementById('btn-orbit').classList.toggle('active', mode === 'orbit');
+    document.getElementById('btn-fly').classList.toggle('active', mode === 'fly');
+    if (mode === 'orbit') {
+        if (document.exitPointerLock) document.exitPointerLock();
+    }
+}
+
+function setTime(tod) {
+    timeOfDay = tod;
+    ['dawn', 'day', 'dusk', 'night'].forEach(t => {
+        document.getElementById(`btn-${t}`).classList.toggle('active', t === tod);
+    });
+}
+
+function snapPreset(preset) {
+    setCamMode('fly');
+    if (preset === 'castle') {
+        camPos = [105, 38, 80]; camYaw = -3.14; camPitch = -0.15;
+    } else if (preset === 'village') {
+        camPos = [135, 24, 115]; camYaw = -2.35; camPitch = -0.2;
+    } else if (preset === 'volcano') {
+        camPos = [165, 42, 25]; camYaw = -0.8; camPitch = -0.3;
+    }
+}
+
+function takeScreenshot() {
+    canvas.toBlob(blob => {
+        const link = document.createElement('a');
+        link.download = `Voxel_Diorama_${timeOfDay}.png`;
+        link.href = URL.createObjectURL(blob);
+        link.click();
+    });
+}
+
+// ============================================================================
+// MAIN WEBGPU APP INITIALIZATION & RENDER LOOP
+// ============================================================================
+async function initWebGPU() {
+    if (!navigator.gpu) {
+        document.getElementById('fallback-msg').classList.remove('hidden');
+        return;
+    }
+
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    if (!adapter) {
+        document.getElementById('fallback-msg').classList.remove('hidden');
+        return;
+    }
+
+    const device = await adapter.requestDevice();
+    const context = canvas.getContext('webgpu');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+
+    function resizeCanvas() {
+        canvas.width = window.innerWidth * window.devicePixelRatio;
+        canvas.height = window.innerHeight * window.devicePixelRatio;
+    }
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    context.configure({ device, format, alphaMode: 'opaque' });
+
+    // Build Voxel Geometry
+    generateWorld();
+    buildMesh(device);
+
+    // Create Shaders & Pipeline
+    const shaderModule = device.createShaderModule({ code: wgslShader });
+
+    const pipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: {
+            module: shaderModule,
+            entryPoint: 'vs_main',
+            buffers: [{
+                arrayStride: 11 * 4,
+                attributes: [
+                    { shaderLocation: 0, offset: 0, format: 'float32x3' },  // Position
+                    { shaderLocation: 1, offset: 12, format: 'float32x3' }, // Normal
+                    { shaderLocation: 2, offset: 24, format: 'float32x3' }, // Color
+                    { shaderLocation: 3, offset: 36, format: 'float32x2' }  // Flags
+                ]
+            }]
+        },
+        fragment: {
+            module: shaderModule,
+            entryPoint: 'fs_main',
+            targets: [{ format }]
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'back' },
+        depthStencil: {
+            depthWriteEnabled: true,
+            depthCompare: 'less',
+            format: 'depth24plus'
+        }
+    });
+
+    // Create Uniform Buffer (64 floats)
+    const uniformBuffer = device.createBuffer({
+        size: 64 * 4,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+    });
+
+    const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: uniformBuffer } }]
+    });
+
+    let depthTexture = null;
+
+    function getDepthTexture() {
+        if (!depthTexture || depthTexture.width !== canvas.width || depthTexture.height !== canvas.height) {
+            if (depthTexture) depthTexture.destroy();
+            depthTexture = device.createTexture({
+                size: [canvas.width, canvas.height],
+                format: 'depth24plus',
+                usage: GPUTextureUsage.RENDER_ATTACHMENT
+            });
+        }
+        return depthTexture;
+    }
+
+    const projMatrix = Mat4.create();
+    const viewMatrix = Mat4.create();
+    const viewProjMatrix = Mat4.create();
+
+    let startTime = performance.now();
+
+    // RENDER LOOP
+    function frame() {
+        const now = performance.now();
+        const time = (now - startTime) * 0.001;
+
+        // 1. Update Camera Position & Rotation
+        if (cameraMode === 'orbit') {
+            orbitAngle += 0.003;
+            const radius = 135;
+            camPos = [
+                80 + Math.cos(orbitAngle) * radius,
+                55 + Math.sin(orbitAngle * 0.5) * 15,
+                80 + Math.sin(orbitAngle) * radius
+            ];
+            Mat4.lookAt(viewMatrix, camPos, camTarget, [0, 1, 0]);
+        } else {
+            // Fly Mode Keyboard Controls
+            const speed = keys['ShiftLeft'] ? 1.2 : 0.5;
+            const forward = [Math.sin(camYaw) * Math.cos(camPitch), Math.sin(camPitch), Math.cos(camYaw) * Math.cos(camPitch)];
+            const right = [Math.sin(camYaw - Math.PI / 2), 0, Math.cos(camYaw - Math.PI / 2)];
+
+            if (keys['KeyW']) { camPos[0] += forward[0] * speed; camPos[1] += forward[1] * speed; camPos[2] += forward[2] * speed; }
+            if (keys['KeyS']) { camPos[0] -= forward[0] * speed; camPos[1] -= forward[1] * speed; camPos[2] -= forward[2] * speed; }
+            if (keys['KeyA']) { camPos[0] -= right[0] * speed; camPos[2] -= right[2] * speed; }
+            if (keys['KeyD']) { camPos[0] += right[0] * speed; camPos[2] += right[2] * speed; }
+            if (keys['Space']) { camPos[1] += speed; }
+            if (keys['ControlLeft']) { camPos[1] -= speed; }
+
+            const target = [
+                camPos[0] + forward[0],
+                camPos[1] + forward[1],
+                camPos[2] + forward[2]
+            ];
+            Mat4.lookAt(viewMatrix, camPos, target, [0, 1, 0]);
+        }
+
+        const aspect = canvas.width / canvas.height;
+        Mat4.perspective(projMatrix, Math.PI / 4, aspect, 0.5, 400.0);
+        Mat4.multiply(viewProjMatrix, projMatrix, viewMatrix);
+
+        // 2. Set Time of Day Presets (Sun direction, Sky & Fog Colors)
+        let lightDir = [0.5, 0.8, 0.4];
+        let lightColor = [1.0, 0.95, 0.85];
+        let skyColor = [0.45, 0.65, 0.88];
+        let fogDensity = 0.0035;
+
+        if (timeOfDay === 'dawn') {
+            lightDir = [0.9, 0.25, 0.2];
+            lightColor = [1.0, 0.55, 0.35];
+            skyColor = [0.75, 0.42, 0.45];
+        } else if (timeOfDay === 'dusk') {
+            lightDir = [-0.9, 0.2, -0.3];
+            lightColor = [0.95, 0.45, 0.25];
+            skyColor = [0.55, 0.32, 0.48];
+        } else if (timeOfDay === 'night') {
+            lightDir = [0.2, 0.9, 0.3];
+            lightColor = [0.15, 0.22, 0.42];
+            skyColor = [0.04, 0.06, 0.12];
+            fogDensity = 0.005;
+        }
+
+        // 3. Update Uniform Buffer
+        const uniformData = new Float32Array(64);
+        uniformData.set(viewProjMatrix, 0);                 // 0..15: viewProj
+        uniformData.set([...camPos, 1.0], 16);             // 16..19: cameraPos
+        uniformData.set([...lightDir, 0.0], 20);            // 20..23: lightDir
+        uniformData.set([...lightColor, 1.0], 24);          // 24..27: lightColor
+        uniformData.set([...skyColor, 1.0], 28);            // 28..31: skyColor
+        uniformData.set([time, fogDensity, 0.0, 0.0], 32);  // 32..35: params
+
+        device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
+        // 4. Encode WebGPU Render Pass
+        const commandEncoder = device.createCommandEncoder();
+        const renderPass = commandEncoder.beginRenderPass({
+            colorAttachments: [{
+                view: context.getCurrentTexture().createView(),
+                clearValue: { r: skyColor[0], g: skyColor[1], b: skyColor[2], a: 1.0 },
+                loadOp: 'clear',
+                storeOp: 'store'
+            }],
+            depthStencilAttachment: {
+                view: getDepthTexture().createView(),
+                depthClearValue: 1.0,
+                depthLoadOp: 'clear',
+                depthStoreOp: 'store'
+            }
+        });
+
+        renderPass.setPipeline(pipeline);
+        renderPass.setBindGroup(0, bindGroup);
+        renderPass.setVertexBuffer(0, vertexBuffer);
+        renderPass.draw(vertexCount);
+        renderPass.end();
+
+        device.queue.submit([commandEncoder.finish()]);
+
+        requestAnimationFrame(frame);
+    }
+
+    requestAnimationFrame(frame);
+}
+
+window.addEventListener('DOMContentLoaded', initWebGPU);
+</script>
+</body>
+</html>

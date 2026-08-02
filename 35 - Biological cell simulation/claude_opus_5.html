@@ -1,0 +1,2316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cell Interior — a WebGPU model of a eukaryotic cell</title>
+<style>
+/* ============================================================================
+   DESIGN TOKENS
+   Palette is borrowed from false-colour electron microscopy: deep vacuum navy,
+   cool slate instrument panels, an amber "energy/process" accent and a cyan
+   "structure/transport" accent. Type pairs an instrument-panel sans (wide
+   tracking, uppercase, small) with a textbook-plate serif for the annotations,
+   and a monospace utility face for counts and timings.
+   ========================================================================== */
+:root{
+  --void:#04070d;
+  --deep:#080d17;
+  --panel:rgba(11,18,30,.80);
+  --panel-solid:#0b121e;
+  --line:rgba(120,160,200,.18);
+  --line-strong:rgba(140,190,235,.34);
+  --ink:#dce7f2;
+  --ink-dim:#8ea3b8;
+  --ink-faint:#5b6e82;
+  --amber:#ffb454;
+  --cyan:#54ccf0;
+  --magenta:#f472b6;
+  --green:#7ee787;
+  --violet:#c084fc;
+  --red:#ff6b6b;
+  --sans:"Helvetica Neue",Helvetica,Arial,system-ui,sans-serif;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --pad:14px;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--void);
+  color:var(--ink);
+  font-family:var(--sans);
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+canvas#gpu{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+/* ambient vignette so the cell reads as suspended in medium */
+#vignette{position:fixed;inset:0;pointer-events:none;
+  background:radial-gradient(120% 90% at 50% 45%,rgba(20,60,110,.10) 0%,rgba(4,7,13,.35) 55%,rgba(2,4,8,.92) 100%)}
+
+/* ---------- shared panel treatment ---------- */
+.panel{
+  position:fixed;z-index:5;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:2px;
+  backdrop-filter:blur(14px) saturate(1.2);
+  -webkit-backdrop-filter:blur(14px) saturate(1.2);
+  box-shadow:0 18px 50px rgba(0,0,0,.55);
+}
+.eyebrow{
+  font-size:9px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600;
+}
+.rule{height:1px;background:var(--line);margin:10px 0}
+
+/* ---------- masthead ---------- */
+#masthead{top:0;left:0;padding:12px 18px 11px;border-left:0;border-top:0;max-width:min(52vw,460px)}
+#masthead h1{
+  margin:2px 0 0;font-size:17px;font-weight:400;letter-spacing:.02em;
+  font-family:var(--serif);
+}
+#masthead h1 em{font-style:normal;color:var(--cyan)}
+#masthead p{margin:5px 0 0;font-size:11.5px;line-height:1.45;color:var(--ink-dim);font-family:var(--serif)}
+
+/* ---------- control column ---------- */
+#controls{top:0;right:0;width:262px;max-height:100vh;overflow-y:auto;
+  padding:12px var(--pad) 16px;border-right:0;border-top:0}
+#controls::-webkit-scrollbar{width:6px}
+#controls::-webkit-scrollbar-thumb{background:var(--line-strong)}
+.group{margin-bottom:14px}
+.group>.eyebrow{display:block;margin-bottom:8px}
+
+.seg{display:flex;border:1px solid var(--line-strong);border-radius:2px;overflow:hidden}
+.seg button{
+  flex:1;background:transparent;border:0;color:var(--ink-dim);
+  font-family:var(--sans);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  padding:8px 4px;cursor:pointer;transition:background .15s,color .15s
+}
+.seg button+button{border-left:1px solid var(--line-strong)}
+.seg button[aria-pressed="true"]{background:rgba(84,204,240,.16);color:var(--cyan)}
+.seg button:hover{background:rgba(84,204,240,.09);color:var(--ink)}
+.seg button:focus-visible{outline:2px solid var(--amber);outline-offset:-2px}
+
+.row{display:flex;align-items:center;gap:10px;margin:9px 0}
+.row label{font-size:11px;color:var(--ink-dim);flex:0 0 62px;letter-spacing:.04em}
+.row output{font-family:var(--mono);font-size:11px;color:var(--amber);flex:0 0 44px;text-align:right}
+input[type=range]{flex:1;-webkit-appearance:none;appearance:none;height:2px;background:var(--line-strong);border-radius:2px;outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;
+  background:var(--amber);cursor:pointer;box-shadow:0 0 0 3px rgba(255,180,84,.18)}
+input[type=range]::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;background:var(--amber);cursor:pointer}
+input[type=range]:focus-visible{box-shadow:0 0 0 2px var(--amber)}
+
+.toggles{display:grid;grid-template-columns:1fr 1fr;gap:2px 10px}
+.tg{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--ink-dim);
+  cursor:pointer;padding:3px 0;user-select:none}
+.tg:hover{color:var(--ink)}
+.tg input{position:absolute;opacity:0;width:0;height:0}
+.swatch{width:9px;height:9px;flex:0 0 9px;border-radius:1px;border:1px solid rgba(255,255,255,.25);
+  transition:box-shadow .15s,opacity .15s;opacity:.28}
+.tg input:checked+.swatch{opacity:1;box-shadow:0 0 8px currentColor}
+.tg input:focus-visible+.swatch{outline:2px solid var(--amber);outline-offset:2px}
+.tg input:checked~span{color:var(--ink)}
+
+/* ---------- annotation / reading panel ---------- */
+#reader{left:0;bottom:118px;width:min(330px,42vw);padding:12px var(--pad) 14px;border-left:0}
+#reader h2{margin:6px 0 2px;font-family:var(--serif);font-size:15px;font-weight:400;letter-spacing:.01em}
+#reader .tagline{font-size:10px;color:var(--ink-faint);letter-spacing:.06em;margin-bottom:8px;font-family:var(--mono)}
+#reader p{margin:0 0 8px;font-family:var(--serif);font-size:12.5px;line-height:1.58;color:#c3d2e2}
+#reader p:last-child{margin-bottom:0}
+#reader .fact{border-left:2px solid var(--amber);padding-left:9px;color:var(--ink-dim);font-size:11.5px}
+#reader .hint{font-family:var(--sans);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint)}
+
+/* ---------- footer: the process ladder / mitosis strip ---------- */
+#deck{left:0;right:0;bottom:0;padding:10px 16px 12px;border-left:0;border-right:0;border-bottom:0;
+  display:flex;flex-direction:column;gap:8px}
+#deckhead{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+#deckhead .eyebrow{white-space:nowrap}
+#deckhead .meta{font-family:var(--mono);font-size:10px;color:var(--ink-faint);letter-spacing:.06em}
+
+#ladder{display:flex;align-items:stretch;gap:0;overflow-x:auto;scrollbar-width:none}
+#ladder::-webkit-scrollbar{display:none}
+.stage{
+  flex:1 1 0;min-width:104px;position:relative;padding:6px 10px 4px;
+  border-left:1px solid var(--line);cursor:pointer;background:transparent;text-align:left;
+  color:inherit;font-family:inherit;transition:background .2s
+}
+.stage:first-child{border-left:0}
+.stage:hover{background:rgba(84,204,240,.06)}
+.stage:focus-visible{outline:1px solid var(--amber);outline-offset:-1px}
+.stage .idx{font-family:var(--mono);font-size:9px;color:var(--ink-faint);letter-spacing:.1em}
+.stage .nm{display:block;font-size:11px;letter-spacing:.03em;margin-top:2px;color:var(--ink-dim);line-height:1.25}
+.stage .ct{display:block;font-family:var(--mono);font-size:10px;margin-top:3px;color:var(--ink-faint)}
+.stage .bar{position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--amber);transition:width .12s linear}
+.stage[data-on="1"] .nm{color:var(--ink)}
+.stage[data-on="1"] .idx{color:var(--amber)}
+.stage[data-on="1"]{background:rgba(255,180,84,.07)}
+
+/* ---------- legend ---------- */
+#legendbox{position:fixed;z-index:5;left:16px;bottom:118px}
+.legend-list{display:flex;flex-wrap:wrap;gap:4px 14px;padding-top:2px}
+.lg{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--ink-dim);letter-spacing:.02em}
+.dot{width:8px;height:8px;border-radius:50%;box-shadow:0 0 7px currentColor;background:currentColor}
+
+/* ---------- floating labels over the 3D scene ---------- */
+#labels{position:fixed;inset:0;pointer-events:none;z-index:3}
+.lbl{
+  position:absolute;transform:translate(-50%,-50%);white-space:nowrap;
+  font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);
+  text-shadow:0 0 10px rgba(0,0,0,.95),0 0 3px rgba(0,0,0,1);
+  padding-left:13px;opacity:0;transition:opacity .25s
+}
+.lbl::before{content:"";position:absolute;left:0;top:50%;width:8px;height:1px;background:currentColor;opacity:.65}
+.lbl::after{content:"";position:absolute;left:-3px;top:calc(50% - 2.5px);width:5px;height:5px;border-radius:50%;
+  border:1px solid currentColor;opacity:.9}
+
+/* ---------- tooltip ---------- */
+#tip{
+  position:fixed;z-index:8;pointer-events:none;opacity:0;transition:opacity .12s;
+  background:rgba(6,11,20,.94);border:1px solid var(--line-strong);border-radius:2px;
+  padding:7px 10px;max-width:250px;box-shadow:0 10px 30px rgba(0,0,0,.6)
+}
+#tip .t{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--cyan)}
+#tip .d{font-family:var(--serif);font-size:11.5px;line-height:1.45;color:var(--ink-dim);margin-top:3px}
+#tip .k{font-family:var(--mono);font-size:9px;color:var(--ink-faint);margin-top:5px;letter-spacing:.08em}
+
+/* ---------- utility ---------- */
+#uiToggle{position:fixed;z-index:9;right:12px;bottom:126px;width:34px;height:34px;
+  background:var(--panel);border:1px solid var(--line-strong);color:var(--ink-dim);
+  border-radius:2px;cursor:pointer;font-size:14px;line-height:1;backdrop-filter:blur(10px)}
+#uiToggle:hover{color:var(--cyan)}
+body.hideui .panel,body.hideui #legendbox{opacity:0;pointer-events:none}
+.panel,#legendbox{transition:opacity .3s}
+
+#fatal{position:fixed;inset:0;z-index:20;display:none;place-items:center;background:var(--void);padding:32px}
+#fatal .in{max-width:520px}
+#fatal h2{font-family:var(--serif);font-weight:400;font-size:22px;margin:0 0 10px}
+#fatal p{font-family:var(--serif);font-size:14px;line-height:1.6;color:var(--ink-dim)}
+#fatal code{font-family:var(--mono);font-size:12px;color:var(--amber)}
+
+#boot{position:fixed;inset:0;z-index:15;display:grid;place-items:center;background:var(--void);
+  transition:opacity .5s;font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--ink-faint)}
+
+@media (max-width:900px){
+  #masthead{max-width:none;right:0;border-right:0}
+  #masthead p{display:none}
+  #controls{top:auto;bottom:0;left:0;right:0;width:auto;max-height:46vh;border:0;border-top:1px solid var(--line)}
+  #reader{display:none}
+  #deck{bottom:auto;top:56px;border-top:1px solid var(--line)}
+  #legendbox{display:none}
+  #uiToggle{bottom:auto;top:60px;right:8px}
+  .toggles{grid-template-columns:1fr 1fr 1fr}
+}
+@media (prefers-reduced-motion:reduce){*{transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+
+<canvas id="gpu"></canvas>
+<div id="vignette"></div>
+<div id="labels"></div>
+
+<!-- ── masthead ─────────────────────────────────────────────────────────── -->
+<header class="panel" id="masthead">
+  <span class="eyebrow">Interactive model · WebGPU</span>
+  <h1>Inside a <em>eukaryotic cell</em></h1>
+  <p>A living cross-section: molecules are traced from gene to secretion, and the whole cell can be
+     driven through one round of division. Drag to orbit, scroll to zoom, click any structure to read about it.</p>
+</header>
+
+<!-- ── controls ─────────────────────────────────────────────────────────── -->
+<aside class="panel" id="controls">
+  <div class="group">
+    <span class="eyebrow">Cell state</span>
+    <div class="seg" role="group" aria-label="Cell state">
+      <button id="modeLife" aria-pressed="true">Metabolism</button>
+      <button id="modeMitosis" aria-pressed="false">Division</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <span class="eyebrow">Playback</span>
+    <div class="seg" role="group" aria-label="Playback">
+      <button id="btnPlay" aria-pressed="true">Pause</button>
+      <button id="btnStep">Step</button>
+      <button id="btnReset">Restart</button>
+    </div>
+    <div class="row">
+      <label for="speed">Speed</label>
+      <input id="speed" type="range" min="0" max="300" value="100">
+      <output id="speedOut">1.00×</output>
+    </div>
+    <div class="row">
+      <label for="density">Crowding</label>
+      <input id="density" type="range" min="0" max="100" value="55">
+      <output id="densityOut">55%</output>
+    </div>
+  </div>
+
+  <div class="group">
+    <span class="eyebrow">Structures</span>
+    <div class="toggles" id="toggles"></div>
+  </div>
+
+  <div class="group">
+    <span class="eyebrow">View</span>
+    <div class="toggles">
+      <label class="tg"><input type="checkbox" id="tLabels" checked><i class="swatch" style="color:#54ccf0;background:#54ccf0"></i><span>Labels</span></label>
+      <label class="tg"><input type="checkbox" id="tParticles" checked><i class="swatch" style="color:#ffb454;background:#ffb454"></i><span>Molecules</span></label>
+      <label class="tg"><input type="checkbox" id="tClip" ><i class="swatch" style="color:#c084fc;background:#c084fc"></i><span>Cutaway</span></label>
+      <label class="tg"><input type="checkbox" id="tSpin" checked><i class="swatch" style="color:#7ee787;background:#7ee787"></i><span>Auto-orbit</span></label>
+    </div>
+    <div class="rule"></div>
+    <div class="row" style="justify-content:space-between">
+      <span class="eyebrow">Frame</span>
+      <span class="meta" id="stats" style="font-family:var(--mono);font-size:10px;color:var(--ink-faint)">—</span>
+    </div>
+  </div>
+</aside>
+
+<!-- ── annotation reader ───────────────────────────────────────────────── -->
+<section class="panel" id="reader" aria-live="polite">
+  <span class="eyebrow" id="readerKind">Orientation</span>
+  <h2 id="readerTitle">The cell as a factory</h2>
+  <div class="tagline" id="readerTag">~20 µm across · shown ~2,000,000×</div>
+  <div id="readerBody"></div>
+</section>
+
+<!-- ── legend ──────────────────────────────────────────────────────────── -->
+<div id="legendbox">
+  <span class="eyebrow">Molecules</span>
+  <div class="legend-list" id="legendList"></div>
+</div>
+
+<!-- ── process ladder / mitosis strip ──────────────────────────────────── -->
+<footer class="panel" id="deck">
+  <div id="deckhead">
+    <span class="eyebrow" id="deckTitle">Secretory pathway · live molecule census</span>
+    <span class="meta" id="deckMeta">—</span>
+  </div>
+  <div id="ladder"></div>
+</footer>
+
+<button id="uiToggle" title="Hide interface (H)" aria-label="Hide interface">◧</button>
+<div id="tip" role="tooltip"><div class="t"></div><div class="d"></div><div class="k"></div></div>
+
+<div id="fatal"><div class="in">
+  <h2>This model needs WebGPU</h2>
+  <p id="fatalMsg">Your browser did not provide a <code>navigator.gpu</code> device. Chrome 113+, Edge 113+,
+  or Safari 18+ on a machine with a supported GPU will run it. If you are on Linux, you may need to enable
+  <code>chrome://flags/#enable-unsafe-webgpu</code>.</p>
+</div></div>
+<div id="boot">Compiling pipelines…</div>
+
+<script>
+"use strict";
+/* ============================================================================
+ *  INSIDE A EUKARYOTIC CELL — a single-file WebGPU teaching model
+ *  ---------------------------------------------------------------------------
+ *  Contents
+ *    §0  Biological model: constants, colour code, annotation text
+ *    §1  Small matrix / vector maths library (no dependencies)
+ *    §2  Procedural geometry (sphere, cylinder, torus) packed into one buffer
+ *    §3  Static scene layout — where every organelle sits (seeded, so it is
+ *        identical on every reload)
+ *    §4  Particle system — biologically inspired state machines
+ *    §5  Mitosis state machine
+ *    §6  WGSL shaders
+ *    §7  WebGPU device / pipeline / resource setup
+ *    §8  Per-frame instance assembly (CPU) and the render loop (GPU)
+ *    §9  Camera, picking, and the HTML interface
+ *
+ *  A note on what this is and is not:  every number here is chosen for
+ *  legibility, not fidelity.  See "LIMITATIONS" at the bottom of this file.
+ * ========================================================================== */
+
+/* ===========================================================================
+ * §0  BIOLOGICAL MODEL — constants, palette, and the text shown to the reader
+ * ======================================================================== */
+
+const CELL_R   = 10.0;   // cell radius in model units (stands in for ~10 µm)
+const NUC_R    = 3.2;    // nuclear radius
+const NUCLEOLUS_R = 1.05;
+const GOLGI_C  = [5.5, -2.3, -2.1];   // centre of the Golgi stack
+const CENTRO_C = [2.4, 2.6, 1.6];     // interphase centrosome (MTOC)
+
+/* Colour code — every structure and molecule has one colour, used in the 3D
+ * scene, the toggles and the legend, so the reader only has to learn it once. */
+const C = {
+  membrane : [0.42, 0.72, 0.95],
+  nucleus  : [0.36, 0.50, 0.92],
+  nucleolus: [0.55, 0.36, 0.85],
+  chromatin: [0.62, 0.55, 0.92],
+  chromosome:[0.85, 0.45, 0.75],
+  mito     : [1.00, 0.46, 0.28],
+  rer      : [0.42, 0.62, 0.90],
+  ser      : [0.36, 0.80, 0.80],
+  golgi    : [0.96, 0.45, 0.72],
+  ribosome : [0.55, 0.90, 0.55],
+  lysosome : [0.72, 0.42, 0.95],
+  microtub : [0.45, 0.85, 0.92],
+  centro   : [0.98, 0.82, 0.42],
+  spindle  : [0.60, 0.90, 1.00],
+};
+const hex = c => '#' + c.map(v => Math.round(Math.min(1,v)*255).toString(16).padStart(2,'0')).join('');
+
+/* Particle colours, doubling as the legend */
+const PC = {
+  mrna     : [1.00, 0.82, 0.40],
+  protein  : [0.49, 0.91, 0.53],
+  transport: [0.33, 0.80, 0.94],
+  secretory: [0.96, 0.45, 0.72],
+  atp      : [1.00, 0.95, 0.62],
+  enzyme   : [0.76, 0.52, 0.99],
+  signal   : [1.00, 0.42, 0.42],
+  cargo    : [0.63, 0.91, 0.90],
+};
+const LEGEND = [
+  ['mrna',      'mRNA transcript'],
+  ['protein',   'Nascent protein'],
+  ['transport', 'Transport vesicle'],
+  ['secretory', 'Secretory vesicle'],
+  ['atp',       'ATP'],
+  ['enzyme',    'Hydrolytic enzyme'],
+  ['signal',    'Signal molecule'],
+  ['cargo',     'Motor-driven cargo'],
+];
+
+/* Structures the reader can switch on and off, hover, click and read about. */
+const STRUCTURES = [
+  { id:'membrane',   name:'Plasma membrane', colour:C.membrane, on:true,
+    tag:'Phospholipid bilayer · ~7 nm thick',
+    body:[`A double sheet of phospholipids with proteins floating in it. It is the cell's border control: small
+           uncharged molecules slip through, everything else needs a channel, a pump or a vesicle.`,
+          `Watch the pink secretory vesicles arrive from the Golgi and disappear into it — that is exocytosis,
+           the vesicle membrane merging with the cell membrane and spilling its cargo outside.`],
+    fact:'Roughly half the mass of the membrane is protein, not lipid.' },
+
+  { id:'nucleus',    name:'Nucleus', colour:C.nucleus, on:true,
+    tag:'~6 µm · double membrane, perforated',
+    body:[`The archive. Nearly all the cell's DNA sits here, wrapped around histone proteins as chromatin and
+           kept behind a double membrane called the nuclear envelope.`,
+          `The envelope is studded with nuclear pore complexes — the small rings on its surface. RNA leaves through
+           them; proteins with the right address tag are let in.`],
+    fact:'A pore is a 120-nm machine built from about 30 different proteins.' },
+
+  { id:'nucleolus',  name:'Nucleolus', colour:C.nucleolus, on:true,
+    tag:'Dense, membrane-free region',
+    body:[`Not a compartment but a crowd: the place where ribosomal RNA is transcribed and packed together with
+           proteins into ribosome subunits.`,
+          `The subunits are exported through the pores and only meet on an mRNA in the cytoplasm.`],
+    fact:'A growing human cell can build 7,500 ribosomes every minute.' },
+
+  { id:'chromatin',  name:'Chromatin', colour:C.chromatin, on:true,
+    tag:'DNA + histones · interphase form',
+    body:[`During interphase the DNA is unspooled and loosely tangled so that the transcription machinery can
+           reach the genes it needs. It is far too thin to see as separate chromosomes.`,
+          `Switch to Division and watch it condense — 2 m of DNA collapsing into compact rods that can be
+           dragged around without snapping.`],
+    fact:'Stretched end to end, the DNA in one human cell is about two metres long.' },
+
+  { id:'mito',       name:'Mitochondria', colour:C.mito, on:true,
+    tag:'1–2 µm · own DNA · double membrane',
+    body:[`Where sugar and oxygen are turned into ATP. The folded inner membrane — the cristae you can see inside
+           each one — carries the electron transport chain that drives the process.`,
+          `Yellow ATP particles stream out of them and diffuse through the cytosol; everything else in this model
+           is, ultimately, spending them.`],
+    fact:'Mitochondria carry their own circular genome — a relic of a free-living bacterium.' },
+
+  { id:'rer',        name:'Rough ER', colour:C.rer, on:true,
+    tag:'Ribosome-studded cisternae',
+    body:[`Flattened sacs wrapped around the nucleus, covered in ribosomes. Proteins destined for secretion, for
+           the membrane, or for lysosomes are threaded into the ER lumen as they are made.`,
+          `Inside, they fold, get sugar chains added and are quality-checked. Only correctly folded ones are
+           packaged into transport vesicles at the ER exit sites.`],
+    fact:'About one third of all proteins a cell makes pass through the ER.' },
+
+  { id:'ser',        name:'Smooth ER', colour:C.ser, on:true,
+    tag:'Tubular · no ribosomes',
+    body:[`The tubular network with no ribosomes on it. It builds lipids and steroids, stores calcium, and in liver
+           cells detoxifies drugs and alcohol.`],
+    fact:'Muscle cells have a specialised version that releases the calcium triggering each contraction.' },
+
+  { id:'golgi',      name:'Golgi apparatus', colour:C.golgi, on:true,
+    tag:'Stacked cisternae · cis → trans',
+    body:[`The dispatch department. Vesicles from the ER fuse with the cis face; the cargo is modified stack by
+           stack, then sorted at the trans face into vesicles addressed to the membrane, to lysosomes, or back
+           to the ER.`,
+          `Follow one cyan vesicle in: it enters on the near face and leaves the far side as a pink secretory
+           vesicle.`],
+    fact:'The sugar chains added here act as postal codes for each protein.' },
+
+  { id:'ribosome',   name:'Ribosomes', colour:C.ribosome, on:true,
+    tag:'~25 nm · RNA + protein machine',
+    body:[`Two-subunit machines that read mRNA three letters at a time and add the matching amino acid. Free
+           ribosomes make proteins for the cytosol; ER-bound ribosomes make proteins for export.`],
+    fact:'The chemistry of peptide-bond formation is done by RNA, not protein — ribosomes are ribozymes.' },
+
+  { id:'lysosome',   name:'Lysosomes', colour:C.lysosome, on:true,
+    tag:'pH ~4.5 · ~60 hydrolases',
+    body:[`Acidic recycling vessels. Proton pumps keep the inside at pH 4.5, where their digestive enzymes work
+           and where — usefully — any leaked enzyme immediately stops working.`,
+          `The violet enzyme particles are confined to them for exactly that reason.`],
+    fact:'Their enzymes would be nearly inactive at the cytosol\u2019s neutral pH.' },
+
+  { id:'microtub',   name:'Microtubules', colour:C.microtub, on:true,
+    tag:'25 nm hollow tubes of tubulin',
+    body:[`The cell's rails and scaffolding. Kinesin motors walk cargo outward along them toward the membrane;
+           dynein walks the other way.`,
+          `The teal cargo particles here are riding them. In division the same tubulin is dismantled and rebuilt
+           into the mitotic spindle.`],
+    fact:'A microtubule end can grow and shrink many times a minute — "dynamic instability".' },
+
+  { id:'centro',     name:'Centrosome', colour:C.centro, on:true,
+    tag:'Two centrioles at right angles',
+    body:[`The main microtubule organising centre. It is duplicated once per cell cycle; in division the two
+           copies move to opposite poles and become the anchors of the spindle.`],
+    fact:'Plant cells build a perfectly good spindle without centrosomes at all.' },
+
+  { id:'chromosome', name:'Chromosomes', colour:C.chromosome, on:false,
+    tag:'Condensed · visible only in division',
+    body:[`Each condensed chromosome is two identical sister chromatids joined at the centromere — the DNA was
+           copied before division began.`,
+          `They only exist in this compact form for the hour or so that division takes.`],
+    fact:'Shown here as 6 chromosomes for clarity; a human cell condenses 46.' },
+];
+const SMAP = Object.fromEntries(STRUCTURES.map(s => [s.id, s]));
+
+/* Steps of the secretory pathway — the footer ladder, and the particle states */
+const STAGES = [
+  { key:'transcription', name:'Transcription',     where:'Nucleus',
+    text:'RNA polymerase copies a gene into messenger RNA.' },
+  { key:'export',        name:'Nuclear export',    where:'Nuclear pore',
+    text:'The transcript is threaded through a nuclear pore into the cytosol.' },
+  { key:'translation',   name:'Translation',       where:'Ribosome',
+    text:'A ribosome reads the mRNA and builds the protein, docking onto the ER as it goes.' },
+  { key:'folding',       name:'Folding in the ER', where:'Rough ER',
+    text:'The chain folds, gets sugar chains, and is quality-checked in the ER lumen.' },
+  { key:'toGolgi',       name:'ER → Golgi',        where:'Transport vesicle',
+    text:'Approved cargo buds off in a COPII vesicle and travels to the cis face of the Golgi.' },
+  { key:'processing',    name:'Golgi processing',  where:'Golgi stack',
+    text:'Each cisterna trims and tags the cargo; the trans face sorts it by destination.' },
+  { key:'secretion',     name:'Secretion',         where:'Plasma membrane',
+    text:'A secretory vesicle rides a microtubule to the membrane and fuses with it — exocytosis.' },
+];
+
+/* Mitosis phases.  dur = seconds of model time at 1× speed. */
+const PHASES = [
+  { key:'interphase',  name:'Interphase',  dur:6,
+    text:'DNA is copied and the cell grows. Chromatin is still diffuse; the centrosome has just been duplicated.' },
+  { key:'prophase',    name:'Prophase',    dur:7,
+    text:'Chromatin condenses into visible chromosomes, the nuclear envelope breaks down, and the two centrosomes move apart, growing the spindle between them.' },
+  { key:'metaphase',   name:'Metaphase',   dur:6,
+    text:'Spindle fibres capture each centromere and pull the chromosomes into a single plane at the cell equator — the metaphase plate.' },
+  { key:'anaphase',    name:'Anaphase',    dur:5,
+    text:'The link between sister chromatids is cut. The fibres shorten and haul one full set of chromatids to each pole.' },
+  { key:'telophase',   name:'Telophase',   dur:6,
+    text:'Two new nuclear envelopes assemble around the separated sets, the chromosomes decondense, and the spindle disassembles.' },
+  { key:'cytokinesis', name:'Cytokinesis', dur:6,
+    text:'A contractile ring of actin tightens around the equator until the cytoplasm is pinched into two complete daughter cells.' },
+];
+
+/* ===========================================================================
+ * §1  MATHS — column-major 4×4 matrices, matching WGSL's mat4x4<f32> layout
+ *     (element [0..3] is the first column, so mat4x4(m0,m1,m2,m3) works
+ *      directly from the four vec4 instance attributes).
+ * ======================================================================== */
+
+const v3 = (x,y,z)=>[x,y,z];
+const sub = (a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const add = (a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const mul = (a,s)=>[a[0]*s,a[1]*s,a[2]*s];
+const dot = (a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const len = a=>Math.hypot(a[0],a[1],a[2]);
+const norm= a=>{const l=len(a)||1;return [a[0]/l,a[1]/l,a[2]/l];};
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const lerp3=(a,b,t)=>[a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
+const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
+const smooth=t=>{t=clamp(t,0,1);return t*t*(3-2*t);};
+const mix=(a,b,t)=>a+(b-a)*t;
+
+function mat4Mul(out,a,b){ // out = a * b
+  for(let c=0;c<4;c++){
+    const b0=b[c*4],b1=b[c*4+1],b2=b[c*4+2],b3=b[c*4+3];
+    out[c*4  ]=a[0]*b0+a[4]*b1+a[8] *b2+a[12]*b3;
+    out[c*4+1]=a[1]*b0+a[5]*b1+a[9] *b2+a[13]*b3;
+    out[c*4+2]=a[2]*b0+a[6]*b1+a[10]*b2+a[14]*b3;
+    out[c*4+3]=a[3]*b0+a[7]*b1+a[11]*b2+a[15]*b3;
+  }
+  return out;
+}
+/* Perspective for WebGPU's [0,1] clip-space depth range. */
+function perspective(out,fovy,aspect,near,far){
+  const f=1/Math.tan(fovy/2);
+  out.fill(0);
+  out[0]=f/aspect; out[5]=f; out[11]=-1;
+  out[10]=far/(near-far); out[14]=(far*near)/(near-far);
+  return out;
+}
+function ortho(out,l,r,b,t,n,f){
+  out.fill(0);
+  out[0]=2/(r-l); out[5]=2/(t-b); out[10]=1/(n-f);
+  out[12]=-(r+l)/(r-l); out[13]=-(t+b)/(t-b); out[14]=n/(n-f); out[15]=1;
+  return out;
+}
+function lookAt(out,eye,ctr,up){
+  const z=norm(sub(eye,ctr)), x=norm(cross(up,z)), y=cross(z,x);
+  out[0]=x[0];out[1]=y[0];out[2]=z[0];out[3]=0;
+  out[4]=x[1];out[5]=y[1];out[6]=z[1];out[7]=0;
+  out[8]=x[2];out[9]=y[2];out[10]=z[2];out[11]=0;
+  out[12]=-dot(x,eye);out[13]=-dot(y,eye);out[14]=-dot(z,eye);out[15]=1;
+  return out;
+}
+/* Build a translate·rotate(XYZ)·scale matrix straight into `out`. */
+function trs(out,p,e,s){
+  const cx=Math.cos(e[0]),sx=Math.sin(e[0]),cy=Math.cos(e[1]),sy=Math.sin(e[1]),cz=Math.cos(e[2]),sz=Math.sin(e[2]);
+  const m00=cz*cy, m01=cz*sy*sx-sz*cx, m02=cz*sy*cx+sz*sx;
+  const m10=sz*cy, m11=sz*sy*sx+cz*cx, m12=sz*sy*cx-cz*sx;
+  const m20=-sy,   m21=cy*sx,          m22=cy*cx;
+  out[0]=m00*s[0]; out[1]=m10*s[0]; out[2]=m20*s[0]; out[3]=0;
+  out[4]=m01*s[1]; out[5]=m11*s[1]; out[6]=m21*s[1]; out[7]=0;
+  out[8]=m02*s[2]; out[9]=m12*s[2]; out[10]=m22*s[2];out[11]=0;
+  out[12]=p[0];    out[13]=p[1];    out[14]=p[2];    out[15]=1;
+  return out;
+}
+/* Transform for the unit cylinder mesh (height 1 along +Y, radius 1) so that it
+ * spans exactly from a to b with the given radius. Also returns the inverse
+ * scale, which the vertex shader needs to keep normals correct. */
+const _invS = [1,1,1];
+function fromTo(out,a,b,r){
+  const d=sub(b,a), L=len(d)||1e-5, u=mul(d,1/L);
+  const ref = Math.abs(u[1])<0.9 ? [0,1,0] : [1,0,0];
+  const p=norm(cross(u,ref)), w=cross(u,p);
+  out[0]=p[0]*r; out[1]=p[1]*r; out[2]=p[2]*r; out[3]=0;
+  out[4]=u[0]*L; out[5]=u[1]*L; out[6]=u[2]*L; out[7]=0;
+  out[8]=w[0]*r; out[9]=w[1]*r; out[10]=w[2]*r;out[11]=0;
+  out[12]=(a[0]+b[0])/2; out[13]=(a[1]+b[1])/2; out[14]=(a[2]+b[2])/2; out[15]=1;
+  _invS[0]=1/r; _invS[1]=1/L; _invS[2]=1/r;
+  return out;
+}
+/* deterministic PRNG so the cell looks the same on every load */
+let _seed = 20240517;
+function rnd(){ _seed = (_seed*1664525 + 1013904223) >>> 0; return _seed / 4294967296; }
+const rr = (a,b)=>a+(b-a)*rnd();
+function shellPoint(rmin,rmax){
+  const u=rnd()*2-1, t=rnd()*Math.PI*2, s=Math.sqrt(1-u*u);
+  const rad=Math.cbrt(mix(rmin**3,rmax**3,rnd()));
+  return [rad*s*Math.cos(t), rad*u, rad*s*Math.sin(t)];
+}
+
+/* ===========================================================================
+ * §2  GEOMETRY — three primitives are enough to build every organelle here.
+ *     They are concatenated into one vertex buffer and one index buffer; each
+ *     draw call selects a range. Vertex = position(3) + normal(3) = 24 bytes.
+ * ======================================================================== */
+
+function sphereMesh(lat=18, lon=28){
+  const v=[], i=[];
+  for(let a=0;a<=lat;a++){
+    const th=a/lat*Math.PI, st=Math.sin(th), ct=Math.cos(th);
+    for(let b=0;b<=lon;b++){
+      const ph=b/lon*Math.PI*2, x=st*Math.cos(ph), y=ct, z=st*Math.sin(ph);
+      v.push(x,y,z, x,y,z);
+    }
+  }
+  for(let a=0;a<lat;a++) for(let b=0;b<lon;b++){
+    const p=a*(lon+1)+b, q=p+lon+1;
+    i.push(p,q,p+1, p+1,q,q+1);
+  }
+  return {v,i};
+}
+function cylinderMesh(seg=20){
+  const v=[], i=[];
+  for(let k=0;k<=seg;k++){                       // side wall
+    const a=k/seg*Math.PI*2, x=Math.cos(a), z=Math.sin(a);
+    v.push(x,-0.5,z, x,0,z);  v.push(x,0.5,z, x,0,z);
+  }
+  for(let k=0;k<seg;k++){ const p=k*2; i.push(p,p+1,p+2, p+2,p+1,p+3); }
+  const base=(seg+1)*2;
+  v.push(0,0.5,0, 0,1,0); v.push(0,-0.5,0, 0,-1,0);   // cap centres
+  const rim=base+2;
+  for(let k=0;k<=seg;k++){
+    const a=k/seg*Math.PI*2, x=Math.cos(a), z=Math.sin(a);
+    v.push(x,0.5,z, 0,1,0); v.push(x,-0.5,z, 0,-1,0);
+  }
+  for(let k=0;k<seg;k++){
+    i.push(base, rim+k*2, rim+(k+1)*2);
+    i.push(base+1, rim+(k+1)*2+1, rim+k*2+1);
+  }
+  return {v,i};
+}
+function torusMesh(maj=34, min=14, tube=0.2){
+  const v=[], i=[];
+  for(let a=0;a<=maj;a++){
+    const u=a/maj*Math.PI*2, cu=Math.cos(u), su=Math.sin(u);
+    for(let b=0;b<=min;b++){
+      const w=b/min*Math.PI*2, cw=Math.cos(w), sw=Math.sin(w);
+      const nx=cu*cw, ny=sw, nz=su*cw;
+      v.push(cu*(1+tube*cw), tube*sw, su*(1+tube*cw), nx,ny,nz);
+    }
+  }
+  for(let a=0;a<maj;a++) for(let b=0;b<min;b++){
+    const p=a*(min+1)+b, q=p+min+1;
+    i.push(p,q,p+1, p+1,q,q+1);
+  }
+  return {v,i};
+}
+
+const MESH_SRC = [sphereMesh(), cylinderMesh(), torusMesh()];
+const MESH = { SPHERE:0, CYL:1, TORUS:2 };
+const meshRanges = [];
+{
+  let vo=0, io=0;
+  for(const m of MESH_SRC){
+    meshRanges.push({ first:io, count:m.i.length, base:vo });
+    vo += m.v.length/6; io += m.i.length;
+  }
+}
+const VERTEX_DATA = new Float32Array(MESH_SRC.reduce((n,m)=>n+m.v.length,0));
+const INDEX_DATA  = new Uint32Array(MESH_SRC.reduce((n,m)=>n+m.i.length,0));
+{
+  let vo=0, io=0;
+  for(const m of MESH_SRC){ VERTEX_DATA.set(m.v,vo); INDEX_DATA.set(m.i,io); vo+=m.v.length; io+=m.i.length; }
+}
+
+/* ===========================================================================
+ * §3  STATIC SCENE LAYOUT
+ *     Every organelle's resting position is generated once from the seeded
+ *     PRNG. Nothing here changes at runtime except through the animation
+ *     parameters computed in §5.
+ * ======================================================================== */
+
+const scene = {};
+
+/* --- nuclear pores: rings sitting on the nuclear envelope ---------------- */
+scene.pores = [];
+for(let k=0;k<16;k++){
+  const u=(k+0.5)/16*2-1, th=k*2.399963;                  // golden-angle spiral
+  const s=Math.sqrt(1-u*u);
+  const n=[s*Math.cos(th), u, s*Math.sin(th)];
+  scene.pores.push({ n, p:mul(n,NUC_R) });
+}
+
+/* --- rough ER: a nest of flattened cisternae wrapped around the nucleus --- */
+scene.erRings = [];
+for(let k=0;k<5;k++){
+  const R = 4.15 + k*0.78;
+  scene.erRings.push({ R, tilt:[rr(-0.55,0.55), rr(0,6.28), rr(-0.5,0.5)], y:rr(-0.8,0.8) });
+}
+/* point on ER ring `i` at angle `a` — used both to place ribosomes and to walk
+ * particles along the lumen */
+function erPoint(i,a){
+  const r=scene.erRings[i];
+  const p=[r.R*Math.cos(a), 0, r.R*Math.sin(a)];
+  const [ex,ey,ez]=r.tilt;
+  // rotate X then Z (matches the tilt used when drawing the ring)
+  let y=p[1]*Math.cos(ex)-p[2]*Math.sin(ex), z=p[1]*Math.sin(ex)+p[2]*Math.cos(ex);
+  let x=p[0];
+  const x2=x*Math.cos(ez)-y*Math.sin(ez), y2=x*Math.sin(ez)+y*Math.cos(ez);
+  return [x2, y2+r.y, z];
+}
+/* ER-bound ribosomes */
+scene.erRibos = [];
+for(let i=0;i<scene.erRings.length;i++)
+  for(let k=0;k<14;k++){
+    const a=rnd()*Math.PI*2;
+    const p=erPoint(i,a);
+    scene.erRibos.push({ p:[p[0]*1.0,p[1]+rr(-0.12,0.12),p[2]], ring:i, ang:a });
+  }
+/* free (cytosolic) ribosomes */
+scene.freeRibos = [];
+while(scene.freeRibos.length<150){
+  const p=shellPoint(NUC_R+0.9, CELL_R-0.7);
+  scene.freeRibos.push(p);
+}
+
+/* --- smooth ER: tubular loops out beyond the rough ER -------------------- */
+scene.serRings = [];
+for(let k=0;k<4;k++){
+  const p=shellPoint(5.4, 7.6);
+  scene.serRings.push({ p, e:[rr(0,6.28),rr(0,6.28),rr(0,6.28)], s:rr(0.9,1.5) });
+}
+
+/* --- mitochondria: ellipsoids with internal cristae ---------------------- */
+scene.mitos = [];
+for(let k=0;k<13;k++){
+  const p=shellPoint(4.6, 8.6);
+  scene.mitos.push({ p, e:[rr(0,6.28),rr(0,6.28),rr(0,6.28)], L:rr(0.95,1.55), R:rr(0.38,0.5), ph:rr(0,6.28) });
+}
+
+/* --- Golgi: a stack of curved cisternae, cis face nearest the ER --------- */
+scene.golgi = { c:GOLGI_C, e:[0.35,-0.6,0.25], n:6 };
+/* local axis of the stack, so vesicles can be walked through it */
+function golgiCisternaCentre(k){
+  const t=(k-(scene.golgi.n-1)/2)*0.42;
+  const e=scene.golgi.e;
+  // stack axis = local +Y rotated by the same Euler angles used for drawing
+  const cx=Math.cos(e[0]),sx=Math.sin(e[0]),cy=Math.cos(e[1]),sy=Math.sin(e[1]),cz=Math.cos(e[2]),sz=Math.sin(e[2]);
+  const ax=[cz*sy*sx-sz*cx, sz*sy*sx+cz*cx, cy*sx];
+  return add(scene.golgi.c, mul(ax,t));
+}
+
+/* --- lysosomes ----------------------------------------------------------- */
+scene.lysos = [];
+for(let k=0;k<7;k++) scene.lysos.push({ p:shellPoint(5.0,8.2), r:rr(0.34,0.5) });
+
+/* --- microtubules radiating from the centrosome -------------------------- */
+scene.mts = [];
+for(let k=0;k<44;k++){
+  const dir=norm(shellPoint(1,1));
+  const L=rr(0.55,0.94)*CELL_R;
+  const end=add(CENTRO_C, mul(dir,L));
+  const l=len(end);
+  scene.mts.push({ a:CENTRO_C, b: l>CELL_R-0.35 ? mul(end,(CELL_R-0.35)/l) : end });
+}
+
+/* --- chromatin strands (interphase) -------------------------------------- */
+scene.chromatin = [];
+for(let s=0;s<10;s++){
+  const pts=[shellPoint(0.3,1.9)];
+  for(let k=0;k<11;k++){
+    let n=add(pts[pts.length-1], [rr(-0.75,0.75),rr(-0.75,0.75),rr(-0.75,0.75)]);
+    const l=len(n); if(l>NUC_R-0.45) n=mul(n,(NUC_R-0.45)/l);
+    pts.push(n);
+  }
+  scene.chromatin.push(pts);
+}
+
+/* --- chromosomes: 6, each with two sister chromatids --------------------- */
+scene.chroms = [];
+for(let k=0;k<6;k++){
+  const ang=k/6*Math.PI*2 + 0.3;
+  scene.chroms.push({
+    scatter: shellPoint(0.6,2.1),
+    axis0: norm([rr(-1,1),rr(-1,1),rr(-1,1)]),          // random arm axis at interphase
+    plate: [0, Math.cos(ang)*(1.35+(k%2)*0.55), Math.sin(ang)*(1.35+(k%2)*0.55)],
+    plateAxis: [0, Math.cos(ang), Math.sin(ang)],
+    arm: rr(0.55,0.85),
+    hue: k,
+  });
+}
+const CHROM_HUES = [
+  [0.93,0.42,0.55],[0.55,0.62,0.98],[0.98,0.72,0.38],
+  [0.52,0.90,0.66],[0.82,0.52,0.96],[0.42,0.86,0.94],
+];
+
+/* ===========================================================================
+ * §4  PARTICLE SYSTEM
+ *     Two populations:
+ *       (a) ~5,000 "crowding" molecules integrated on the GPU in a compute
+ *           shader — pure Brownian motion, they give the cytosol its texture.
+ *       (b) ~500 pathway molecules integrated on the CPU. Each one is a small
+ *           state machine that walks the secretory pathway. Keeping these on
+ *           the CPU makes the biology readable and lets the interface count
+ *           how many molecules are in each stage.
+ *     Both are drawn by the same instanced-billboard pipeline: the compute
+ *     buffer is bound directly as a vertex buffer, no copy needed.
+ * ======================================================================== */
+
+const MAX_PATH = 620;      // pathway molecules
+const MAX_CROWD = 5200;    // GPU-integrated crowding molecules
+const PART_STRIDE = 8;     // floats: x,y,z,size, r,g,b,a
+
+const pathData = new Float32Array(MAX_PATH*PART_STRIDE);
+const parts = [];          // JS-side state for the pathway molecules
+
+/* a molecule is: position, target, speed, state, timer, plus a little memory */
+function newParticle(){
+  return { p:[0,0,0], t:[0,0,0], v:[0,0,0], sp:1, st:'transcription', timer:0,
+           kind:'mrna', size:0.1, ring:0, ang:0, mt:0, u:0, life:0, on:true };
+}
+for(let k=0;k<MAX_PATH;k++) parts.push(newParticle());
+
+/* population split: the pathway itself, plus ATP, enzymes, signals and cargo */
+const POP = { pathway:300, atp:150, enzyme:60, signal:24, cargo:60 };
+
+function seedParticles(){
+  let idx=0;
+  const set=(n,fn)=>{ for(let k=0;k<n && idx<MAX_PATH;k++,idx++) fn(parts[idx]); };
+
+  set(POP.pathway, p=>{                       // start scattered along the pathway
+    respawnTranscript(p);
+    p.st = STAGES[Math.floor(rnd()*4)].key;   // stagger so all stages are populated
+    if(p.st==='translation'||p.st==='folding'){
+      // a molecule already folding must be on the ER, never on a free ribosome
+      let r = pickRibosome();
+      if(p.st==='folding' && r.ring<0){
+        const er = scene.erRibos[Math.floor(rnd()*scene.erRibos.length)];
+        r = { p:er.p, ring:er.ring, ang:er.ang };
+      }
+      p.p=r.p.slice(); p.ring=r.ring; p.ang=r.ang; p.kind='protein'; p.size=0.1;
+      p.timer = rr(1.0,3.0);
+    }
+  });
+  set(POP.atp,     p=>{ respawnATP(p); p.life=rr(0,1); });
+  set(POP.enzyme,  p=>{ const L=scene.lysos[Math.floor(rnd()*scene.lysos.length)];
+                        p.kind='enzyme'; p.st='digest'; p.size=0.075;
+                        p.p=add(L.p, mul(norm(shellPoint(1,1)), rr(0,L.r*0.8))); p.t=L.p; });
+  set(POP.signal,  p=>{ respawnSignal(p); });
+  set(POP.cargo,   p=>{ respawnCargo(p); });
+  for(;idx<MAX_PATH;idx++) parts[idx].on=false;
+}
+function respawnTranscript(p){
+  p.kind='mrna'; p.st='transcription'; p.size=0.115; p.on=true;
+  p.p = shellPoint(0.3, NUC_R-0.7);
+  const pore = scene.pores[Math.floor(rnd()*scene.pores.length)];
+  p.t = pore.p.slice(); p.sp = rr(0.9,1.5); p.timer = rr(0.4,2.2);
+}
+function respawnATP(p){
+  const m=scene.mitos[Math.floor(rnd()*scene.mitos.length)];
+  p.kind='atp'; p.st='atp'; p.size=0.075; p.on=true;
+  p.p = add(m.p, mul(norm(shellPoint(1,1)), rr(0,0.5)));
+  p.v = mul(norm(shellPoint(1,1)), rr(0.5,1.3));
+  p.life = 1;
+}
+function respawnSignal(p){
+  p.kind='signal'; p.st='signalIn'; p.size=0.11; p.on=true;
+  const d=norm(shellPoint(1,1));
+  p.p = mul(d, CELL_R*1.02);
+  p.t = mul(d, CELL_R*0.94);        // dock at the membrane first
+  p.sp = rr(1.0,1.6); p.timer = rr(0.3,1.4);
+}
+function respawnCargo(p){
+  p.kind='cargo'; p.st='rail'; p.size=0.1; p.on=true;
+  p.mt = Math.floor(rnd()*scene.mts.length);
+  p.u = rnd(); p.sp = rr(0.35,0.75)*(rnd()<0.5?-1:1);
+  const m=scene.mts[p.mt];
+  p.p = lerp3(m.a,m.b,p.u);
+}
+function pickRibosome(){
+  // 70% of pathway proteins are made on the ER (they are destined for export)
+  if(rnd()<0.78){ const r=scene.erRibos[Math.floor(rnd()*scene.erRibos.length)]; return {p:r.p, ring:r.ring, ang:r.ang}; }
+  const p=scene.freeRibos[Math.floor(rnd()*scene.freeRibos.length)];
+  return {p, ring:-1, ang:0};
+}
+
+/* move `p` toward its target; returns true on arrival */
+function step(p, dt, jitter){
+  const d=sub(p.t,p.p), L=len(d);
+  const adv=p.sp*dt*1.9;
+  if(L<Math.max(adv,0.06)){ p.p=p.t.slice(); return true; }
+  const u=mul(d,1/L);
+  p.p[0]+=u[0]*adv + (rnd()-0.5)*jitter*dt;
+  p.p[1]+=u[1]*adv + (rnd()-0.5)*jitter*dt;
+  p.p[2]+=u[2]*adv + (rnd()-0.5)*jitter*dt;
+  return false;
+}
+
+const stageCount = {};   // live census shown in the footer
+function updateParticles(dt){
+  for(const k of STAGES) stageCount[k.key]=0;
+  stageCount.other=0;
+  const g0=golgiCisternaCentre(0), gN=golgiCisternaCentre(scene.golgi.n-1);
+
+  for(const p of parts){
+    if(!p.on) continue;
+    switch(p.st){
+
+    /* ---- 1. transcription: wander in the nucleoplasm, then head for a pore */
+    case 'transcription': {
+      p.timer-=dt;
+      if(p.timer>0){ // random walk near the nucleolus / chromatin
+        p.p[0]+=(rnd()-0.5)*dt*2.2; p.p[1]+=(rnd()-0.5)*dt*2.2; p.p[2]+=(rnd()-0.5)*dt*2.2;
+        const l=len(p.p); if(l>NUC_R-0.5) p.p=mul(p.p,(NUC_R-0.5)/l);
+      } else if(step(p,dt,0.5)) { p.st='export'; p.timer=0.35; }
+      break; }
+
+    /* ---- 2. nuclear export: squeeze through the pore, then find a ribosome */
+    case 'export': {
+      p.timer-=dt;
+      if(p.timer<=0){
+        const r=pickRibosome();
+        p.t=r.p.slice(); p.ring=r.ring; p.ang=r.ang;
+        p.st='toRibosome'; p.sp=rr(1.1,1.8);
+      } else {
+        p.p=lerp3(p.p, mul(norm(p.p), NUC_R+0.25), 0.14);
+      }
+      break; }
+    case 'toRibosome':
+      if(step(p,dt,0.9)){ p.st='translation'; p.timer=rr(1.2,2.6); }
+      break;
+
+    /* ---- 3. translation: dwell on the ribosome, emerge as a protein ------ */
+    case 'translation':
+      p.timer-=dt;
+      p.p[0]+=(rnd()-0.5)*dt*0.35; p.p[1]+=(rnd()-0.5)*dt*0.35; p.p[2]+=(rnd()-0.5)*dt*0.35;
+      if(p.timer<=0){
+        p.kind='protein'; p.size=0.1;
+        if(p.ring>=0){ p.st='folding'; p.timer=rr(1.5,3.5); }
+        else { p.st='cytosolic'; p.timer=rr(3,7); }   // free ribosome → stays in cytosol
+      }
+      break;
+
+    /* ---- 4. folding: slide along the ER lumen --------------------------- */
+    case 'folding': {
+      if(p.ring<0 || p.ring>=scene.erRings.length){   // not on the ER after all
+        p.st='cytosolic'; p.timer=rr(3,7); break;
+      }
+      p.timer-=dt;
+      p.ang += dt*0.55;
+      const target=erPoint(p.ring,p.ang);
+      p.p=lerp3(p.p,target,clamp(dt*4,0,1));
+      if(p.timer<=0){ p.st='toGolgi'; p.kind='transport'; p.size=0.19; p.t=g0.slice(); p.sp=rr(0.8,1.2); }
+      break; }
+
+    /* ---- 5. ER → Golgi: a transport vesicle ----------------------------- */
+    case 'toGolgi':
+      if(step(p,dt,0.35)){ p.st='processing'; p.gs=0; p.t=golgiCisternaCentre(0); p.timer=0.5; }
+      break;
+
+    /* ---- 6. Golgi: hop from cisterna to cisterna, cis → trans ----------- */
+    case 'processing':
+      p.timer-=dt;
+      step(p,dt,0.15);
+      if(p.timer<=0){
+        p.gs++;
+        if(p.gs>=scene.golgi.n){
+          p.st='secretion'; p.kind='secretory'; p.size=0.22;
+          // leave along a microtubule that points outward
+          p.mt=Math.floor(rnd()*scene.mts.length);
+          p.t=scene.mts[p.mt].b.slice(); p.sp=rr(0.9,1.5);
+        } else { p.t=golgiCisternaCentre(p.gs); p.timer=0.55; }
+      }
+      break;
+
+    /* ---- 7. secretion: ride outward, fuse with the plasma membrane ------ */
+    case 'secretion':
+      if(step(p,dt,0.25)){
+        p.t=mul(norm(p.p), CELL_R);      // final approach to the membrane
+        p.st='fusing'; p.timer=0.5;
+      }
+      break;
+    case 'fusing':
+      p.timer-=dt; step(p,dt,0.1); p.size=0.22*Math.max(p.timer/0.5,0);
+      if(p.timer<=0) respawnTranscript(p);
+      break;
+
+    /* ---- proteins made on free ribosomes: diffuse, then are degraded ---- */
+    case 'cytosolic': {
+      p.timer-=dt;
+      p.p[0]+=(rnd()-0.5)*dt*1.6; p.p[1]+=(rnd()-0.5)*dt*1.6; p.p[2]+=(rnd()-0.5)*dt*1.6;
+      const l=len(p.p);
+      if(l>CELL_R-0.4) p.p=mul(p.p,(CELL_R-0.4)/l);
+      if(p.timer<=0) respawnTranscript(p);
+      break; }
+
+    /* ---- ATP: leaves a mitochondrion, diffuses, is consumed ------------- */
+    case 'atp': {
+      p.life-=dt*0.28;
+      p.v=mul(p.v,0.985);
+      p.p[0]+=p.v[0]*dt+(rnd()-0.5)*dt*1.4;
+      p.p[1]+=p.v[1]*dt+(rnd()-0.5)*dt*1.4;
+      p.p[2]+=p.v[2]*dt+(rnd()-0.5)*dt*1.4;
+      const l=len(p.p); if(l>CELL_R-0.3) p.p=mul(p.p,(CELL_R-0.3)/l);
+      p.size=0.075*clamp(p.life*1.6,0,1);
+      if(p.life<=0) respawnATP(p);
+      break; }
+
+    /* ---- lysosomal enzymes: confined to their vesicle ------------------- */
+    case 'digest': {
+      const d=sub(p.p,p.t), l=len(d);
+      p.p[0]+=(rnd()-0.5)*dt*1.1; p.p[1]+=(rnd()-0.5)*dt*1.1; p.p[2]+=(rnd()-0.5)*dt*1.1;
+      if(l>0.42){ p.p=add(p.t, mul(norm(d),0.42)); }
+      break; }
+
+    /* ---- signal molecules: bind at the surface, travel to the nucleus --- */
+    case 'signalIn':
+      if(step(p,dt,0.2)){ p.st='signalDock'; p.timer=rr(0.4,1.2); }
+      break;
+    case 'signalDock':
+      p.timer-=dt;
+      if(p.timer<=0){ p.t=mul(norm(shellPoint(1,1)),NUC_R*0.6); p.st='signalNuc'; p.sp=rr(0.9,1.5); }
+      break;
+    case 'signalNuc':
+      if(step(p,dt,1.1)){ p.timer=0.6; p.st='signalFade'; }
+      break;
+    case 'signalFade':
+      p.timer-=dt; p.size=0.11*Math.max(p.timer/0.6,0);
+      if(p.timer<=0) respawnSignal(p);
+      break;
+
+    /* ---- motor-driven cargo shuttling along a microtubule --------------- */
+    case 'rail': {
+      const m=scene.mts[p.mt];
+      p.u+=p.sp*dt*0.25;
+      if(p.u>1||p.u<0){ respawnCargo(p); break; }
+      const base=lerp3(m.a,m.b,p.u);
+      p.p=[base[0]+(rnd()-0.5)*0.05, base[1]+(rnd()-0.5)*0.05, base[2]+(rnd()-0.5)*0.05];
+      break; }
+    }
+
+    /* census for the footer ladder */
+    const map={transcription:'transcription', export:'export', toRibosome:'export',
+      translation:'translation', folding:'folding', toGolgi:'toGolgi',
+      processing:'processing', secretion:'secretion', fusing:'secretion'};
+    if(map[p.st]) stageCount[map[p.st]]++; else stageCount.other++;
+  }
+}
+
+/* pack the CPU particles into the GPU-visible float array */
+function writeParticleBuffer(){
+  let n=0;
+  for(const p of parts){
+    if(!p.on || p.size<=0.001) continue;
+    const c=PC[p.kind]||[1,1,1];
+    const o=n*PART_STRIDE;
+    pathData[o]=p.p[0]; pathData[o+1]=p.p[1]; pathData[o+2]=p.p[2]; pathData[o+3]=p.size;
+    pathData[o+4]=c[0]; pathData[o+5]=c[1]; pathData[o+6]=c[2];
+    pathData[o+7]= (p.kind==='transport'||p.kind==='secretory') ? 0.95 : 0.8;
+    n++;
+  }
+  return n;
+}
+
+/* ===========================================================================
+ * §5  MITOSIS STATE MACHINE
+ *     `mit.t` is a single clock in seconds. Every animated quantity below is
+ *     derived from it through `ph(key)`, which returns 0 before a phase, its
+ *     normalised progress during it, and 1 afterwards. Animations therefore
+ *     stay consistent no matter where the reader scrubs to.
+ * ======================================================================== */
+
+const mit = { on:false, t:0, total:PHASES.reduce((a,p)=>a+p.dur,0) };
+function phaseAt(t){
+  let acc=0;
+  for(let k=0;k<PHASES.length;k++){
+    if(t < acc+PHASES[k].dur) return {i:k, local:(t-acc)/PHASES[k].dur};
+    acc+=PHASES[k].dur;
+  }
+  return {i:PHASES.length-1, local:1};
+}
+function ph(key){
+  let acc=0;
+  for(const p of PHASES){
+    if(p.key===key) return clamp((mit.t-acc)/p.dur, 0, 1);
+    acc+=p.dur;
+  }
+  return 0;
+}
+/* the derived animation parameters, recomputed once per frame */
+const M = {};
+function updateMitosis(dt){
+  if(mit.on){ mit.t += dt; if(mit.t>=mit.total) mit.t=0; }
+  const on = mit.on ? 1 : 0;
+  M.condense  = on*smooth(ph('prophase'));
+  M.envelope  = 1 - on*smooth(ph('prophase')*1.15);            // old envelope fades
+  M.poles     = on*smooth(ph('prophase'));                     // centrosome separation
+  M.align     = on*smooth(ph('metaphase'));
+  M.separate  = on*smooth(ph('anaphase'));
+  M.telo      = on*smooth(ph('telophase'));
+  M.furrow    = on*(0.10*smooth(ph('telophase')) + 0.82*smooth(ph('cytokinesis')));
+  M.spindle   = on*clamp(smooth(ph('prophase'))*1.2 - smooth(ph('telophase')), 0, 1);
+  M.newNuclei = on*smooth(ph('telophase'));
+  M.organelleFade = 1 - on*0.45*clamp(smooth(ph('prophase'))-smooth(ph('telophase')),0,1);
+  M.poleX     = 4.9;
+}
+/* Where chromatid `s` (0 or 1) of chromosome `i` is right now, plus its arm axis. */
+function chromatidPose(i, s){
+  const ch=scene.chroms[i];
+  const sgn = s ? -1 : 1;
+  // scattered → metaphase plate
+  const base = lerp3(ch.scatter, ch.plate, M.align);
+  // sister separation: a small offset at metaphase, then a haul to the pole
+  const near = [base[0] + sgn*0.16, base[1], base[2]];
+  const pole = [sgn*(3.3 + 0.5*M.telo), base[1]*0.55, base[2]*0.55];
+  const c = lerp3(near, pole, M.separate);
+  // arm axis rotates from its random interphase direction into the plate
+  const axis = norm(lerp3(ch.axis0, ch.plateAxis, M.align));
+  return { c, axis, sgn };
+}
+
+/* ===========================================================================
+ * §6  WGSL SHADERS
+ *     Three programs:
+ *       meshWGSL     — lit, optionally transparent organelle surfaces, with a
+ *                      shadow-map lookup and an optional "cleavage furrow"
+ *                      vertex deformation used during cytokinesis.
+ *       partWGSL     — camera-facing billboards with a soft radial falloff,
+ *                      blended additively so overlapping molecules glow.
+ *       computeWGSL  — Brownian integration of the crowding molecules.
+ * ======================================================================== */
+
+const UNIFORM_WGSL = /* wgsl */`
+struct Uniforms {
+  viewProj      : mat4x4<f32>,
+  lightViewProj : mat4x4<f32>,
+  camPos        : vec4<f32>,
+  camRight      : vec4<f32>,
+  camUp         : vec4<f32>,
+  lightDir      : vec4<f32>,
+  misc          : vec4<f32>,   // x = time, y = furrow amount, z = cutaway, w = unused
+};
+@group(0) @binding(0) var<uniform> U : Uniforms;
+`;
+
+const meshWGSL = UNIFORM_WGSL + /* wgsl */`
+@group(0) @binding(1) var shadowTex : texture_depth_2d;
+@group(0) @binding(2) var shadowSmp : sampler_comparison;
+
+struct VIn {
+  @location(0) pos : vec3<f32>,
+  @location(1) nrm : vec3<f32>,
+  // per-instance: four columns of the model matrix, colour, params, inverse scale
+  @location(2) m0  : vec4<f32>,
+  @location(3) m1  : vec4<f32>,
+  @location(4) m2  : vec4<f32>,
+  @location(5) m3  : vec4<f32>,
+  @location(6) col : vec4<f32>,
+  @location(7) prm : vec4<f32>,   // x=furrow flag, y=rim glow, z=membrane flag, w=two-sided
+  @location(8) isc : vec4<f32>,
+};
+struct VOut {
+  @builtin(position) clip : vec4<f32>,
+  @location(0) wpos : vec3<f32>,
+  @location(1) nrm  : vec3<f32>,
+  @location(2) col  : vec4<f32>,
+  @location(3) prm  : vec4<f32>,
+  @location(4) shp  : vec4<f32>,
+};
+
+// Cytokinesis: squeeze everything near the x = 0 plane. A contractile ring of
+// actin does this in a real cell; here it is a single Gaussian pinch applied in
+// world space, so the membrane and the cytoplasm deform together.
+fn pinch(p : vec3<f32>, amt : f32) -> vec3<f32> {
+  let w = 1.25;
+  let f = 1.0 - amt * exp(-(p.x * p.x) / (w * w));
+  return vec3<f32>(p.x, p.y * f, p.z * f);
+}
+
+@vertex fn vsMain(v : VIn) -> VOut {
+  let model = mat4x4<f32>(v.m0, v.m1, v.m2, v.m3);
+  var w = (model * vec4<f32>(v.pos, 1.0)).xyz;
+  // isc is 1/scale, which turns the model matrix into a correct normal matrix
+  let n = normalize((model * vec4<f32>(v.nrm * v.isc.xyz, 0.0)).xyz);
+  if (v.prm.x > 0.5) { w = pinch(w, U.misc.y); }
+  var o : VOut;
+  o.clip = U.viewProj * vec4<f32>(w, 1.0);
+  o.wpos = w;
+  o.nrm  = n;
+  o.col  = v.col;
+  o.prm  = v.prm;
+  o.shp  = U.lightViewProj * vec4<f32>(w, 1.0);
+  return o;
+}
+
+// 3x3 PCF. textureSampleCompareLevel (rather than textureSampleCompare) is used
+// because it is allowed in non-uniform control flow.
+fn shadowAt(sp : vec4<f32>) -> f32 {
+  let proj = sp.xyz / sp.w;
+  let uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z > 1.0) { return 1.0; }
+  var s = 0.0;
+  let texel = 1.0 / 1600.0;
+  for (var i = -1; i <= 1; i = i + 1) {
+    for (var j = -1; j <= 1; j = j + 1) {
+      s = s + textureSampleCompareLevel(shadowTex, shadowSmp,
+            uv + vec2<f32>(f32(i), f32(j)) * texel, proj.z - 0.0035);
+    }
+  }
+  return s / 9.0;
+}
+
+@fragment fn fsMain(o : VOut) -> @location(0) vec4<f32> {
+  // Cutaway view: discard the +Z half so the reader can see inside.
+  if (U.misc.z > 0.5 && o.wpos.z > 0.0 && o.prm.z > 0.5) { discard; }
+
+  var N = normalize(o.nrm);
+  let V = normalize(U.camPos.xyz - o.wpos);
+  if (o.prm.w > 0.5 && dot(N, V) < 0.0) { N = -N; }   // light thin sheets from both sides
+
+  let L = normalize(U.lightDir.xyz);
+  let ndl = max(dot(N, L), 0.0);
+  let sh  = shadowAt(o.shp);
+  let H   = normalize(L + V);
+  let spec = pow(max(dot(N, H), 0.0), 46.0) * 0.55;
+  let fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+  // hemispheric ambient: cool from below, slightly warm from above
+  let amb = mix(vec3<f32>(0.10, 0.14, 0.22), vec3<f32>(0.30, 0.32, 0.38), N.y * 0.5 + 0.5);
+
+  var rgb = o.col.rgb * (amb + ndl * 0.95 * mix(0.30, 1.0, sh));
+  rgb = rgb + vec3<f32>(1.0) * spec * sh;
+  rgb = rgb + o.col.rgb * fres * o.prm.y;             // rim / subsurface glow
+
+  var a = o.col.a;
+  if (o.prm.z > 0.5) {
+    // lipid-bilayer mottling, so the big transparent spheres are not flat
+    let m = sin(o.wpos.x * 5.3) * sin(o.wpos.y * 5.9) * sin(o.wpos.z * 6.7);
+    rgb = rgb * (1.0 + 0.18 * m);
+    a = a * (1.0 + 0.35 * m);
+  }
+  if (a < 0.995) { a = clamp(a + fres * 0.55, 0.0, 1.0); }   // fresnel-thickened edges
+  return vec4<f32>(rgb, a);
+}
+`;
+
+const shadowWGSL = UNIFORM_WGSL + /* wgsl */`
+struct VIn {
+  @location(0) pos : vec3<f32>,
+  @location(1) nrm : vec3<f32>,
+  @location(2) m0  : vec4<f32>,
+  @location(3) m1  : vec4<f32>,
+  @location(4) m2  : vec4<f32>,
+  @location(5) m3  : vec4<f32>,
+  @location(6) col : vec4<f32>,
+  @location(7) prm : vec4<f32>,
+  @location(8) isc : vec4<f32>,
+};
+fn pinch(p : vec3<f32>, amt : f32) -> vec3<f32> {
+  let w = 1.25;
+  let f = 1.0 - amt * exp(-(p.x * p.x) / (w * w));
+  return vec3<f32>(p.x, p.y * f, p.z * f);
+}
+@vertex fn vsShadow(v : VIn) -> @builtin(position) vec4<f32> {
+  let model = mat4x4<f32>(v.m0, v.m1, v.m2, v.m3);
+  var w = (model * vec4<f32>(v.pos, 1.0)).xyz;
+  if (v.prm.x > 0.5) { w = pinch(w, U.misc.y); }
+  return U.lightViewProj * vec4<f32>(w, 1.0);
+}
+`;
+
+const partWGSL = UNIFORM_WGSL + /* wgsl */`
+struct PIn {
+  @location(0) posSize : vec4<f32>,   // xyz = world position, w = radius
+  @location(1) colour  : vec4<f32>,
+};
+struct POut {
+  @builtin(position) clip : vec4<f32>,
+  @location(0) uv  : vec2<f32>,
+  @location(1) col : vec4<f32>,
+};
+@vertex fn vsPart(@builtin(vertex_index) vi : u32, p : PIn) -> POut {
+  // one triangle-list quad, expanded along the camera's right/up vectors so the
+  // sprite always faces the viewer
+  var corner = array<vec2<f32>, 6>(
+    vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
+    vec2<f32>(-1.0,  1.0), vec2<f32>(1.0, -1.0), vec2<f32>( 1.0, 1.0));
+  let c = corner[vi];
+  let w = p.posSize.xyz + (U.camRight.xyz * c.x + U.camUp.xyz * c.y) * p.posSize.w;
+  var o : POut;
+  o.clip = U.viewProj * vec4<f32>(w, 1.0);
+  o.uv = c;
+  o.col = p.colour;
+  // Molecules are never clipped: in cutaway view the shells open up precisely so
+  // that the traffic inside stays visible.
+  return o;
+}
+@fragment fn fsPart(o : POut) -> @location(0) vec4<f32> {
+  let d = length(o.uv);
+  if (d > 1.0) { discard; }
+  let core = pow(1.0 - d, 2.2);
+  let halo = pow(1.0 - d, 5.0);
+  let a = core * o.col.a;
+  return vec4<f32>(o.col.rgb * (0.55 + 1.9 * halo), a);
+}
+`;
+
+const computeWGSL = /* wgsl */`
+struct Part { pos : vec3<f32>, size : f32, col : vec4<f32> };
+struct Sim {
+  a : vec4<f32>,   // dt, time, cellR, nucR
+  b : vec4<f32>,   // mitosis flag, furrow, visible fraction, unused
+};
+@group(0) @binding(0) var<uniform> S : Sim;
+@group(0) @binding(1) var<storage, read_write> parts : array<Part>;
+@group(0) @binding(2) var<storage, read_write> vels  : array<vec4<f32>>;
+
+fn pcg(vin : u32) -> u32 {
+  let s = vin * 747796405u + 2891336453u;
+  let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+fn rf(v : u32) -> f32 { return f32(pcg(v)) * 2.3283064e-10; }
+
+@compute @workgroup_size(64)
+fn csMain(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let i = gid.x;
+  if (i >= arrayLength(&parts)) { return; }
+  let dt = S.a.x;
+  let seed = i * 7919u + u32(S.a.y * 240.0);
+
+  var p = parts[i].pos;
+  var v = vels[i].xyz;
+
+  // Brownian kick + viscous drag. The cytosol is so viscous at this scale that
+  // inertia is meaningless in reality; the damping term stands in for that.
+  let kick = vec3<f32>(rf(seed) - 0.5, rf(seed + 1u) - 0.5, rf(seed + 2u) - 0.5);
+  v = v * 0.90 + kick * 9.0 * dt;
+  p = p + v * dt;
+
+  // keep molecules inside the plasma membrane
+  let r = length(p);
+  if (r > S.a.z * 0.965) { p = p * (S.a.z * 0.965 / r); v = v * -0.35; }
+  // and out of the nucleus, unless the envelope has broken down
+  let nr = S.a.w;
+  if (S.b.x < 0.5 && r < nr * 1.06 && r > 0.001) { p = p * (nr * 1.06 / r); v = v * -0.35; }
+  // during cytokinesis the furrow sweeps them into the two halves
+  if (S.b.y > 0.02) {
+    let w = 1.25 * (1.0 + S.b.y);
+    let push = S.b.y * exp(-(p.x * p.x) / (w * w));
+    let s = select(-1.0, 1.0, p.x >= 0.0);
+    p.x = p.x + s * push * dt * 3.0;
+    p.y = p.y * (1.0 - push * 0.02);
+    p.z = p.z * (1.0 - push * 0.02);
+  }
+
+  parts[i].pos = p;
+  vels[i] = vec4<f32>(v, 0.0);
+  // fade out the tail of the population so the "crowding" slider is smooth
+  let frac = f32(i) / f32(arrayLength(&parts));
+  parts[i].size = select(0.0, 0.035, frac < S.b.z);
+}
+`;
+
+/* ===========================================================================
+ * §7  WEBGPU SETUP
+ * ======================================================================== */
+
+const canvas = document.getElementById('gpu');
+let device, ctx, format, sampleCount = 4;
+let msaaTex, depthTex, shadowTex, shadowView, msaaView, depthView;
+let pipeOpaque, pipeTransBack, pipeTransFront, pipeShadow, pipePart, pipeCompute;
+let sceneBG, uniBG, computeBG;
+let uniformBuf, simBuf, vbuf, ibuf, crowdBuf, crowdVelBuf, pathBuf;
+const SHADOW_SIZE = 1600;
+
+/* instance buffers: one per (pass, mesh) so each draw call is a single range */
+const INST_STRIDE = 28;              // floats: mat4(16) + colour(4) + params(4) + invScale(4)
+const INST_BYTES  = INST_STRIDE * 4; // 112 bytes
+const CAP = [3000, 1600, 900];       // capacity per mesh, per pass
+const passes = { opaque:null, trans:null };
+function makeBucketSet(){
+  return MESH_SRC.map((_,k)=>({ data:new Float32Array(CAP[k]*INST_STRIDE), n:0, cap:CAP[k], buf:null }));
+}
+
+async function initGPU(){
+  if(!navigator.gpu) throw new Error('navigator.gpu is undefined');
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference:'high-performance' });
+  if(!adapter) throw new Error('No suitable GPU adapter was found');
+  device = await adapter.requestDevice();
+  device.lost.then(info => showFatal('The GPU device was lost: ' + info.message));
+
+  ctx = canvas.getContext('webgpu');
+  format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode:'opaque' });
+
+  /* --- static geometry ------------------------------------------------- */
+  vbuf = device.createBuffer({ size:VERTEX_DATA.byteLength, usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(vbuf, 0, VERTEX_DATA);
+  ibuf = device.createBuffer({ size:INDEX_DATA.byteLength, usage:GPUBufferUsage.INDEX|GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(ibuf, 0, INDEX_DATA);
+
+  /* --- instance buffers ------------------------------------------------ */
+  for(const key of ['opaque','trans']){
+    passes[key] = makeBucketSet();
+    for(const b of passes[key])
+      b.buf = device.createBuffer({ size:b.data.byteLength, usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST });
+  }
+
+  /* --- uniforms -------------------------------------------------------- */
+  uniformBuf = device.createBuffer({ size:208, usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST });
+  simBuf     = device.createBuffer({ size:32,  usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST });
+
+  /* --- particle storage ------------------------------------------------ */
+  crowdBuf = device.createBuffer({ size:MAX_CROWD*PART_STRIDE*4,
+    usage:GPUBufferUsage.STORAGE|GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST });
+  crowdVelBuf = device.createBuffer({ size:MAX_CROWD*16,
+    usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST });
+  pathBuf = device.createBuffer({ size:MAX_PATH*PART_STRIDE*4,
+    usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST });
+  { // seed the crowding molecules across the cytosol
+    const init = new Float32Array(MAX_CROWD*PART_STRIDE);
+    for(let k=0;k<MAX_CROWD;k++){
+      const p = shellPoint(NUC_R*1.1, CELL_R*0.95), o=k*PART_STRIDE;
+      init[o]=p[0]; init[o+1]=p[1]; init[o+2]=p[2]; init[o+3]=0.035;
+      const warm = rnd()<0.22;
+      init[o+4]= warm?0.85:0.42; init[o+5]= warm?0.78:0.72; init[o+6]= warm?0.55:0.95;
+      init[o+7]= 0.30;
+    }
+    device.queue.writeBuffer(crowdBuf, 0, init);
+    device.queue.writeBuffer(crowdVelBuf, 0, new Float32Array(MAX_CROWD*4));
+  }
+
+  /* --- shadow map ------------------------------------------------------ */
+  shadowTex = device.createTexture({
+    size:[SHADOW_SIZE,SHADOW_SIZE], format:'depth32float',
+    usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING });
+  shadowView = shadowTex.createView();
+  const shadowSampler = device.createSampler({ compare:'less', magFilter:'linear', minFilter:'linear' });
+
+  /* --- bind group layouts ---------------------------------------------- */
+  const sceneBGL = device.createBindGroupLayout({ entries:[
+    { binding:0, visibility:GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT, buffer:{type:'uniform'} },
+    { binding:1, visibility:GPUShaderStage.FRAGMENT, texture:{sampleType:'depth'} },
+    { binding:2, visibility:GPUShaderStage.FRAGMENT, sampler:{type:'comparison'} },
+  ]});
+  const uniBGL = device.createBindGroupLayout({ entries:[
+    { binding:0, visibility:GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT, buffer:{type:'uniform'} },
+  ]});
+  const compBGL = device.createBindGroupLayout({ entries:[
+    { binding:0, visibility:GPUShaderStage.COMPUTE, buffer:{type:'uniform'} },
+    { binding:1, visibility:GPUShaderStage.COMPUTE, buffer:{type:'storage'} },
+    { binding:2, visibility:GPUShaderStage.COMPUTE, buffer:{type:'storage'} },
+  ]});
+
+  sceneBG = device.createBindGroup({ layout:sceneBGL, entries:[
+    { binding:0, resource:{buffer:uniformBuf} },
+    { binding:1, resource:shadowView },
+    { binding:2, resource:shadowSampler },
+  ]});
+  uniBG = device.createBindGroup({ layout:uniBGL, entries:[{ binding:0, resource:{buffer:uniformBuf} }]});
+  computeBG = device.createBindGroup({ layout:compBGL, entries:[
+    { binding:0, resource:{buffer:simBuf} },
+    { binding:1, resource:{buffer:crowdBuf} },
+    { binding:2, resource:{buffer:crowdVelBuf} },
+  ]});
+
+  /* --- vertex layouts --------------------------------------------------- */
+  const meshLayout = {
+    arrayStride:24, attributes:[
+      {shaderLocation:0, offset:0,  format:'float32x3'},
+      {shaderLocation:1, offset:12, format:'float32x3'}]};
+  const instLayout = {
+    arrayStride:INST_BYTES, stepMode:'instance', attributes:[
+      {shaderLocation:2, offset:0,  format:'float32x4'},
+      {shaderLocation:3, offset:16, format:'float32x4'},
+      {shaderLocation:4, offset:32, format:'float32x4'},
+      {shaderLocation:5, offset:48, format:'float32x4'},
+      {shaderLocation:6, offset:64, format:'float32x4'},
+      {shaderLocation:7, offset:80, format:'float32x4'},
+      {shaderLocation:8, offset:96, format:'float32x4'}]};
+  const partLayout = {
+    arrayStride:32, stepMode:'instance', attributes:[
+      {shaderLocation:0, offset:0,  format:'float32x4'},
+      {shaderLocation:1, offset:16, format:'float32x4'}]};
+
+  const meshMod   = device.createShaderModule({ code:meshWGSL });
+  const shadowMod = device.createShaderModule({ code:shadowWGSL });
+  const partMod   = device.createShaderModule({ code:partWGSL });
+  const compMod   = device.createShaderModule({ code:computeWGSL });
+
+  const blendAlpha = {
+    color:{ srcFactor:'src-alpha', dstFactor:'one-minus-src-alpha', operation:'add' },
+    alpha:{ srcFactor:'one',       dstFactor:'one-minus-src-alpha', operation:'add' }};
+  const blendAdd = {
+    color:{ srcFactor:'src-alpha', dstFactor:'one', operation:'add' },
+    alpha:{ srcFactor:'zero',      dstFactor:'one', operation:'add' }};
+
+  const meshPipe = (cull, depthWrite, blend) => device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts:[sceneBGL] }),
+    vertex:{ module:meshMod, entryPoint:'vsMain', buffers:[meshLayout, instLayout] },
+    fragment:{ module:meshMod, entryPoint:'fsMain', targets:[{ format, blend }] },
+    primitive:{ topology:'triangle-list', cullMode:cull },
+    depthStencil:{ format:'depth24plus', depthWriteEnabled:depthWrite, depthCompare:'less' },
+    multisample:{ count:sampleCount },
+  });
+  pipeOpaque     = meshPipe('back',  true,  undefined);
+  pipeTransBack  = meshPipe('front', false, blendAlpha);   // inside surfaces first…
+  pipeTransFront = meshPipe('back',  false, blendAlpha);   // …then outside surfaces
+
+  pipeShadow = device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts:[uniBGL] }),
+    vertex:{ module:shadowMod, entryPoint:'vsShadow', buffers:[meshLayout, instLayout] },
+    primitive:{ topology:'triangle-list', cullMode:'back' },
+    depthStencil:{ format:'depth32float', depthWriteEnabled:true, depthCompare:'less' },
+  });
+
+  pipePart = device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts:[uniBGL] }),
+    vertex:{ module:partMod, entryPoint:'vsPart', buffers:[partLayout] },
+    fragment:{ module:partMod, entryPoint:'fsPart', targets:[{ format, blend:blendAdd }] },
+    primitive:{ topology:'triangle-list', cullMode:'none' },
+    depthStencil:{ format:'depth24plus', depthWriteEnabled:false, depthCompare:'less' },
+    multisample:{ count:sampleCount },
+  });
+
+  pipeCompute = device.createComputePipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts:[compBGL] }),
+    compute:{ module:compMod, entryPoint:'csMain' },
+  });
+
+  resize();
+}
+
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  const w = Math.max(1, Math.floor(canvas.clientWidth*dpr));
+  const h = Math.max(1, Math.floor(canvas.clientHeight*dpr));
+  if(canvas.width===w && canvas.height===h && msaaTex) return;
+  canvas.width=w; canvas.height=h;
+  msaaTex?.destroy(); depthTex?.destroy();
+  msaaTex = device.createTexture({ size:[w,h], format, sampleCount, usage:GPUTextureUsage.RENDER_ATTACHMENT });
+  depthTex = device.createTexture({ size:[w,h], format:'depth24plus', sampleCount, usage:GPUTextureUsage.RENDER_ATTACHMENT });
+  msaaView = msaaTex.createView(); depthView = depthTex.createView();
+}
+
+/* ===========================================================================
+ * §8  PER-FRAME SCENE ASSEMBLY + RENDER LOOP
+ * ======================================================================== */
+
+const _m = new Float32Array(16);
+function addInst(pass, mesh, m, col, alpha, prm, inv){
+  const b = passes[pass][mesh];
+  if(b.n >= b.cap) return;
+  const o = b.n*INST_STRIDE, d = b.data;
+  d.set(m, o);
+  d[o+16]=col[0]; d[o+17]=col[1]; d[o+18]=col[2]; d[o+19]=alpha;
+  d[o+20]=prm[0]; d[o+21]=prm[1]; d[o+22]=prm[2]; d[o+23]=prm[3];
+  d[o+24]=inv?inv[0]:1; d[o+25]=inv?inv[1]:1; d[o+26]=inv?inv[2]:1; d[o+27]=0;
+  b.n++;
+}
+const P0 = [0,0,0,0];                       // params: no furrow, no glow, solid, one-sided
+const vis = {};                             // structure visibility, driven by the toggles
+let showParticles = true, cutaway = false, autoSpin = true;
+
+function buildScene(time){
+  for(const key of ['opaque','trans']) for(const b of passes[key]) b.n=0;
+  const fade = M.organelleFade;
+
+  /* ---------- plasma membrane (transparent, deformable) ---------------- */
+  if(vis.membrane){
+    trs(_m,[0,0,0],[0,0,0],[CELL_R,CELL_R,CELL_R]);
+    addInst('trans', MESH.SPHERE, _m, C.membrane, 0.085, [1,0.9,1,1], [1/CELL_R,1/CELL_R,1/CELL_R]);
+    // a faint inner leaflet gives the bilayer visible thickness
+    const r2=CELL_R-0.16;
+    trs(_m,[0,0,0],[0,0,0],[r2,r2,r2]);
+    addInst('trans', MESH.SPHERE, _m, C.membrane, 0.06, [1,0.7,1,1], [1/r2,1/r2,1/r2]);
+  }
+
+  /* ---------- nucleus, nucleolus, pores --------------------------------- */
+  if(vis.nucleus && M.envelope>0.01){
+    const a = 0.20*M.envelope;
+    trs(_m,[0,0,0],[0,0,0],[NUC_R,NUC_R,NUC_R]);
+    addInst('trans', MESH.SPHERE, _m, C.nucleus, a, [1,0.8,1,1], [1/NUC_R,1/NUC_R,1/NUC_R]);
+    const ri=NUC_R-0.14;
+    trs(_m,[0,0,0],[0,0,0],[ri,ri,ri]);
+    addInst('trans', MESH.SPHERE, _m, C.nucleus, a*0.7, [1,0.6,1,1], [1/ri,1/ri,1/ri]);
+    for(const pore of scene.pores){                    // pore rings on the envelope
+      const n=pore.n;
+      const e=[Math.atan2(n[1],Math.hypot(n[0],n[2]))*-1+Math.PI/2, Math.atan2(n[0],n[2]), 0];
+      trs(_m, mul(n,NUC_R), [e[0],e[1],0], [0.26,0.26,0.26]);
+      addInst('opaque', MESH.TORUS, _m, C.nucleus, M.envelope, [1,0.5,0,1], [1/0.26,1/0.26,1/0.26]);
+    }
+  }
+  if(vis.nucleolus && M.envelope>0.01){
+    trs(_m,[0.9,0.5,-0.5],[0,0,0],[NUCLEOLUS_R,NUCLEOLUS_R*0.9,NUCLEOLUS_R]);
+    addInst('opaque', MESH.SPHERE, _m, C.nucleolus, M.envelope,
+      [1,0.55,0,0], [1/NUCLEOLUS_R,1/(NUCLEOLUS_R*0.9),1/NUCLEOLUS_R]);
+  }
+  /* daughter nuclei re-forming in telophase */
+  if(vis.nucleus && M.newNuclei>0.01){
+    const R = 0.5 + 1.85*M.newNuclei;
+    for(const s of [1,-1]){
+      trs(_m,[s*3.55,0,0],[0,0,0],[R,R,R]);
+      addInst('trans', MESH.SPHERE, _m, C.nucleus, 0.20*M.newNuclei, [1,0.8,1,1], [1/R,1/R,1/R]);
+    }
+  }
+
+  /* ---------- chromatin (interphase) ------------------------------------ */
+  if(vis.chromatin && M.envelope>0.02 && M.condense<0.98){
+    const a = (1-M.condense)*0.85*M.envelope;
+    for(const strand of scene.chromatin){
+      for(let k=0;k<strand.length-1;k++){
+        fromTo(_m, strand[k], strand[k+1], 0.052);
+        addInst('opaque', MESH.CYL, _m, C.chromatin, a, [0,0.35,0,0], _invS);
+      }
+    }
+  }
+
+  /* ---------- chromosomes (condensed) ----------------------------------- */
+  if(vis.chromosome && mit.on && M.condense>0.02){
+    const sc = M.condense * (1 - 0.45*M.telo);
+    for(let i=0;i<scene.chroms.length;i++){
+      const ch=scene.chroms[i], hue=CHROM_HUES[ch.hue];
+      for(let s=0;s<2;s++){
+        const { c, axis } = chromatidPose(i,s);
+        const armL = ch.arm*sc;
+        const side = mul(norm(cross(axis,[1,0,0])), 0.0);
+        const e1 = add(add(c, mul(axis, armL)), side);
+        const e2 = add(add(c, mul(axis,-armL*0.75)), side);
+        fromTo(_m, c, e1, 0.15*sc + 0.02);
+        addInst('opaque', MESH.CYL, _m, hue, 1, [0,0.5,0,0], _invS);
+        fromTo(_m, c, e2, 0.15*sc + 0.02);
+        addInst('opaque', MESH.CYL, _m, hue, 1, [0,0.5,0,0], _invS);
+        trs(_m, c, [0,0,0], [0.14,0.14,0.14]);   // centromere
+        addInst('opaque', MESH.SPHERE, _m, [0.95,0.95,1], 1, [0,0.7,0,0], [7.1,7.1,7.1]);
+      }
+    }
+  }
+
+  /* ---------- mitotic spindle ------------------------------------------- */
+  if(vis.microtub && M.spindle>0.02){
+    const a = M.spindle;
+    for(const s of [1,-1]){
+      const pole=[s*M.poleX*M.poles, 0, 0];
+      for(let i=0;i<scene.chroms.length;i++){
+        const { c } = chromatidPose(i, s>0?0:1);
+        fromTo(_m, pole, c, 0.022);
+        addInst('opaque', MESH.CYL, _m, C.spindle, a*0.9, [0,0.9,0,0], _invS);
+      }
+      for(let k=0;k<10;k++){                      // astral microtubules
+        const ang=k/10*Math.PI*2;
+        const tip=[pole[0]+s*1.9, Math.cos(ang)*2.6, Math.sin(ang)*2.6];
+        fromTo(_m, pole, tip, 0.018);
+        addInst('opaque', MESH.CYL, _m, C.spindle, a*0.5, [0,0.7,0,0], _invS);
+      }
+    }
+  }
+
+  /* ---------- rough ER --------------------------------------------------- */
+  if(vis.rer){
+    for(const r of scene.erRings){
+      trs(_m, [0,r.y,0], [r.tilt[0],0,r.tilt[2]], [r.R,0.42,r.R]);
+      addInst('trans', MESH.TORUS, _m, C.rer, 0.30*fade, [0,0.6,0,1], [1/r.R,1/0.42,1/r.R]);
+    }
+  }
+  if(vis.ribosome){
+    for(const r of scene.erRibos){                        // ER-bound ribosomes
+      trs(_m, r.p, [0,0,0], [0.085,0.085,0.085]);
+      addInst('opaque', MESH.SPHERE, _m, C.ribosome, fade, [0,0.5,0,0], [11.7,11.7,11.7]);
+    }
+    for(const p of scene.freeRibos){                      // free ribosomes
+      trs(_m, p, [0,0,0], [0.07,0.07,0.07]);
+      addInst('opaque', MESH.SPHERE, _m, C.ribosome, fade*0.9, [0,0.4,0,0], [14.3,14.3,14.3]);
+    }
+  }
+
+  /* ---------- smooth ER --------------------------------------------------- */
+  if(vis.ser){
+    for(const r of scene.serRings){
+      trs(_m, r.p, r.e, [r.s,r.s*0.7,r.s]);
+      addInst('opaque', MESH.TORUS, _m, C.ser, fade, [0,0.5,0,1], [1/r.s,1/(r.s*0.7),1/r.s]);
+      trs(_m, add(r.p,[0.4,0.3,-0.2]), [r.e[1],r.e[2],r.e[0]], [r.s*0.7,r.s*0.5,r.s*0.7]);
+      addInst('opaque', MESH.TORUS, _m, C.ser, fade, [0,0.5,0,1], [1/(r.s*0.7),1/(r.s*0.5),1/(r.s*0.7)]);
+    }
+  }
+
+  /* ---------- mitochondria ------------------------------------------------ */
+  if(vis.mito){
+    for(const m of scene.mitos){
+      const pulse = 1 + 0.03*Math.sin(time*2.2 + m.ph);
+      trs(_m, m.p, m.e, [m.L*pulse, m.R, m.R]);
+      addInst('opaque', MESH.SPHERE, _m, C.mito, fade, [0,0.45,0,0], [1/(m.L*pulse),1/m.R,1/m.R]);
+      // cristae: flattened rings threaded down the long axis of the ellipsoid
+      for(let k=0;k<5;k++){
+        const t=(k-2)*0.3*m.L;
+        const cx=Math.cos(m.e[0]),sx=Math.sin(m.e[0]),cy=Math.cos(m.e[1]),sy=Math.sin(m.e[1]),
+              cz=Math.cos(m.e[2]),sz=Math.sin(m.e[2]);
+        const ax=[cz*cy, sz*cy, -sy];                     // local +X in world space
+        const c=add(m.p, mul(ax,t));
+        const rr2 = m.R*0.72*Math.sqrt(Math.max(0.05,1-(t/(m.L||1))**2));
+        trs(_m, c, [m.e[0],m.e[1],m.e[2]+Math.PI/2], [rr2, rr2*0.35, rr2]);
+        addInst('opaque', MESH.TORUS, _m, [1,0.72,0.45], fade, [0,0.8,0,1],
+          [1/rr2, 1/(rr2*0.35), 1/rr2]);
+      }
+    }
+  }
+
+  /* ---------- Golgi apparatus --------------------------------------------- */
+  if(vis.golgi){
+    for(let k=0;k<scene.golgi.n;k++){
+      const c=golgiCisternaCentre(k);
+      const R = 1.75 - k*0.11;
+      trs(_m, c, scene.golgi.e, [R, 0.30, R*0.82]);
+      // colour ramps from cis (cool) to trans (warm) so the direction is readable
+      const t=k/(scene.golgi.n-1);
+      const col=[mix(0.55,0.99,t), mix(0.62,0.40,t), mix(0.92,0.72,t)];
+      addInst('opaque', MESH.TORUS, _m, col, fade, [0,0.6,0,1], [1/R,1/0.30,1/(R*0.82)]);
+    }
+  }
+
+  /* ---------- lysosomes ---------------------------------------------------- */
+  if(vis.lysosome){
+    for(const l of scene.lysos){
+      trs(_m, l.p, [0,0,0], [l.r,l.r,l.r]);
+      addInst('opaque', MESH.SPHERE, _m, C.lysosome, fade, [0,0.75,0,0], [1/l.r,1/l.r,1/l.r]);
+    }
+  }
+
+  /* ---------- cytoskeleton ------------------------------------------------- */
+  if(vis.microtub && M.spindle<0.5){
+    const a = fade*(1-M.spindle*2>0?1-M.spindle*2:0);
+    for(const m of scene.mts){
+      fromTo(_m, m.a, m.b, 0.026);
+      addInst('opaque', MESH.CYL, _m, C.microtub, Math.max(a,0.05), [0,0.55,0,0], _invS);
+    }
+  }
+
+  /* ---------- centrosomes --------------------------------------------------- */
+  if(vis.centro){
+    const poles = mit.on
+      ? [ lerp3(CENTRO_C,[ M.poleX,0,0],M.poles), lerp3(CENTRO_C,[-M.poleX,0,0],M.poles) ]
+      : [ CENTRO_C ];
+    for(let k=0;k<poles.length;k++){
+      const c=poles[k];
+      if(k===1 && M.poles<0.02) continue;
+      // two centrioles at right angles
+      fromTo(_m, add(c,[0,-0.22,0]), add(c,[0,0.22,0]), 0.11);
+      addInst('opaque', MESH.CYL, _m, C.centro, 1, [0,0.9,0,0], _invS);
+      fromTo(_m, add(c,[-0.24,0.3,0]), add(c,[0.24,0.3,0]), 0.1);
+      addInst('opaque', MESH.CYL, _m, C.centro, 1, [0,0.9,0,0], _invS);
+    }
+  }
+}
+
+/* --- camera --------------------------------------------------------------- */
+const cam = { theta:0.7, phi:1.15, dist:26, target:[0,0,0], eye:[0,0,0] };
+const viewM=new Float32Array(16), projM=new Float32Array(16), vpM=new Float32Array(16);
+const lightViewM=new Float32Array(16), lightProjM=new Float32Array(16), lightVP=new Float32Array(16);
+const LIGHT_DIR = norm([0.45,0.85,0.45]);
+const uniData = new Float32Array(52);       // 208 bytes
+const simData = new Float32Array(8);
+
+function updateCamera(dt){
+  if(autoSpin && !paused) cam.theta += dt*0.045;
+  const sp=Math.sin(cam.phi), cp=Math.cos(cam.phi);
+  cam.eye=[ cam.target[0]+cam.dist*sp*Math.sin(cam.theta),
+            cam.target[1]+cam.dist*cp,
+            cam.target[2]+cam.dist*sp*Math.cos(cam.theta) ];
+  lookAt(viewM, cam.eye, cam.target, [0,1,0]);
+  perspective(projM, 0.72, canvas.width/canvas.height, 0.35, 90);
+  mat4Mul(vpM, projM, viewM);
+
+  const le = mul(LIGHT_DIR, 26);
+  lookAt(lightViewM, le, [0,0,0], [0,1,0]);
+  ortho(lightProjM, -13.5, 13.5, -13.5, 13.5, 1, 55);
+  mat4Mul(lightVP, lightProjM, lightViewM);
+}
+function writeUniforms(time){
+  uniData.set(vpM, 0);
+  uniData.set(lightVP, 16);
+  uniData[32]=cam.eye[0]; uniData[33]=cam.eye[1]; uniData[34]=cam.eye[2]; uniData[35]=1;
+  // camera basis, used to build the particle billboards
+  uniData[36]=viewM[0]; uniData[37]=viewM[4]; uniData[38]=viewM[8];  uniData[39]=0;   // right
+  uniData[40]=viewM[1]; uniData[41]=viewM[5]; uniData[42]=viewM[9];  uniData[43]=0;   // up
+  uniData[44]=LIGHT_DIR[0]; uniData[45]=LIGHT_DIR[1]; uniData[46]=LIGHT_DIR[2]; uniData[47]=0;
+  uniData[48]=time; uniData[49]=M.furrow; uniData[50]=cutaway?1:0; uniData[51]=0;
+  device.queue.writeBuffer(uniformBuf, 0, uniData);
+}
+
+/* --- the frame ------------------------------------------------------------ */
+let paused=false, speed=1, crowdFrac=0.55, simTime=0, lastT=0, frames=0, fpsT=0, fps=0;
+let pathCount=0;
+
+function frame(now){
+  requestAnimationFrame(frame);
+  const rawDt = Math.min((now-lastT)/1000 || 0, 0.05);
+  lastT = now;
+  const dt = paused ? 0 : rawDt*speed;
+  simTime += dt;
+
+  resize();
+  updateMitosis(dt);
+  if(dt>0){ updateParticles(dt); }
+  updateCamera(rawDt);
+  writeUniforms(simTime);
+
+  /* upload pathway molecules */
+  pathCount = writeParticleBuffer();
+  device.queue.writeBuffer(pathBuf, 0, pathData, 0, pathCount*PART_STRIDE);
+
+  /* compute-shader parameters for the crowding molecules */
+  simData[0]=dt; simData[1]=simTime; simData[2]=CELL_R; simData[3]=NUC_R;
+  simData[4]=(mit.on && M.envelope<0.4)?1:0; simData[5]=M.furrow;
+  simData[6]=showParticles?crowdFrac:0; simData[7]=0;
+  device.queue.writeBuffer(simBuf, 0, simData);
+
+  /* assemble this frame's organelle instances and upload them */
+  buildScene(simTime);
+  for(const key of ['opaque','trans'])
+    for(const b of passes[key])
+      if(b.n) device.queue.writeBuffer(b.buf, 0, b.data, 0, b.n*INST_STRIDE);
+
+  const enc = device.createCommandEncoder();
+
+  /* --- 1. compute pass: Brownian motion of the crowding molecules -------- */
+  {
+    const cp = enc.beginComputePass();
+    cp.setPipeline(pipeCompute);
+    cp.setBindGroup(0, computeBG);
+    cp.dispatchWorkgroups(Math.ceil(MAX_CROWD/64));
+    cp.end();
+  }
+
+  /* --- 2. shadow pass: opaque geometry only, seen from the light --------- */
+  {
+    const sp = enc.beginRenderPass({ colorAttachments:[], depthStencilAttachment:{
+      view:shadowView, depthClearValue:1, depthLoadOp:'clear', depthStoreOp:'store' }});
+    sp.setPipeline(pipeShadow);
+    sp.setBindGroup(0, uniBG);
+    sp.setVertexBuffer(0, vbuf);
+    sp.setIndexBuffer(ibuf, 'uint32');
+    for(let k=0;k<MESH_SRC.length;k++){
+      const b=passes.opaque[k]; if(!b.n) continue;
+      sp.setVertexBuffer(1, b.buf);
+      const r=meshRanges[k];
+      sp.drawIndexed(r.count, b.n, r.first, r.base, 0);
+    }
+    sp.end();
+  }
+
+  /* --- 3. main pass ------------------------------------------------------ */
+  {
+    const view = ctx.getCurrentTexture().createView();
+    const rp = enc.beginRenderPass({
+      colorAttachments:[{ view:msaaView, resolveTarget:view,
+        clearValue:{r:0.012,g:0.020,b:0.038,a:1}, loadOp:'clear', storeOp:'store' }],
+      depthStencilAttachment:{ view:depthView,
+        depthClearValue:1, depthLoadOp:'clear', depthStoreOp:'store' }});
+
+    rp.setVertexBuffer(0, vbuf);
+    rp.setIndexBuffer(ibuf, 'uint32');
+
+    // 3a. opaque organelles
+    rp.setPipeline(pipeOpaque);
+    rp.setBindGroup(0, sceneBG);
+    for(let k=0;k<MESH_SRC.length;k++){
+      const b=passes.opaque[k]; if(!b.n) continue;
+      rp.setVertexBuffer(1, b.buf);
+      const r=meshRanges[k];
+      rp.drawIndexed(r.count, b.n, r.first, r.base, 0);
+    }
+
+    // 3b. back faces of the transparent shells
+    rp.setPipeline(pipeTransBack);
+    rp.setBindGroup(0, sceneBG);
+    for(let k=0;k<MESH_SRC.length;k++){
+      const b=passes.trans[k]; if(!b.n) continue;
+      rp.setVertexBuffer(1, b.buf);
+      const r=meshRanges[k];
+      rp.drawIndexed(r.count, b.n, r.first, r.base, 0);
+    }
+
+    // 3c. glowing molecules, sandwiched inside the transparent shells
+    if(showParticles){
+      rp.setPipeline(pipePart);
+      rp.setBindGroup(0, uniBG);
+      rp.setVertexBuffer(0, crowdBuf);
+      rp.draw(6, MAX_CROWD, 0, 0);
+      rp.setVertexBuffer(0, pathBuf);
+      if(pathCount) rp.draw(6, pathCount, 0, 0);
+      rp.setVertexBuffer(0, vbuf);          // restore for the next mesh draw
+    }
+
+    // 3d. front faces of the transparent shells
+    rp.setPipeline(pipeTransFront);
+    rp.setBindGroup(0, sceneBG);
+    for(let k=0;k<MESH_SRC.length;k++){
+      const b=passes.trans[k]; if(!b.n) continue;
+      rp.setVertexBuffer(1, b.buf);
+      const r=meshRanges[k];
+      rp.drawIndexed(r.count, b.n, r.first, r.base, 0);
+    }
+    rp.end();
+  }
+
+  device.queue.submit([enc.finish()]);
+
+  /* --- interface refresh ------------------------------------------------- */
+  frames++;
+  if(now-fpsT>500){ fps=Math.round(frames*1000/(now-fpsT)); frames=0; fpsT=now; syncStats(); }
+  updateLabels();
+  updateDeck();
+}
+
+/* ===========================================================================
+ * §9  INTERFACE — camera controls, picking, labels, panels
+ * ======================================================================== */
+
+/* --- orbit / pan / zoom ---------------------------------------------------- */
+let dragging=null, lastX=0, lastY=0, pinch0=0;
+canvas.addEventListener('pointerdown', e=>{
+  canvas.setPointerCapture(e.pointerId);
+  dragging = e.button===2 || e.shiftKey ? 'pan' : 'orbit';
+  lastX=e.clientX; lastY=e.clientY;
+});
+canvas.addEventListener('pointermove', e=>{
+  const dx=e.clientX-lastX, dy=e.clientY-lastY;
+  if(dragging){
+    if(dragging==='orbit'){
+      cam.theta -= dx*0.006;
+      cam.phi = clamp(cam.phi - dy*0.006, 0.12, Math.PI-0.12);
+    } else {
+      const s=cam.dist*0.0016;
+      const right=[Math.cos(cam.theta),0,-Math.sin(cam.theta)];
+      cam.target = add(cam.target, add(mul(right,-dx*s), [0,dy*s,0]));
+    }
+    lastX=e.clientX; lastY=e.clientY;
+  } else {
+    hover(e.clientX, e.clientY);
+  }
+});
+addEventListener('pointerup', ()=>{ dragging=null; });
+canvas.addEventListener('contextmenu', e=>e.preventDefault());
+canvas.addEventListener('wheel', e=>{
+  e.preventDefault();
+  cam.dist = clamp(cam.dist * Math.exp(e.deltaY*0.0012), 4, 60);
+}, {passive:false});
+canvas.addEventListener('touchmove', e=>{
+  if(e.touches.length===2){
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    if(pinch0) cam.dist=clamp(cam.dist*(pinch0/d),4,60);
+    pinch0=d;
+  }
+},{passive:true});
+canvas.addEventListener('touchend', ()=>{ pinch0=0; });
+
+/* --- picking: ray vs. bounding spheres ------------------------------------- */
+function pickTargets(){
+  const t=[];
+  const push=(id,c,r)=>{ if(vis[id]) t.push({id,c,r}); };
+  push('nucleolus',[0.9,0.5,-0.5],1.3);
+  if(M.envelope>0.4) push('nucleus',[0,0,0],NUC_R);
+  push('golgi',scene.golgi.c,2.1);
+  push('centro', mit.on ? lerp3(CENTRO_C,[M.poleX,0,0],M.poles) : CENTRO_C, 0.7);
+  for(const m of scene.mitos) push('mito',m.p,Math.max(m.L,m.R)*0.95);
+  for(const l of scene.lysos) push('lysosome',l.p,l.r*1.25);
+  for(const r of scene.serRings) push('ser',r.p,r.s*1.15);
+  for(let i=0;i<scene.erRings.length;i++){
+    const rr2=scene.erRings[i];
+    for(let k=0;k<8;k++) push('rer', erPoint(i,k/8*Math.PI*2), 0.85);
+  }
+  for(const r of scene.erRibos) push('ribosome',r.p,0.24);
+  if(mit.on && M.condense>0.3)
+    for(let i=0;i<scene.chroms.length;i++) push('chromosome', chromatidPose(i,0).c, 0.95);
+  return t;
+}
+function rayFromScreen(x,y){
+  const r=canvas.getBoundingClientRect();
+  const ndcX=((x-r.left)/r.width)*2-1, ndcY=1-((y-r.top)/r.height)*2;
+  const fwd=norm(sub(cam.target,cam.eye));
+  const right=norm(cross(fwd,[0,1,0]));
+  const up=cross(right,fwd);
+  const th=Math.tan(0.36), aspect=r.width/r.height;
+  return norm(add(fwd, add(mul(right,ndcX*th*aspect), mul(up,ndcY*th))));
+}
+function pick(x,y){
+  const d=rayFromScreen(x,y), o=cam.eye;
+  let best=null, bestT=1e9;
+  for(const t of pickTargets()){
+    const L=sub(t.c,o), tca=dot(L,d);
+    if(tca<0) continue;
+    const d2=dot(L,L)-tca*tca;
+    if(d2>t.r*t.r) continue;
+    const thc=Math.sqrt(t.r*t.r-d2), hit=tca-thc;
+    if(hit>0.1 && hit<bestT){ bestT=hit; best=t.id; }
+  }
+  // The membrane encloses everything, so it only counts when nothing inside was hit.
+  if(!best && vis.membrane){
+    const L=sub([0,0,0],o), tca=dot(L,d), d2=dot(L,L)-tca*tca;
+    if(d2 < CELL_R*CELL_R) best='membrane';
+  }
+  return best;
+}
+const tip=document.getElementById('tip');
+let hovered=null;
+function hover(x,y){
+  const id = pick(x,y);
+  if(id!==hovered){
+    hovered=id;
+    if(id){
+      const s=SMAP[id];
+      tip.querySelector('.t').textContent=s.name;
+      tip.querySelector('.d').textContent=s.tag;
+      tip.querySelector('.k').textContent='Click to read more';
+      tip.style.opacity='1';
+    } else tip.style.opacity='0';
+  }
+  if(hovered){
+    tip.style.left=Math.min(x+16, innerWidth-260)+'px';
+    tip.style.top=(y+16)+'px';
+  }
+}
+canvas.addEventListener('click', e=>{
+  const id=pick(e.clientX,e.clientY);
+  if(id) showStructure(id);
+});
+
+/* --- reader panel ---------------------------------------------------------- */
+const readerKind=document.getElementById('readerKind'),
+      readerTitle=document.getElementById('readerTitle'),
+      readerTag=document.getElementById('readerTag'),
+      readerBody=document.getElementById('readerBody');
+function showStructure(id){
+  const s=SMAP[id]; if(!s) return;
+  readerKind.textContent='Structure';
+  readerTitle.textContent=s.name;
+  readerTag.textContent=s.tag;
+  readerBody.innerHTML = s.body.map(t=>`<p>${t}</p>`).join('') +
+    (s.fact?`<p class="fact">${s.fact}</p>`:'');
+}
+function showStage(k){
+  const s=STAGES[k];
+  readerKind.textContent=`Secretory pathway · step ${k+1} of ${STAGES.length}`;
+  readerTitle.textContent=s.name;
+  readerTag.textContent=s.where;
+  readerBody.innerHTML=`<p>${s.text}</p><p class="fact">${stageCount[s.key]||0} molecules are at this step right now.</p>`;
+}
+function showPhase(i){
+  const p=PHASES[i];
+  readerKind.textContent=`Mitosis · phase ${i+1} of ${PHASES.length}`;
+  readerTitle.textContent=p.name;
+  readerTag.textContent=`${p.dur.toFixed(0)} s of model time`;
+  readerBody.innerHTML=`<p>${p.text}</p>`;
+}
+function showOverview(){
+  readerKind.textContent='Orientation';
+  readerTitle.textContent='The cell as a factory';
+  readerTag.textContent='~20 µm across · shown ~2,000,000×';
+  readerBody.innerHTML =
+    `<p>Everything here is running at once: genes are read in the nucleus, proteins are built and folded,
+        vesicles carry them to the Golgi and out to the surface, and mitochondria pay for all of it in ATP.</p>
+     <p class="fact">Click any structure in the scene, or any step in the strip below, to read what it does.</p>
+     <p class="hint">Drag to orbit · scroll to zoom · shift-drag to pan</p>`;
+}
+
+/* --- structure toggles ------------------------------------------------------ */
+const togglesEl=document.getElementById('toggles');
+for(const s of STRUCTURES){
+  vis[s.id]=s.on;
+  const el=document.createElement('label');
+  el.className='tg';
+  el.innerHTML=`<input type="checkbox" ${s.on?'checked':''}>
+    <i class="swatch" style="color:${hex(s.colour)};background:${hex(s.colour)}"></i><span>${s.name}</span>`;
+  el.querySelector('input').addEventListener('change', e=>{ vis[s.id]=e.target.checked; });
+  el.addEventListener('mouseenter', ()=>{ /* keep the reader stable on hover */ });
+  el.addEventListener('dblclick', ()=>showStructure(s.id));
+  el.title = s.tag;
+  togglesEl.appendChild(el);
+}
+
+/* --- legend ------------------------------------------------------------------ */
+const legendList=document.getElementById('legendList');
+for(const [k,label] of LEGEND){
+  const el=document.createElement('div');
+  el.className='lg';
+  el.innerHTML=`<i class="dot" style="color:${hex(PC[k])}"></i><span>${label}</span>`;
+  legendList.appendChild(el);
+}
+
+/* --- floating 3D labels ------------------------------------------------------ */
+const LABELS=[
+  { id:'nucleus',   text:'Nucleus',       at:()=>[0,NUC_R+0.5,0] },
+  { id:'nucleolus', text:'Nucleolus',     at:()=>[0.9,0.5,-0.5] },
+  { id:'golgi',     text:'Golgi',         at:()=>add(scene.golgi.c,[0,1.5,0]) },
+  { id:'rer',       text:'Rough ER',      at:()=>erPoint(2,1.1) },
+  { id:'ser',       text:'Smooth ER',     at:()=>scene.serRings[0].p },
+  { id:'mito',      text:'Mitochondrion', at:()=>scene.mitos[0].p },
+  { id:'lysosome',  text:'Lysosome',      at:()=>scene.lysos[0].p },
+  { id:'centro',    text:'Centrosome',    at:()=>mit.on?lerp3(CENTRO_C,[M.poleX,0,0],M.poles):CENTRO_C },
+  { id:'microtub',  text:'Microtubule',   at:()=>lerp3(scene.mts[3].a,scene.mts[3].b,0.75) },
+  { id:'membrane',  text:'Plasma membrane', at:()=>[0,CELL_R*0.94,0] },
+];
+const labelLayer=document.getElementById('labels');
+let showLabels=true;
+for(const L of LABELS){
+  const el=document.createElement('div');
+  el.className='lbl'; el.textContent=L.text;
+  labelLayer.appendChild(el); L.el=el;
+}
+function updateLabels(){
+  const w=canvas.clientWidth, h=canvas.clientHeight;
+  for(const L of LABELS){
+    if(!showLabels || !vis[L.id]){ L.el.style.opacity='0'; continue; }
+    const p=L.at();
+    const cx=vpM[0]*p[0]+vpM[4]*p[1]+vpM[8]*p[2]+vpM[12];
+    const cy=vpM[1]*p[0]+vpM[5]*p[1]+vpM[9]*p[2]+vpM[13];
+    const cw=vpM[3]*p[0]+vpM[7]*p[1]+vpM[11]*p[2]+vpM[15];
+    if(cw<=0.05){ L.el.style.opacity='0'; continue; }
+    const sx=(cx/cw*0.5+0.5)*w, sy=(-cy/cw*0.5+0.5)*h;
+    L.el.style.transform=`translate(0,-50%) translate(${sx}px,${sy}px)`;
+    // fade labels on the far side of the cell so the scene stays readable
+    const facing = dot(norm(sub(p,cam.target)), norm(sub(cam.eye,cam.target)));
+    L.el.style.opacity = String(clamp(0.35+facing*0.75, 0.12, 1));
+  }
+}
+
+/* --- the footer strip: process ladder, or mitosis timeline ------------------- */
+const ladder=document.getElementById('ladder'),
+      deckTitle=document.getElementById('deckTitle'),
+      deckMeta=document.getElementById('deckMeta');
+function buildLadder(){
+  ladder.innerHTML='';
+  const items = mit.on ? PHASES : STAGES;
+  items.forEach((s,k)=>{
+    const b=document.createElement('button');
+    b.className='stage'; b.type='button'; b.dataset.k=k;
+    b.innerHTML=`<span class="idx">${String(k+1).padStart(2,'0')}</span>
+                 <span class="nm">${s.name}</span>
+                 <span class="ct"></span><i class="bar"></i>`;
+    b.addEventListener('click', ()=>{
+      if(mit.on){ let acc=0; for(let j=0;j<k;j++) acc+=PHASES[j].dur; mit.t=acc+0.001; showPhase(k); }
+      else showStage(k);
+    });
+    b._nm = b.querySelector('.nm'); b._ct = b.querySelector('.ct'); b._bar = b.querySelector('.bar');
+    ladder.appendChild(b);
+  });
+  deckTitle.textContent = mit.on
+    ? 'Mitosis · one full round of division'
+    : 'Secretory pathway · live molecule census';
+}
+function updateDeck(){
+  const nodes=ladder.children;
+  if(mit.on){
+    const {i,local}=phaseAt(mit.t);
+    for(let k=0;k<nodes.length;k++){
+      nodes[k].dataset.on = k===i ? '1':'0';
+      nodes[k]._bar.style.width = (k<i?100:k===i?local*100:0)+'%';
+      nodes[k]._ct.textContent = k===i ? PHASES[k].dur.toFixed(0)+'s' : '';
+    }
+    deckMeta.textContent = `t = ${mit.t.toFixed(1)}s / ${mit.total}s · ${PHASES[i].name}`;
+  } else {
+    let total=0;
+    for(let k=0;k<nodes.length;k++){
+      const c=stageCount[STAGES[k].key]||0; total+=c;
+      nodes[k]._ct.textContent = c+' mol';
+      nodes[k]._bar.style.width = Math.min(100, c*4)+'%';
+      nodes[k].dataset.on = c>0 ? '1':'0';
+    }
+    deckMeta.textContent = `${total} molecules in transit · ${MAX_CROWD} crowding molecules on the GPU`;
+  }
+}
+
+/* --- playback + mode controls ------------------------------------------------ */
+const $=id=>document.getElementById(id);
+const btnPlay=$('btnPlay');
+btnPlay.addEventListener('click', ()=>{
+  paused=!paused;
+  btnPlay.textContent = paused?'Play':'Pause';
+  btnPlay.setAttribute('aria-pressed', String(!paused));
+});
+$('btnStep').addEventListener('click', ()=>{
+  const wasPaused=paused; paused=false;
+  updateMitosis(1/30); updateParticles(1/30);
+  paused=true; btnPlay.textContent='Play'; btnPlay.setAttribute('aria-pressed','false');
+  if(!wasPaused) {/* stays paused */}
+});
+$('btnReset').addEventListener('click', ()=>{ mit.t=0; _seed=20240517; seedParticles(); simTime=0; });
+$('speed').addEventListener('input', e=>{
+  speed = Math.pow(e.target.value/100, 1.6);      // 100 on the slider = real time
+  $('speedOut').textContent = speed.toFixed(2)+'×';
+});
+$('speed').dispatchEvent(new Event('input'));
+$('density').addEventListener('input', e=>{
+  crowdFrac = e.target.value/100;
+  $('densityOut').textContent = e.target.value+'%';
+});
+$('tLabels').addEventListener('change', e=>{ showLabels=e.target.checked; });
+$('tParticles').addEventListener('change', e=>{ showParticles=e.target.checked; });
+$('tClip').addEventListener('change', e=>{ cutaway=e.target.checked; });
+$('tSpin').addEventListener('change', e=>{ autoSpin=e.target.checked; });
+
+const modeLife=$('modeLife'), modeMitosis=$('modeMitosis');
+function setMode(divide){
+  mit.on=divide; mit.t=0;
+  modeLife.setAttribute('aria-pressed', String(!divide));
+  modeMitosis.setAttribute('aria-pressed', String(divide));
+  vis.chromosome = divide;
+  // reflect the change in the toggle list
+  const idx=STRUCTURES.findIndex(s=>s.id==='chromosome');
+  togglesEl.children[idx].querySelector('input').checked = divide;
+  buildLadder();
+  if(divide) showPhase(0); else showOverview();
+}
+modeLife.addEventListener('click', ()=>setMode(false));
+modeMitosis.addEventListener('click', ()=>setMode(true));
+
+$('uiToggle').addEventListener('click', ()=>document.body.classList.toggle('hideui'));
+addEventListener('keydown', e=>{
+  if(e.target.tagName==='INPUT') return;
+  if(e.code==='Space'){ e.preventDefault(); btnPlay.click(); }
+  else if(e.key==='m'||e.key==='M') setMode(!mit.on);
+  else if(e.key==='l'||e.key==='L'){ showLabels=!showLabels; $('tLabels').checked=showLabels; }
+  else if(e.key==='h'||e.key==='H') document.body.classList.toggle('hideui');
+  else if(e.key==='c'||e.key==='C'){ cutaway=!cutaway; $('tClip').checked=cutaway; }
+});
+function syncStats(){
+  $('stats').textContent = `${fps} fps · ${pathCount + Math.round(MAX_CROWD*crowdFrac)} particles`;
+}
+
+/* --- boot -------------------------------------------------------------------- */
+function showFatal(msg){
+  document.getElementById('boot').style.display='none';
+  const f=document.getElementById('fatal');
+  f.style.display='grid';
+  if(msg) document.getElementById('fatalMsg').textContent=msg;
+}
+(async function boot(){
+  try{
+    seedParticles();
+    updateMitosis(0);
+    buildLadder();
+    showOverview();
+    await initGPU();
+    document.getElementById('boot').style.opacity='0';
+    setTimeout(()=>document.getElementById('boot').style.display='none', 520);
+    requestAnimationFrame(t=>{ lastT=t; fpsT=t; requestAnimationFrame(frame); });
+  }catch(err){
+    console.error(err);
+    showFatal(String(err && err.message || err));
+  }
+})();
+
+/* ===========================================================================
+ *  BIOLOGICAL ASSUMPTIONS AND LIMITATIONS
+ *  ---------------------------------------------------------------------------
+ *  Scale.        Nothing here is to scale with anything else. A ribosome drawn
+ *                to scale against this cell would be roughly one screen pixel
+ *                across, and the ~10^9 protein molecules in a real cell would
+ *                render as opaque fog. Organelles are enlarged, molecules are
+ *                enormously enlarged, and the cytosol holds ~5,000 visible
+ *                molecules instead of billions.
+ *
+ *  Time.         Model seconds are not real seconds, and different processes
+ *                are not in correct proportion to each other. Translating one
+ *                protein takes tens of seconds in reality; mitosis takes about
+ *                an hour, and the interphase it interrupts takes ~20 hours.
+ *                Here the whole division cycle is compressed to 36 s so it can
+ *                be watched, and interphase is represented by a token 6 s.
+ *
+ *  Motion.       At cellular scale, inertia is irrelevant (Reynolds number
+ *                ~10^-5) and everything is dominated by viscous drag and
+ *                thermal noise. The compute shader approximates this with a
+ *                random kick plus heavy damping, which is qualitatively right
+ *                but is not a real Langevin integrator. Pathway molecules move
+ *                along smoothed target-seeking paths rather than by diffusion
+ *                and capture, because true diffusion would look like noise.
+ *
+ *  Geometry.     Organelles are built from three primitives. Real mitochondria
+ *                are branching and dynamic, the ER is one continuous membrane
+ *                network rather than separate rings, the Golgi is a stack of
+ *                pancakes rather than tori, and microtubules constantly grow
+ *                and collapse. The cell is drawn as a sphere; most animal
+ *                cells in tissue are nothing of the sort.
+ *
+ *  Genome.       Six chromosomes are shown instead of 46, and the metaphase
+ *                plate is idealised. Real congression is a noisy, error-prone
+ *                search-and-capture process with a spindle-assembly checkpoint
+ *                that can hold the cell in metaphase for a long time.
+ *
+ *  Omissions.    No peroxisomes, no actin cortex, no intermediate filaments,
+ *                no endosomes, no proteasomes, no cytoplasmic streaming, no
+ *                membrane potential, no water. Endocytosis is not shown; only
+ *                the outbound half of vesicle traffic is.
+ *
+ *  What is honest here: the sequence and the topology. Genes are read only in
+ *  the nucleus; RNA leaves only through pores; proteins for export are made on
+ *  the ER and never free in the cytosol; vesicle traffic runs ER → cis-Golgi →
+ *  trans-Golgi → surface and not the other way; ATP comes from mitochondria;
+ *  and the order of the mitotic phases is fixed.
+ *
+ *  ---------------------------------------------------------------------------
+ *  RENDERING NOTES
+ *  Pipelines: one compute pass (crowding molecules), one depth-only shadow pass
+ *  at 1600², and one 4× MSAA main pass. The main pass draws opaque organelles,
+ *  then the inside faces of transparent shells, then additive particle
+ *  billboards, then the outside faces of the shells — a cheap substitute for
+ *  sorting that works because every transparent shell here is convex.
+ *  All organelle geometry is instanced from three meshes held in a single
+ *  vertex buffer; each frame the CPU rebuilds ~1,500 instance records
+ *  (matrix + colour + parameters) and uploads them in three writeBuffer calls
+ *  per pass. The crowding particle buffer is never read back — the compute
+ *  shader writes it and the vertex stage consumes it in place.
+ * ======================================================================== */
+</script>
+</body>
+</html>

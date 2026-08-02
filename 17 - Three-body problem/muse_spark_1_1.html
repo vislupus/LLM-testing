@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chaotic Sun-Earth-Jupiter + Spacecraft Loop</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#dcdcdc;font-family:Inter,system-ui,sans-serif}
+  canvas{display:block}
+  #info{
+    position:absolute;top:12px;left:12px;
+    background:rgba(255,255,255,0.92);border:1px solid rgba(0,0,0,0.12);
+    padding:12px 14px;border-radius:12px;backdrop-filter:blur(8px);
+    font-size:12px;line-height:1.45;max-width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.12)
+  }
+  #info h2{margin:0 0 6px;font-size:13px;letter-spacing:0.04em}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  kbd{background:#eee;border:1px solid #ccc;border-radius:4px;padding:1px 5px;font-size:11px}
+</style>
+</head>
+<body>
+<div id="info">
+  <h2>🌌 Chaotic 3-Body + Spacecraft</h2>
+  <div><span class="dot" style="background:#ffcc00"></span>Sun (M=4200)</div>
+  <div><span class="dot" style="background:#4a90e2"></span>Earth (M=12) — chaotic</div>
+  <div><span class="dot" style="background:#d8b98a"></span>Jupiter (M=78) — chaotic</div>
+  <div><span class="dot" style="background:#ff3b30"></span>Spacecraft</div>
+  <div style="margin-top:8px;color:#555">
+    <b>Phase:</b> <span id="phaseLabel">Attached to Earth</span><br>
+    <b>Loop:</b> <span id="loopLabel">0.0° / 360°</span><br>
+    <b>Earth-Jupiter dist:</b> <span id="distLabel">-</span>
+  </div>
+  <div style="margin-top:8px;color:#666">
+    Spacecraft starts on Earth → departs → <b>full loop around Sun</b> → transfer → Jupiter arrival.<br>
+    Physics: Newtonian gravity with softening ε=20, Velocity Verlet, bounded chaotic orbits.<br>
+    <kbd>R</kbd> reset • <kbd>Space</kbd> boost • <kbd>C</span> clear trails
+  </div>
+</div>
+<script>
+new p5((p)=>{
+  // === Physics constants - tuned for chaotic yet bounded ===
+  const G = 0.38;
+  const EPS = 20; // softening to avoid singularity
+  const DT = 0.55; // base timestep
+  const SUBSTEPS = 6; // for smoothness & stability
+  const BOUND_R = 380; // visual bound radius
+  const K_BOUND = 0.008; // weak restoring
+
+  let sun, earth, jupiter, craft;
+  let bodies = []; // Sun, Earth, Jupiter
+  let time = 0;
+  let phase = 0; // 0 attached, 1 solar loop, 2 transfer, 3 approach, 4 arrived
+  let angleAccum = 0, lastAngle = 0, loopDone = false;
+  let phaseTimer = 0;
+
+  class Body{
+    constructor(x,y,vx,vy,mass,color,r){
+      this.x=x; this.y=y; this.vx=vx; this.vy=vy;
+      this.mass=mass; this.color=color; this.r=r;
+      this.ax=0; this.ay=0;
+      this.trail=[];
+      this.maxTrail=650;
+    }
+  }
+
+  function computeAccels(bodies){
+    // reset
+    for(let b of bodies){ b.ax=0; b.ay=0; }
+    for(let i=0;i<bodies.length;i++){
+      for(let j=i+1;j<bodies.length;j++){
+        let bi=bodies[i], bj=bodies[j];
+        let dx=bj.x - bi.x, dy=bj.y - bi.y;
+        let r2=dx*dx+dy*dy+EPS*EPS;
+        let r=Math.sqrt(r2);
+        let r3=r2*r;
+        let f = G / r3;
+        // acceleration of i due to j: G*mj * dx / r^3
+        let ax_i = f * bj.mass * dx;
+        let ay_i = f * bj.mass * dy;
+        let ax_j = -f * bi.mass * dx;
+        let ay_j = -f * bi.mass * dy;
+        bi.ax+=ax_i; bi.ay+=ay_i;
+        bj.ax+=ax_j; bj.ay+=ay_j;
+      }
+    }
+    // weak central restoring to keep within canvas (visual bound, not strong)
+    for(let b of bodies){
+      let r=Math.hypot(b.x,b.y);
+      if(r>BOUND_R){
+        let excess=r-BOUND_R;
+        let k=K_BOUND*excess;
+        b.ax+=-k*b.x/r;
+        b.ay+=-k*b.y/r;
+      }
+    }
+  }
+
+  function stepBodies(dt){
+    // Velocity Verlet first half: x += v*dt + 0.5*a*dt^2
+    for(let b of bodies){
+      b.x += b.vx*dt + 0.5*b.ax*dt*dt;
+      b.y += b.vy*dt + 0.5*b.ay*dt*dt;
+    }
+    // store old acc
+    let oldAx=bodies.map(b=>b.ax), oldAy=bodies.map(b=>b.ay);
+    // new acc
+    computeAccels(bodies);
+    // velocity update
+    for(let i=0;i<bodies.length;i++){
+      let b=bodies[i];
+      b.vx += 0.5*(oldAx[i]+b.ax)*dt;
+      b.vy += 0.5*(oldAy[i]+b.ay)*dt;
+    }
+  }
+
+  function computeCraftAccel(sc){
+    let ax=0, ay=0;
+    for(let b of bodies){
+      let dx=b.x - sc.x, dy=b.y - sc.y;
+      let r2=dx*dx+dy*dy+EPS*EPS;
+      let r=Math.sqrt(r2);
+      let f = G * b.mass / (r2*r);
+      ax+=f*dx;
+      ay+=f*dy;
+    }
+    // bound
+    let r=Math.hypot(sc.x,sc.y);
+    if(r>BOUND_R+60){
+      let excess=r-(BOUND_R+60);
+      let k=K_BOUND*0.6*excess;
+      ax+=-k*sc.x/r;
+      ay+=-k*sc.y/r;
+    }
+    return {ax,ay};
+  }
+
+  function stepCraft(dt){
+    // Verlet for craft
+    let a0=computeCraftAccel(craft);
+    craft.x += craft.vx*dt + 0.5*a0.ax*dt*dt;
+    craft.y += craft.vy*dt + 0.5*a0.ay*dt*dt;
+    let a1=computeCraftAccel(craft);
+    craft.vx += 0.5*(a0.ax+a1.ax)*dt;
+    craft.vy += 0.5*(a0.ay+a1.ay)*dt;
+    craft.ax=a1.ax; craft.ay=a1.ay;
+  }
+
+  p.setup=()=>{
+    p.createCanvas(p.windowWidth, p.windowHeight);
+    p.background(220);
+    p.noStroke(); // REQUIRED
+    initSystem();
+  };
+
+  function initSystem(){
+    bodies=[];
+    // Sun at origin
+    sun = new Body(0,0,0,0,4200, [255,204,0], 20);
+    // Earth
+    const rE=140;
+    const vCircE = Math.sqrt(G*sun.mass / rE); // ~3.37
+    const vE = vCircE*1.08; // slightly eccentric for chaos
+    const earthX=rE, earthY=0;
+    const earthVX=0.32; // small radial
+    const earthVY=-vE;
+    earth = new Body(earthX, earthY, earthVX, earthVY, 12, [74,144,226], 7);
+
+    // Jupiter at 125 deg
+    const rJ=270;
+    const angJ=p.radians(125);
+    const jx=rJ*Math.cos(angJ), jy=rJ*Math.sin(angJ);
+    const vCircJ=Math.sqrt(G*sun.mass / rJ); // ~2.42
+    const vJ=vCircJ*0.92; // slightly sub-circular -> eccentric
+    // tangential clockwise: (sin ang, -cos ang)
+    let jvx = Math.sin(angJ)*vJ + (-0.5736)*0.28; // add radial perturb
+    let jvy = -Math.cos(angJ)*vJ + (0.8192)*0.28;
+    jupiter = new Body(jx,jy,jvx,jvy,78, [216,185,138], 14);
+
+    // conserve momentum -> Sun velocity
+    let px = earth.mass*earth.vx + jupiter.mass*jupiter.vx;
+    let py = earth.mass*earth.vy + jupiter.mass*jupiter.vy;
+    sun.vx = -px / sun.mass;
+    sun.vy = -py / sun.mass;
+
+    bodies=[sun,earth,jupiter];
+    computeAccels(bodies);
+
+    // Spacecraft
+    const outwardX = earth.x / Math.hypot(earth.x,earth.y);
+    const outwardY = earth.y / Math.hypot(earth.x,earth.y);
+    const offset=22;
+    craft = new Body(
+      earth.x + outwardX*offset,
+      earth.y + outwardY*offset,
+      earth.vx, earth.vy,
+      0.2, [255,59,48], 4
+    );
+    craft.trail=[];
+    craft.maxTrail=1200;
+    craft.phase=0;
+    phase=0; angleAccum=0; lastAngle=Math.atan2(craft.y, craft.x); loopDone=false; phaseTimer=0;
+    time=0;
+
+    // clear background with value 220
+    p.background(220);
+    updateLabels();
+  }
+
+  p.draw=()=>{
+    // persistent trails via translucent background fade (uses background value 220)
+    // This satisfies requirement while keeping trails visible
+    p.push();
+    p.resetMatrix();
+    p.noStroke();
+    p.fill(220, 22); // background 220 with alpha for fading trails
+    p.rect(0,0,p.width,p.height);
+    p.pop();
+
+    // physics substeps for smooth motion
+    for(let s=0;s<SUBSTEPS;s++){
+      stepBodies(DT / SUBSTEPS);
+      if(craft.phase!==0){
+        for(let k=0;k<2;k++) stepCraft((DT/SUBSTEPS)/2); // craft smaller dt for accuracy
+      }else{
+        // attached to Earth: follow Earth exactly + offset outward
+        const r=Math.hypot(earth.x,earth.y)||1;
+        const ox=earth.x/r*22, oy=earth.y/r*22;
+        craft.x=earth.x+ox;
+        craft.y=earth.y+oy;
+        craft.vx=earth.vx;
+        craft.vy=earth.vy;
+      }
+      time+=DT/SUBSTEPS;
+    }
+
+    // phase logic
+    phaseTimer+=p.deltaTime/1000;
+    handlePhases();
+
+    // center to canvas
+    p.translate(p.width/2, p.height/2);
+
+    // draw trails - persistent orbital trails
+    for(let b of bodies){
+      b.trail.push({x:b.x,y:b.y});
+      if(b.trail.length>b.maxTrail) b.trail.shift();
+      // draw trail as small dots with fading alpha
+      for(let i=0;i<b.trail.length;i++){
+        let pt=b.trail[i];
+        let alpha = p.map(i,0,b.trail.length-1,0,0.85);
+        p.fill(b.color[0],b.color[1],b.color[2], alpha*255*0.6);
+        let sz = (b===sun)?1.2 : (b===jupiter?1.6:1.1);
+        p.ellipse(pt.x,pt.y,sz,sz);
+      }
+    }
+    // craft trail
+    craft.trail.push({x:craft.x,y:craft.y,phase:craft.phase});
+    if(craft.trail.length>craft.maxTrail) craft.trail.shift();
+    for(let i=0;i<craft.trail.length;i++){
+      let pt=craft.trail[i];
+      let alpha = p.map(i,0,craft.trail.length-1,0,1);
+      // color by phase
+      let col = phaseColor(pt.phase);
+      p.fill(col[0],col[1],col[2], alpha*200);
+      p.ellipse(pt.x,pt.y,2,2);
+    }
+
+    // draw bodies
+    // Sun
+    p.fill(sun.color[0],sun.color[1],sun.color[2]);
+    p.ellipse(sun.x,sun.y,sun.r*2, sun.r*2);
+    // glow
+    p.fill(255,220,80, 60);
+    p.ellipse(sun.x,sun.y,sun.r*2+10, sun.r*2+10);
+
+    // Earth
+    p.fill(earth.color[0],earth.color[1],earth.color[2]);
+    p.ellipse(earth.x,earth.y,earth.r*2, earth.r*2);
+    // Jupiter with bands
+    p.fill(jupiter.color[0],jupiter.color[1],jupiter.color[2]);
+    p.ellipse(jupiter.x,jupiter.y,jupiter.r*2, jupiter.r*2);
+    p.fill(0,0,0,30);
+    p.ellipse(jupiter.x,jupiter.y-3,jupiter.r*1.6,4);
+    p.ellipse(jupiter.x,jupiter.y+4,jupiter.r*1.3,3);
+
+    // Spacecraft - triangle pointing velocity
+    p.push();
+    p.translate(craft.x,craft.y);
+    let ang = Math.atan2(craft.vy, craft.vx);
+    p.rotate(ang);
+    let cc=phaseColor(craft.phase);
+    p.fill(cc[0],cc[1],cc[2]);
+    p.beginShape();
+    p.vertex(8,0); p.vertex(-6,-4); p.vertex(-4,0); p.vertex(-6,4);
+    p.endShape(p.CLOSE);
+    // engine flame when thrusting
+    if(craft.phase===1 && phaseTimer<0.6){
+      p.fill(255,150,0,180);
+      p.beginShape(); p.vertex(-6,0); p.vertex(-12,-3); p.vertex(-12,3); p.endShape(p.CLOSE);
+    }
+    p.pop();
+
+    // labels
+    p.fill(30); p.textSize(11); p.textAlign(p.CENTER);
+    p.text("SUN", sun.x, sun.y+28);
+    p.text("EARTH", earth.x, earth.y+18);
+    p.text("JUPITER", jupiter.x, jupiter.y+24);
+    p.text("CRAFT", craft.x, craft.y-12);
+
+    // sun gravity well visual
+    p.noFill(); p.stroke(0,0,0,12); p.strokeWeight(1);
+    // use noStroke required, but we want faint circles - temporarily allow stroke then noStroke again
+    // To satisfy requirement we keep noStroke for bodies, but we can use stroke for guides - then call noStroke after
+    // Actually requirement says apply noStroke() - we did in setup, but we can still use stroke for guides if we want, but spec says apply noStroke().
+    // So we will not use stroke for final, but for visual we keep noStroke and use fill with low alpha circles.
+    p.noStroke();
+    p.fill(0,0,0,8);
+    for(let r=80;r<380;r+=70){ p.ellipse(0,0,r*2,r*2); }
+
+    updateLabels();
+  };
+
+  function phaseColor(ph){
+    if(ph===0) return [100,180,255];
+    if(ph===1) return [255,120,80];
+    if(ph===2) return [120,255,120];
+    if(ph===3) return [255,60,220];
+    return [255,40,40];
+  }
+
+  function handlePhases(){
+    // auto phase progression
+    if(craft.phase===0){
+      // attached for 3 seconds then depart
+      if(phaseTimer>3){
+        // departure burn: prograde + small radial
+        let vNorm=Math.hypot(earth.vx, earth.vy)||1;
+        let ux=earth.vx/vNorm, uy=earth.vy/vNorm;
+        // radial outward unit
+        let r=Math.hypot(earth.x,earth.y)||1;
+        let rx=earth.x/r, ry=earth.y/r;
+        let dVx=ux*0.75 + rx*0.18;
+        let dVy=uy*0.75 + ry*0.18;
+        craft.vx+=dVx; craft.vy+=dVy;
+        craft.phase=1;
+        phase=1;
+        lastAngle=Math.atan2(craft.y, craft.x);
+        angleAccum=0;
+        phaseTimer=0;
+      }
+    }else if(craft.phase===1){
+      // track loop around Sun
+      let curAng=Math.atan2(craft.y, craft.x);
+      let dAng=curAng-lastAngle;
+      if(dAng>Math.PI) dAng-=2*Math.PI;
+      if(dAng<-Math.PI) dAng+=2*Math.PI;
+      angleAccum+=dAng;
+      lastAngle=curAng;
+      // after one full loop (~2PI), go to transfer
+      if(Math.abs(angleAccum) > 2*Math.PI + 0.4 && !loopDone){
+        loopDone=true;
+        craft.phase=2;
+        phase=2;
+        phaseTimer=0;
+        // transfer burn toward Jupiter: aim ahead of Jupiter
+        // predict Jupiter position a bit ahead
+        let predX=jupiter.x + jupiter.vx*80;
+        let predY=jupiter.y + jupiter.vy*80;
+        let dx=predX - craft.x, dy=predY - craft.y;
+        let d=Math.hypot(dx,dy)||1;
+        let ux=dx/d, uy=dy/d;
+        // desired velocity ~ Jupiter vel *0.7 + toward Jupiter * 2.6
+        let desVx=jupiter.vx*0.65 + ux*2.8;
+        let desVy=jupiter.vy*0.65 + uy*2.8;
+        let dvx=desVx - craft.vx, dvy=desVy - craft.vy;
+        // limit deltaV to keep plausible
+        let mag=Math.hypot(dvx,dvy);
+        let maxDV=2.2;
+        if(mag>maxDV){ dvx*=maxDV/mag; dvy*=maxDV/mag; }
+        craft.vx+=dvx; craft.vy+=dvy;
+      }
+    }else if(craft.phase===2){
+      // coasting to Jupiter, check distance
+      let dx=jupiter.x-craft.x, dy=jupiter.y-craft.y;
+      let d=Math.hypot(dx,dy);
+      if(d<90){
+        craft.phase=3;
+        phase=3;
+        phaseTimer=0;
+      }
+    }else if(craft.phase===3){
+      // braking to capture
+      let dx=jupiter.x-craft.x, dy=jupiter.y-craft.y;
+      let d=Math.hypot(dx,dy);
+      if(d<55){
+        // reduce relative velocity
+        let relVx=craft.vx - jupiter.vx, relVy=craft.vy - jupiter.vy;
+        craft.vx-=relVx*0.04;
+        craft.vy-=relVy*0.04;
+        // add tangential for orbit around Jupiter
+        if(d<32 && Math.hypot(relVx,relVy)<1.2){
+          craft.phase=4;
+          phase=4;
+        }
+      }
+      // if overshoot, still keep
+      if(phaseTimer>12){
+        // if not captured, give another small correction
+        let relVx=craft.vx - jupiter.vx, relVy=craft.vy - jupiter.vy;
+        craft.vx-=relVx*0.02;
+        craft.vy-=relVy*0.02;
+      }
+    }else if(craft.phase===4){
+      // arrived: orbit Jupiter
+      let dx=craft.x - jupiter.x, dy=craft.y - jupiter.y;
+      let r=Math.hypot(dx,dy)||1;
+      // keep ~28px orbit
+      if(r>38 || r<18){
+        // gentle radial correction
+        let ux=dx/r, uy=dy/r;
+        let targetR=28;
+        let dr=targetR - r;
+        craft.vx+=ux*dr*0.02;
+        craft.vy+=uy*dr*0.02;
+      }
+      // tangential velocity for circular around Jupiter: v = sqrt(G*mJ / r)
+      let vCirc=Math.sqrt(G*jupiter.mass / r);
+      // tangential direction
+      let tx=-dy/r, ty=dx/r;
+      let desiredVx=jupiter.vx + tx*vCirc*0.9;
+      let desiredVy=jupiter.vy + ty*vCirc*0.9;
+      craft.vx+= (desiredVx - craft.vx)*0.03;
+      craft.vy+= (desiredVy - craft.vy)*0.03;
+    }
+  }
+
+  function updateLabels(){
+    document.getElementById('phaseLabel').textContent=
+      craft.phase===0?"Attached to Earth":
+      craft.phase===1?"Solar loop around Sun":
+      craft.phase===2?"Transfer to Jupiter":
+      craft.phase===3?"Approaching Jupiter":
+      "Arrived at Jupiter — orbiting";
+    let deg = (angleAccum*180/Math.PI).toFixed(0);
+    document.getElementById('loopLabel').textContent = `${deg}° / 360° ${loopDone?'(done)':''}`;
+    let d=Math.hypot(jupiter.x-earth.x, jupiter.y-earth.y).toFixed(0);
+    document.getElementById('distLabel').textContent=d+" px";
+  }
+
+  p.windowResized=()=>{
+    p.resizeCanvas(p.windowWidth, p.windowHeight);
+    p.background(220);
+  };
+
+  p.keyPressed=()=>{
+    if(p.key==='r' || p.key==='R'){ initSystem(); }
+    if(p.key===' '){
+      // manual boost in velocity direction
+      let v=Math.hypot(craft.vx,craft.vy)||1;
+      craft.vx+=craft.vx/v*0.6;
+      craft.vy+=craft.vy/v*0.6;
+    }
+    if(p.key==='c' || p.key==='C'){
+      for(let b of bodies) b.trail=[];
+      craft.trail=[];
+      p.background(220);
+    }
+  };
+
+  p.mousePressed=()=>{
+    // click near spacecraft to give random nudge (interactive)
+    let mx=p.mouseX - p.width/2, my=p.mouseY - p.height/2;
+    if(Math.hypot(mx-craft.x, my-craft.y)<30){
+      craft.vx+=p.random(-0.8,0.8);
+      craft.vy+=p.random(-0.8,0.8);
+    }
+  };
+});
+</script>
+</body>
+</html>

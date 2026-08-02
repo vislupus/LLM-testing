@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Galaxy Formation - 10k Particles - Barnes-Hut</title>
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#dcdcdc;}
+  canvas{display:block;}
+  #hud{
+    position:absolute;top:12px;left:12px;
+    font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size:11px;line-height:1.4;
+    color:#222;
+    background:rgba(220,220,220,0.85);
+    border:1px solid rgba(0,0,0,0.12);
+    padding:10px 12px;border-radius:10px;
+    backdrop-filter:blur(6px);
+    pointer-events:none;
+  }
+  #hud b{color:#000}
+  #title{
+    position:absolute;top:12px;right:12px;
+    font-family:system-ui,sans-serif;
+    font-size:11px;letter-spacing:0.12em;text-transform:uppercase;
+    color:#444;background:rgba(220,220,220,0.8);padding:8px 10px;border-radius:8px;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "p5": "https://cdn.jsdelivr.net/npm/p5@1.11.3/+esm"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud"></div>
+<div id="title">protogalactic collapse → spiral • Barnes-Hut • 10 000 stars</div>
+<script type="module">
+import p5 from 'p5';
+
+const sketch = (p) => {
+  // --- Config ---
+  const NUM = 10000;
+  let G = 0.14;
+  let THETA = 0.9;
+  const SOFT = 5.5;
+  const M_CORE = 2800;
+  const V_HALO = 1.45;
+  const MERGE_EVERY = 6;
+  const CELL_SIZE = 12;
+
+  let particles = [];
+  let center;
+  let quad = null;
+  let time = 0;
+  let totalMass0 = 0;
+
+  class Particle {
+    constructor(pos, vel, mass){
+      this.pos = pos; // p5.Vector
+      this.vel = vel;
+      this.acc = p.createVector(0,0);
+      this.mass = mass;
+      this.radius = Math.pow(mass,0.4)*1.1 + 0.3;
+      this.brightness = p.random(35, 88);
+      this.hueShift = p.random(-1,1);
+    }
+    applyForce(f){
+      // f is force vector, acc += f / m
+      // Using p5.Vector div
+      let a = p5.Vector.div(f, this.mass);
+      this.acc.add(a);
+    }
+    update(){
+      this.vel.add(this.acc);
+      this.vel.mult(0.9997);
+      this.pos.add(this.vel);
+      this.acc.mult(0);
+    }
+  }
+
+  class QuadNode {
+    constructor(x,y,w,h){
+      this.x=x; this.y=y; this.w=w; this.h=h;
+      this.mass=0;
+      this.com=null;
+      this.particle=null;
+      this.children=null;
+    }
+    contains(pt){
+      return pt.pos.x >= this.x - this.w && pt.pos.x < this.x + this.w &&
+             pt.pos.y >= this.y - this.h && pt.pos.y < this.y + this.h;
+    }
+    subdivide(){
+      const hw=this.w*0.5, hh=this.h*0.5;
+      this.children=[
+        new QuadNode(this.x - hw, this.y - hh, hw, hh),
+        new QuadNode(this.x + hw, this.y - hh, hw, hh),
+        new QuadNode(this.x - hw, this.y + hh, hw, hh),
+        new QuadNode(this.x + hw, this.y + hh, hw, hh)
+      ];
+    }
+    insert(pt){
+      if(!this.contains(pt)) return false;
+      if(!this.children && !this.particle){
+        this.particle=pt;
+        return true;
+      }
+      if(!this.children){
+        this.subdivide();
+        let old=this.particle;
+        this.particle=null;
+        for(let c of this.children){ if(c.contains(old)){ c.insert(old); break; } }
+      }
+      for(let c of this.children){ if(c.insert(pt)) return true; }
+      return false;
+    }
+    updateMass(){
+      if(this.children){
+        let tm=0, cx=0, cy=0;
+        for(let c of this.children){
+          c.updateMass();
+          if(c.mass>0){
+            tm+=c.mass;
+            cx+=c.com.x*c.mass;
+            cy+=c.com.y*c.mass;
+          }
+        }
+        this.mass=tm;
+        if(tm>0) this.com=p.createVector(cx/tm, cy/tm);
+        else this.com=null;
+      }else if(this.particle){
+        this.mass=this.particle.mass;
+        this.com=this.particle.pos.copy();
+      }else{
+        this.mass=0; this.com=null;
+      }
+    }
+    computeForce(target, theta, G, soft){
+      if(this.mass===0) return p.createVector(0,0);
+      if(!this.children && this.particle===target) return p.createVector(0,0);
+      const dx = this.com ? this.com.x - target.pos.x : 0;
+      const dy = this.com ? this.com.y - target.pos.y : 0;
+      const distSq = dx*dx + dy*dy + soft*soft;
+      const dist = Math.sqrt(distSq);
+      const s = this.w*2;
+      if(!this.children || (s/dist < theta)){
+        const fmag = G * target.mass * this.mass / distSq;
+        return p.createVector(dx/dist*fmag, dy/dist*fmag);
+      }else{
+        let fx=0, fy=0;
+        for(let c of this.children){
+          let f=c.computeForce(target, theta, G, soft);
+          fx+=f.x; fy+=f.y;
+        }
+        return p.createVector(fx,fy);
+      }
+    }
+  }
+
+  function handleMerging(){
+    const grid=new Map();
+    for(let i=0;i<particles.length;i++){
+      let pt=particles[i];
+      let gx=Math.floor(pt.pos.x / CELL_SIZE);
+      let gy=Math.floor(pt.pos.y / CELL_SIZE);
+      let key=gx+','+gy;
+      if(!grid.has(key)) grid.set(key,[]);
+      grid.get(key).push(i);
+    }
+    let toRemove=new Set();
+    for(let i=0;i<particles.length;i++){
+      if(toRemove.has(i)) continue;
+      let pi=particles[i];
+      let gx=Math.floor(pi.pos.x / CELL_SIZE);
+      let gy=Math.floor(pi.pos.y / CELL_SIZE);
+      for(let dx=-1;dx<=1;dx++){
+        for(let dy=-1;dy<=1;dy++){
+          let key=(gx+dx)+','+(gy+dy);
+          let list=grid.get(key);
+          if(!list) continue;
+          for(let j of list){
+            if(j<=i) continue;
+            if(toRemove.has(j)) continue;
+            let pj=particles[j];
+            let d = p5.Vector.dist(pi.pos, pj.pos);
+            let md = (pi.radius + pj.radius)*0.68;
+            if(d < md){
+              // merge pj into pi conserving mass and momentum
+              let tm = pi.mass + pj.mass;
+              // p = m1v1+m2v2
+              let vm = p5.Vector.add(p5.Vector.mult(pi.vel, pi.mass), p5.Vector.mult(pj.vel, pj.mass)).div(tm);
+              let pm = p5.Vector.add(p5.Vector.mult(pi.pos, pi.mass), p5.Vector.mult(pj.pos, pj.mass)).div(tm);
+              pi.vel = vm;
+              pi.pos = pm;
+              pi.mass = tm;
+              pi.radius = Math.pow(tm,0.42)*0.95 + 0.2;
+              pi.brightness = Math.min(96, (pi.brightness + pj.brightness)*0.5 + 6);
+              toRemove.add(j);
+            }
+          }
+        }
+      }
+    }
+    if(toRemove.size>0){
+      particles = particles.filter((_,idx)=>!toRemove.has(idx));
+    }
+  }
+
+  p.setup = () => {
+    p.createCanvas(p.windowWidth, p.windowHeight);
+    p.background(220);
+    center = p.createVector(p.width*0.5, p.height*0.5);
+    // init 10k particles as collapsing cloud
+    for(let i=0;i<NUM;i++){
+      // polar with power-law for central concentration
+      let ang = p.random(p.TWO_PI);
+      // slight spiral seed for 45% of particles
+      let r;
+      if(p.random()<0.45){
+        let arm = p.floor(p.random(2));
+        let baseR = Math.pow(p.random(),0.68)*380;
+        // logarithmic spiral offset
+        let spiralAng = arm*Math.PI + (baseR/70)*1.15;
+        ang = spiralAng + p.random(-0.32,0.32);
+        r = baseR + p.random(-12,12);
+      }else{
+        r = Math.pow(p.random(),0.62)*420;
+      }
+      r = Math.max(12, r);
+      let pos = p.createVector(center.x + r*Math.cos(ang), center.y + r*Math.sin(ang));
+      // velocity: tangential + inward collapse
+      let rVec = p5.Vector.sub(pos, center);
+      let rMag = rVec.mag() + 0.1;
+      let tang = p.createVector(-rVec.y, rVec.x).normalize();
+      // enclosed mass approx
+      let mEnc = M_CORE + (rMag/400)*6000;
+      let vCirc = Math.sqrt(G * mEnc / (rMag+18)) * (0.65 + p.random(0,0.25));
+      // solid body component to spin up
+      vCirc += rMag*0.0035;
+      let vel = tang.copy().mult(vCirc);
+      // inward collapse component
+      let collapse = rVec.copy().normalize().mult(-0.18 * p.random(0.2,1.0) * (rMag/400));
+      vel.add(collapse);
+      // random dispersion
+      vel.add(p.createVector(p.random(-0.35,0.35), p.random(-0.35,0.35)));
+      let mass = p.random(0.7,1.55);
+      particles.push(new Particle(pos, vel, mass));
+      totalMass0+=mass;
+    }
+    p.frameRate(60);
+  };
+
+  p.draw = () => {
+    // subtle trail for motion
+    p.noStroke();
+    p.fill(220,220,220,38);
+    p.rect(0,0,p.width,p.height);
+
+    // rebuild quadtree
+    quad = new QuadNode(p.width*0.5, p.height*0.5, p.width*0.5, p.height*0.5);
+    for(let pt of particles) quad.insert(pt);
+    quad.updateMass();
+
+    // forces
+    for(let pt of particles){
+      let f = p.createVector(0,0);
+      // core
+      let toC = p5.Vector.sub(center, pt.pos);
+      let distC = toC.mag() + 4;
+      let coreFmag = G * M_CORE * pt.mass / (distC*distC + 30);
+      let coreF = toC.copy().normalize().mult(coreFmag);
+      f.add(coreF);
+      // dark halo -> flat rotation: a = v_h^2 / r
+      let haloFmag = (V_HALO*V_HALO) * pt.mass / (distC);
+      let haloF = toC.copy().normalize().mult(haloFmag);
+      f.add(haloF);
+      // particle-particle via Barnes-Hut
+      let pp = quad.computeForce(pt, THETA, G, SOFT);
+      f.add(pp);
+      pt.applyForce(f);
+    }
+
+    // update
+    for(let pt of particles) pt.update();
+
+    if(p.frameCount % MERGE_EVERY === 0) handleMerging();
+
+    // draw particles as simple circles varying size/brightness
+    p.noStroke();
+    for(let pt of particles){
+      let d = p5.Vector.dist(pt.pos, center);
+      let t = p.constrain(d/360,0,1);
+      // color from warm core to cool outer: inner reddish-yellow, outer bluish
+      let r = p.lerp(45, 35, t);
+      let g = p.lerp(35, 65, t);
+      let b = p.lerp(45, 125, t);
+      // brightness modulation by mass
+      let br = pt.brightness/100;
+      let alpha = p.map(pt.mass,0.7,6,55,190);
+      p.fill(r + br*22, g + br*18, b + br*32, alpha);
+      let sz = pt.radius*2;
+      p.circle(pt.pos.x, pt.pos.y, sz);
+    }
+
+    // central core / black hole
+    p.noStroke();
+    p.fill(18,18,22,220);
+    p.circle(center.x, center.y, 13);
+    p.fill(30,30,40,70);
+    p.circle(center.x, center.y, 26);
+    p.fill(220,220,220,18);
+    p.circle(center.x, center.y, 90);
+
+    time += 0.016;
+
+    // HUD
+    let innerCount=0, outerCount=0;
+    for(let pt of particles){ let d=p5.Vector.dist(pt.pos, center); if(d<120) innerCount++; else if(d>260) outerCount++; }
+    let avgVinner=0; // rough
+    document.getElementById('hud').innerHTML =
+      `<b>${particles.length}</b> stars (from ${NUM})<br>`+
+      `core ${M_CORE} • halo v²=${V_HALO.toFixed(2)} • G=${G}<br>`+
+      `theta ${THETA} • soft ${SOFT} • merges conserve mass<br>`+
+      `inner <120px: ${innerCount} | outer >260px: ${outerCount}<br>`+
+      `frame ${p.frameCount} • ${p.frameRate().toFixed(1)} fps<br>`+
+      `<span style="opacity:0.7">Keplerian: inner faster • halo flattens outer • trails = 220 alpha</span>`;
+
+    // auto re-center if many escape? keep center
+  };
+
+  p.windowResized = () => {
+    p.resizeCanvas(p.windowWidth, p.windowHeight);
+    center = p.createVector(p.width*0.5, p.height*0.5);
+    p.background(220);
+  };
+};
+
+new p5(sketch);
+</script>
+</body>
+</html>
