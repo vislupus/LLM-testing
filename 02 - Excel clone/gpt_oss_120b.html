@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Mini‑Excel – pure HTML/JS</title>
+<style>
+  :root{
+    --header-bg:#f0f0f0;
+    --cell-bg:#fff;
+    --cell-selected:#cce5ff;
+    --cell-edit:#e9ffe9;
+    --grid-line:#ddd;
+    --toolbar-bg:#e8e8e8;
+    --tab-bg:#ddd;
+    --tab-active:#fff;
+    --tab-hover:#eee;
+  }
+  body{margin:0;font-family:Arial,Helvetica,sans-serif;overflow:hidden;height:100vh;display:flex;flex-direction:column;background:#fafafa;}
+  /* ----- TOOLBAR ------------------------------------------------------ */
+  #toolbar{
+    display:flex;align-items:center;background:var(--toolbar-bg);padding:4px 8px;gap:6px;
+    border-bottom:1px solid #bbb;
+  }
+  #toolbar button{
+    background:#fff;border:1px solid #999;padding:3px 6px;border-radius:3px;cursor:pointer;
+  }
+  #toolbar button:hover{background:#f0f0f0;}
+  #toolbar input[type="color"]{border:none;width:28px;height:28px;padding:0;}
+  #toolbar input[type="file"]{display:none;}
+  /* ----- SHEET TABS --------------------------------------------------- */
+  #sheets{
+    display:flex;background:#e0e0e0;padding:2px 4px;gap:4px;border-bottom:1px solid #bbb;
+  }
+  .sheet-tab{
+    background:var(--tab-bg);padding:4px 8px;border-radius:3px 3px 0 0;cursor:pointer;user-select:none;
+  }
+  .sheet-tab.active{background:var(--tab-active);font-weight:bold;}
+  .sheet-tab:hover:not(.active){background:var(--tab-hover);}
+  .sheet-tab .close{margin-left:4px;color:#a00;cursor:pointer;}
+  /* ----- FORMULA BAR ------------------------------------------------- */
+  #formulaBar{
+    display:flex;align-items:center;background:#fff;border-bottom:1px solid #bbb;padding:2px 8px;
+  }
+  #formulaBar input{
+    flex:1;margin-left:6px;padding:4px;font-size:14px;border:1px solid #999;border-radius:3px;
+  }
+  /* ----- GRID ---------------------------------------------------------- */
+  #gridWrapper{
+    flex:1;overflow:auto;position:relative;background:#fff;
+  }
+  #grid{
+    position:absolute;top:0;left:0;display:grid;grid-template-rows:repeat(var(--rows),30px);
+  }
+  .col-header{background:var(--header-bg);border-right:1px solid var(--grid-line);border-bottom:1px solid var(--grid-line);text-align:center;font-weight:bold;user-select:none;}
+  .row-header{background:var(--header-bg);border-right:1px solid var(--grid-line);border-bottom:1px solid var(--grid-line);text-align:right;padding-right:4px;font-size:12px;color:#555;user-select:none;}
+  .cell{
+    border-right:1px solid var(--grid-line);border-bottom:1px solid var(--grid-line);
+    padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;
+    background:var(--cell-bg);
+  }
+  .cell.selected{background:var(--cell-selected);}
+  .cell.editing{background:var(--cell-edit);}
+  .cell.bold{font-weight:bold;}
+  .cell.italic{font-style:italic;}
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <button id="boldBtn"><b>B</b></button>
+  <button id="italicBtn"><i>I</i></button>
+  <input type="color" id="fillColorBtn" title="Cell background">
+  <button id="clearBtn">Clear</button>
+  <button id="addSheetBtn">+ Sheet</button>
+  <button id="downloadBtn">Download CSV</button>
+  <label for="uploadInput" style="cursor:pointer;">Upload CSV</label>
+  <input type="file" id="uploadInput" accept=".csv">
+</div>
+
+<div id="sheets"></div>
+
+<div id="formulaBar">
+  <span id="cellAddress">A1</span>
+  <input id="formulaInput" placeholder="Enter value or formula"/>
+</div>
+
+<div id="gridWrapper"><div id="grid"></div></div>
+
+<script>
+/* ==== CONSTANTS ===================================================== */
+const COLS = 26;               // A‑Z (you can increase later)
+const ROWS = 100;              // 100 rows to start
+const COL_WIDTH = 100;         // px (resizable later)
+const ROW_HEIGHT = 30;         // px
+
+/* ==== STATE ========================================================= */
+let sheets = [];               // each sheet = {name:string, data:[][]}
+let activeSheet = 0;           // index in sheets
+let selected = {r:0,c:0};      // currently highlighted cell
+let rangeSelection = null;     // {start:{r,c},end:{r,c}} while dragging
+let editing = false;           // are we typing in formula bar?
+let undoStack = [];            // very simple undo (optional)
+
+/* ==== UTILITIES ===================================================== */
+function colToLetter(i){let s='';i++;while(i>0){s=String.fromCharCode(65+((i-1)%26))+s;i=Math.floor((i-1)/26);}return s;}
+function letterToCol(s){let n=0;for(let i=0;i<s.length;i++){n=n*26+(s.charCodeAt(i)-64);}return n-1;}
+function cellId(r,c){return colToLetter(c)+(r+1);}
+function parseCellId(id){
+  const m=id.match(/^([A-Z]+)(\d+)$/);if(!m)return null;
+  return {c:letterToCol(m[1]), r:parseInt(m[2],10)-1};
+}
+function getCell(r,c){return sheets[activeSheet].data[r]?.[c]||{raw:'',val:'',style:{}};}
+function setCell(r,c,obj){sheets[activeSheet].data[r][c]=Object.assign(getCell(r,c),obj);}
+
+/* ==== INIT SHEET ==================================================== */
+function newSheet(name='Sheet1'){
+  const data=Array.from({length:ROWS},()=>Array.from({length:COLS},()=>({raw:'',val:'',style:{}})));
+  sheets.push({name, data});
+  renderSheetTabs();
+  switchSheet(sheets.length-1);
+}
+newSheet();
+
+/* ==== SHEET TABS ==================================================== */
+function renderSheetTabs(){
+  const container=document.getElementById('sheets');
+  container.innerHTML='';
+  sheets.forEach((sh,i)=>{
+    const tab=document.createElement('div');
+    tab.className='sheet-tab'+(i===activeSheet?' active':'');
+    tab.textContent=sh.name;
+    tab.onclick=()=>switchSheet(i);
+    const close=document.createElement('span');
+    close.className='close';
+    close.textContent='✕';
+    close.onclick=e=>{e.stopPropagation();deleteSheet(i);};
+    tab.appendChild(close);
+    container.appendChild(tab);
+  });
+}
+function switchSheet(idx){
+  activeSheet=idx;
+  renderSheetTabs();
+  drawGrid();
+  updateFormulaBar();
+}
+function deleteSheet(idx){
+  if(sheets.length===1)return alert('At least one sheet required');
+  sheets.splice(idx,1);
+  if(activeSheet>=sheets.length)activeSheet=sheets.length-1;
+  renderSheetTabs();
+  drawGrid();
+  updateFormulaBar();
+}
+
+/* ==== GRID CONSTRUCTION ============================================= */
+function drawGrid(){
+  const grid=document.getElementById('grid');
+  grid.style.setProperty('--rows',ROWS);
+  grid.innerHTML='';
+
+  // Column headers
+  for(let c=0;c<COLS+1;c++){
+    const div=document.createElement('div');
+    div.className='col-header';
+    div.style.gridColumn = c+1;
+    div.style.gridRow = 1;
+    div.style.minWidth = COL_WIDTH+'px';
+    if(c>0) div.textContent=colToLetter(c-1);
+    grid.appendChild(div);
+  }
+
+  // Row headers + cells
+  for(let r=0;r<ROWS;r++){
+    // row header
+    const rh=document.createElement('div');
+    rh.className='row-header';
+    rh.style.gridColumn = 1;
+    rh.style.gridRow = r+2;
+    rh.textContent = r+1;
+    grid.appendChild(rh);
+    for(let c=0;c<COLS;c++){
+      const cell=document.createElement('div');
+      cell.className='cell';
+      cell.dataset.r=r;cell.dataset.c=c;
+      cell.style.gridColumn = c+2;
+      cell.style.gridRow = r+2;
+      cell.style.minWidth = COL_WIDTH+'px';
+      cell.style.height = ROW_HEIGHT+'px';
+      const data = getCell(r,c);
+      cell.textContent = data.val;
+      applyCellStyle(cell,data.style);
+      if(r===selected.r && c===selected.c)cell.classList.add('selected');
+      grid.appendChild(cell);
+    }
+  }
+}
+
+/* ==== CELL STYLE ==================================================== */
+function applyCellStyle(el,style){
+  el.style.fontWeight = style.bold?'bold':'normal';
+  el.style.fontStyle = style.italic?'italic':'normal';
+  el.style.backgroundColor = style.bg||'';
+}
+
+/* ==== SELECTION HANDLING =========================================== */
+function clearSelection(){
+  document.querySelectorAll('.cell.selected').forEach(el=>el.classList.remove('selected'));
+}
+function selectCell(r,c){
+  selected={r,c};
+  clearSelection();
+  const cell=document.querySelector(`.cell[data-r="${r}"][data-c="${c}"]`);
+  if(cell)cell.classList.add('selected');
+  updateFormulaBar();
+}
+function updateFormulaBar(){
+  const {r,c}=selected;
+  const data=getCell(r,c);
+  document.getElementById('cellAddress').textContent=cellId(r,c);
+  const input=document.getElementById('formulaInput');
+  input.value=data.raw;
+}
+
+/* ==== FORMULA PARSER / EVALUATOR =================================== */
+function evalFormula(expr, visited=new Set()){
+  // strip outer spaces
+  expr=expr.trim();
+  if(expr==='' )return '';
+  // simple number
+  if(!isNaN(expr))return parseFloat(expr);
+  // function call
+  const fnMatch=expr.match(/^([A-Z]+)\((.*)\)$/i);
+  if(fnMatch){
+    const fn=fnMatch[1].toUpperCase();
+    const args=splitArgs(fnMatch[2]);
+    const vals=args.map(a=>evalFormula(a,visited));
+    switch(fn){
+      case 'SUM': return vals.reduce((a,b)=>a+b,0);
+      case 'AVERAGE': return vals.reduce((a,b)=>a+b,0)/vals.length;
+      case 'MIN': return Math.min(...vals);
+      case 'MAX': return Math.max(...vals);
+      default: return '';
+    }
+  }
+  // range reference (e.g. A1:B3) – used inside functions only
+  if(expr.includes(':')){
+    const parts=expr.split(':');
+    const start=parseCellId(parts[0]); const end=parseCellId(parts[1]);
+    const vals=[];
+    for(let r=start.r;r<=end.r;r++) for(let c=start.c;c<=end.c;c++){
+      vals.push(evalCell(r,c,visited));
+    }
+    return vals;
+  }
+  // cell reference
+  if(/^[A-Z]+\d+$/.test(expr)){
+    const rc=parseCellId(expr);
+    return evalCell(rc.r,rc.c,visited);
+  }
+  // arithmetic expression – replace cell refs with values, then eval
+  let safeExpr=expr.replace(/[A-Z]+\d+/g,m=>{
+    const rc=parseCellId(m);
+    return evalCell(rc.r,rc.c,visited);
+  });
+  // allow only numbers and operators
+  if(/[^0-9\.\+\-\*\/\(\)\s]/.test(safeExpr))return '';
+  try{return Function('"use strict";return ('+safeExpr+')')();}
+  catch(e){return '';}
+}
+function splitArgs(str){
+  const out=[]; let depth=0, cur='';
+  for(let ch of str){
+    if(ch===',' && depth===0){out.push(cur);cur='';}
+    else{if(ch==='(')depth++;if(ch===')')depth--;cur+=ch;}
+  }
+  if(cur)out.push(cur);
+  return out;
+}
+function evalCell(r,c,visited){
+  const id=r+','+c;
+  if(visited.has(id))return 0; // circular reference guard
+  visited.add(id);
+  const data=getCell(r,c);
+  if(data.raw.startsWith('=')){
+    const val=evalFormula(data.raw.slice(1),visited);
+    data.val=val; // cache for display
+    return val;
+  }
+  // plain value – try numeric conversion
+  const n=Number(data.raw);
+  data.val=isNaN(n)?data.raw:n;
+  return data.val;
+}
+function recalcAll(){
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) evalCell(r,c,new Set());
+  drawGrid();
+}
+
+/* ==== EVENT LISTENERS ============================================= */
+document.getElementById('grid').addEventListener('mousedown',e=>{
+  if(e.target.classList.contains('cell')){
+    const r=+e.target.dataset.r, c=+e.target.dataset.c;
+    selectCell(r,c);
+  }
+});
+document.getElementById('grid').addEventListener('dblclick',e=>{
+  if(e.target.classList.contains('cell')){
+    const cell=e.target;
+    const r=+cell.dataset.r, c=+cell.dataset.c;
+    startEditCell(cell,r,c);
+  }
+});
+function startEditCell(cell,r,c){
+  if(editing)return;
+  editing=true;
+  cell.contentEditable=true;
+  cell.classList.add('editing');
+  cell.focus();
+  setTimeout(()=>{ // place cursor at end
+    const range=document.createRange();
+    range.selectNodeContents(cell);
+    range.collapse(false);
+    const sel=window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+  },0);
+}
+document.addEventListener('click',e=>{
+  if(editing && !e.target.classList.contains('cell')){
+    // leave edit mode
+    const cell=document.querySelector('.cell.editing');
+    if(cell){
+      const r=+cell.dataset.r, c=+cell.dataset.c;
+      const newVal=cell.textContent.trim();
+      setCell(r,c,{raw:newVal});
+      cell.contentEditable=false;
+      cell.classList.remove('editing');
+      editing=false;
+      recalcAll();
+      selectCell(r,c);
+    }
+  }
+});
+// -------------------------------------------------- keyboard navigation
+document.addEventListener('keydown',e=>{
+  if(e.target===document.getElementById('formulaInput')){
+    // while editing formula bar we only handle Enter
+    if(e.key==="Enter"){
+      const txt=e.target.value;
+      const {r,c}=selected;
+      setCell(r,c,{raw:txt});
+      recalcAll();
+      e.preventDefault();
+    }
+    return;
+  }
+  const {r,c}=selected;
+  let nr=r,nc=c;
+  if(e.key==='ArrowUp') nr=Math.max(0,r-1);
+  else if(e.key==='ArrowDown') nr=Math.min(ROWS-1,r+1);
+  else if(e.key==='ArrowLeft') nc=Math.max(0,c-1);
+  else if(e.key==='ArrowRight') nc=Math.min(COLS-1,c+1);
+  else if(e.key==='Enter') nr=Math.min(ROWS-1,r+1);
+  else if(e.key==='Tab'){ nc=Math.min(COLS-1,c+1); e.preventDefault();}
+  else return;
+  selectCell(nr,nc);
+  e.preventDefault();
+});
+// -------------------------------------------------- formula bar insertion via click
+document.getElementById('formulaInput').addEventListener('focus',()=>{editing=true;});
+document.getElementById('formulaInput').addEventListener('blur',()=>{editing=false;});
+document.getElementById('grid').addEventListener('mousedown',e=>{
+  if(editing && e.target.classList.contains('cell')){
+    const addr=cellId(+e.target.dataset.r,+e.target.dataset.c);
+    const input=document.getElementById('formulaInput');
+    const start=input.selectionStart||0;
+    const end=input.selectionEnd||0;
+    const before=input.value.slice(0,start);
+    const after=input.value.slice(end);
+    input.value = before+addr+after;
+    const pos=before.length+addr.length;
+    input.setSelectionRange(pos,pos);
+    e.preventDefault();
+  }
+});
+/* ==== TOOLBAR BUTTONS ============================================== */
+document.getElementById('boldBtn').onclick=()=>toggleStyle('bold');
+document.getElementById('italicBtn').onclick=()=>toggleStyle('italic');
+function toggleStyle(prop){
+  const {r,c}=selected;
+  const data=getCell(r,c);
+  data.style[prop]=!data.style[prop];
+  setCell(r,c,{style:data.style});
+  drawGrid();
+}
+document.getElementById('fillColorBtn').onchange=e=>{
+  const col=e.target.value;
+  const {r,c}=selected;
+  const data=getCell(r,c);
+  data.style.bg=col;
+  setCell(r,c,{style:data.style});
+  drawGrid();
+};
+document.getElementById('clearBtn').onclick=()=>{
+  const {r,c}=selected;
+  setCell(r,c,{raw:'',val:'',style:{}});
+  recalcAll();
+};
+document.getElementById('addSheetBtn').onclick=()=>{
+  const name='Sheet'+(sheets.length+1);
+  newSheet(name);
+};
+document.getElementById('downloadBtn').onclick=()=>{
+  const rows=[];
+  for(let r=0;r<ROWS;r++){
+    const row=[];
+    for(let c=0;c<COLS;c++){
+      const d=getCell(r,c);
+      row.push(''+d.raw);
+    }
+    rows.push(row.join(','));
+  }
+  const csv=rows.join('\n');
+  const blob=new Blob([csv],{type:'text/csv'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='sheet_'+sheets[activeSheet].name+'.csv';
+  a.click();
+};
+document.getElementById('uploadInput').onchange=e=>{
+  const file=e.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    const text=ev.target.result;
+    const rows=text.split(/\r?\n/);
+    rows.forEach((line,r)=>{
+      if(r>=ROWS)return;
+      const cells=line.split(',');
+      cells.forEach((val,c)=>{
+        if(c>=COLS)return;
+        setCell(r,c,{raw:val});
+      });
+    });
+    recalcAll();
+  };
+  reader.readAsText(file);
+};
+
+/* ==== INITIAL DRAW ================================================== */
+drawGrid();
+selectCell(0,0);
+</script>
+
+</body>
+</html>

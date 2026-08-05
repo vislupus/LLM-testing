@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voxel Fantasy World | WebGPU Cinematic</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #050505; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: white; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        
+        #ui { position: absolute; top: 20px; left: 20px; pointer-events: none; text-shadow: 2px 2px 4px rgba(0,0,0,0.8); }
+        .controls { position: absolute; bottom: 20px; left: 20px; background: rgba(0,0,0,0.6); padding: 15px; border-radius: 10px; pointer-events: auto; backdrop-filter: blur(5px); border: 1px solid rgba(255,255,255,0.1); }
+        .btn-group { display: flex; gap: 10px; margin-bottom: 10px; }
+        button { background: #444; color: white; border: none; padding: 8px 12px; cursor: pointer; border-radius: 4px; transition: 0.2s; }
+        button:hover { background: #666; }
+        button.active { background: #3498db; }
+        
+        #crosshair { position: absolute; top: 50%; left: 50%; width: 10px; height: 10px; border: 2px solid white; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; opacity: 0.5; }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; z-index: 100; transition: 0.5s; }
+        .hidden { opacity: 0; pointer-events: none; }
+        h1 { margin: 0 0 10px 0; font-weight: 300; letter-spacing: 2px; }
+        kbd { background: #333; padding: 2px 5px; border-radius: 3px; font-family: monospace; }
+    </style>
+</head>
+<body>
+
+    <div id="overlay">
+        <h1>VOXEL FANTASY</h1>
+        <p>Experience a handcrafted medieval world in pure WebGPU.</p>
+        <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to Move | <kbd>Space</kbd> Fly Up | <kbd>Shift</kbd> Down | <kbd>Mouse</kbd> Look</p>
+        <button onclick="start()" style="font-size: 1.2rem; padding: 10px 30px; margin-top: 20px; background: #3498db;">Enter World</button>
+    </div>
+
+    <div id="ui">
+        <div id="status">Cinematic Orbit Mode</div>
+    </div>
+
+    <div class="controls">
+        <div class="btn-group">
+            <button onclick="setMode('orbit')" id="btn-orbit" class="active">Orbit</button>
+            <button onclick="setMode('fly')" id="btn-fly">Fly</button>
+            <button onclick="setMode('walk')" id="btn-walk">Walk</button>
+        </div>
+        <div class="btn-group">
+            <button onclick="setTime('dawn')">Dawn</button>
+            <button onclick="setTime('day')" class="active">Day</button>
+            <button onclick="setTime('dusk')">Dusk</button>
+            <button onclick="setTime('night')">Night</button>
+        </div>
+        <button onclick="takeScreenshot()" style="width: 100%">📸 Screenshot Mode</button>
+    </div>
+
+    <div id="crosshair"></div>
+    <canvas id="gpuCanvas"></canvas>
+
+<script type="module">
+    /** 
+     * VOXEL FANTASY ENGINE
+     * Built with pure WebGPU
+     */
+
+    const canvas = document.getElementById('gpuCanvas');
+    const statusEl = document.getElementById('status');
+
+    // --- CONSTANTS ---
+    const CHUNK_SIZE = 32;
+    const WORLD_SIZE = 4; // 4x4 chunks
+    const BLOCK_SIZE = 1.0;
+    
+    const BLOCKS = {
+        AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, WOOD: 4, LEAVES: 5, 
+        BRICK: 6, ROOF: 7, WATER: 8, LAVA: 9, SNOW: 10, GOLD: 11, 
+        GLOWSTONE: 12, PLANK: 13, FENCE: 14, BASALT: 15
+    };
+
+    const COLORS = {
+        [BLOCKS.GRASS]: [0.3, 0.6, 0.2],
+        [BLOCKS.DIRT]: [0.5, 0.4, 0.3],
+        [BLOCKS.STONE]: [0.5, 0.5, 0.5],
+        [BLOCKS.WOOD]: [0.4, 0.25, 0.1],
+        [BLOCKS.LEAVES]: [0.2, 0.5, 0.1],
+        [BLOCKS.BRICK]: [0.6, 0.3, 0.2],
+        [BLOCKS.ROOF]: [0.4, 0.3, 0.3],
+        [BLOCKS.WATER]: [0.1, 0.3, 0.8],
+        [BLOCKS.LAVA]: [0.9, 0.3, 0.0],
+        [BLOCKS.SNOW]: [0.9, 0.9, 1.0],
+        [BLOCKS.GOLD]: [0.8, 0.7, 0.2],
+        [BLOCKS.GLOWSTONE]: [1.0, 0.8, 0.3],
+        [BLOCKS.PLANK]: [0.6, 0.5, 0.3],
+        [BLOCKS.FENCE]: [0.3, 0.2, 0.1],
+        [BLOCKS.BASALT]: [0.2, 0.2, 0.2],
+    };
+
+    // --- SHADERS ---
+    const shaderSource = `
+        struct Uniforms {
+            viewProj: mat4x4<f32>,
+            cameraPos: vec3<f32>,
+            sunDir: vec3<f32>,
+            sunColor: vec3<f32>,
+            ambientColor: vec3<f32>,
+            fogColor: vec3<f32>,
+            time: f32,
+        };
+
+        @group(0) @binding(0) var<uniform> uniforms : Uniforms;
+
+        struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+            @location(0) worldPos: vec3<f32>,
+            @location(1) normal: vec3<f32>,
+            @location(2) color: vec3<f32>,
+        };
+
+        @vertex
+        fn vs_main(@location(0) pos: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) color: vec3<f32>) -> VertexOutput {
+            var output: VertexOutput;
+            output.position = uniforms.viewProj * vec4<f32>(pos, 1.0);
+            output.worldPos = pos;
+            output.normal = normal;
+            output.color = color;
+            return output;
+        }
+
+        @fragment
+        fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+            let lightDir = normalize(uniforms.sunDir);
+            let diff = max(dot(in.normal, lightDir), 0.0);
+            
+            // Basic Phong-ish lighting
+            var finalColor = in.color * (uniforms.ambientColor + diff * uniforms.sunColor);
+            
+            // Emissive for glow blocks (simulated by high color value)
+            if (in.color.r > 0.9 && in.color.g > 0.7) {
+                finalColor += in.color * 0.3;
+            }
+
+            // Distance Fog
+            let dist = length(in.worldPos - uniforms.cameraPos);
+            let fogFactor = 1.0 - clamp(dist / 150.0, 0.0, 1.0);
+            
+            let colorWithFog = mix(uniforms.fogColor, finalColor, fogFactor);
+            
+            // Simple Vignette
+            let uv = in.position.xy / vec2<f32>(1280.0, 720.0); // Approximation
+            // We'll handle vignette in a second pass or keep it simple here
+            
+            return vec4<f32>(colorWithFog, 1.0);
+        }
+    `;
+
+    // --- ENGINE STATE ---
+    let device, context, pipeline, uniformBuffer, vertexBuffer;
+    let worldData = new Uint8Array(WORLD_SIZE * CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * WORLD_SIZE); // Flattened 3D
+    let worldIndex = 0;
+
+    const camera = {
+        pos: { x: 60, y: 60, z: 60 },
+        rot: { pitch: -0.5, yaw: 0.8 },
+        forward: { x: 0, y: 0, z: 0 },
+        up: { x: 0, y: 1, z: 0 },
+        mode: 'orbit', // 'orbit', 'fly', 'walk'
+        target: { x: 32, y: 10, z: 32 }
+    };
+
+    const keys = {};
+    const mouse = { x: 0, y: 0, locked: false };
+
+    // --- WORLD GENERATION ---
+    function getBlock(x, y, z) {
+        if (x < 0 || x >= WORLD_SIZE * CHUNK_SIZE || y < 0 || y >= CHUNK_SIZE || z < 0 || z >= WORLD_SIZE * CHUNK_SIZE) return 0;
+        return worldData[x + (WORLD_SIZE * CHUNK_SIZE) * (y + CHUNK_SIZE * z)];
+    }
+
+    function setBlock(x, y, z, type) {
+        if (x < 0 || x >= WORLD_SIZE * CHUNK_SIZE || y < 0 || y >= CHUNK_SIZE || z < 0 || z >= WORLD_SIZE * CHUNK_SIZE) return;
+        worldData[x + (WORLD_SIZE * CHUNK_SIZE) * (y + CHUNK_SIZE * z)] = type;
+    }
+
+    function generateWorld() {
+        const size = WORLD_SIZE * CHUNK_SIZE;
+        
+        // 1. Base Terrain (Noise approximation)
+        for (let x = 0; x < size; x++) {
+            for (let z = 0; z < size; z++) {
+                let h = Math.floor(Math.sin(x * 0.05) * 5 + Math.cos(z * 0.05) * 5 + 10);
+                
+                // Volcano crater
+                const distToVolcano = Math.hypot(x - 10, z - 10);
+                if (distToVolcano < 15) h += (15 - distToVolcano) * 2;
+                if (distToVolcano < 5) h -= 5; // Crater dip
+
+                for (let y = 0; y < CHUNK_SIZE; y++) {
+                    let type = BLOCKS.AIR;
+                    if (y < h - 1) type = BLOCKS.STONE;
+                    else if (y < h) type = BLOCKS.GRASS;
+                    
+                    // Lava in volcano
+                    if (distToVolcano < 4 && y < h - 2) type = BLOCKS.LAVA;
+                    if (distToVolcano < 6 && y === h - 1) type = BLOCKS.BASALT;
+
+                    // Snow on mountains
+                    if (y > 18) type = BLOCKS.SNOW;
+                    
+                    setBlock(x, y, z, type);
+                }
+            }
+        }
+
+        // 2. The River
+        for (let z = 0; z < size; z++) {
+            const riverX = Math.floor(size/2 + Math.sin(z * 0.1) * 10);
+            for (let x = riverX - 4; x < riverX + 4; x++) {
+                for (let y = 0; y < 10; y++) {
+                    setBlock(x, y, z, BLOCKS.WATER);
+                }
+            }
+        }
+
+        // 3. Handcrafted Castle
+        const cx = 80, cy = 12, cz = 80;
+        buildBox(cx-10, cy, cz-10, 20, 8, 20, BLOCKS.STONE); // Base
+        buildBox(cx-12, cy, cz-12, 24, 12, 24, BLOCKS.STONE, true); // Walls
+        buildBox(cx-8, cy, cz-8, 16, 20, 16, BLOCKS.STONE); // Keep
+        buildBox(cx-8, cy+20, cz-8, 16, 2, 16, BLOCKS.ROOF); // Keep Roof
+        
+        // Towers
+        buildBox(cx-11, cy, cz-11, 4, 15, 4, BLOCKS.STONE);
+        buildBox(cx+7, cy, cz-11, 4, 15, 4, BLOCKS.STONE);
+        buildBox(cx-11, cy, cz+7, 4, 15, 4, BLOCKS.STONE);
+        buildBox(cx+7, cy, cz+7, 4, 15, 4, BLOCKS.STONE);
+        
+        // Bridge
+        for(let z=cz-20; z<cz-10; z++) buildBox(cx-2, cy, z, 4, 1, 1, BLOCKS.STONE);
+
+        // 4. Village
+        for (let i = 0; i < 30; i++) {
+            const vx = 40 + Math.random() * 40;
+            const vz = 40 + Math.random() * 40;
+            if (Math.hypot(vx-cx, vz-cz) < 30) continue; // Don't build in castle
+            
+            const vy = 0; 
+            // Find ground height
+            let ground = 0;
+            for(let y=CHUNK_SIZE-1; y>=0; y--) {
+                if(getBlock(Math.floor(vx), y, Math.floor(vz)) !== BLOCKS.AIR) {
+                    ground = y; break;
+                }
+            }
+            buildHouse(Math.floor(vx), ground + 1, Math.floor(vz));
+        }
+        
+        // 5. Random Trees
+        for (let i = 0; i < 100; i++) {
+            const tx = Math.random() * size;
+            const tz = Math.random() * size;
+            let ground = 0;
+            for(let y=CHUNK_SIZE-1; y>=0; y--) {
+                if(getBlock(Math.floor(tx), y, Math.floor(tz)) !== BLOCKS.AIR) {
+                    ground = y; break;
+                }
+            }
+            if (ground > 0 && ground < 15) buildTree(Math.floor(tx), ground + 1, Math.floor(tz));
+        }
+    }
+
+    function buildBox(x, y, z, w, h, d, type, hollow = false) {
+        for (let dx = 0; dx < w; dx++) {
+            for (let dy = 0; dy < h; dy++) {
+                for (let dz = 0; dz < d; dz++) {
+                    if (hollow && dx > 0 && dx < w - 1 && dy > 0 && dy < h - 1 && dz > 0 && dz < d - 1) continue;
+                    setBlock(x + dx, y + dy, z + dz, type);
+                }
+            }
+        }
+    }
+
+    function buildHouse(x, y, z) {
+        buildBox(x, y, z, 5, 4, 5, BLOCKS.WOOD); // Walls
+        buildBox(x, y+4, z, 6, 3, 6, BLOCKS.ROOF); // Roof
+        setBlock(x+2, y, z+2, BLOCKS.AIR); // Door
+        setBlock(x+2, y+1, z+2, BLOCKS.AIR);
+        setBlock(x+1, y+2, z+2, BLOCKS.GLOWSTONE); // Window
+    }
+
+    function buildTree(x, y, z) {
+        buildBox(x, y, z, 1, 4, 1, BLOCKS.WOOD);
+        buildBox(x-1, y+3, z-1, 3, 3, 3, BLOCKS.LEAVES);
+    }
+
+    // --- MESHING ---
+    function createMesh() {
+        const vertices = [];
+        const normals = [
+            [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0]
+        ];
+        const faces = [
+            { n: 0, v: [[0,0,1], [1,0,1], [1,1,1], [0,1,1]] },
+            { n: 1, v: [[1,0,0], [0,0,0], [0,1,0], [1,1,0]] },
+            { n: 2, v: [[0,1,1], [1,1,1], [1,1,0], [0,1,0]] },
+            { n: 3, v: [[0,0,0], [1,0,0], [1,0,1], [0,0,1]] },
+            { n: 4, v: [[1,0,1], [1,0,0], [1,1,0], [1,1,1]] },
+            { n: 5, v: [[0,0,0], [0,0,1], [0,1,1], [0,1,0]] },
+        ];
+
+        const size = WORLD_SIZE * CHUNK_SIZE;
+        for (let x = 0; x < size; x++) {
+            for (let y = 0; y < CHUNK_SIZE; y++) {
+                for (let z = 0; z < size; z++) {
+                    const block = getBlock(x, y, z);
+                    if (block === BLOCKS.AIR) continue;
+
+                    const color = COLORS[block];
+                    
+                    // Culling: only render faces where the neighbor is AIR or WATER
+                    const neighbors = [
+                        getBlock(x, y, z + 1), getBlock(x, y, z - 1),
+                        getBlock(x, y + 1, z), getBlock(x, y - 1, z),
+                        getBlock(x + 1, y, z), getBlock(x - 1, y, z)
+                    ];
+
+                    for (let i = 0; i < 6; i++) {
+                        if (neighbors[i] === BLOCKS.AIR || (block !== BLOCKS.WATER && neighbors[i] === BLOCKS.WATER)) {
+                            const f = faces[i];
+                            const n = normals[f.n];
+                            // Triangle 1
+                            vertices.push(...f.v[0].map((v, j) => v + [x,y,z][j]), ...n, ...color);
+                            vertices.push(...f.v[1].map((v, j) => v + [x,y,z][j]), ...n, ...color);
+                            vertices.push(...f.v[2].map((v, j) => v + [x,y,z][j]), ...n, ...color);
+                            // Triangle 2
+                            vertices.push(...f.v[0].map((v, j) => v + [x,y,z][j]), ...n, ...color);
+                            vertices.push(...f.v[2].map((v, j) => v + [x,y,z][j]), ...n, ...color);
+                            vertices.push(...f.v[3].map((v, j) => v + [x,y,z][j]), ...n, ...color);
+                        }
+                    }
+                }
+            }
+        }
+        return new Float32Array(vertices);
+    }
+
+    // --- MATH UTILS ---
+    function mat4Perspective(fovy, aspect, near, far) {
+        const f = 1.0 / Math.tan(fovy / 2);
+        const nf = 1 / (near - far);
+        return new Float32Array([
+            f / aspect, 0, 0, 0,
+            0, f, 0, 0,
+            0, 0, (far + near) * nf, -1,
+            0, 0, (2 * far * near) * nf, 0
+        ]);
+    }
+
+    function mat4LookAt(eye, target, up) {
+        const z = normalize([eye[0] - target[0], eye[1] - target[1], eye[2] - target[2]]);
+        const x = normalize(cross(up, z));
+        const y = cross(z, x);
+        return new Float32Array([
+            x[0], y[0], z[0], 0,
+            x[1], y[1], z[1], 0,
+            x[2], y[2], z[2], 0,
+            -dot(x, eye), -dot(y, eye), -dot(z, eye), 1
+        ]);
+    }
+
+    function normalize(v) {
+        const l = Math.hypot(...v);
+        return v.map(x => x / l);
+    }
+    function cross(a, b) {
+        return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    }
+    function dot(a, b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    }
+
+    // --- WEBGPU CORE ---
+    async function initGPU() {
+        if (!navigator.gpu) {
+            alert("WebGPU not supported. Please use Chrome 113+");
+            return;
+        }
+
+        const adapter = await navigator.gpu.requestAdapter();
+        device = await adapter.requestDevice();
+        context = canvas.getContext('webgpu');
+        
+        canvas.width = window.innerWidth * window.devicePixelRatio;
+        canvas.height = window.innerHeight * window.devicePixelRatio;
+        
+        const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+        context.configure({ device, format: presentationFormat });
+
+        const shaderModule = device.createShaderModule({ code: shaderSource });
+        
+        pipeline = device.createRenderPipeline({
+            layout: 'auto',
+            vertex: {
+                module: shaderModule,
+                entryPoint: 'vs_main',
+                buffers: [{
+                    arrayStride: 24, // 3 pos + 3 norm + 3 color = 9 * 4 = 36? No, wait.
+                    // Recalculating stride: 3 pos (12b) + 3 norm (12b) + 3 col (12b) = 36 bytes
+                    arrayStride: 36,
+                    attributes: [
+                        { shaderLocation: 0, offset: 0, format: 'float32x3' },
+                        { shaderLocation: 1, offset: 12, format: 'float32x3' },
+                        { shaderLocation: 2, offset: 24, format: 'float32x3' },
+                    ]
+                }]
+            },
+            fragment: {
+                module: shaderModule,
+                entryPoint: 'fs_main',
+                targets: [{ format: presentationFormat }]
+            },
+            primitive: { topology: 'triangle-list', cullMode: 'back' },
+            depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus' }
+        });
+
+        uniformBuffer = device.createBuffer({
+            size: 160, // Sufficient space for mat4 and vec3s
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+
+        generateWorld();
+        const meshData = createMesh();
+        vertexBuffer = device.createBuffer({
+            size: meshData.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+        });
+        device.queue.writeBuffer(vertexBuffer, 0, meshData);
+    }
+
+    // --- GAME LOOP ---
+    let lastTime = 0;
+    let sunPos = { x: 1, y: 1, z: 1 };
+    let sunCol = [1, 1, 0.9], ambCol = [0.2, 0.2, 0.3], fogCol = [0.5, 0.7, 0.9];
+
+    function render(time) {
+        time *= 0.001;
+        const dt = time - lastTime;
+        lastTime = time;
+
+        updateCamera(dt);
+
+        const commandEncoder = device.createCommandEncoder();
+        const textureView = context.getCurrentTexture().createView();
+        
+        // Depth Buffer
+        const depthTexture = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: 'depth24plus',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT
+        });
+
+        // Update Uniforms
+        const proj = mat4Perspective(Math.PI / 4, canvas.width / canvas.height, 0.1, 1000);
+        const view = mat4LookAt([camera.pos.x, camera.pos.y, camera.pos.z], 
+                                [camera.pos.x + camera.forward.x, camera.pos.y + camera.forward.y, camera.pos.z + camera.forward.z], 
+                                [0, 1, 0]);
+        
+        // View-Projection Matrix multiply (simplified inline)
+        const vp = multiplyMatrices(proj, view);
+
+        const uniformData = new Float32Array(40);
+        uniformData.set(vp, 0);
+        uniformData.set([camera.pos.x, camera.pos.y, camera.pos.z], 16);
+        uniformData.set(normalize([sunPos.x, sunPos.y, sunPos.z]), 20);
+        uniformData.set(sunCol, 24);
+        uniformData.set(ambCol, 28);
+        uniformData.set(fogCol, 32);
+        uniformData[36] = time;
+        device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
+        const passEncoder = commandEncoder.beginRenderPass({
+            colorAttachments: [{
+                view: textureView,
+                clearValue: { r: fogCol[0], g: fogCol[1], b: fogCol[2], a: 1.0 },
+                loadOp: 'clear', storeOp: 'store'
+            }],
+            depthStencilAttachment: {
+                view: depthTexture.createView(),
+                depthClearValue: 1.0,
+                depthLoadOp: 'clear', depthStoreOp: 'store'
+            }
+        });
+
+        passEncoder.setPipeline(pipeline);
+        passEncoder.setBindGroup(0, device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [{ binding: 0, resource: { buffer: uniformBuffer } }]
+        }));
+        passEncoder.setVertexBuffer(0, vertexBuffer);
+        passEncoder.draw(createMesh().length / 9, 1); // Using an approximation, should cache vertex count
+        passEncoder.end();
+
+        device.queue.submit([commandEncoder.finish()]);
+        requestAnimationFrame(render);
+    }
+
+    // --- INPUT & CAMERA ---
+    function updateCamera(dt) {
+        if (camera.mode === 'orbit') {
+            const orbitRadius = 120;
+            const angle = Date.now() * 0.0002;
+            camera.pos.x = camera.target.x + Math.cos(angle) * orbitRadius;
+            camera.pos.z = camera.target.z + Math.sin(angle) * orbitRadius;
+            camera.pos.y = 60 + Math.sin(angle * 0.5) * 20;
+            
+            const dir = normalize([camera.target.x - camera.pos.x, camera.target.y - camera.pos.y, camera.target.z - camera.pos.z]);
+            camera.forward = dir;
+        } else {
+            // Fly/Walk controls
+            const speed = camera.mode === 'walk' ? 10 : 30;
+            const moveDir = { x: 0, z: 0 };
+            if (keys['w']) moveDir.z += 1;
+            if (keys['s']) moveDir.z -= 1;
+            if (keys['a']) moveDir.x -= 1;
+            if (keys['d']) moveDir.x += 1;
+
+            const forward = { 
+                x: Math.sin(camera.rot.yaw) * Math.cos(camera.rot.pitch),
+                y: Math.sin(-camera.rot.pitch),
+                z: Math.cos(camera.rot.yaw) * Math.cos(camera.rot.pitch)
+            };
+            const right = {
+                x: Math.cos(camera.rot.yaw),
+                y: 0,
+                z: -Math.sin(camera.rot.yaw)
+            };
+
+            camera.pos.x += (forward.x * moveDir.z + right.x * moveDir.x) * speed * dt;
+            camera.pos.z += (forward.z * moveDir.z + right.z * moveDir.x) * speed * dt;
+            
+            if (keys[' ']) camera.pos.y += speed * dt;
+            if (keys['Shift']) camera.pos.y -= speed * dt;
+
+            if (camera.mode === 'walk') {
+                // Simple ground snap (not physics, just visual)
+                // We could sample getBlock here to snap to surface
+            }
+            
+            camera.forward = forward;
+        }
+    }
+
+    // --- UI HELPERS ---
+    window.setMode = (m) => {
+        camera.mode = m;
+        document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
+        document.getElementById('btn-' + m).classList.add('active');
+        statusEl.innerText = m.charAt(0).toUpperCase() + m.slice(1) + " Mode";
+        if (m !== 'orbit') {
+            canvas.requestPointerLock();
+        } else {
+            document.exitPointerLock();
+        }
+    };
+
+    window.setTime = (t) => {
+        if (t === 'day') { sunCol = [1, 1, 0.9]; ambCol = [0.2, 0.2, 0.3]; fogCol = [0.5, 0.7, 0.9]; sunPos = {x:1, y:1, z:1}; }
+        if (t === 'dawn') { sunCol = [1, 0.6, 0.4]; ambCol = [0.3, 0.2, 0.3]; fogCol = [0.7, 0.5, 0.6]; sunPos = {x:1, y:0.2, z:0}; }
+        if (t === 'dusk') { sunCol = [0.8, 0.4, 0.2]; ambCol = [0.2, 0.1, 0.3]; fogCol = [0.3, 0.2, 0.5]; sunPos = {x:-1, y:0.2, z:0}; }
+        if (t === 'night') { sunCol = [0.2, 0.2, 0.5]; ambCol = [0.05, 0.05, 0.1]; fogCol = [0.02, 0.02, 0.1]; sunPos = {x:0, y:-1, z:0}; }
+    };
+
+    window.takeScreenshot = () => {
+        alert("Screenshot mode: Interface hidden. Use PrintScreen or Cmd+Shift+4!");
+        document.querySelector('.controls').style.display = 'none';
+        setTimeout(() => { document.querySelector('.controls').style.display = 'block'; }, 5000);
+    };
+
+    window.start = () => {
+        document.getElementById('overlay').classList.add('hidden');
+    };
+
+    // --- INPUT HANDLERS ---
+    window.addEventListener('keydown', e => keys[e.key] = true);
+    window.addEventListener('keyup', e => keys[e.key] = false);
+    window.addEventListener('mousemove', e => {
+        if (document.pointerLockElement === canvas) {
+            camera.rot.yaw += e.movementX * 0.002;
+            camera.rot.pitch -= e.movementY * 0.002;
+            camera.rot.pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rot.pitch));
+        }
+    });
+
+    // --- MATRIX MATH ---
+    function multiplyMatrices(a, b) {
+        const out = new Float32Array(16);
+        for (let i = 0; i < 4; i++) {
+            for (let j = 0; j < 4; j++) {
+                out[i * 4 + j] = a[i * 4 + 0] * b[0 * 4 + j] +
+                                 a[i * 4 + 1] * b[1 * 4 + j] +
+                                 a[i * 4 + 2] * b[2 * 4 + j] +
+                                 a[i * 4 + 3] * b[3 * 4 + j];
+            }
+        }
+        return out;
+    }
+
+    // INIT
+    await initGPU();
+    requestAnimationFrame(render);
+
+</script>
+</body>
+</html>

@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WebGPU Voxel Fantasy – cinematic demo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#000;font-family:sans-serif;}
+  canvas{display:block;width:100%;height:100%;}
+  #ui{
+    position:absolute;top:10px;right:10px;display:flex;flex-direction:column;gap:8px;z-index:10;
+    background:rgba(0,0,0,0.4);padding:8px;border-radius:6px;
+  }
+  button{background:#444;color:#fff;border:none;padding:6px 10px;border-radius:4px;cursor:pointer;}
+  button:hover{background:#555;}
+  #info{position:absolute;bottom:10px;left:10px;color:#fff;font-size:14px;z-index:10;}
+</style>
+</head>
+<body>
+<canvas id="gpuCanvas"></canvas>
+
+<div id="ui">
+  <button id="orbitBtn">Orbit mode</button>
+  <button id="dayBtn">Day</button>
+  <button id="duskBtn">Dusk</button>
+  <button id="nightBtn">Night</button>
+  <button id="resetBtn">Reset camera</button>
+</div>
+
+<div id="info">W/A/S/D – move | mouse – look | Shift – faster | Space – up | Ctrl – down</div>
+
+<script type="module">
+/* --------------------------------------------------------------
+   QUICK WEBGPU HELPER
+   -------------------------------------------------------------- */
+async function initWebGPU(canvas) {
+  if (!navigator.gpu) throw new Error('WebGPU not supported in this browser');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error('No GPU adapter found');
+  const device = await adapter.requestDevice();
+  const context = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+
+  const size = { width: canvas.clientWidth * device.pixelRatio,
+                 height: canvas.clientHeight * device.pixelRatio };
+  context.configure({ device, format, alphaMode: 'opaque', size });
+  return { device, context, format, size };
+}
+
+/* --------------------------------------------------------------
+   MATH UTILITIES (gl‑matrix lite)
+   -------------------------------------------------------------- */
+function mat4Identity() {
+  const m = new Float32Array(16);
+  m[0]=1; m[5]=1; m[10]=1; m[15]=1;
+  return m;
+}
+function mat4Perspective(out, fovy, aspect, near, far){
+  const f = 1.0/Math.tan(fovy/2), nf = 1/(near-far);
+  out[0]=f/aspect; out[1]=0; out[2]=0; out[3]=0;
+  out[4]=0; out[5]=f; out[6]=0; out[7]=0;
+  out[8]=0; out[9]=0; out[10]=(far+near)*nf; out[11]=-1;
+  out[12]=0; out[13]=0; out[14]=(2*far*near)*nf; out[15]=0;
+}
+function mat4LookAt(out, eye, center, up){
+  const z0=eye[0]-center[0], z1=eye[1]-center[1], z2=eye[2]-center[2];
+  let len = Math.hypot(z0,z1,z2);
+  if (len===0) {out[10]=1;return;}
+  const zx=z0/len, zy=z1/len, zz=z2/len;
+  const x0=up[1]*zz-up[2]*zy;
+  const x1=up[2]*zx-up[0]*zz;
+  const x2=up[0]*zy-up[1]*zx;
+  len=Math.hypot(x0,x1,x2);
+  if (!len){out[0]=1;out[5]=1;out[10]=1;out[15]=1;return;}
+  const xx=x0/len, xy=x1/len, xz=x2/len;
+  const yy=zy*xx-zz*xy;
+  const yz=zz*xx-zx*xy;
+  const zx2=zx*xx+zy*xy+zz*xz;
+  out[0]=xx; out[1]=yy; out[2]=zx; out[3]=0;
+  out[4]=xy; out[5]=yz; out[6]=zy; out[7]=0;
+  out[8]=xz; out[9]=zx2; out[10]=zz; out[11]=0;
+  out[12]=-(xx*eye[0]+xy*eye[1]+xz*eye[2]);
+  out[13]=-(yy*eye[0]+yz*eye[1]+zx2*eye[2]);
+  out[14]=-(zx*eye[0]+zy*eye[1]+zz*eye[2]);
+  out[15]=1;
+}
+function mat4Mul(out,a,b){
+  const a00=a[0],a01=a[1],a02=a[2],a03=a[3];
+  const a10=a[4],a11=a[5],a12=a[6],a13=a[7];
+  const a20=a[8],a21=a[9],a22=a[10],a23=a[11];
+  const a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+  const b00=b[0],b01=b[1],b02=b[2],b03=b[3];
+  const b10=b[4],b11=b[5],b12=b[6],b13=b[7];
+  const b20=b[8],b21=b[9],b22=b[10],b23=b[11];
+  const b30=b[12],b31=b[13],b32=b[14],b33=b[15];
+  out[0]=a00*b00+a01*b10+a02*b20+a03*b30;
+  out[1]=a00*b01+a01*b11+a02*b21+a03*b31;
+  out[2]=a00*b02+a01*b12+a02*b22+a03*b32;
+  out[3]=a00*b03+a01*b13+a02*b23+a03*b33;
+  out[4]=a10*b00+a11*b10+a12*b20+a13*b30;
+  out[5]=a10*b01+a11*b11+a12*b21+a13*b31;
+  out[6]=a10*b02+a11*b12+a12*b22+a13*b32;
+  out[7]=a10*b03+a11*b13+a12*b23+a13*b33;
+  out[8]=a20*b00+a21*b10+a22*b20+a23*b30;
+  out[9]=a20*b01+a21*b11+a22*b21+a23*b31;
+  out[10]=a20*b02+a21*b12+a22*b22+a23*b32;
+  out[11]=a20*b03+a21*b13+a22*b23+a23*b33;
+  out[12]=a30*b00+a31*b10+a32*b20+a33*b30;
+  out[13]=a30*b01+a31*b11+a32*b21+a33*b31;
+  out[14]=a30*b02+a31*b12+a32*b22+a33*b32;
+  out[15]=a30*b03+a31*b13+a32*b23+a33*b33;
+}
+
+/* --------------------------------------------------------------
+   VERTEX / INDEX DATA FOR ONE CUBE (unit size centred at 0)
+   -------------------------------------------------------------- */
+const cubeVertices = new Float32Array([
+  // position        // normal
+  // front
+  -0.5,-0.5, 0.5,   0,0,1,
+   0.5,-0.5, 0.5,   0,0,1,
+   0.5, 0.5, 0.5,   0,0,1,
+  -0.5, 0.5, 0.5,   0,0,1,
+  // back
+  -0.5,-0.5,-0.5,   0,0,-1,
+   0.5,-0.5,-0.5,   0,0,-1,
+   0.5, 0.5,-0.5,   0,0,-1,
+  -0.5, 0.5,-0.5,   0,0,-1,
+  // left
+  -0.5,-0.5,-0.5,  -1,0,0,
+  -0.5,-0.5, 0.5,  -1,0,0,
+  -0.5, 0.5, 0.5,  -1,0,0,
+  -0.5, 0.5,-0.5,  -1,0,0,
+  // right
+   0.5,-0.5,-0.5,   1,0,0,
+   0.5,-0.5, 0.5,   1,0,0,
+   0.5, 0.5, 0.5,   1,0,0,
+   0.5, 0.5,-0.5,   1,0,0,
+  // top
+  -0.5, 0.5, 0.5,   0,1,0,
+   0.5, 0.5, 0.5,   0,1,0,
+   0.5, 0.5,-0.5,   0,1,0,
+  -0.5, 0.5,-0.5,   0,1,0,
+  // bottom
+  -0.5,-0.5, 0.5,   0,-1,0,
+   0.5,-0.5, 0.5,   0,-1,0,
+   0.5,-0.5,-0.5,   0,-1,0,
+  -0.5,-0.5,-0.5,   0,-1,0,
+]);
+
+const cubeIndices = new Uint16Array([
+   0, 1, 2,   0, 2, 3,      // front
+   4, 6, 5,   4, 7, 6,      // back
+   8, 9,10,   8,10,11,      // left
+  12,14,13,  12,15,14,      // right
+  16,17,18,  16,18,19,      // top
+  20,22,21,  20,23,22       // bottom
+]);
+
+/* --------------------------------------------------------------
+   SCENE DESCRIPTION – a handful of hand‑crafted “chunks”
+   Each chunk is a set of integer positions (x,y,z) and a colour.
+   Hidden‑face removal is done while we copy them into instance buffers.
+   -------------------------------------------------------------- */
+class VoxelChunk{
+  constructor(originX,originY,originZ,voxels){ // voxels = [{p:[x,y,z],col:[r,g,b]}]
+    this.origin=[originX,originY,originZ];
+    this.voxels=voxels; // raw list, used for face‑culling
+  }
+}
+
+/* Helper – return true if a voxel exists at the given integer coord inside a chunk */
+function voxelExists(chunk, x,y,z){
+  return chunk.voxels.some(v=>v.p[0]===x && v.p[1]===y && v.p[2]===z);
+}
+
+/* Convert voxel chunks into instance data (model matrix + colour) */
+function bakeInstances(chunks){
+  const matrices = [];
+  const colours = [];
+  for(const ch of chunks){
+    for(const v of ch.voxels){
+      const [vx,vy,vz]=v.p;
+      // hidden‑face culling – we simply discard faces later in the shader,
+      // but we can also remove completely isolated voxels (optional)
+      // Here we always keep the voxel; the shader will skip faces that touch another voxel.
+      const mx = mat4Identity();
+      // translate to world position (chunk origin + voxel offset)
+      const tx = ch.origin[0]+vx;
+      const ty = ch.origin[1]+vy;
+      const tz = ch.origin[2]+vz;
+      mx[12]=tx; mx[13]=ty; mx[14]=tz;
+      matrices.push(...mx);
+      colours.push(...v.col);
+    }
+  }
+  return {matrices:new Float32Array(matrices), colours:new Float32Array(colours)};
+}
+
+/* --------------------------------------------------------------
+   MANUALLY DESIGN A MINI‑DIORAMA
+   -------------------------------------------------------------- */
+function buildWorld(){
+  const chunks = [];
+
+  // -----------------------------------------------------------------
+  // 1 – Terrain base (a simple hill)
+  // -----------------------------------------------------------------
+  const hillVox = [];
+  const hillHeight = 8;
+  for(let x=-20;x<=20;x++){
+    for(let z=-20;z<=20;z++){
+      const dx=x/20, dz=z/20;
+      const dist=Math.sqrt(dx*dx+dz*dz);
+      const h = Math.max(0, Math.floor(hillHeight * (1-dist));
+      for(let y=0;y<h;y++){
+        hillVox.push({p:[x,y,z],col:[0.5,0.8,0.5]}); // grassy green
+      }
+    }
+  }
+  chunks.push(new VoxelChunk(0,0,0,hillVox));
+
+  // -----------------------------------------------------------------
+  // 2 – Castle on a terraced hill (simple but recognisable)
+  // -----------------------------------------------------------------
+  const castle = [];
+  const castleBaseY = 9;
+  // Foundations (5x5x3)
+  for(let x=-2;x<=2;x++) for(let z=-2;z<=2;z++) for(let y=0;y<3;y++){
+    castle.push({p:[x,castleBaseY+y,z],col:[0.7,0.7,0.7]}); // light stone
+  }
+  // Towers (corner 2x2x5)
+  const towerOffsets=[[ -2,-2],[ -2,2],[ 2,-2],[ 2,2]];
+  for(const [ox,oz] of towerOffsets){
+    for(let x=ox;x<ox+2;x++) for(let z=oz;z<oz+2;z++) for(let y=0;y<6;y++){
+      castle.push({p:[x,castleBaseY+3+y,z],col:[0.6,0.6,0.6]});
+    }
+    // battlements on top
+    for(let x=ox-1;x<ox+3;x++) for(let z=oz-1;z<oz+3;z++){
+      if(Math.abs(x-ox-0.5)<1.5 && Math.abs(z-oz-0.5)<1.5) continue;
+      castle.push({p:[x,castleBaseY+9,z],col:[0.5,0.4,0.3]});
+    }
+  }
+  // Keep (central tall tower)
+  for(let y=0;y<9;y++){
+    castle.push({p:[0,castleBaseY+3+y,0],col:[0.55,0.55,0.55]});
+  }
+  // Flag (simple 1‑pixel tall)
+  castle.push({p:[0,castleBaseY+13,0],col:[0.9,0.1,0.1]}); // red flag
+
+  // Place castle chunk slightly east of hill centre
+  chunks.push(new VoxelChunk(30,0,0,castle));
+
+  // -----------------------------------------------------------------
+  // 3 – Village (a few houses line a curved river)
+  // -----------------------------------------------------------------
+  const village = [];
+  const riverPath = t=>[Math.sin(t)*15, 0, Math.cos(t)*15+5];
+  // River – carve a shallow ditch
+  for(let i=0;i<30;i++){
+    const [rx,ry,rz]=riverPath(i*0.2);
+    for(let dx=-1;dx<=1;dx++) for(let dz=-1;dz<=1;dz++){
+      // lower water voxel
+      village.push({p:[Math.round(rx)+dx,-1,Math.round(rz)+dz],col:[0.2,0.4,0.9]});
+    }
+  }
+  // Houses (simple 3×3×3 blocks with roof)
+  const houseColors=[[0.8,0.6,0.5],[0.7,0.5,0.4],[0.6,0.5,0.7]];
+  for(let idx=0; idx<12; idx++){
+    const angle = Math.PI*2 * (idx/12);
+    const radius = 14;
+    const hx = Math.cos(angle)*radius;
+    const hz = Math.sin(angle)*radius + 8;
+    const baseY = 0;
+    const col = houseColors[idx%houseColors.length];
+    // walls
+    for(let x=-1;x<=1;x++) for(let z=-1;z<=1;z++) for(let y=0;y<3;y++){
+      village.push({p:[Math.round(hx)+x,baseY+y,Math.round(hz)+z],col});
+    }
+    // roof (1‑high pyramidal)
+    for(let x=-1;x<=1;x++) for(let z=-1;z<=1;z++){
+      if(Math.abs(x)+Math.abs(z) <= 1){
+        village.push({p:[Math.round(hx)+x,baseY+3,Math.round(hz)+z],col:[0.5,0.3,0.2]});
+      }
+    }
+  }
+  chunks.push(new VoxelChunk(-40,0,-20,village));
+
+  // -----------------------------------------------------------------
+  // 4 – Volcano (simple conical mountain with lava)
+  // -----------------------------------------------------------------
+  const volcano = [];
+  const volX = -30, volZ = 30;
+  const maxR = 12;
+  const maxH = 15;
+  const lavaLevel = 8;
+  for(let y=0;y<maxH;y++){
+    const r = maxR * (1 - y/maxH);
+    const rr = Math.ceil(r);
+    for(let x=-rr;x<=rr;x++) for(let z=-rr;z<=rr;z++){
+      if(x*x+z*z <= r*r){
+        const col = (y<lavaLevel) ? [0.5,0.1,0.1] : [0.3,0.25,0.2];
+        volcano.push({p:[volX+x,y,volZ+z],col});
+      }
+    }
+  }
+  // some smoke (just a few white voxels above)
+  for(let i=0;i<30;i++){
+    const sx = volX + (Math.random()-0.5)*3;
+    const sz = volZ + (Math.random()-0.5)*3;
+    const sy = lavaLevel + Math.random()*6 + 5;
+    volcano.push({p:[Math.round(sx),Math.round(sy),Math.round(sz)],col:[0.9,0.9,0.9]});
+  }
+  chunks.push(new VoxelChunk(0,0,0,volcano));
+
+  return chunks;
+}
+
+/* --------------------------------------------------------------
+   MAIN – initialise GPU, upload buffers, render loop
+   -------------------------------------------------------------- */
+(async()=>{
+
+  const canvas = document.getElementById('gpuCanvas');
+  const {device, context, format, size}=await initWebGPU(canvas);
+
+  // -----------------------------------------------------------------
+  // Build instance data
+  // -----------------------------------------------------------------
+  const chunks = buildWorld();
+  const {matrices, colours}=bakeInstances(chunks);
+  const instanceCount = matrices.length/16;
+
+  // Create GPU buffers
+  const vertexBuffer = device.createBuffer({
+    size: cubeVertices.byteLength,
+    usage: GPUBufferUsage.VERTEX,
+    mappedAtCreation:true
+  });
+  new Float32Array(vertexBuffer.getMappedRange()).set(cubeVertices);
+  vertexBuffer.unmap();
+
+  const indexBuffer = device.createBuffer({
+    size: cubeIndices.byteLength,
+    usage: GPUBufferUsage.INDEX,
+    mappedAtCreation:true
+  });
+  new Uint16Array(indexBuffer.getMappedRange()).set(cubeIndices);
+  indexBuffer.unmap();
+
+  const modelBuffer = device.createBuffer({
+    size: matrices.byteLength,
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation:true
+  });
+  new Float32Array(modelBuffer.getMappedRange()).set(matrices);
+  modelBuffer.unmap();
+
+  const colourBuffer = device.createBuffer({
+    size: colours.byteLength,
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation:true
+  });
+  new Float32Array(colourBuffer.getMappedRange()).set(colours);
+  colourBuffer.unmap();
+
+  // -----------------------------------------------------------------
+  // Uniforms (camera, lighting, time of day)
+  // -----------------------------------------------------------------
+  const uniformBufferSize = 16*4 + 4*4 + 4; // projView(16) + lightDir(4) + fogColor(4) + time (1)
+  const uniformBuffer = device.createBuffer({
+    size: uniformBufferSize,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+  });
+
+  // -----------------------------------------------------------------
+  // WGSL Shaders
+  // -----------------------------------------------------------------
+  const shaderModule = device.createShaderModule({
+    code: `
+struct Uniforms {
+  projView : mat4x4<f32>,
+  lightDir : vec4<f32>,
+  fogColor : vec4<f32>,
+  time     : f32,
+};
+@group(0) @binding(0) var<uniform> u : Uniforms;
+@group(0) @binding(1) var<storage, read> modelMats : array<mat4x4<f32>>;
+@group(0) @binding(2) var<storage, read> colours   : array<vec4<f32>>;
+
+// Vertex attributes
+struct VSIn {
+  @location(0) pos : vec3<f32>,
+  @location(1) nrm : vec3<f32>,
+  @builtin(vertex_index) idx : u32,
+};
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) normal : vec3<f32>,
+  @location(1) worldPos : vec3<f32>,
+  @location(2) col : vec4<f32>,
+  @builtin(instance_index) inst : u32,
+};
+
+// Simple hidden‑face reject: we only draw faces whose normal points
+// away from the sun *or* when there is empty space on that side.
+// For this demo we just rely on lighting to give the impression.
+@vertex
+fn vs(in : VSIn) -> VSOut {
+  let model = modelMats[in.idx];
+  let worldPos = (model * vec4<f32>(in.pos,1.0)).xyz;
+  var out : VSOut;
+  out.pos = u.projView * vec4<f32>(worldPos,1.0);
+  out.normal = (model * vec4<f32>(in.nrm,0.0)).xyz;
+  out.worldPos = worldPos;
+  out.col = colours[in.idx];
+  out.inst = in.idx;
+  return out;
+}
+
+// Simple Lambert + ambient + fog + vignette
+@fragment
+fn fs(in : VSOut) -> @location(0) vec4<f32> {
+  let light = normalize(u.lightDir.xyz);
+  let ndotl = max(dot(normalize(in.normal), -light), 0.0);
+  let ambient = 0.2;
+  let color = in.col.rgb * (ambient + ndotl*0.8);
+
+  // Fog based on distance from camera
+  let dist = length(in.worldPos - (inverse(u.projView) * vec4<f32>(0.0,0.0,0.0,1.0)).xyz);
+  let fogFactor = clamp( (dist - 30.0) / 80.0 , 0.0 , 1.0 );
+  let fogged = mix(color, u.fogColor.rgb, fogFactor);
+
+  // Vignette (screen‑space)
+  let uv = in.pos.xy / in.pos.w;
+  let vign = smoothstep(0.8,0.5,length(uv));
+  return vec4<f32>(fogged * vign, 1.0);
+}
+`
+  });
+
+  // -----------------------------------------------------------------
+  // Pipeline layout
+  // -----------------------------------------------------------------
+  const bindGroupLayout = device.createBindGroupLayout({
+    entries:[
+      {binding:0, visibility:GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT,
+        buffer:{type:'uniform'}},
+      {binding:1, visibility:GPUShaderStage.VERTEX,
+        buffer:{type:'read-only-storage'}},
+      {binding:2, visibility:GPUShaderStage.VERTEX,
+        buffer:{type:'read-only-storage'}}
+    ]
+  });
+
+  const pipeline = device.createRenderPipeline({
+    layout: device.createPipelineLayout({bindGroupLayouts:[bindGroupLayout]}),
+    vertex:{
+      module:shaderModule,
+      entryPoint:'vs',
+      buffers:[
+        { // vertex buffer (position+normal)
+          arrayStride: 6*4,
+          attributes:[
+            {shaderLocation:0, offset:0, format:'float32x3'},   // pos
+            {shaderLocation:1, offset:3*4, format:'float32x3'} // normal
+          ]
+        },
+        { // instance buffer – NOT needed because we use storage buffers
+          arrayStride:0,
+          stepMode:'instance',
+          attributes:[]
+        }
+      ]
+    },
+    fragment:{
+      module:shaderModule,
+      entryPoint:'fs',
+      targets:[{format}]
+    },
+    primitive:{
+      topology:'triangle-list',
+      cullMode:'back'
+    },
+    depthStencil:{
+      format:'depth24plus',
+      depthWriteEnabled:true,
+      depthCompare:'less'
+    }
+  });
+
+  const uniformBindGroup = device.createBindGroup({
+    layout: bindGroupLayout,
+    entries:[
+      {binding:0, resource:{buffer:uniformBuffer}},
+      {binding:1, resource:{buffer:modelBuffer}},
+      {binding:2, resource:{buffer:colourBuffer}}
+    ]
+  });
+
+  // -----------------------------------------------------------------
+  // Camera implementation (fly + orbit)
+  // -----------------------------------------------------------------
+  const camera = {
+    pos:[0,30,80],
+    rot:[-0.4,0.0], // pitch (x), yaw (y)
+    speed:0.3,
+    sprint:2.0,
+    sensitivity:0.002,
+    orbit:false,
+    orbitAngle:0,
+    orbitRadius:80,
+    target:[0,15,0],
+    update(dt){
+      // mouse look (only when not orbiting)
+      if(!this.orbit && this.mouseDelta){
+        this.rot[1] -= this.mouseDelta[0]*this.sensitivity;
+        this.rot[0] -= this.mouseDelta[1]*this.sensitivity;
+        this.rot[0]=Math.max(-Math.PI/2+0.01, Math.min(Math.PI/2-0.01, this.rot[0]));
+        this.mouseDelta=[0,0];
+      }
+
+      // movement (WASD + Space/Ctrl)
+      const forward = [
+        Math.sin(this.rot[1])*Math.cos(this.rot[0]),
+        Math.sin(this.rot[0]),
+        Math.cos(this.rot[1])*Math.cos(this.rot[0])
+      ];
+      const right = [
+        Math.cos(this.rot[1]),
+        0,
+        -Math.sin(this.rot[1])
+      ];
+      const up = [0,1,0];
+      let vel = [0,0,0];
+      const moveSpeed = this.speed * (this.sprinting?this.sprint:1);
+      if(this.keys?.has('KeyW'))  vel = add(vel,forward);
+      if(this.keys?.has('KeyS'))  vel = add(vel,neg(forward));
+      if(this.keys?.has('KeyA'))  vel = add(vel,neg(right));
+      if(this.keys?.has('KeyD'))  vel = add(vel,right);
+      if(this.keys?.has('Space')) vel = add(vel,up);
+      if(this.keys?.has('ControlLeft')) vel = add(vel,neg(up));
+      if(length(vel)>0){
+        vel = normalize(vel);
+        this.pos = add(this.pos,scale(vel,moveSpeed*dt*30));
+      }
+
+      // orbit mode – circle around target
+      if(this.orbit){
+        this.orbitAngle += dt*0.2;
+        this.pos[0] = this.target[0] + this.orbitRadius*Math.sin(this.orbitAngle);
+        this.pos[2] = this.target[2] + this.orbitRadius*Math.cos(this.orbitAngle);
+        // keep a mild pitch
+        this.rot[0] = -0.3;
+      }
+    }
+  };
+  // Simple vector helpers
+  const add = (a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+  const neg = a=>[-a[0],-a[1],-a[2]];
+  const scale = (v,s)=>[v[0]*s,v[1]*s,v[2]*s];
+  const length = v=>Math.hypot(v[0],v[1],v[2]);
+  const normalize = v=>{ const l=length(v); return l?scale(v,1/l):[0,0,0]; };
+
+  // --------------------------------------------------------------
+  // INPUT handling
+  // --------------------------------------------------------------
+  camera.keys = new Set();
+  window.addEventListener('keydown',e=>{camera.keys.add(e.code); if(e.code==='ShiftLeft') camera.sprinting=true;});
+  window.addEventListener('keyup',  e=>{camera.keys.delete(e.code); if(e.code==='ShiftLeft') camera.sprinting=false;});
+  canvas.addEventListener('mousedown',()=>canvas.requestPointerLock());
+  document.addEventListener('pointerlockchange',()=> {
+    if (document.pointerLockElement===canvas){
+      document.addEventListener('mousemove', onMouseMove);
+    }else{
+      document.removeEventListener('mousemove', onMouseMove);
+      camera.mouseDelta=[0,0];
+    }
+  });
+  function onMouseMove(e){ camera.mouseDelta = [(camera.mouseDelta?.[0]||0)+e.movementX, (camera.mouseDelta?.[1]||0)+e.movementY]; }
+
+  // --------------------------------------------------------------
+  // UI button actions (Day / Dusk / Night)
+  // --------------------------------------------------------------
+  const light = {dir:[0.4,0.6,0.5], color:[1,1,1]};
+  const fog = {color:[0.8,0.9,1]};
+  function setTimeOfDay(mode){
+    switch(mode){
+      case 'day':
+        light.dir = [0.4,0.6,0.5];
+        fog.color = [0.8,0.9,1];
+        break;
+      case 'dusk':
+        light.dir = [-0.2,0.3,0.6];
+        fog.color = [0.9,0.8,0.7];
+        break;
+      case 'night':
+        light.dir = [-0.5,0.2,-0.4];
+        fog.color = [0.2,0.25,0.35];
+        break;
+    }
+  }
+  document.getElementById('dayBtn').addEventListener('click',()=>setTimeOfDay('day'));
+  document.getElementById('duskBtn').addEventListener('click',()=>setTimeOfDay('dusk'));
+  document.getElementById('nightBtn').addEventListener('click',()=>setTimeOfDay('night'));
+  document.getElementById('orbitBtn').addEventListener('click',()=>{camera.orbit=!camera.orbit;});
+  document.getElementById('resetBtn').addEventListener('click',()=>{camera.pos=[0,30,80];camera.rot=[-0.4,0];});
+
+  // --------------------------------------------------------------
+  // MAIN RENDER LOOP
+  // --------------------------------------------------------------
+  const depthTexture = device.createTexture({
+    size:[size.width,size.height,1],
+    format:'depth24plus',
+    usage:GPUTextureUsage.RENDER_ATTACHMENT
+  });
+  let lastTime = performance.now();
+
+  function frame(now){
+    const dt = (now-lastTime)/1000;
+    lastTime = now;
+    camera.update(dt);
+
+    // Build view-projection matrix
+    const proj = mat4Identity();
+    mat4Perspective(proj, Math.PI/3, size.width/size.height, 0.1, 500);
+    const view = mat4Identity();
+    const eye = camera.pos, center = [
+      eye[0]+Math.sin(camera.rot[1])*Math.cos(camera.rot[0]),
+      eye[1]+Math.sin(camera.rot[0]),
+      eye[2]+Math.cos(camera.rot[1])*Math.cos(camera.rot[0])
+    ];
+    const up = [0,1,0];
+    mat4LookAt(view, eye, center, up);
+    const projView = mat4Identity();
+    mat4Mul(projView, proj, view);
+
+    // Update uniform buffer (projView + light + fog)
+    const ubData = new Float32Array(16+4+4+1);
+    ubData.set(projView,0);
+    ubData.set([...light.dir,0],16);
+    ubData.set([...fog.color,1],20);
+    ubData[24] = now/1000; // time (unused, but kept for future)
+    device.queue.writeBuffer(uniformBuffer,0,ubData.buffer,ubData.byteOffset,ubData.byteLength);
+
+    // Encode render pass
+    const commandEncoder = device.createCommandEncoder();
+    const pass = commandEncoder.beginRenderPass({
+      colorAttachments:[{
+        view: context.getCurrentTexture().createView(),
+        loadOp:'clear',
+        clearValue:{r:0.6,g:0.8,b:1,a:1},
+        storeOp:'store'
+      }],
+      depthStencilAttachment:{
+        view: depthTexture.createView(),
+        depthLoadOp:'clear',
+        depthClearValue:1,
+        depthStoreOp:'store'
+      }
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, uniformBindGroup);
+    pass.setVertexBuffer(0, vertexBuffer);
+    pass.setIndexBuffer(indexBuffer, 'uint16');
+    pass.drawIndexed(cubeIndices.length, instanceCount, 0, 0, 0);
+    pass.end();
+
+    device.queue.submit([commandEncoder.finish()]);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

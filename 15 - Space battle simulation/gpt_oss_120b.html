@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Babylon.js 3‑D Space Battle</title>
+<style>
+  html, body { overflow:hidden; width:100%; height:100%; margin:0; padding:0; background:#000; }
+  #renderCanvas { width:100%; height:100%; touch-action:none; }
+  .healthBar {
+    position:absolute; pointer-events:none;
+    width:40px; height:6px; background:#333;
+    border:1px solid #111; border-radius:3px;
+  }
+  .healthFill {
+    height:100%; background:#0f0; border-radius:3px;
+  }
+</style>
+</head>
+<body>
+<canvas id="renderCanvas"></canvas>
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+<script>
+  // --------------------------------------------------------------
+  // BASIC SETUP
+  // --------------------------------------------------------------
+  const canvas = document.getElementById("renderCanvas");
+  const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+  const scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0,0,0,1);
+
+  // Camera – orbit (ArcRotate) around origin
+  const camera = new BABYLON.ArcRotateCamera("Cam", Math.PI/2, Math.PI/4, 150, BABYLON.Vector3.Zero(), scene);
+  camera.attachControl(canvas, true);
+  camera.lowerRadiusLimit = 30;
+  camera.upperRadiusLimit = 300;
+  camera.wheelDeltaPercentage = 0.01;
+
+  // Light – a few point lights to simulate engine thrusters /
+  // a central sun for ambience
+  const sun = new BABYLON.PointLight("sun", new BABYLON.Vector3(0,0,0), scene);
+  sun.intensity = 0.6;
+
+  // Starfield skybox
+  const skybox = BABYLON.MeshBuilder.CreateBox("skyBox", {size:1000}, scene);
+  const skyboxMat = new BABYLON.StandardMaterial("skyBoxMat", scene);
+  skyboxMat.backFaceCulling = false;
+  skyboxMat.disableLighting = true;
+  skyboxMat.diffuseColor = new BABYLON.Color3(0,0,0);
+  skyboxMat.emissiveTexture = new BABYLON.CubeTexture("https://playground.babylonjs.com/textures/skybox", scene);
+  skybox.material = skyboxMat;
+
+  // --------------------------------------------------------------
+  // DATA STRUCTURES
+  // --------------------------------------------------------------
+  const fleets = [
+    { name:"Blue",  color:new BABYLON.Color3(0.2,0.4,1),  side:-1 }, // -X side
+    { name:"Red",   color:new BABYLON.Color3(1,0.3,0.3), side: 1 }  // +X side
+  ];
+  const ships = []; // all ship objects
+  const projectiles = []; // active shots
+
+  // --------------------------------------------------------------
+  // HELPERS
+  // --------------------------------------------------------------
+  function createHealthBar(parent, offsetY){
+    const gui = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI(parent.name + "_ui");
+    const container = new BABYLON.GUI.Container();
+    container.width = "60px"; container.height = "8px";
+    container.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+    container.verticalAlignment   = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
+    container.linkOffsetY = offsetY;
+    container.linkWithMesh(parent);
+    const bg = new BABYLON.GUI.Rectangle("bg");
+    bg.width = 1; bg.height = 1; bg.cornerRadius = 2;
+    bg.background = "#222";
+    container.addControl(bg);
+    const fill = new BABYLON.GUI.Rectangle("fill");
+    fill.width = 1; fill.height = 1; fill.cornerRadius = 2;
+    fill.background = "#0f0";
+    fill.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+    fill.isPointerBlocker = false;
+    bg.addControl(fill);
+    parent._healthBarFill = fill;
+  }
+
+  function updateHealthBar(ship){
+    const pct = Math.max(ship.health/ship.maxHealth,0);
+    ship._healthBarFill.width = pct;
+    ship._healthBarFill.background = pct>0.5?"#0f0":(pct>0.25?"#ff0":"#f00");
+  }
+
+  // --------------------------------------------------------------
+  // SHIP CREATION
+  // --------------------------------------------------------------
+  function createShip(fleet, isFlagship, index){
+    const size = isFlagship ? 4 : 2;
+    const mesh = BABYLON.MeshBuilder.CreateBox(`${fleet.name}_ship_${index}`, {size:size}, scene);
+    // simple detail for flagship
+    if(isFlagship){
+      const cone = BABYLON.MeshBuilder.CreateCylinder("cone", {diameterTop:0, diameterBottom:size*1.2, height:size*2, tessellation:4}, scene);
+      cone.parent = mesh;
+      cone.position.y = size*1.5;
+    }
+    // material / color
+    const mat = new BABYLON.StandardMaterial("mat", scene);
+    mat.diffuseColor = fleet.color;
+    mat.specularColor = new BABYLON.Color3(0.2,0.2,0.2);
+    mesh.material = mat;
+    // starting position
+    const startX = fleet.side * 40 + (Math.random()-0.5)*10;
+    mesh.position = new BABYLON.Vector3(startX, (Math.random()-0.5)*20, (Math.random()-0.5)*20);
+    // health
+    mesh.maxHealth = isFlagship ? 200 : 80;
+    mesh.health = mesh.maxHealth;
+    // AI target
+    mesh._target = null;
+    // health bar
+    createHealthBar(mesh, -size*30);
+    // store meta
+    mesh._fleet = fleet;
+    mesh._isFlagship = isFlagship;
+    ships.push(mesh);
+  }
+
+  // Build both fleets
+  fleets.forEach(fleet=>{
+    // flagship
+    createShip(fleet, true, "flag");
+    // 9 escorts
+    for(let i=0;i<9;i++) createShip(fleet, false, i);
+  });
+
+  // --------------------------------------------------------------
+  // SIMPLE AI – MOVE TOWARDS ENEMY, RANDOMLY WANDER, TURN SLOWLY
+  // --------------------------------------------------------------
+  function getRandomPointNear(target){
+    const spread = 30;
+    return target.add(new BABYLON.Vector3(
+      (Math.random()-0.5)*spread,
+      (Math.random()-0.5)*spread,
+      (Math.random()-0.5)*spread
+    ));
+  }
+
+  function updateShipAI(ship, dt){
+    // pick a target ship (enemy) if none or dead
+    if(!ship._target || ship._target.health<=0){
+      const enemies = ships.filter(s=>s._fleet!==ship._fleet && s.health>0);
+      if(enemies.length===0) return;
+      ship._target = enemies[Math.floor(Math.random()*enemies.length)];
+    }
+    // Aim point a bit ahead of the enemy
+    const aimPoint = ship._target.position.clone();
+    // If flagship, aim for the enemy flagship first
+    if(ship._isFlagship){
+      const enemyFlagship = ships.find(s=>s._fleet!==ship._fleet && s._isFlagship);
+      if(enemyFlagship) ship._target = enemyFlagship;
+    }
+    // Move towards aim point but also wander a bit
+    const desired = getRandomPointNear(aimPoint).subtract(ship.position);
+    const distance = desired.length();
+
+    // Simple acceleration / steering
+    const maxSpeed = ship._isFlagship ? 8 : 12;
+    const maxForce = 30;
+    const vel = ship._velocity || new BABYLON.Vector3(0,0,0);
+    const desiredVel = desired.normalize().scale(maxSpeed);
+    const steer = desiredVel.subtract(vel);
+    steer.normalize().scaleInPlace(maxForce*dt);
+    const newVel = vel.add(steer);
+    if(newVel.length()>maxSpeed) newVel.normalize().scaleInPlace(maxSpeed);
+    ship._velocity = newVel;
+
+    // Apply translation
+    ship.position.addInPlace(newVel.scale(dt));
+
+    // Rotate to face movement direction
+    if(newVel.length()>0.1){
+      const forward = new BABYLON.Vector3(0,0,1);
+      const dir = newVel.clone().normalize();
+      const axis = BABYLON.Vector3.Cross(forward, dir);
+      const angle = Math.acos(BABYLON.Vector3.Dot(forward, dir));
+      const quat = BABYLON.Quaternion.RotationAxis(axis, angle);
+      ship.rotationQuaternion = quat;
+    }
+
+    // Keep inside a big cube
+    const limit = 120;
+    ['x','y','z'].forEach(coord=>{
+      if(Math.abs(ship.position[coord])>limit) ship.position[coord] = -ship.position[coord];
+    });
+  }
+
+  // --------------------------------------------------------------
+  // PROJECTILES
+  // --------------------------------------------------------------
+  function fireProjectile(ship){
+    const proj = BABYLON.MeshBuilder.CreateSphere("proj", {diameter:0.8}, scene);
+    const mat = new BABYLON.StandardMaterial("projMat", scene);
+    mat.emissiveColor = ship._fleet.color;
+    mat.diffuseColor = ship._fleet.color;
+    proj.material = mat;
+    proj.position = ship.position.clone();
+    // velocity – forward direction of ship
+    const forward = new BABYLON.Vector3(0,0,1);
+    const quat = ship.rotationQuaternion || BABYLON.Quaternion.Identity();
+    const dir = BABYLON.Vector3.TransformCoordinates(forward, BABYLON.Matrix.RotationQuaternion(quat));
+    proj._velocity = dir.normalize().scale(40);
+    proj._ownerFleet = ship._fleet;
+    proj._lifetime = 5; // seconds
+
+    // Trail (simple particle system attached to projectile)
+    const trail = new BABYLON.ParticleSystem("trail", 200, scene);
+    trail.particleTexture = new BABYLON.Texture("https://playground.babylonjs.com/textures/flare.png", scene);
+    trail.emitter = proj;
+    trail.minEmitBox = new BABYLON.Vector3(0,0,0);
+    trail.maxEmitBox = new BABYLON.Vector3(0,0,0);
+    trail.color1 = trail.color2 = ship._fleet.color;
+    trail.minSize = 0.2; trail.maxSize = 0.6;
+    trail.minLifeTime = 0.2; trail.maxLifeTime = 0.4;
+    trail.emitRate = 500;
+    trail.direction1 = trail.direction2 = new BABYLON.Vector3(0,0,0);
+    trail.gravity = new BABYLON.Vector3(0,0,0);
+    trail.start();
+
+    proj._trail = trail;
+    projectiles.push(proj);
+  }
+
+  // fire schedule
+  let fireTimer = 0;
+  function scheduleFiring(dt){
+    fireTimer -= dt;
+    if(fireTimer<=0){
+      fireTimer = 3; // every 3 seconds
+      // each ship fires (1 per escort, 2 per flag)
+      ships.forEach(ship=>{
+        if(ship.health<=0) return;
+        const shots = ship._isFlagship ? 2 : 1;
+        for(let i=0;i<shots;i++) fireProjectile(ship);
+      });
+    }
+  }
+
+  // --------------------------------------------------------------
+  // COLLISIONS – Projectile hits ship
+  // --------------------------------------------------------------
+  function handleProjectileCollisions(dt){
+    const hitShips = new Set();
+
+    projectiles.forEach((proj,i)=>{
+      proj._lifetime -= dt;
+      if(proj._lifetime<=0){
+        proj.dispose();
+        proj._trail.dispose();
+        projectiles.splice(i,1);
+        return;
+      }
+      // move
+      proj.position.addInPlace(proj._velocity.scale(dt));
+
+      // simple sphere‑vs‑box test
+      ships.forEach(ship=>{
+        if(ship.health<=0) return;
+        if(ship._fleet===proj._ownerFleet) return; // don't hit own side
+        const dist = BABYLON.Vector3.Distance(proj.position, ship.position);
+        const radius = (ship._isFlagship?4:2)*0.8; // approximate
+        if(dist < radius){
+          // damage
+          ship.health -= 30;
+          updateHealthBar(ship);
+          // immediate explosion if health <=0
+          if(ship.health<=0 && !hitShips.has(ship)){
+            hitShips.add(ship);
+            explodeShip(ship);
+          }
+          // remove projectile
+          proj.dispose();
+          proj._trail.dispose();
+          projectiles.splice(i,1);
+        }
+      });
+    });
+  }
+
+  // --------------------------------------------------------------
+  // EXPLOSION + DEBRIS + CHAIN REACTION
+  // --------------------------------------------------------------
+  function explodeShip(ship){
+    // Particle fire
+    const fire = new BABYLON.ParticleSystem("fire", 2000, scene);
+    fire.particleTexture = new BABYLON.Texture("https://playground.babylonjs.com/textures/flame.png", scene);
+    fire.emitter = ship; // location
+    fire.minEmitBox = new BABYLON.Vector3(-1,-1,-1);
+    fire.maxEmitBox = new BABYLON.Vector3(1,1,1);
+    fire.color1 = new BABYLON.Color4(1,0.5,0,1);
+    fire.color2 = new BABYLON.Color4(1,0,0,1);
+    fire.minSize = 2; fire.maxSize = 6;
+    fire.minLifeTime = 0.3; fire.maxLifeTime = 0.6;
+    fire.emitRate = 1500;
+    fire.blendMode = BABYLON.ParticleSystem.BLENDMODE_ONEONE;
+    fire.gravity = new BABYLON.Vector3(0, -2, 0);
+    fire.direction1 = new BABYLON.Vector3(-1,1,-1);
+    fire.direction2 = new BABYLON.Vector3(1,1,1);
+    fire.minAngularSpeed = 0; fire.maxAngularSpeed = Math.PI;
+    fire.minEmitPower = 5; fire.maxEmitPower = 10;
+    fire.updateSpeed = 0.01;
+    fire.start();
+    setTimeout(()=>fire.stop(), 800);
+
+    // Shockwave (transparent expanding sphere)
+    const shock = BABYLON.MeshBuilder.CreateSphere("shock", {diameter:5}, scene);
+    const shockMat = new BABYLON.StandardMaterial("shockMat", scene);
+    shockMat.emissiveColor = new BABYLON.Color3(1,0.8,0.4);
+    shockMat.alpha = 0.6;
+    shockMat.backFaceCulling = false;
+    shock.material = shockMat;
+    shock.position = ship.position.clone();
+    const shockSpeed = 30;
+    let shockLife = 0.8;
+    scene.registerBeforeRender(()=> {
+      const delta = engine.getDeltaTime()/1000;
+      shockLife -= delta;
+      if(shockLife>0){
+        shock.scaling.addInPlace(new BABYLON.Vector3(shockSpeed*delta, shockSpeed*delta, shockSpeed*delta));
+        shockMat.alpha = Math.max(shockLife,0);
+      }else{
+        shock.dispose();
+      }
+    });
+
+    // Debris – a few small boxes launching outward
+    for(let d=0; d<8; d++){
+      const debris = BABYLON.MeshBuilder.CreateBox("debris", {size:0.5}, scene);
+      debris.position = ship.position.clone();
+      const mat = new BABYLON.StandardMaterial("debrisMat", scene);
+      mat.diffuseColor = ship._fleet.color;
+      debris.material = mat;
+      const dir = new BABYLON.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize();
+      const speed = 10 + Math.random()*10;
+      const life = 2 + Math.random()*1;
+      const start = Date.now();
+      scene.registerBeforeRender(()=> {
+        const now = Date.now();
+        const dt = (now-start)/1000;
+        if(dt < life){
+          debris.position.addInPlace(dir.scale(speed*engine.getDeltaTime()/1000));
+        }else{
+          debris.dispose();
+        }
+      });
+    }
+
+    // Chain reaction – check nearby ships
+    const blastRadius = 6; // roughly one ship width + a bit
+    ships.forEach(other=>{
+      if(other === ship) return;
+      if(other.health<=0) return;
+      const d = BABYLON.Vector3.Distance(other.position, ship.position);
+      if(d < blastRadius){
+        // damage heavily, may trigger own explosion
+        other.health -= 60;
+        updateHealthBar(other);
+        if(other.health<=0){
+          explodeShip(other);
+        }
+      }
+    });
+  }
+
+  // --------------------------------------------------------------
+  // MAIN RENDER LOOP
+  // --------------------------------------------------------------
+  scene.registerBeforeRender(()=>{
+    const dt = engine.getDeltaTime() / 1000; // seconds
+
+    // AI update
+    ships.forEach(ship=> {
+      if(ship.health>0) updateShipAI(ship, dt);
+    });
+
+    // Firing schedule
+    scheduleFiring(dt);
+
+    // Projectile movement & collisions
+    handleProjectileCollisions(dt);
+
+    // Clean up dead ships (hide, stop updates)
+    ships.forEach(ship=>{
+      if(ship.health<=0 && ship.isVisible){
+        ship.isVisible = false;
+        // optionally hide mesh but keep for explosion checks (already done)
+      }
+    });
+  });
+
+  engine.runRenderLoop(()=> scene.render());
+
+  window.addEventListener("resize",()=> engine.resize());
+</script>
+</body>
+</html>
