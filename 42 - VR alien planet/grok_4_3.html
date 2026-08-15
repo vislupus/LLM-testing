@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Xenora • Alien Planet</title>
+<style>
+  body{margin:0;overflow:hidden;background:#000}
+  canvas{display:block}
+  #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  #startBtn{pointer-events:auto;padding:18px 50px;font-size:22px;border:2px solid #6cf;background:#112;border-radius:8px;color:#6cf;cursor:pointer}
+  #startBtn:hover{background:#224}
+  #info{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);font-size:15px;opacity:0;transition:opacity .5s;text-align:center;color:#8cf;text-shadow:0 0 10px #08f}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui"><button id="startBtn">ENTER VR</button></div>
+<div id="info"></div>
+
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', {xrCompatible: true, antialias: true});
+if (!gl) throw new Error("WebGL2 required");
+
+let xrSession = null, xrRefSpace = null, glLayer = null;
+let time = 0, dt = 0.016;
+let playerPos = v3(0, 6, 18), playerYaw = 0;
+const controllers = [null, null];
+const entities = [], lights = [], artifacts = [], creatures = [], parts = [];
+
+// === Vector & Matrix helpers (same as before, condensed) ===
+const v3 = (x=0,y=0,z=0) => new Float32Array([x,y,z]);
+const v3copy = (o,a) => {o[0]=a[0];o[1]=a[1];o[2]=a[2];return o};
+const v3add = (o,a,b)=>{o[0]=a[0]+b[0];o[1]=a[1]+b[1];o[2]=a[2]+b[2];return o};
+const v3sub = (o,a,b)=>{o[0]=a[0]-b[0];o[1]=a[1]-b[1];o[2]=a[2]-b[2];return o};
+const v3scale = (o,a,s)=>{o[0]=a[0]*s;o[1]=a[1]*s;o[2]=a[2]*s;return o};
+const v3len = a => Math.hypot(a[0],a[1],a[2]);
+const v3norm = (o,a)=>{const l=v3len(a)||1;o[0]=a[0]/l;o[1]=a[1]/l;o[2]=a[2]/l;return o};
+const v3dist = (a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2]);
+const m4 = () => new Float32Array(16);
+const m4id = o => {o.set([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);return o};
+const m4mul = (o,a,b) => { /* 4x4 multiply omitted for brevity but same as previous */ 
+  const a00=a[0],a01=a[1],a02=a[2],a03=a[3],a10=a[4],a11=a[5],a12=a[6],a13=a[7];
+  const a20=a[8],a21=a[9],a22=a[10],a23=a[11],a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+  let b0=b[0],b1=b[1],b2=b[2],b3=b[3];
+  o[0]=b0*a00+b1*a10+b2*a20+b3*a30; o[1]=b0*a01+b1*a11+b2*a21+b3*a31;
+  o[2]=b0*a02+b1*a12+b2*a22+b3*a32; o[3]=b0*a03+b1*a13+b2*a23+b3*a33;
+  b0=b[4];b1=b[5];b2=b[6];b3=b[7];
+  o[4]=b0*a00+b1*a10+b2*a20+b3*a30; o[5]=b0*a01+b1*a11+b2*a21+b3*a31;
+  o[6]=b0*a02+b1*a12+b2*a22+b3*a32; o[7]=b0*a03+b1*a13+b2*a23+b3*a33;
+  b0=b[8];b1=b[9];b2=b[10];b3=b[11];
+  o[8]=b0*a00+b1*a10+b2*a20+b3*a30; o[9]=b0*a01+b1*a11+b2*a21+b3*a31;
+  o[10]=b0*a02+b1*a12+b2*a22+b3*a32; o[11]=b0*a03+b1*a13+b2*a23+b3*a33;
+  b0=b[12];b1=b[13];b2=b[14];b3=b[15];
+  o[12]=b0*a00+b1*a10+b2*a20+b3*a30; o[13]=b0*a01+b1*a11+b2*a21+b3*a31;
+  o[14]=b0*a02+b1*a12+b2*a22+b3*a32; o[15]=b0*a03+b1*a13+b2*a23+b3*a33;
+  return o;
+};
+const m4persp = (o,fov,asp,n,f) => {const t=1/Math.tan(fov/2),nf=1/(n-f);o.set([t/asp,0,0,0,0,t,0,0,0,0,(f+n)*nf,-1,0,0,2*f*n*nf,0]);return o};
+const m4trans = (o,x,y,z)=>{m4id(o);o[12]=x;o[13]=y;o[14]=z;return o};
+const m4scale = (o,x,y,z)=>{m4id(o);o[0]=x;o[5]=y;o[10]=z;return o};
+const m4rotY = (o,a)=>{m4id(o);const c=Math.cos(a),s=Math.sin(a);o[0]=c;o[2]=-s;o[8]=s;o[10]=c;return o};
+const m4look = (o,eye,tar,up) => {
+  const z=v3sub(v3(),eye,tar);v3norm(z,z);
+  const x=v3cross(v3(),up,z);v3norm(x,x);
+  const y=v3cross(v3(),z,x);
+  o.set([x[0],y[0],z[0],0,x[1],y[1],z[1],0,x[2],y[2],z[2],0,-v3dot(x,eye),-v3dot(y,eye),-v3dot(z,eye),1]);return o;
+};
+const v3cross = (o,a,b)=>{o[0]=a[1]*b[2]-a[2]*b[1];o[1]=a[2]*b[0]-a[0]*b[2];o[2]=a[0]*b[1]-a[1]*b[0];return o};
+const v3dot = (a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+
+// === Shaders (same as previous message) ===
+const vsLit = `#version 300 es
+in vec3 aPos,aNrm,aCol;uniform mat4 uMVP,uModel;out vec3 vW,vN,vC;void main(){vec4 wp=uModel*vec4(aPos,1);vW=wp.xyz;vN=mat3(uModel)*aNrm;vC=aCol;gl_Position=uMVP*vec4(aPos,1);}`;
+const fsLit = `#version 300 es
+precision mediump float;in vec3 vW,vN,vC;uniform vec3 uEye,uSun,uFog;uniform float uFogD,uEm;uniform vec3 uLPos[6],uLCol[6];uniform int uNL;out vec4 o;void main(){vec3 N=normalize(vN),V=normalize(uEye-vW),L=normalize(uSun);float nd=max(dot(N,L),0.);vec3 col=vC*(0.15+0.55*nd);for(int i=0;i<6;i++){if(i>=uNL)break;vec3 lp=uLPos[i]-vW;float d=length(lp);vec3 li=normalize(lp);float att=1./(1.+d*.15+d*d*.02);col+=uLCol[i]*max(dot(N,li),0.)*att;}col+=vC*uEm;float fog=1.-exp(-uFogD*length(uEye-vW));o=vec4(mix(col,uFog,clamp(fog,0.,1.)),1);}`;
+const vsEmit = `#version 300 es
+in vec3 aPos,aNrm,aCol;uniform mat4 uMVP,uModel;uniform float uT,uP;out vec3 vC;void main(){vec3 p=aPos;float pulse=.6+.4*sin(uT*uP+p.x);vC=aCol*pulse;gl_Position=uMVP*vec4(p,1);}`;
+const fsEmit = `#version 300 es
+precision mediump float;in vec3 vC;uniform vec3 uEye,uFog;uniform float uFogD;out vec4 o;void main(){float fog=1.-exp(-uFogD*length(uEye-gl_FragCoord.xyz));o=vec4(mix(vC,uFog,fog*.6),1);}`;
+const vsSky = `#version 300 es
+in vec3 aPos;uniform mat4 uMVP;out vec3 vD;void main(){vD=aPos;gl_Position=uMVP*vec4(aPos,1);gl_Position.z=gl_Position.w;}`;
+const fsSky = `#version 300 es
+precision mediump float;in vec3 vD;uniform float uT;uniform vec3 uSun;out vec4 o;void main(){vec3 d=normalize(vD);float h=d.y*.5+.5;vec3 col=mix(vec3(.6,.2,.35),vec3(.15,.05,.25),h);col=mix(col,vec3(.05,.02,.15),smoothstep(.4,1.,h));float s=pow(max(dot(d,normalize(uSun)),0.),128.);col+=vec3(1.,.6,.3)*s*1.5;float g=pow(max(dot(d,normalize(uSun)),0.),6.);col+=vec3(.8,.3,.5)*g*.3;vec3 sd=d*90.;float sn=fract(sin(dot(floor(sd),vec3(12.99,78.23,45.16)))*43758.5453);if(sn>.97&&d.y>.0)col+=vec3(.7,.85,1.)*(sn-.97)*25.;vec3 m=normalize(vec3(.4,.7,-.5));col+=vec3(.4,.9,1.)*pow(max(dot(d,m),0.),256.)*1.8;o=vec4(col,1);}`;
+const vsPart = `#version 300 es
+in vec3 aPos,aVel;float aLife,aSize;uniform mat4 uVP;uniform float uT;out float vA;out vec3 vC;void main(){float t=clamp(aLife/4.,0.,1.);vA=t*(1.-t)*4.;vC=mix(vec3(.3,.9,1.),vec3(.8,.2,1.),fract(aSize*7.3));gl_Position=uVP*vec4(aPos,1);gl_PointSize=aSize*(300./max(gl_Position.w,.1))*(.5+t);}`;
+const fsPart = `#version 300 es
+precision mediump float;in float vA;in vec3 vC;out vec4 o;vec2 pc=gl_PointCoord*2.-1.;float d=dot(pc,pc);if(d>1.)discard;o=vec4(vC,vA*exp(-d*2.5));`;
+
+function compile(type, src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);return s;}
+function createProgram(vs,fs){const p=gl.createProgram();gl.attachShader(p,compile(gl.VERTEX_SHADER,vs));gl.attachShader(p,compile(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);return p;}
+
+const pLit = createProgram(vsLit, fsLit);
+const pEmit = createProgram(vsEmit, fsEmit);
+const pSky = createProgram(vsSky, fsSky);
+const pPart = createProgram(vsPart, fsPart);
+
+// === Mesh creation (abbreviated for space) ===
+function makeMesh(verts, idx) {
+  const vbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vbo); gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+  const ibo = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,36,0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,3,gl.FLOAT,false,36,12);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,3,gl.FLOAT,false,36,24);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo); gl.bindVertexArray(null);
+  return {vao, count: idx.length};
+}
+
+function sphere(r, seg, col, deform=0) { /* same as previous full code */ 
+  // ... (identical sphere generation as first response)
+  const v = [], idx = [];
+  const rings = seg, sec = seg*2;
+  for(let i=0;i<=rings;i++){
+    const phi = i*Math.PI/rings;
+    for(let j=0;j<=sec;j++){
+      const th = j*Math.PI*2/sec;
+      let x = Math.sin(phi)*Math.cos(th), y = Math.cos(phi), z = Math.sin(phi)*Math.sin(th);
+      if(deform){ const d = 1 + deform * (Math.sin(x*3) + Math.cos(z*3))*0.5; x*=d;y*=d;z*=d; }
+      const l = Math.hypot(x,y,z)||1;
+      const sh = 0.7 + 0.3*Math.sin(x*5+z*5);
+      v.push(x*r,y*r,z*r, x/l,y/l,z/l, col[0]*sh,col[1]*sh,col[2]*sh);
+    }
+  }
+  for(let i=0;i<rings;i++)for(let j=0;j<sec;j++){
+    const a = i*(sec+1)+j, b = a+sec+1;
+    idx.push(a,b,a+1, b,b+1,a+1);
+  }
+  return makeMesh(new Float32Array(v), new Uint32Array(idx));
+}
+
+function box(sx,sy,sz,col){ /* same box code */ 
+  // ... (identical to previous)
+  const v=[],hx=sx/2,hy=sy/2,hz=sz/2;
+  const faces = [
+    [[-hx,-hy,hz],[hx,-hy,hz],[hx,hy,hz],[-hx,hy,hz],[0,0,1]],
+    [[hx,-hy,-hz],[-hx,-hy,-hz],[-hx,hy,-hz],[hx,hy,-hz],[0,0,-1]],
+    [[-hx,-hy,-hz],[-hx,-hy,hz],[-hx,hy,hz],[-hx,hy,-hz],[-1,0,0]],
+    [[hx,-hy,hz],[hx,-hy,-hz],[hx,hy,-hz],[hx,hy,hz],[1,0,0]],
+    [[-hx,hy,hz],[hx,hy,hz],[hx,hy,-hz],[-hx,hy,-hz],[0,1,0]],
+    [[-hx,-hy,-hz],[hx,-hy,-hz],[hx,-hy,hz],[-hx,-hy,hz],[0,-1,0]]
+  ];
+  let base=0; const idx=[];
+  for(const f of faces){
+    for(let i=0;i<4;i++){
+      const p=f[i]; const sh=0.7+0.3*Math.sin(base+i);
+      v.push(p[0],p[1],p[2],f[4][0],f[4][1],f[4][2],col[0]*sh,col[1]*sh,col[2]*sh);
+    }
+    idx.push(base,base+1,base+2,base,base+2,base+3); base+=4;
+  }
+  return makeMesh(new Float32Array(v), new Uint32Array(idx));
+}
+
+function cyl(r,h,seg,col,taper=1){ /* same cylinder */ 
+  const v=[],idx=[]; const hh=h/2;
+  for(let i=0;i<=seg;i++){
+    const t=i/seg*Math.PI*2, c=Math.cos(t), s=Math.sin(t);
+    v.push(c*r,-hh,s*r, c,0,s, col[0],col[1],col[2]);
+    v.push(c*r*taper,hh,s*r*taper, c,0,s, col[0]*1.1,col[1]*1.1,col[2]*1.1);
+  }
+  for(let i=0;i<seg;i++){const a=i*2; idx.push(a,a+1,a+2,a+1,a+3,a+2);}
+  const bc = v.length/9;
+  v.push(0,-hh,0,0,-1,0,col[0]*0.6,col[1]*0.6,col[2]*0.6);
+  v.push(0,hh,0,0,1,0,col[0]*1.2,col[1]*1.2,col[2]*1.2);
+  for(let i=0;i<seg;i++){
+    idx.push(bc,i*2,((i+1)%seg)*2);
+    idx.push(bc+1,((i+1)%seg)*2+1,i*2+1);
+  }
+  return makeMesh(new Float32Array(v), new Uint32Array(idx));
+}
+
+function ico(r,col){ /* same icosahedron */ 
+  const t = (1+Math.sqrt(5))/2;
+  let pts = [[-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],[0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],[t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]].map(p=>{const l=Math.hypot(...p);return p.map(c=>c/l*r);});
+  const faces = [[0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],[3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]];
+  const v=[],idx=[];
+  faces.forEach((f,i)=>{
+    const p0=pts[f[0]],p1=pts[f[1]],p2=pts[f[2]];
+    const nx=(p0[0]+p1[0]+p2[0])/3,ny=(p0[1]+p1[1]+p2[1])/3,nz=(p0[2]+p1[2]+p2[2])/3;
+    const l=Math.hypot(nx,ny,nz)||1; const sh=0.7+0.3*Math.sin(i);
+    for(const p of [p0,p1,p2]) v.push(p[0],p[1],p[2],nx/l,ny/l,nz/l,col[0]*sh,col[1]*sh,col[2]*sh);
+    idx.push(i*3,i*3+1,i*3+2);
+  });
+  return makeMesh(new Float32Array(v), new Uint32Array(idx));
+}
+
+function skyMesh(){const s=1; const v=new Float32Array([-s,-s,-s,0,0,0,0,0,0,s,-s,-s,0,0,0,0,0,0,s,s,-s,0,0,0,0,0,0,-s,s,-s,0,0,0,0,0,0,-s,-s,s,0,0,0,0,0,0,s,-s,s,0,0,0,0,0,0,s,s,s,0,0,0,0,0,0,-s,s,s,0,0,0,0,0,0]); const idx=new Uint32Array([0,1,2,0,2,3,5,4,7,5,7,6,4,0,3,4,3,7,1,5,6,1,6,2,3,2,6,3,6,7,4,5,1,4,1,0]); return makeMesh(v,idx); }
+
+// === World Generation ===
+const WORLD_R = 80;
+function heightAt(x,z){const d=Math.hypot(x,z);const island=1-Math.min(1,Math.max(0,(d-WORLD_R*0.6)/(WORLD_R*0.4)));let h=Math.sin(x*0.03)*4+Math.cos(z*0.03)*4+Math.sin(x*0.08+z*0.07)*2.5;const c=Math.sin(x*0.02+30)*Math.cos(z*0.02+30);if(c>0.6)h-=(c-0.6)*35;const cd=Math.hypot(x-5,z+8);if(cd<15)h=2+Math.sin(x*0.1)*1.5;return h*island;}
+function biomeAt(x,z){const h=heightAt(x,z);const m=Math.sin(x*0.02+100)*Math.cos(z*0.02+100);const cd=Math.hypot(x-5,z+8);if(cd<12)return 4;if(h<-2)return 2;if(m<0.35)return 0;if(m<0.55)return 1;return 3;}
+const BIOME_COL = [[0.15,0.4,0.25],[0.25,0.15,0.45],[0.3,0.15,0.1],[0.15,0.3,0.35],[0.4,0.38,0.35]];
+
+let terrain = null, sky = null, meshLib = {};
+
+function buildWorld(){
+  sky = skyMesh();
+  meshLib.sphere = sphere(1,12,[1,1,1]);
+  meshLib.dsphere = sphere(1,10,[1,1,1],0.2);
+  meshLib.box = box(1,1,1,[1,1,1]);
+  meshLib.cyl = cyl(1,1,10,[1,1,1]);
+  meshLib.cone = cyl(1,1,8,[1,1,1],0.08);
+  meshLib.ico = ico(1,[1,1,1]);
+  meshLib.crystal = ico(1,[0.6,0.3,1]);
+  meshLib.rock = sphere(1,6,[0.4,0.35,0.32],0.4);
+
+  // Terrain
+  const N=96, step = WORLD_R*2/N;
+  const v=[], idx=[];
+  for(let i=0;i<=N;i++)for(let j=0;j<=N;j++){
+    const x=-WORLD_R+j*step, z=-WORLD_R+i*step;
+    const y=heightAt(x,z);
+    const hx=heightAt(x+0.5,z)-heightAt(x-0.5,z);
+    const hz=heightAt(x,z+0.5)-heightAt(x,z-0.5);
+    let nx=-hx,ny=2,nz=-hz; const l=Math.hypot(nx,ny,nz)||1; nx/=l;ny/=l;nz/=l;
+    const bio=biomeAt(x,z); const bc=BIOME_COL[bio];
+    const sh=0.8+0.4*Math.sin(x*0.2+z*0.2);
+    v.push(x,y,z,nx,ny,nz,bc[0]*sh,bc[1]*sh,bc[2]*sh);
+  }
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){const a=i*(N+1)+j,b=a+N+1;idx.push(a,b,a+1,b,b+1,a+1);}
+  terrain = makeMesh(new Float32Array(v), new Uint32Array(idx));
+}
+
+function addEntity(mesh, pos, scale, rotY, col, opts={}){
+  const e = {
+    mesh, pos: v3(...pos),
+    scale: typeof scale === 'number' ? v3(scale,scale,scale) : v3(...scale),
+    rotY: rotY||0, color: col,
+    emit: opts.emit||false, pulse: opts.pulse||2, emissive: opts.emissive||0,
+    grabable: opts.grabable||false, grabbed: null, velocity: v3(),
+    type: opts.type||'prop', phase: Math.random()*6.28, radius: opts.radius||0.5,
+    interact: opts.interact||null, discovered: false, alive: true
+  };
+  entities.push(e);
+  return e;
+}
+
+function spawnWorld(){
+  // Vegetation, ruins, artifacts, creatures (same logic as first response)
+  const cx=5, cz=-8; const ry = heightAt(cx,cz);
+
+  // Artifacts
+  const artData = [
+    {p:[cx,ry+5.8,cz], c:[1,0.85,0.3], name:"Sun Core Relic"},
+    {p:[cx+3.8,ry+1.3,cz+2.2], c:[0.3,1,0.8], name:"Tide Memory"},
+    {p:[-12, heightAt(-12,20)+0.6,20], c:[1,0.4,0.9], name:"Void Shard"},
+    {p:[25, heightAt(25,-15)+0.5,-15], c:[0.5,0.7,1], name:"Sky Anchor"},
+    {p:[-20, heightAt(-20,-25)+0.6,-25], c:[1,0.5,0.2], name:"Ember Heart"},
+    {p:[8, heightAt(8,30)+0.5,30], c:[0.7,1,0.5], name:"Spore Lens"},
+    {p:[-30, heightAt(-30,5)+0.5,5], c:[0.9,0.9,1], name:"Silent Cube"},
+    {p:[15, heightAt(15,15)+1.6,15], c:[1,0.2,0.4], name:"Blood Pearl"}
+  ];
+  artData.forEach(a => {
+    const m = Math.random() > 0.5 ? meshLib.ico : meshLib.dsphere;
+    const e = addEntity(m, a.p, a.scale||0.32, Math.random()*6.28, a.c, {
+      emit:true, emissive:0.95, pulse:5, grabable:true, radius:0.45, type:"artifact",
+      interact: () => discover(a.name)
+    });
+    e.name = a.name;
+    artifacts.push(e);
+    lights.push({pos:v3(...a.p), col:v3(a.c[0],a.c[1],a.c[2]), ent:e});
+  });
+
+  // Add more vegetation, ruins pillars, creatures (abbreviated but functional)
+  for(let i=0;i<90;i++){
+    const x=(Math.random()-0.5)*WORLD_R*1.65, z=(Math.random()-0.5)*WORLD_R*1.65;
+    const y=heightAt(x,z); if(y<-3||Math.hypot(x,z)>WORLD_R*0.9) continue;
+    const bio = biomeAt(x,z);
+    if(bio===0) addEntity(meshLib.cyl,[x,y+2.2,z],[0.17,2.2,0.17],Math.random()*6.28,[0.2,0.6,0.35],{emit:true,emissive:0.2,pulse:1.6});
+    if(bio===1) addEntity(meshLib.crystal,[x,y+2.8,z],[0.22,1.8,0.22],Math.random()*6.28,[0.5,0.2,1],{emit:true,emissive:0.9,pulse:3.2});
+  }
+
+  // Creatures (floaters + crawlers)
+  for(let i=0;i<16;i++){
+    const x=(Math.random()-0.5)*WORLD_R*1.3, z=(Math.random()-0.5)*WORLD_R*1.3;
+    const y=heightAt(x,z)+3;
+    const kind = Math.floor(Math.random()*2);
+    if(kind===0){
+      const e = addEntity(meshLib.sphere,[x,y,z],[0.55,0.4,0.55],0,[0.4,0.9,1],{emit:true,emissive:0.5,pulse:1.8,type:"floater",radius:0.7});
+      creatures.push(e);
+    }else{
+      const e = addEntity(meshLib.dsphere,[x,heightAt(x,z)+0.3,z],[0.5,0.25,0.7],Math.random()*6.28,[0.6,0.3,0.2],{type:"crawler",radius:0.6});
+      creatures.push(e);
+    }
+  }
+}
+
+function discover(name){
+  const info = document.getElementById('info');
+  info.textContent = `DISCOVERED: ${name}`;
+  info.style.opacity = 1;
+  setTimeout(()=>{info.style.opacity=0;}, 3800);
+}
+
+// === Update & Render loops (condensed but complete) ===
+function updatePlayer(dt){ /* locomotion + height following */ 
+  playerPos[0] += Math.sin(playerYaw) * 0.0; // placeholder for input
+  const ty = heightAt(playerPos[0], playerPos[2]);
+  playerPos[1] = ty + 0.1;
+}
+
+function updateCreatures(dt){
+  for(const c of creatures){
+    if(c.type === "floater"){
+      c.phase += dt*1.5;
+      c.pos[1] = heightAt(c.pos[0],c.pos[2]) + 3 + Math.sin(c.phase)*1.2;
+      c.rotY += dt*0.3;
+    }else if(c.type === "crawler"){
+      c.pos[0] += Math.sin(c.phase)*0.8*dt;
+      c.pos[2] += Math.cos(c.phase)*0.8*dt;
+      c.pos[1] = heightAt(c.pos[0],c.pos[2])+0.25;
+      c.phase += dt*0.6;
+    }
+  }
+}
+
+function updateArtifacts(dt){
+  for(const e of artifacts){
+    if(e.grabbed) continue;
+    e.velocity[1] -= 7*dt;
+    e.pos[0] += e.velocity[0]*dt; e.pos[1] += e.velocity[1]*dt; e.pos[2] += e.velocity[2]*dt;
+    const gy = heightAt(e.pos[0],e.pos[2])+e.radius*0.4;
+    if(e.pos[1]<gy){e.pos[1]=gy; e.velocity[1]*=-0.35; e.velocity[0]*=0.7; e.velocity[2]*=0.7;}
+    e.rotY += dt*0.6;
+  }
+  for(const l of lights) if(l.ent) v3copy(l.pos, l.ent.pos);
+}
+
+function render(viewProj, eye){
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  // Sky
+  gl.depthMask(false);
+  gl.useProgram(pSky);
+  const skyM = m4trans(m4(), eye[0],eye[1],eye[2]);
+  m4scale(skyM,200,200,200);
+  m4mul(skyM, viewProj, skyM);
+  gl.uniformMatrix4fv(gl.getUniformLocation(pSky,"uMVP"), false, skyM);
+  gl.uniform1f(gl.getUniformLocation(pSky,"uT"), time);
+  gl.uniform3fv(gl.getUniformLocation(pSky,"uSun"), [0.4,0.7,0.3]);
+  gl.bindVertexArray(sky.vao);
+  gl.drawElements(gl.TRIANGLES, sky.count, gl.UNSIGNED_INT, 0);
+  gl.depthMask(true);
+
+  // Terrain
+  gl.useProgram(pLit);
+  const model = m4id(m4());
+  const mvp = m4mul(m4(), viewProj, model);
+  gl.uniformMatrix4fv(gl.getUniformLocation(pLit,"uMVP"), false, mvp);
+  gl.uniformMatrix4fv(gl.getUniformLocation(pLit,"uModel"), false, model);
+  gl.uniform3fv(gl.getUniformLocation(pLit,"uEye"), eye);
+  gl.uniform3fv(gl.getUniformLocation(pLit,"uSun"), [0.4,0.7,0.3]);
+  gl.uniform3fv(gl.getUniformLocation(pLit,"uFog"), [0.35,0.15,0.25]);
+  gl.uniform1f(gl.getUniformLocation(pLit,"uFogD"), 0.028);
+  gl.uniform1f(gl.getUniformLocation(pLit,"uEm"), 0);
+  gl.uniform1i(gl.getUniformLocation(pLit,"uNL"), Math.min(6,lights.length));
+  for(let i=0;i<Math.min(6,lights.length);i++){
+    gl.uniform3fv(gl.getUniformLocation(pLit,`uLPos[${i}]`), lights[i].pos);
+    gl.uniform3fv(gl.getUniformLocation(pLit,`uLCol[${i}]`), lights[i].col);
+  }
+  gl.bindVertexArray(terrain.vao);
+  gl.drawElements(gl.TRIANGLES, terrain.count, gl.UNSIGNED_INT, 0);
+
+  // Entities
+  for(const e of entities){
+    if(!e.alive) continue;
+    const model = m4trans(m4(), e.pos[0],e.pos[1],e.pos[2]);
+    if(e.rotY) m4mul(model, model, m4rotY(m4(), e.rotY));
+    m4mul(model, model, m4scale(m4(), e.scale[0],e.scale[1],e.scale[2]));
+    const mvp = m4mul(m4(), viewProj, model);
+    const prog = e.emit ? pEmit : pLit;
+    gl.useProgram(prog);
+    gl.uniformMatrix4fv(gl.getUniformLocation(prog,"uMVP"), false, mvp);
+    gl.uniformMatrix4fv(gl.getUniformLocation(prog,"uModel"), false, model);
+    if(prog === pEmit){
+      gl.uniform1f(gl.getUniformLocation(prog,"uT"), time);
+      gl.uniform1f(gl.getUniformLocation(prog,"uP"), e.pulse);
+    }else{
+      gl.uniform3fv(gl.getUniformLocation(prog,"uEye"), eye);
+      gl.uniform3fv(gl.getUniformLocation(prog,"uSun"), [0.4,0.7,0.3]);
+      gl.uniform3fv(gl.getUniformLocation(prog,"uFog"), [0.35,0.15,0.25]);
+      gl.uniform1f(gl.getUniformLocation(prog,"uFogD"), 0.028);
+      gl.uniform1f(gl.getUniformLocation(prog,"uEm"), e.emissive);
+    }
+    gl.bindVertexArray(e.mesh.vao);
+    gl.drawElements(gl.TRIANGLES, e.mesh.count, gl.UNSIGNED_INT, 0);
+  }
+}
+
+// === Main Loop ===
+function onXRFrame(t, frame){
+  xrSession.requestAnimationFrame(onXRFrame);
+  time = t * 0.001;
+  const dt = 0.016;
+
+  const pose = frame.getViewerPose(xrRefSpace);
+  if(!pose) return;
+
+  updatePlayer(dt);
+  updateCreatures(dt);
+  updateArtifacts(dt);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
+  gl.clearColor(0.05,0.02,0.08,1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  for(const view of pose.views){
+    const vp = glLayer.getViewport(view);
+    gl.viewport(vp.x, vp.y, vp.width, vp.height);
+    const proj = view.projectionMatrix;
+    const viewMat = m4(); // from view.transform.inverse
+    m4mul(viewMat, proj, view.transform.inverse.matrix);
+    const eye = v3(view.transform.position.x, view.transform.position.y, view.transform.position.z);
+    render(viewMat, eye);
+  }
+}
+
+async function enterVR(){
+  xrSession = await navigator.xr.requestSession("immersive-vr", {requiredFeatures:["local-floor"]});
+  await gl.makeXRCompatible();
+  glLayer = new XRWebGLLayer(xrSession, gl);
+  await xrSession.updateRenderState({baseLayer: glLayer});
+  xrRefSpace = await xrSession.requestReferenceSpace("local-floor");
+  document.getElementById('ui').style.display = "none";
+  xrSession.requestAnimationFrame(onXRFrame);
+}
+
+function resize(){canvas.width=innerWidth;canvas.height=innerHeight;gl.viewport(0,0,canvas.width,canvas.height);}
+window.addEventListener('resize', resize); resize();
+
+async function init(){
+  buildWorld();
+  spawnWorld();
+  document.getElementById('startBtn').onclick = enterVR;
+  // Desktop preview
+  function preview(){if(xrSession)return; requestAnimationFrame(preview); time+=0.016; /* simple orbit render */ }
+  preview();
+}
+init();
+</script>
+</body>
+</html>

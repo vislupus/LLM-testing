@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Xenogenesis — WebXR Alien Planet</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;background:#000;font-family:ui-monospace,Menlo,Consolas,monospace}
+canvas{display:block;width:100%;height:100%}
+#ui{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+background:radial-gradient(ellipse,rgba(0,15,30,.88),rgba(0,0,0,.94));
+color:#9cf;z-index:10;text-align:center;padding:20px}
+#ui h1{font-size:clamp(24px,5vw,44px);letter-spacing:.2em;text-shadow:0 0 25px rgba(0,200,255,.5);margin-bottom:6px}
+#ui p{max-width:520px;font-size:clamp(11px,1.8vw,15px);line-height:1.6;opacity:.85;margin:6px auto}
+#ui button{margin-top:22px;background:rgba(0,200,255,.08);border:1px solid rgba(0,200,255,.55);
+color:#9cf;padding:14px 42px;font:inherit;font-size:clamp(14px,2vw,18px);cursor:pointer;
+letter-spacing:.15em;text-transform:uppercase;box-shadow:0 0 22px rgba(0,200,255,.15);transition:.25s}
+#ui button:hover{background:rgba(0,200,255,.2);box-shadow:0 0 40px rgba(0,200,255,.35)}
+#hud{position:fixed;left:14px;bottom:14px;padding:10px 16px;color:#bff;
+background:rgba(0,0,0,.35);border:1px solid rgba(80,180,255,.2);font-size:13px;
+text-shadow:0 1px 4px #000;line-height:1.5;z-index:8;display:none}
+#controls{position:fixed;right:14px;bottom:14px;padding:10px 16px;color:#bff;
+background:rgba(0,0,0,.35);border:1px solid rgba(80,180,255,.2);font-size:12px;
+text-shadow:0 1px 4px #000;line-height:1.6;z-index:8;display:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+<h1>XENOGENESIS</h1>
+<p>A silent world of crystal plains, fungal groves, basalt ridges, and ancient ruins.
+Glowing spores drift in the air. Strange life flits in the shadows.</p>
+<p style="font-size:12px;opacity:.65;margin-top:8px">
+◈ Left stick — move &nbsp; ◈ Right stick — snap turn<br>
+◈ Trigger — grab artifact &nbsp; ◈ Face button — scan pulse<br>
+◈ Bring artifact to your headset to collect</p>
+<button id="enterBtn">Enter VR Expedition</button>
+<div id="msg" style="margin-top:16px;font-size:12px;opacity:.5"></div>
+</div>
+<div id="hud">
+<div>◈ Artifacts: <span id="hAc">0</span> / <span id="hAt">0</span></div>
+<div>◈ Biome: <span id="hBm">—</span></div>
+</div>
+<div id="controls">
+<div>◈ Move: Left Stick</div>
+<div>◈ Turn: Right Stick</div>
+<div>◈ Grab: Trigger</div>
+<div>◈ Scan: Face Btn</div>
+</div>
+
+<script>
+"use strict";
+
+/* ====================================================================
+   MATH UTILITIES
+   ==================================================================== */
+const TAU=Math.PI*2,{sin,cos,sqrt,abs,floor,min,max,hypot,atan2,random,exp,PI}=Math;
+const clamp=(v,a,b)=>max(a,min(b,v));
+
+/* ====================================================================
+   NOISE GENERATOR
+   ==================================================================== */
+class Noise{
+  constructor(seed){
+    let s=(seed??(random()*1e9|0))|0;
+    const rnd=()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296;};
+    const p=new Uint8Array(256);
+    for(let i=0;i<256;i++)p[i]=i;
+    for(let i=255;i>0;i--){const j=(rnd()*(i+1))|0;[p[i],p[j]]=[p[j],p[i]];}
+    this.p=new Uint8Array(512);
+    for(let i=0;i<512;i++)this.p[i]=p[i&255];
+  }
+  n2(x,y){
+    const X=floor(x)&255,Y=floor(y)&255,fx=x-X,fy=y-Y;
+    const u=fx*fx*(3-2*fx),v=fy*fy*(3-2*fy);
+    const a=this.p[(this.p[X]+Y)&255]/255,b=this.p[(this.p[X+1]+Y)&255]/255;
+    const c=this.p[(this.p[X]+Y+1)&255]/255,d=this.p[(this.p[X+1]+Y+1)&255]/255;
+    return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;
+  }
+  fbm(x,y,oct=5){
+    let amp=0.5,sum=0,freq=1;
+    for(let i=0;i<oct;i++){sum+=amp*this.n2(x*freq,y*freq);freq*=2;amp*=0.5;}
+    return sum;
+  }
+}
+const NOISE=new Noise();
+
+/* ====================================================================
+   WORLD CONFIGURATION
+   ==================================================================== */
+const WORLD_R=160,SIZE=340,STEP=3.5;
+const CAVES=[],RUINS=[];
+for(let i=0;i<7;i++){
+  const a=random()*TAU,r=45+random()*95;
+  CAVES.push({x:cos(a)*r,z:sin(a)*r,radius:14+random()*16,depth:12+random()*14});
+}
+for(let i=0;i<5;i++){
+  const a=random()*TAU,r=35+random()*100;
+  RUINS.push({x:cos(a)*r,z:sin(a)*r,yaw:random()*TAU,count:6+((random()*8)|0),radius:7+random()*14});
+}
+
+/* ====================================================================
+   TERRAIN & BIOMES
+   ==================================================================== */
+function heightAt(x,z){
+  let h=NOISE.fbm(x*0.005,z*0.005,5)*22-8+NOISE.fbm(x*0.02,z*0.02,3)*3;
+  for(const c of CAVES){
+    const d=hypot(x-c.x,z-c.z);
+    if(d<c.radius){const t=1-d/c.radius,s=t*t*(3-2*t);h-=c.depth*s;}
+  }
+  const ed=hypot(x,z);
+  if(ed>WORLD_R*0.75){const t=clamp((ed-WORLD_R*0.75)/(WORLD_R*0.25),0,1);h-=t*t*50;}
+  return h;
+}
+function biomeAt(x,z){
+  for(const c of CAVES)if(hypot(x-c.x,z-c.z)<c.radius*0.6)return'cave';
+  const h=heightAt(x,z);
+  if(h>12)return'ridge';
+  const v=NOISE.fbm(x*0.003+100,z*0.003+100,3)-0.5;
+  if(v>0.18)return'crystal';
+  if(v<-0.18)return'fungal';
+  return'swamp';
+}
+function biomePalette(b){
+  switch(b){
+    case'crystal':return{c:[0.08,0.65,0.85],e:[0,0.12,0.22],g:0.85};
+    case'fungal':return{c:[0.50,0.15,0.45],e:[0.10,0,0.15],g:0.80};
+    case'cave':return{c:[0.03,0.05,0.10],e:[0,0.02,0.04],g:0.25};
+    case'ridge':return{c:[0.35,0.35,0.40],e:[0,0,0],g:0.0};
+    default:return{c:[0.10,0.30,0.18],e:[0,0,0],g:0.02};
+  }
+}
+
+/* ====================================================================
+   WEBGL2 SETUP
+   ==================================================================== */
+const canvas=document.getElementById('c');
+const gl=canvas.getContext('webgl2',{alpha:false,antialias:true,depth:true,xrCompatible:true});
+if(!gl){document.getElementById('msg').textContent='WebGL2 unavailable';throw new Error('no GL');}
+
+function compileShader(type,src){
+  const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(s);
+  return s;
+}
+function linkProgram(vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,compileShader(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,compileShader(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw gl.getProgramInfoLog(p);
+  return p;
+}
+function getUniforms(p){
+  const u={},cnt=gl.getProgramParameter(p,gl.ACTIVE_UNIFORMS);
+  for(let i=0;i<cnt;i++){const info=gl.getActiveUniform(p,i);u[info.name]=gl.getUniformLocation(p,info.name);}
+  return u;
+}
+
+/* ====================================================================
+   SHADERS
+   ==================================================================== */
+const VERT_STATIC=`#version 300 es
+precision highp float;
+layout(location=0)in vec3 aP;layout(location=1)in vec3 aN;
+layout(location=2)in vec3 aC;layout(location=3)in vec3 aE;
+layout(location=4)in float aG;layout(location=5)in float aT;
+uniform mat4 uP,uV,uM,uW2R;uniform float uTime,uMatBoost;
+out vec3 vWP,vWN,vCol,vEmi;out float vGlow,vDist,vTag;
+void main(){
+vec4 w=uM*vec4(aP,1.0);
+if(aT>2.5&&aT<3.5)w.y+=sin(uTime*2.5+w.x*1.7)*0.15;
+vWP=w.xyz;vWN=normalize(mat3(uM)*aN);vCol=aC;vEmi=aE*(1.+uMatBoost);
+vGlow=aG+uMatBoost;vTag=aT;
+vec4 vp=uV*(uW2R*w);vDist=length(vp.xyz);gl_Position=uP*vp;
+}`;
+
+const VERT_INST=`#version 300 es
+precision highp float;
+layout(location=0)in vec3 aP;layout(location=1)in vec3 aN;
+layout(location=2)in vec3 aC;layout(location=3)in vec3 aE;
+layout(location=4)in float aG;layout(location=5)in float aT;
+layout(location=6)in vec4 iPS;layout(location=7)in vec4 iD;layout(location=8)in vec3 iT;
+uniform mat4 uP,uV,uW2R;uniform float uTime;
+out vec3 vWP,vWN,vCol,vEmi;out float vGlow,vDist,vTag;
+mat2 rot(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
+void main{
+float yaw=iD.x,seed=iD.y,addG=iD.z,kind=iD.w;
+vec3 wp,nrm=aN;
+if(kind>8.5){
+vec3 cen=iPS.xyz;float orbit=iPS.w,spd=0.25+fract(seed*7.3)*0.35;
+float ang=uTime*spd+seed*6.2831853;vec3 p=aP;
+p.y+=sin(uTime*6.0+seed*8.0)*abs(p.x)*0.2;
+vec2 xz=rot(yaw)*p.xz;p.x=xz.x;p.z=xz.y;
+wp=cen+vec3(cos(ang)*orbit,sin(uTime*0.8+seed*10.0)*1.5,sin(ang)*orbit)+p;
+}else{
+float sc=iPS.w;vec3 p=aP*sc;
+if(kind<1.5){float sw=sin(uTime*1.5+seed*20.0)*0.12;p.xz=rot(sw)*p.xz;}
+vec2 xz=rot(yaw)*p.xz;p.x=xz.x;p.z=xz.y;
+wp=iPS.xyz+p;vec2 nx=rot(yaw)*nrm.xz;nrm.x=nx.x;nrm.z=nx.y;
+}
+vWP=wp;vWN=normalize(nrm);vCol=aC*iT;vEmi=aE*(1.+addG);vGlow=aG+addG;vTag=aT;
+vec4 vp=uV*(uW2R*vec4(wp,1.0));vDist=length(vp.xyz);gl_Position=uP*vp;
+}`;
+
+const FRAG_LIT=`#version 300 es
+precision highp float;
+in vec3 vWP,vWN,vCol,vEmi;in float vGlow,vDist,vTag;
+uniform float uTime;uniform vec3 uFogCol;uniform float uFogDen;
+uniform vec3 uScanOrg;uniform float uScanFront,uScanStrength;
+out vec4 O;
+void main(){
+vec3 n=normalize(vWN);
+float ndl=max(dot(n,normalize(vec3(0.5,0.8,0.3))),0.0);
+vec3 col=vCol*(0.18+ndl*0.72);
+col+=vEmi*(0.7+0.3*sin(uTime*2.5+vGlow*8.0))*vGlow;
+float sd=distance(vWP,uScanOrg);float sr=uScanFront;
+col+=vec3(0.3,0.9,1.0)*exp(-abs(sd-sr)*2.2)*max(0.0,1.0-uScanStrength*0.5)*(0.3+vGlow*0.4);
+float fog=1.0-exp(-uFogDen*vDist*vDist*0.0008);
+O=vec4(mix(col,uFogCol,clamp(fog,0.0,1.0)),1.0);
+}`;
+
+const VERT_PART=`#version 300 es
+precision highp float;
+layout(location=0)in vec3 aOff;layout(location=1)in float aSeed;
+uniform mat4 uP,uV,uW2R;uniform vec3 uPlayer;
+uniform float uTime,uFallSpeed,uWind;
+out float vA;
+void main(){
+vec3 p=uPlayer+aOff;
+float t=uTime*uFallSpeed+aSeed*10.0;
+p.y=uPlayer.y+mod(aOff.y-t,48.0);
+p.x+=sin(aSeed*5.0+uTime*0.3)*uWind*t*0.02;
+p.z+=cos(aSeed*7.0+uTime*0.25)*uWind*t*0.02;
+vec4 vv=uV*(uW2R*vec4(p,1.0));gl_Position=uP*vv;
+float d=length(vv.xyz);gl_PointSize=clamp(20.0/(0.5+d),1.0,5.5);
+vA=clamp(1.0-d*0.01,0.0,0.7);
+}`;
+
+const FRAG_PART=`#version 300 es
+precision highp float;in float vA;uniform vec3 uPartCol;out vec4 O;
+void main{vec2 uv=gl_PointCoord*2.0-1.0;O=vec4(uPartCol,exp(-dot(uv,uv)*3.0)*vA);}`;
+
+const pStatic=linkProgram(VERT_STATIC,FRAG_LIT);
+const pInst=linkProgram(VERT_INST,FRAG_LIT);
+const pPart=linkProgram(VERT_PART,FRAG_PART);
+const uStatic=getUniforms(pStatic);
+const uInst=getUniforms(pInst);
+const uPart=getUniforms(pPart);
+
+/* ====================================================================
+   MESH CREATION
+   ==================================================================== */
+const STRIDE=14;
+function pushV(arr,...v){arr.push(...v);}
+function mkMesh(arr,idx){
+  const vao=gl.createVertexArray();gl.bindVertexArray(vao);
+  const vbo=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vbo);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(arr),gl.STATIC_DRAW);
+  const ibo=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ibo);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint32Array(idx),gl.STATIC_DRAW);
+  const s=STRIDE*4;
+  for(let i=0;i<6;i++){const sz=i<4?3:1,off=[0,12,24,36,48,52][i];
+    gl.enableVertexAttribArray(i);gl.vertexAttribPointer(i,sz,gl.FLOAT,false,s,off);}
+  gl.bindVertexArray(null);return{vao,count:idx.length};
+}
+function addInst(mesh,data){
+  gl.bindVertexArray(mesh.vao);
+  const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);
+  const s=44;
+  gl.enableVertexAttribArray(6);gl.vertexAttribPointer(6,4,gl.FLOAT,false,s,0);gl.vertexAttribDivisor(6,1);
+  gl.enableVertexAttribArray(7);gl.vertexAttribPointer(7,4,gl.FLOAT,false,s,16);gl.vertexAttribDivisor(7,1);
+  gl.enableVertexAttribArray(8);gl.vertexAttribPointer(8,3,gl.FLOAT,false,s,32);gl.vertexAttribDivisor(8,1);
+  gl.bindVertexArray(null);return{...mesh,ic:data.length/11};
+}
+function octMesh(col,emi,glow,tag,scale){
+  const V=[],I=[];
+  const pts=[[0,1,0],[0,-1,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]];
+  const faces=[[0,2,4],[0,4,3],[0,3,5],[0,5,2],[1,4,2],[1,3,4],[1,5,3],[1,2,5]];
+  let vi=0;
+  for(const f of faces){
+    const a=pts[f[0]],b=pts[f[1]],c=pts[f[2]];
+    const ux=b[0]-a[0],uy=b[1]-a[1],uz=b[2]-a[2];
+    const vx=c[0]-a[0],vy=c[1]-a[1],vz=c[2]-a[2];
+    let nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
+    const nl=hypot(nx,ny,nz)||1;nx/=nl;ny/=nl;nz/=nl;
+    for(const p of[a,b,c])pushV(V,p[0]*scale,p[1]*scale,p[2]*scale,nx,ny,nz,...col,...emi,glow,tag);
+    I.push(vi,vi+1,vi+2);vi+=3;
+  }
+  return mkMesh(V,I);
+}
+
+/* ====================================================================
+   BUILD WORLD GEOMETRY
+   ==================================================================== */
+const terrain=(()=>{
+  const V=[],I=[],half=SIZE/2,N=floor(SIZE/STEP),row=N+1;
+  const H=[];
+  for(let z=0;z<=N;z++){H[z]=[];for(let x=0;x<=N;x++)H[z][x]=heightAt(-half+x*STEP,-half+z*STEP);}
+  for(let z=0;z<=N;z++)for(let x=0;x<=N;x++){
+    const wx=-half+x*STEP,wz=-half+z*STEP,h=H[z][x];
+    const hl=x>0?H[z][x-1]:h,hr=x<N?H[z][x+1]:h;
+    const hd=z>0?H[z-1][x]:h,hu=z<N?H[z+1][x]:h;
+    let nx=hl-hr,ny=2*STEP,nz=hd-hu;
+    const nl=hypot(nx,ny,nz)||1;nx/=nl;ny/=nl;nz/=nl;
+    const pal=biomePalette(biomeAt(wx,wz));
+    pushV(V,wx,h,wz,nx,ny,nz,...pal.c,...pal.e,pal.g,0);
+  }
+  for(let z=0;z<N;z++)for(let x=0;x<N;x++){const a=z*row+x;I.push(a,a+row,a+1,a+1,a+row,a+row+1);}
+  return mkMesh(V,I);
+})();
+
+const crystalGeo=octMesh([0.12,0.80,1.0],[0.03,0.25,0.40],1.8,2,1);
+const mushroomGeo=(()=>{
+  const V=[],I=[];let vi=0;
+  const seg=8,sR=0.08,sH=1.4,capR=0.45;
+  const sC=[0.72,0.85,0.95],sE=[0,0.05,0.10],cC=[0.85,0.25,0.80],cE=[0.20,0.02,0.18];
+  for(let i=0;i<seg;i++){
+    const a1=TAU*i/seg,a2=TAU*(i+1)/seg;
+    const x1=cos(a1)*sR,z1=sin(a1)*sR,x2=cos(a2)*sR,z2=sin(a2)*sR;
+    pushV(V,x1,0,z1,cos(a1),0,sin(a1),...sC,...sE,0.15,1);
+    pushV(V,x2,0,z2,cos(a2),0,sin(a2),...sC,...sE,0.15,1);
+    pushV(V,x1,sH,z1,cos(a1),0,sin(a1),...sC,...sE,0.15,1);
+    pushV(V,x2,sH,z2,cos(a2),0,sin(a2),...sC,...sE,0.15,1);
+    I.push(vi,vi+1,vi+2,vi,vi+2,vi+3);vi+=4;
+    pushV(V,0,sH+0.12,0,0,1,0,...cC,...cE,2.2,2);
+    pushV(V,x1,sH,z1,cos(a1),0.5,sin(a1),...cC,...cE,2.2,2);
+    pushV(V,x2,sH,z2,cos(a2),0.5,sin(a2),...cC,...cE,2.2,2);
+    I.push(vi,vi+1,vi+2);vi+=3;
+  }
+  return mkMesh(V,I);
+})();
+const pillarGeo=(()=>{
+  const V=[],I=[];let vi=0;
+  const hw=0.25,hh=2.5,hd=0.25,col=[0.22,0.20,0.26],emi=[0,0,0];
+  const faces=[
+    [[-hw,-hh,-hd],[hw,-hh,-hd],[hw,hh,-hd],[-hw,hh,-hd],[0,0,-1]],
+    [[hw,-hh,hd],[hw,-hh,-hd],[hw,hh,-hd],[hw,hh,hd],[1,0,0]],
+    [[-hw,-hh,hd],[hw,-hh,hd],[hw,hh,hd],[-hw,hh,hd],[0,0,1]],
+    [[-hw,-hh,-hd],[-hw,-hh,hd],[-hw,hh,hd],[-hw,hh,-hd],[-1,0,0]],
+    [[-hw,hh,-hd],[hw,hh,-hd],[hw,hh,hd],[-hw,hh,hd],[0,1,0]],
+    [[-hw,-hh,-hd],[hw,-hh,hd],[hw,-hh,-hd],[-hw,-hh,hd],[0,-1,0]]
+  ];
+  for(const f of faces){for(let v=0;v<4;v++)pushV(V,...f[v],...f[4],...col,...emi,0,3);I.push(vi,vi+1,vi+2,vi,vi+2,vi+3);vi+=4;}
+  return mkMesh(V,I);
+})();
+const mantaGeo=(()=>{
+  const V=[],I=[];let vi=0;
+  const pts=[[0,0,.9],[-1.2,0,-.4],[-.3,0,-.7],[.3,0,-.7],[1.2,0,-.4]];
+  const n=[0,1,0],col=[0.42,0.92,0.82],emi=[0.02,0.08,0.06];
+  for(const q of[[0,1,2],[0,2,3],[0,3,4]]){for(const idx of q)pushV(V,...pts[idx],...n,...col,...emi,0.55,1);I.push(vi,vi+1,vi+2);vi+=3;}
+  return mkMesh(V,I);
+})();
+const artifactGeo=octMesh([1,0.88,0.22],[0.55,0.42,0.08],3.2,3,0.45);
+const handOrbGeo=octMesh([0.35,0.95,1.0],[0.10,0.30,0.40],2.5,0,0.055);
+
+/* ====================================================================
+   INSTANCE DATA
+   ==================================================================== */
+function randPoint(){const a=random()*TAU,r=sqrt(random())*WORLD_R*0.92;return{x:cos(a)*r,z:sin(a)*r};}
+const cData=[];
+for(let i=0;i<380;i++){const p=randPoint(),h=heightAt(p.x,p.z);if(biomeAt(p.x,p.z)!=='crystal')continue;
+  cData.push(p.x,h,p.z,0.6+random()*1.8,random()*TAU,random(),0.3+random()*1,2,0.65+random()*.35,.95,1);}
+const mushroomInstData=[];
+for(let i=0;i<320;i++){const p=randPoint(),h=heightAt(p.x,p.z),b=biomeAt(p.x,p.z);
+  if(b!=='fungal'&&(b!=='swamp'||random()>.78))continue;
+  mushroomInstData.push(p.x,h,p.z,0.7+random()*1.4,random()*TAU,random(),0.15+random()*0.8,1,.9+random()*0.1,.4+random()*.3,.9+random()*.1);}
+const pillarInstData=[];
+for(const site of RUINS){for(let i=0;i<site.count;i++){
+  const ang=site.yaw+TAU*i/site.count+(random()-.5)*0.12,r=site.radius+(random()-.5)*3;
+  const x=site.x+cos(ang)*r,z=site.z+sin(ang)*r,h=heightAt(x,z);
+  pillarInstData.push(x,h,z,0.7+random()*0.6,random()*TAU,random(),random()*0.2,3,.9,.85,1);}}
+const mantaInstData=[];
+for(let i=0;i<24;i++){const p=randPoint(),h=heightAt(p.x,p.z);
+  const y=14+abs(NOISE.fbm(p.x*0.006,p.z*0.006,3))*14+h;
+  mantaInstData.push(p.x,y,p.z,10+random()*22,0,random(),random()*0.3,9,.55+random()*.45,.95,.9);}
+const crystalInst=addInst(crystalGeo,cData);
+const mushroomInst=addInst(mushroomGeo,mushroomInstData);
+const pillarInst=addInst(pillarGeo,pillarInstData);
+const mantaInst=addInst(mantaGeo,mantaInstData);
+
+/* ====================================================================
+   ARTIFACTS
+   ==================================================================== */
+const artifacts=[];
+(function placeArtifacts(){
+  const places=[];
+  for(const s of RUINS)for(let i=0;i<3;i++){const a=random()*TAU,r=4+random()*14;places.push({x:s.x+cos(a)*r,z:s.z+sin(a)*r});}
+  for(const c of CAVES)for(let i=0;i<2;i++){const a=random()*TAU,r=random()*0.6*c.radius;places.push({x:c.x+cos(a)*r,z:c.z+sin(a)*r});}
+  while(places.length<14){const p=randPoint();places.push(p);}
+  places.forEach((p,i)=>{const y=heightAt(p.x,p.z)+2;
+    artifacts.push({id:i,x:p.x,y,z:p.z,vx:0,vy:0,vz:0,yaw:random()*TAU,grabbed:false,collected:false,grabber:null,lastHP:{x:0,y:0,z:0},boost:0});});
+})();
+
+/* ====================================================================
+   PARTICLES
+   ==================================================================== */
+const partCount=1200;
+const partVAO=gl.createVertexArray();gl.bindVertexArray(partVAO);
+const pOff=new Float32Array(partCount*3),pSeed=new Float32Array(partCount);
+for(let i=0;i<partCount;i++){pOff[i*3]=(random()-.5)*140;pOff[i*3+1]=random()*50;pOff[i*3+2]=(random()-.5)*140;pSeed[i]=random();}
+const pv0=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,pv0);gl.bufferData(gl.ARRAY_BUFFER,pOff,gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+const pv1=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,pv1);gl.bufferData(gl.ARRAY_BUFFER,pSeed,gl.STATIC_DRAW);
+gl.enableVertexAttribArray(1);gl.vertexAttribPointer(1,1,gl.FLOAT,false,0,0);
+gl.bindVertexArray(null);
+
+/* ====================================================================
+   XR STATE
+   ==================================================================== */
+let xrSession=null,xrRef=null,lastTime=0;
+const player={pos:{x:0,y:heightAt(0,0),z:0},yaw:0};
+const world2ref=new Float32Array(16);
+const I4=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+let scanTime=-99,scanOrigin={x:0,y:0,z:0};
+
+function matW2R(out,p,yaw){const c=cos(yaw),s=sin(yaw);
+  out[0]=c;out[1]=0;out[2]=-s;out[3]=0;out[4]=0;out[5]=1;out[6]=0;out[7]=0;
+  out[8]=s;out[9]=0;out[10]=c;out[11]=0;out[12]=-(c*p.x+s*p.z);out[13]=-p.y;out[14]=-(-s*p.x+c*p.z);out[15]=1;}
+function quatYaw(q){const{x,y,z,w}=q;return atan2(2*(w*y+x*z),1-2*(y*y+z*z));}
+const srcState=new Map();
+function srcRec(src){let r=srcState.get(src);if(!r){r={trig:false,scan:false};srcState.set(src,r);}return r;}
+function haptic(src,int=0.3,dur=25){try{const a=src.gamepad?.hapticActuators?.[0];if(a?.pulse)a.pulse(int,dur);}catch(_){}}
+function updateHUD(){document.getElementById('hAc').textContent=artifacts.filter(a=>a.collected).length;
+  document.getElementById('hAt').textContent=artifacts.length;document.getElementById('hBm').textContent=biomeAt(player.pos.x,player.pos.z);}
+
+/* ====================================================================
+   RENDER LOOP
+   ==================================================================== */
+function onXRFrame(t,frame){
+  xrSession.requestAnimationFrame(onXRFrame);
+  const dt=lastTime?min(0.04,(t-lastTime)*0.001):0.016,time=t*0.001;lastTime=t;
+  const pose=frame.getViewerPose(xrRef);if(!pose)return;
+
+  let moveX=0,moveZ=0,turnX=0,boost=false,scanEdge=false;
+  for(const src of xrSession.inputSources){
+    const gp=src.gamepad;if(!gp)continue;const st=srcRec(src);
+    const scanNow=!!(gp.buttons?.[3]?.pressed||gp.buttons?.[4]?.pressed||gp.buttons?.[5]?.pressed);
+    if(scanNow&&!st.scan)scanEdge=true;st.scan=scanNow;
+    if(src.handedness==='left'){if(gp.axes.length>=2){moveX=gp.axes[0];moveZ=gp.axes[1];}boost=!!gp.buttons?.[1]?.pressed;}
+    else if(src.handedness==='right'){if(gp.axes.length>=2)turnX=gp.axes[2]??gp.axes[0];}
+  }
+  if(scanEdge){scanTime=time;const hv=pose.views[0].transform.position;scanOrigin={x:hv.x,y:hv.y,z:hv.z};}
+  if(abs(turnX)>0.35)player.yaw+=(turnX>0?-PI/6:PI/6);
+  const dead=0.15;
+  if(abs(moveX)>dead||abs(moveZ)>dead){
+    const spd=boost?8:4.5,hy=quatYaw(pose.views[0].transform.orientation),ay=player.yaw+hy;
+    const mx=abs(moveX)>dead?moveX:0,mz=abs(moveZ)>dead?moveZ:0;
+    player.pos.x+=(-sin(ay)*mz+cos(ay)*mx)*spd*dt;
+    player.pos.z+=(-cos(ay)*mz-sin(ay)*mx)*spd*dt;
+  }
+  const pd=hypot(player.pos.x,player.pos.z);
+  if(pd>WORLD_R*0.96){const k=WORLD_R*0.96/pd;player.pos.x*=k;player.pos.z*=k;}
+  player.pos.y=heightAt(player.pos.x,player.pos.z);
+  matW2R(world2ref,player.pos,player.yaw);
+
+  const headWG=(()=>{const hv=pose.views[0].transform.position;return{x:hv.x+player.pos.x,y:hv.y+player.pos.y,z:hv.z+player.pos.z};})();
+  for(const a of artifacts){
+    if(a.collected)continue;a.boost=max(0,a.boost-dt*2.5);
+    if(!a.grabbed){
+      a.vy-=9.2*dt;a.vx*=exp(-dt);a.vy*=exp(-dt*0.5);a.vz*=exp(-dt);
+      a.x+=a.vx*dt;a.y+=a.vy*dt;a.z+=a.vz*dt;
+      const gy=heightAt(a.x,a.z)+1;if(a.y<gy){a.y=gy;a.vy=abs(a.vy)*.25;a.vx*=.6;a.vz*=.6;}
+      a.yaw+=dt*0.7;
+    }
+  }
+
+  const hands=[];
+  for(const src of xrSession.inputSources){
+    if(!src.gripSpace||!src.gamepad)continue;
+    const gp=src.gamepad;const grip=frame.getPose(src.gripSpace,xrRef);if(!grip)continue;
+    const gp_=grip.transform.position;
+    const hand={x:gp_.x+player.pos.x,y:gp_.y+player.pos.y,z:gp_.z+player.pos.z};hands.push(hand);
+    const trig=!!gp.buttons?.[0]?.pressed;const st=srcRec(src);
+    const trigDown=trig&&!st.trig,trigUp=!trig&&st.trig;st.trig=trig;
+    const held=artifacts.find(a=>a.grabbed&&a.grabber===src);
+    if(held){
+      const prev={...held.lastHP};held.lastHP={...hand};
+      const ddt=dt||0.016;
+      held.vx=(hand.x-prev.x)/ddt;held.vy=(hand.y-prev.y)/ddt;held.vz=(hand.z-prev.z)/ddt;
+      held.x=hand.x;held.y=hand.y;held.z=hand.z;
+      if(hypot(held.x-headWG.x,held.y-headWG.y,held.z-headWG.z)<0.30){
+        held.collected=true;held.grabbed=false;held.grabber=null;updateHUD();haptic(src,0.6,45);}
+      if(trigUp){held.grabbed=false;held.grabber=null;}
+      continue;
+    }
+    const near=artifacts.find(a=>!a.collected&&!a.grabbed&&hypot(a.x-hand.x,a.y-hand.y,a.z-hand.z)<0.45);
+    if(near)near.boost=1.5;
+    if(trigDown){const tgt=artifacts.find(a=>!a.collected&&!a.grabbed&&hypot(a.x-hand.x,a.y-hand.y,a.z-hand.z)<0.38);
+      if(tgt){tgt.grabbed=true;tgt.grabber=src;tgt.lastHP={...hand};tgt.boost=2.5;haptic(src,0.45,25);}}
+  }
+
+  const biome=biomeAt(player.pos.x,player.pos.z);
+  let fogCol=[0.02,0.02,0.06],fogDen=0.022,partCol=[0.55,0.85,0.75],wind=1,fall=1.1;
+  switch(biome){
+    case'crystal':fogCol=[0.03,0.055,0.09];fogDen=0.024;partCol=[0.4,0.95,1];wind=1.2;fall=0.9;break;
+    case'fungal':fogCol=[0.04,0.02,0.06];fogDen=0.032;partCol=[0.85,0.4,0.95];wind=0.6;fall=0.8;break;
+    case'cave':fogCol=[0,0,0.02];fogDen=0.058;partCol=[0.15,0.8,0.55];wind=0.2;fall=0.5;break;
+    case'ridge':fogCol=[0.02,0.02,0.03];fogDen=0.019;partCol=[0.7,0.8,0.95];wind=1.5;fall=1.3;break;
+    default:fogCol=[0.02,0.03,0.03];fogDen=0.027;partCol=[0.5,0.95,0.7];wind=1;fall=1.1;
+  }
+  const scanFrac=max(0,1-(time-scanTime)*0.85),scanFront=(time-scanTime)*22;
+
+  const layer=xrSession.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+
+  for(const view of pose.views){
+    const vp=layer.getViewport(view);gl.viewport(vp.x,vp.y,vp.width,vp.height);
+    const proj=view.projectionMatrix,viewM=view.transform.inverse.matrix;
+
+    gl.useProgram(pStatic);
+    gl.uniformMatrix4fv(uStatic.uP,false,proj);gl.uniformMatrix4fv(uStatic.uV,false,viewM);
+    gl.uniformMatrix4fv(uStatic.uW2R,false,world2ref);gl.uniformMatrix4fv(uStatic.uM,false,I4);
+    gl.uniform1f(uStatic.uTime,time);gl.uniform1f(uStatic.uMatBoost,0);
+    gl.uniform3fv(uStatic.uFogCol,fogCol);gl.uniform1f(uStatic.uFogDen,fogDen);
+    gl.uniform3f(uStatic.uSO,scanOrigin.x,scanOrigin.y,scanOrigin.z);
+    gl.uniform1f(uStatic.uScanFront,scanFront);gl.uniform1f(uStatic.uScanStrength,scanFrac);
+    gl.bindVertexArray(terrain.vao);gl.drawElements(gl.TRIANGLES,terrain.count,gl.UNSIGNED_INT,0);
+
+    gl.useProgram(pInst);
+    gl.uniformMatrix4fv(uInst.uP,false,proj);gl.uniformMatrix4fv(uInst.uV,false,viewM);
+    gl.uniformMatrix4fv(uInst.uW2R,false,world2ref);gl.uniform1f(uInst.uTime,time);
+    gl.uniform3fv(uInst.uFogCol,fogCol);gl.uniform1f(uInst.uFogDen,fogDen);
+    gl.uniform3f(uInst.uSO,scanOrigin.x,scanOrigin.y,scanOrigin.z);
+    gl.uniform1f(uInst.uScanFront,scanFront);gl.uniform1f(uInst.uScanStrength,scanFrac);
+    for(const inst of[crystalInst,mushroomInst,pillarInst,mantaInst]){
+      gl.bindVertexArray(inst.vao);gl.drawElementsInstanced(gl.TRIANGLES,inst.count,gl.UNSIGNED_INT,0,inst.ic);}
+
+    gl.useProgram(pStatic);
+    gl.uniformMatrix4fv(uStatic.uV,false,viewM);gl.uniformMatrix4fv(uStatic.uW2R,false,world2ref);
+    gl.uniform3fv(uStatic.uFogCol,fogCol);gl.uniform1f(uStatic.uFogDen,fogDen);
+    gl.uniform3f(uStatic.uSO,scanOrigin.x,scanOrigin.y,scanOrigin.z);
+    gl.uniform1f(uStatic.uScanFront,scanFront);gl.uniform1f(uStatic.uScanStrength,scanFrac);
+    for(const a of artifacts){
+      if(a.collected)continue;
+      const bob=sin(time*2.2+a.id*1.7)*0.12,sc=a.grabbed?0.72:0.55,ya=a.yaw+time*0.35;
+      const c=cos(ya),s=sin(ya);const model=new Float32Array(16);
+      model[0]=c*sc;model[1]=0;model[2]=-s*sc;model[3]=0;
+      model[4]=0;model[5]=sc;model[6]=0;model[7]=0;
+      model[8]=s*sc;model[9]=0;model[10]=c*sc;model[11]=0;
+      model[12]=a.x;model[13]=a.y+bob;model[14]=a.z;model[15]=1;
+      gl.uniformMatrix4fv(uStatic.uM,false,model);gl.uniform1f(uStatic.uTime,time);gl.uniform1f(uStatic.uMatBoost,a.boost);
+      gl.bindVertexArray(artifactGeo.vao);gl.drawElements(gl.TRIANGLES,artifactGeo.count,gl.UNSIGNED_INT,0);
+    }
+    for(const h of hands){
+      const model=new Float32Array(16);model[0]=0.055;model[5]=0.055;model[10]=0.055;model[15]=1;
+      model[12]=h.x;model[13]=h.y;model[14]=h.z;
+      gl.uniformMatrix4fv(uStatic.uM,false,model);gl.uniform1f(uStatic.uMatBoost,1.2);
+      gl.bindVertexArray(handOrbGeo.vao);gl.drawElements(gl.TRIANGLES,handOrbGeo.count,gl.UNSIGNED_INT,0);
+    }
+
+    gl.depthMask(false);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE);
+    gl.useProgram(pPart);
+    gl.uniformMatrix4fv(uPart.uP,false,proj);gl.uniformMatrix4fv(uPart.uV,false,viewM);
+    gl.uniformMatrix4fv(uPart.uW2R,false,world2ref);
+    gl.uniform3f(uPart.uPlayer,player.pos.x,player.pos.y,player.pos.z);
+    gl.uniform1f(uPart.uTime,time);gl.uniform1f(uPart.uFallSpeed,fall);gl.uniform1f(uPart.uWind,wind);
+    gl.uniform3fv(uPart.uPartCol,partCol);
+    gl.bindVertexArray(partVAO);gl.drawArrays(gl.POINTS,0,partCount);
+    gl.disable(gl.BLEND);gl.depthMask(true);
+  }
+}
+
+/* ====================================================================
+   START SESSION
+   ==================================================================== */
+document.getElementById('enterBtn').addEventListener('click',async()=>{
+  if(!navigator.xr){document.getElementById('msg').textContent='WebXR unsupported';return;}
+  try{
+    xrSession=await navigator.xr.requestSession('immersive-vr',{requiredFeatures:['local-floor']});
+    xrSession.addEventListener('end',()=>{xrSession=null;xrRef=null;
+      document.getElementById('ui').style.display='';document.getElementById('hud').style.display='none';
+      document.getElementById('controls').style.display='none';});
+    if(gl.makeXRCompatible)await gl.makeXRCompatible();
+    xrSession.updateRenderState({baseLayer:new XRWebGLLayer(xrSession,gl)});
+    xrRef=await xrSession.requestReferenceSpace('local-floor');
+    document.getElementById('ui').style.display='none';
+    document.getElementById('hud').style.display='block';
+    document.getElementById('controls').style.display='block';
+    updateHUD();lastTime=0;xrSession.requestAnimationFrame(onXRFrame);
+  }catch(e){document.getElementById('msg').textContent='XR Error: '+e.message;console.error(e);}
+});
+</script>
+</body>
+</html>

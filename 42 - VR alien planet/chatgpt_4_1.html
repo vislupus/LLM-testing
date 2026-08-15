@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <title>Alien VR World - WebXR</title>
+  <style>
+    html,body { height:100%; margin:0; background:#111; }
+    body { color:#75ffc1; font-family:monospace; overflow:hidden; }
+    #vrui { position:fixed; left:0;right:0;top:0;bottom:0;
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      z-index:10; background:rgba(0,30,50,0.92); }
+    #vrui button { background:#001d16; color:#6ff; border:1px solid #75ffc1;
+      padding:1em 2em; margin-top:2em; cursor:pointer; font-size:1.6rem; }
+    canvas { display:block; width:100vw; height:100vh;}
+    #hud {
+      position:fixed; left:10px; bottom:10px; padding:8px 14px;
+      color:#fff; background:rgba(0,0,0,0.5); font-size:15px; border-radius:7px;
+      pointer-events:none; z-index:8; text-shadow: 1px 1px 4px #000b;}
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="vrui">
+  <div>
+    <h1>Alien Exoplanet VR</h1>
+    <p>🪐 Explore. 🦑 Discover. ✨ Collect.
+    <br>Move: left stick
+    <br>Turn: right stick
+    <br>Trigger: grab glowing artifact</p>
+    <button>Enter VR</button>
+    <div style="font-size:13px; opacity:.5; margin-top:2em;">No libraries. WebXR VR only.</div>
+  </div>
+</div>
+<div id="hud" style="display:none"></div>
+<script>
+// ==== Procedural noise ====
+class Noise {
+  constructor() {
+    this.p = Array(512).fill(0).map((_,i)=>i<256?i:0).sort(()=>Math.random()-.5);
+    for(let i=0;i<256;i++) this.p[256+i]=this.p[i];
+  }
+  fade(t){return t*t*t*(t*(t*6-15)+10);}
+  lerp(a,b,t){return a+(b-a)*t;}
+  grad(hash,x,y){return ((hash&1)?-x:x)+((hash&2)?-y:y);}
+  noise(x,y) {
+    let X = Math.floor(x)&255, Y = Math.floor(y)&255;
+    x-=Math.floor(x); y-=Math.floor(y);
+    let u=this.fade(x), v=this.fade(y);
+    let A=this.p[X]+Y, B=this.p[X+1]+Y;
+    return this.lerp(this.lerp(this.grad(this.p[A],x,y), this.grad(this.p[B],x-1,y),u),
+                     this.lerp(this.grad(this.p[A+1],x,y-1), this.grad(this.p[B+1],x-1,y-1),u),v);
+  }
+  fbm(x,y,o=5){let a=0,f=1,s=0.5;
+    for(let i=0;i<o;i++){a+=Math.abs(this.noise(x*f,y*f))*s;f*=2;s/=2;}
+    return a;
+  }
+}
+const NOISE = new Noise();
+
+// ==== Biome/terrain ====
+function terrainHeight(x,z) {
+  let n=(NOISE.noise(x*0.006,z*0.006))*17 + (NOISE.fbm(x*0.017,z*0.017))*6;
+  // Caves as depressions
+  let caveC=NOISE.noise(x*0.022+10,z*0.022+20);
+  if(caveC>0.46) n-=10*(caveC-0.46);
+  // Soft drop at world edge
+  let edge = Math.max(0,(Math.hypot(x,z)-135)/25);
+  n -= 18*edge*edge;
+  return n;
+}
+function biome(x,z) {
+  let v=NOISE.noise(x*0.008+2,z*0.008-2);
+  if(v>0.31) return 'crystal';
+  if(v<-0.33) return 'fungal';
+  let h=terrainHeight(x,z);
+  if(h>14) return 'ridge';
+  return 'swamp'; // default
+}
+
+// ==== WebGL2 Shaders ====
+const VERT_SRC = `#version 300 es
+in vec3 p; in vec3 n; in vec3 c; in float glow; in float t; // t=tag
+uniform mat4 pv; uniform mat4 mw;
+out vec3 vN;out vec3 vC;out float vG;out float vTag;out vec3 vP;
+void main(){
+  vec4 wp = mw*vec4(p,1.0);
+  vN=mat3(mw)*n;
+  vC=c; vG=glow; vTag=t; vP=wp.xyz;
+  gl_Position = pv*wp;
+}`;
+const FRAG_SRC = `#version 300 es
+precision highp float;
+in vec3 vN,vC,vP;
+in float vG,vTag;
+uniform float t;
+uniform vec3 sun,cam;
+out vec4 o;
+void main(){
+  float lit = max(0.,dot(normalize(vN),sun));
+  float fog = 1.-exp(-.042*pow(length(vP-cam),1.15));
+  vec3 c = vC*(.14+lit*.74)+(.16+sin(t*3.+vG*7.)*.19)*vG;
+  if(vTag>1.5) c+=vec3(.9,.9,.1)*(sin(t*10.)*.3+.46);
+  o=vec4(mix(c,vec3(.08,.09,.13),fog),1.0);
+}`;
+
+// ==== GL Utility ====
+function compile(gl,type,src){
+  let s=gl.createShader(type);
+  gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
+    throw gl.getShaderInfoLog(s);
+  return s;
+}
+function link(gl,vsSrc,fsSrc) {
+  let p=gl.createProgram();
+  gl.attachShader(p,compile(gl,gl.VERTEX_SHADER,vsSrc));
+  gl.attachShader(p,compile(gl,gl.FRAGMENT_SHADER,fsSrc));
+  gl.linkProgram(p); if(!gl.getProgramParameter(p,gl.LINK_STATUS))
+    throw gl.getProgramInfoLog(p);
+  return p;
+}
+
+// ==== Mesh Constructors ====
+function push(arr,...v){for(let i=0;i<v.length;i++)arr.push(v[i]);}
+function makeTerrain(gl) {
+  let pos=[], nrm=[], col=[], glo=[], tag=[], ind=[];
+  let D=140, S=4, N=D/S;
+  let idx=(x,z)=>z*(N+1)+x;
+  for(let z=0;z<=N;z++)for(let x=0;x<=N;x++){
+    let wx=(x-N/2)*S, wz=(z-N/2)*S, wy=terrainHeight(wx,wz);
+    let hL=terrainHeight(wx-1,wz), hR=terrainHeight(wx+1,wz);
+    let hD=terrainHeight(wx,wz-1), hU=terrainHeight(wx,wz+1);
+    let n=[hL-hR,2,hD-hU];
+    let b=biome(wx,wz), c,g,t=0;
+    if(b=='crystal'){c=[.10,.77,1.0];g=0.82;}
+    else if(b=='fungal'){c=[.6,.19,.58];g=0.9;}
+    else if(b=='ridge'){c=[.4,.4,.47];g=0.17;}
+    else{c=[.14,.33,.23];g=0.05;}
+    if(wy<-5) c=[.04,.08,.12]; // cave entry
+    if(wy<-10){c=[.00,.06,.14]; t=2;}
+    if(b=='fungal'&&wy>2) g=0.23+Math.sin(wx*wz)*.21;
+    push(pos,wx,wy,wz); push(nrm,...n); push(col,...c); push(glo,g); push(tag,t);
+  }
+  for(let z=0;z<N;z++)for(let x=0;x<N;x++){
+    let a=idx(x,z),b=idx(x+1,z),c=idx(x,z+1),d=idx(x+1,z+1);
+    push(ind,a,c,b, b,c,d);
+  }
+  let buf=(arr,n)=>{let b=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(arr),gl.STATIC_DRAW); return b;};
+  return {
+    idx:new Uint32Array(ind),
+    vbo:[buf(pos,3),buf(nrm,3),buf(col,3),buf(glo,1),buf(tag,1)],
+    len:ind.length
+  }
+}
+function makeArtifact(x,y,z,gid) {
+  // Glowing octahedron
+  let verts=[], nrms=[], cols=[], glos=[], tags=[], inds=[];
+  let p=[[0,0.32,0],[0,-0.32,0],[0.22,0,0.],[-0.22,0,0],[0,0,0.22],[0,0,-0.22]];
+  let faces=[[0,2,4],[0,4,3],[0,3,5],[0,5,2],[1,4,2],[1,3,4],[1,5,3],[1,2,5]];
+  let c=[1,.95,.27], emi=[.5,.5,.11], g=1.7+Math.random()*1.5;
+  let t=3; // artifacts tagged
+  for(let f of faces){
+    let a=p[f[0]], b=p[f[1]], c1=p[f[2]], n=[0,0,0];
+    let u=[b[0]-a[0],b[1]-a[1],b[2]-a[2]], v=[c1[0]-a[0],c1[1]-a[1],c1[2]-a[2]];
+    n=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]];
+    let nl=Math.sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2])||1; n=[n[0]/nl,n[1]/nl,n[2]/nl];
+    push(verts,a[0]+x,a[1]+y,a[2]+z); push(nrms,...n); push(cols,...c); push(glos,g); push(tags,t);
+    push(verts,b[0]+x,b[1]+y,b[2]+z); push(nrms,...n); push(cols,...c); push(glos,g); push(tags,t);
+    push(verts,c1[0]+x,c1[1]+y,c1[2]+z);push(nrms,...n);push(cols,...c);push(glos,g);push(tags,t);
+  }
+  for(let i=0;i<faces.length;i++) push(inds,i*3,i*3+1,i*3+2);
+  return {idx:new Uint32Array(inds),vbo:[
+    gpuBuf(verts),gpuBuf(nrms),gpuBuf(cols),gpuBuf(glos),gpuBuf(tags)],
+    len:inds.length,x,y,z,gid,grabbed:false,collected:false
+  };
+}
+function makeMushroom(x,y,z) {
+  // Glowing stem + cap
+  let v=[],n=[],c=[],g=[],t=[],ind=[];
+  let col1=[.72,.91,.99], col2=[.88,.28,.82]; // stem/cap
+  let basey=y-0.19;
+  // stem (cylinder approx)
+  for(let i=0;i<8;i++){
+    let a=2*Math.PI*i/8,b=2*Math.PI*(i+1)/8;
+    let x1=Math.cos(a)*.06, z1=Math.sin(a)*.06, x2=Math.cos(b)*.06, z2=Math.sin(b)*.06;
+    push(v,x+x1,basey,z+z1, x+x2,basey,z+z2, x, y, z);
+    let nx=(x1+x2)*.5, nz=(z1+z2)*.5, ny=.13,
+        nl=Math.sqrt(nx*nx+nz*nz+ny*ny)||1; nx/=nl; ny/=nl; nz/=nl;
+    for(let k=0;k<3;k++) push(n,nx,ny,nz),push(c,...col1),g.push(0.14),t.push(2);
+    push(ind,i*3,i*3+1,i*3+2);
+  }
+  // cap (hemisphere face fans)
+  let ycap=y+0.07;
+  for(let i=0;i<8;i++){
+    let a=2*Math.PI*i/8,b=2*Math.PI*(i+1)/8;
+    let x1=Math.cos(a)*.19,z1=Math.sin(a)*.19,x2=Math.cos(b)*.19,z2=Math.sin(b)*.19;
+    push(v,x,ycap,z, x+x1,ycap+.08,z+z1, x+x2,ycap+.08,z+z2);
+    for(let k=0;k<3;k++) push(n,0,0.8,0),push(c,...col2),g.push(1),t.push(2);
+    push(ind,24+i*3,24+i*3+1,24+i*3+2);
+  }
+  return {idx:new Uint32Array(ind),vbo:[gpuBuf(v),gpuBuf(n),gpuBuf(c),gpuBuf(g),gpuBuf(t)],len:ind.length };
+}
+function makePillar(x,y,z) {
+  // Ancient basalt pillar (box)
+  let v=[],n=[],c=[],g=[],t=[],ind=[];
+  let col=[.19,.21,.22],emi=[0,0,0];
+  let h = 2.5 + Math.random()*4;
+  let br = .20 + Math.random()*0.18;
+  let b0=[x-br,y,z-br],b1=[x+br,y,z-br],b2=[x+br,y,z+br],b3=[x-br,y,z+br],
+      t0=[x-br,y+h,z-br],t1=[x+br,y+h,z-br],t2=[x+br,y+h,z+br],t3=[x-br,y+h,z+br];
+  let faces=[
+    [b0,b1,t1,t0,[0,0,-1]],[b1,b2,t2,t1,[1,0,0]],
+    [b2,b3,t3,t2,[0,0,1]],[b3,b0,t0,t3,[-1,0,0]],
+    [t0,t1,t2,t3,[0,1,0]],[b0,b3,b2,b1,[0,-1,0]]
+  ];
+  for(let f=0;f<faces.length;f++){
+    let fh=faces[f],v0=fh[0],v1=fh[1],v2=fh[2],v3=fh[3],nm=fh[4];
+    let base=v.length/3;
+    push(v,...v0,...v1,...v2,...v3);
+    for(let k=0;k<4;k++) push(n,...nm),push(c,...col),g.push(0),t.push(2);
+    push(ind,base,base+1,base+2, base,base+2,base+3);
+  }
+  return {idx:new Uint32Array(ind),vbo:[gpuBuf(v),gpuBuf(n),gpuBuf(c),gpuBuf(g),gpuBuf(t)],len:ind.length};
+}
+function makeManta(x,y,z,seed) {
+  // Wildlife "alien sky-ray"
+  let v=[],n=[],c=[],g=[],t=[],ind=[];
+  let pts=[[0,0,.6],[-.9,0,-.5],[-.24,0,-.6],[.24,0,-.6],[.9,0,-.5]];
+  let nrm=[0,1,0], col=[.46,1,.9], gval=.5, tag=1;
+  for(let i=1;i<5;i++){
+    push(v,x,y,z, ...pts[0]);
+    push(v,x,y,z, ...pts[i]);
+    push(v,x,y,z, ...pts[i%4+1]);
+    for(let k=0;k<3;k++) push(n,...nrm),push(c,...col),g.push(gval),t.push(tag);
+    let base=v.length/3-3; push(ind,base,base+1,base+2);
+  }
+  return {idx:new Uint32Array(ind),vbo:[gpuBuf(v),gpuBuf(n),gpuBuf(c),gpuBuf(g),gpuBuf(t)],len:ind.length,sx:1.2+seed*1.3,seed};
+}
+function gpuBuf(arr){ let b=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,b); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(arr),gl.STATIC_DRAW); return b; }
+
+// ==== Population ====
+const artifacts=[], mushrooms=[], pillars=[], mantas=[];
+for(let i=0;i<12;i++){
+  let a=Math.random()*6.283,r=58+Math.random()*65;
+  let x=Math.cos(a)*r, z=Math.sin(a)*r, y=terrainHeight(x,z)+2.1;
+  artifacts.push(makeArtifact(x,y,z,i));
+}
+for(let i=0;i<40;i++){
+  let a=Math.random()*6.283,r=35+Math.random()*100;
+  let x=Math.cos(a)*r, z=Math.sin(a)*r, y=terrainHeight(x,z);
+  if(biome(x,z)=="fungal"||NOISE.noise(x*0.02,z*0.021)<-0.15)mushrooms.push(makeMushroom(x,y+0.43,z));
+}
+for(let i=0;i<34;i++){
+  let a=Math.random()*6.283,r=33+Math.random()*110;
+  let x=Math.cos(a)*r, z=Math.sin(a)*r, y=terrainHeight(x,z)-0.1;
+  if(biome(x,z)=="ridge"||biome(x,z)=="crystal"||NOISE.noise(x*0.04+9,z*0.039-8)>0.25)
+    pillars.push(makePillar(x,y,z));
+}
+for(let i=0;i<18;i++){
+  let a=Math.random()*6.283,r=28+Math.random()*110;
+  let x=Math.cos(a)*r, z=Math.sin(a)*r, y=terrainHeight(x,z)+5+Math.random()*8;
+  mantas.push(makeManta(x,y,z,Math.random()));
+}
+const terrain = makeTerrain(gl);
+
+// ==== GL/Buffers ====
+const gl = c.getContext('webgl2',{xrCompatible:true});
+const prog = link(gl,VERT_SRC,FRAG_SRC);
+gl.useProgram(prog);
+const locs = {
+  pv:gl.getUniformLocation(prog,"pv"),
+  mw:gl.getUniformLocation(prog,"mw"),
+  sun:gl.getUniformLocation(prog,"sun"),
+  cam:gl.getUniformLocation(prog,"cam"),
+  t:gl.getUniformLocation(prog,"t")
+};
+["p","n","c","glow","t"].forEach((name,i)=>gl.enableVertexAttribArray(i));
+// continuous
+gl.clearColor(0.03,0.08,0.13,1.);
+
+function setAttribs(mesh) {
+  mesh.vbo.forEach((b,i)=>{
+    gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.vertexAttribPointer(i,i==3||i==4?1:3,gl.FLOAT,false,0,0);
+  });
+}
+function drawMesh(mesh,mw,cam,view,sun,t){ setAttribs(mesh);
+  gl.uniformMatrix4fv(locs.pv,false,view);
+  gl.uniformMatrix4fv(locs.mw,false,mw);
+  gl.uniform3fv(locs.cam,cam);
+  gl.uniform3fv(locs.sun,sun);
+  gl.uniform1f(locs.t,t);
+  gl.drawElements(gl.TRIANGLES,mesh.len,gl.UNSIGNED_INT,0);
+}
+
+// ==== Main state ====
+let xr=null, ref=null;
+let playerPos=[0,terrainHeight(0,0),0], playerYaw=0;
+let stickL=[0,0], stickR=[0,0];
+let moving=false, lastFrame=0, collected=0;
+
+// ==== VR HANDS ARTIFACT INTERACTION ====
+const grabbed={}; // source->artifact id
+
+// ==== Render loop ====
+async function main() {
+  if(!navigator.xr)return alert('WebXR not available');
+  c.width=window.innerWidth; c.height=window.innerHeight;
+
+  let session = await navigator.xr.requestSession('immersive-vr',{requiredFeatures:['local-floor']});
+  xr=session;
+  xr.addEventListener("end",()=>{xr=null;ref=null; vrui.style.display=""; hud.style.display="none"; });
+  document.getElementById("vrui").style.display="none"; hud.style.display="";
+  ref=await xr.requestReferenceSpace('local-floor');
+  let xrgl = gl;
+  xr.updateRenderState({ baseLayer:new XRWebGLLayer(xr,xrgl)});
+  lastFrame=0;
+  xr.requestAnimationFrame(loop);
+
+  function loop(t,frame) {
+    xr.requestAnimationFrame(loop);
+    let dt=(t-lastFrame)*.001||0.016; lastFrame=t;
+    let pose = frame.getViewerPose(ref);
+    let vp = pose.views[0];
+    let layer = xr.renderState.baseLayer;
+    xrgl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);
+
+    // --- Locomotion ---
+    for(let s of xr.inputSources){
+      let gp=s.gamepad;
+      if(gp){
+        // Left: movement. Right: turn.
+        let l=[gp.axes[0],gp.axes[1]], r=gp.axes[2]? [gp.axes[2],gp.axes[3]] : [gp.axes[0],gp.axes[1]];
+        if(s.handedness=='left')stickL=l;
+        if(s.handedness=='right')stickR=r;
+      }
+    }
+    // Move (forward relative to yaw)
+    let sp=3, headYaw=quatYaw(pose.views[0].transform.orientation);
+    if(Math.abs(stickL[1])>.13||Math.abs(stickL[0])>.13){
+      let ang = playerYaw + headYaw;
+      playerPos[0]+=Math.sin(ang)*-stickL[1]*sp*dt + Math.cos(ang)*-stickL[0]*sp*dt;
+      playerPos[2]+=Math.cos(ang)*-stickL[1]*sp*dt - Math.sin(ang)*-stickL[0]*sp*dt;
+    }
+    // Snap turn
+    if(Math.abs(stickR[0])>.36 && !moving){
+      playerYaw += stickR[0]*.18; moving=true;
+    } else if(Math.abs(stickR[0])<.2){ moving=false; }
+    // Keep inside world
+    let pd=Math.sqrt(playerPos[0]*playerPos[0]+playerPos[2]*playerPos[2]);
+    if(pd>130){playerPos[0]*=120/pd;playerPos[2]*=120/pd;}
+    playerPos[1]=terrainHeight(playerPos[0],playerPos[2]);
+
+    // --- VR per eye draw
+    for(let view of pose.views){
+      let vp = layer.getViewport(view);
+      gl.viewport(vp.x,vp.y,vp.width,vp.height);
+
+      // Camera and matrix
+      let refMat = view.transform.inverse.matrix;
+      let viewMat = new Float32Array(refMat);
+      // Model view matrix for terrain
+      let tr=playerPos, yaw=playerYaw;
+      let mw = mtxYaw(-yaw, [-tr[0],-tr[1],-tr[2]]);
+
+      // Directional for sun
+      let sun=[.66,.77,.44];
+      let cam=[0,0,0]; // draws from player's eyes
+
+      // Draw terrain
+      drawMesh(terrain,mw,cam,view.projectionMatrix,sun,t*.001);
+
+      // Draw Ruins
+      for(let m of pillars)drawMesh(m,mw,cam,view.projectionMatrix,sun,t*.001);
+
+      // Draw Flora
+      for(let m of mushrooms)drawMesh(m,mw,cam,view.projectionMatrix,sun,t*.001);
+
+      // Draw Wildlife
+      for(let m of mantas){
+        // Animate orbit & flap
+        let a=t*.00032+m.seed*8;
+        let x = m.vbo[0].length ? m.vbo[0].length/30 : 0;
+        let cx=m.vbo[0][0]+Math.cos(a)*m.sx*7, cz=m.vbo[0][2]+Math.sin(a)*m.sx*7, cy=m.vbo[0][1]+Math.sin(a*0.7)*1.5;
+        drawMesh(m,mtxYaw(a, [cx,cy,cz]),cam,view.projectionMatrix,sun,t*.001);
+      }
+
+      // Draw artifacts
+      for(let m of artifacts)
+        if(!m.collected){
+          let activeGlow = m.grabbed? 2.3:1.0, mwA = mtxYaw(t/370*Math.PI+0.21*m.gid, [m.x+Math.sin(t*.0012+m.gid)*.1,m.y+Math.sin(t*.0041+m.gid)*.07+0.2,m.z]);
+          setAttribs(m);
+          gl.uniformMatrix4fv(locs.mw,false,mwA);
+          gl.uniform3fv(locs.sun,sun);
+          gl.uniform3fv(locs.cam,cam);
+          gl.uniform1f(locs.t,t*.001+activeGlow);
+          gl.drawElements(gl.TRIANGLES,m.len,gl.UNSIGNED_INT,0);
+        }
+      // Draw VR hands as glowing balls
+      for(let s of xr.inputSources){
+        if(!s.gripSpace)continue;
+        let p = frame.getPose(s.gripSpace,ref);
+        if(!p)continue;
+        gl.uniformMatrix4fv(locs.mw,false,mtxYaw(0,[p.transform.position.x,p.transform.position.y,p.transform.position.z],0.07));
+        gl.uniform1f(locs.t,t*.001+1.1);
+        drawSphere();
+      }
+      // Weather: falling particles
+      gl.disable(gl.DEPTH_TEST);
+      let pr=[0,0,0],N=250;
+      for(let i=0;i<N;i++){
+        let a=Math.random()*6.283,r=Math.random()*120;
+        let x=Math.cos(a)*r+Math.sin(t*.00013+a)*4,y=35+30*Math.random()-60*((t*.0031)%15),z=Math.sin(a)*r+Math.cos(t*.00013+a)*3;
+        let c=biome(x,z),gx=x,gy=terrainHeight(x,z)+Math.abs(Math.sin(t*.00017+i)*9),gz=z;
+        let col = c=='crystal'? [.5,1,.85] : (c=='fungal'? [1,.45,1]:[.7,1,.8]);
+        drawBillboard(view.projectionMatrix,viewMat,[x,y,z],col, 0.7+Math.random()*1.2);
+      }
+      gl.enable(gl.DEPTH_TEST);
+      // HUD
+      hud.innerHTML=`Collected: <b>${collected}</b>/${artifacts.length}&emsp;Biome: <b>${biome(playerPos[0],playerPos[2])}</b>`;
+    }
+
+    // --- Input: hand triggers to grab artifact
+    for(let s of xr.inputSources){
+      if(!s.gripSpace||!s.gamepad)continue;
+      let trig=s.gamepad.buttons[0]?.pressed, id=s.handedness+s.targetRayMode;
+      let p = frame.getPose(s.gripSpace,ref);
+      if(!p)continue;
+      let hand=[p.transform.position.x,p.transform.position.y,p.transform.position.z];
+      // If holding artifact
+      if(grabbed[id]!=null){
+        let m=artifacts[grabbed[id]];
+        m.x=hand[0]; m.y=hand[1]; m.z=hand[2];
+        m.grabbed=true;
+        // Release if trigger up
+        if(!trig){ m.grabbed=false; grabbed[id]=null;}
+        // "Collect" if brought near eyes
+        let pose0 = pose.views[0].transform.position;
+        let dist = Math.hypot(m.x-pose0.x,m.y-pose0.y,m.z-pose0.z);
+        if(m.grabbed&&!m.collected&&dist<.26){
+          collected++; m.collected=true; grabbed[id]=null;
+        }
+      }
+      // Grab artifact on trigger, if not holding
+      else if(trig){
+        for(let i=0;i<artifacts.length;i++){
+          let m=artifacts[i];
+          if(!m.collected&&!m.grabbed&&Math.hypot(m.x-hand[0],m.y-hand[1],m.z-hand[2])<.31){
+            grabbed[id]=i; m.grabbed=true;
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+// === Helpers ===
+function mtxYaw(yaw, tr,s=1) {
+  let c=Math.cos(yaw),si=Math.sin(yaw);
+  let x=tr[0],y=tr[1],z=tr[2];
+  return new Float32Array([
+    c*s,0,si*s,0,  0,s,0,0, -si*s,0,c*s,0, x,y,z,1]);
+}
+function quatYaw(q){
+  if(!q)return 0;
+  let {x,y,z,w}=q;
+  return Math.atan2(2*(w*y+z*x),1-2*(y*y+z*z));
+}
+function drawSphere(){
+  // Octahedron points
+  let v=[[0,1,0],[0,-1,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]];
+  let inds=[[0,2,4],[0,4,3],[0,3,5],[0,5,2],[1,4,2],[1,3,4],[1,5,3],[1,2,5]];
+  let buf=[],nrm=[],c=[.88,1,.97]; let g=1.8,t=1;
+  for(let f of inds){
+    for(let k=0;k<3;k++)
+      buf.push(v[f[k]][0]*.15,v[f[k]][1]*.15,v[f[k]][2]*.15),
+      nrm.push(v[f[k]][0],v[f[k]][1],v[f[k]][2]);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER,null); // disable attrib arrays
+  let tempbuf=(d,per=3)=>{let b=gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(d),gl.STREAM_DRAW);
+    gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+    gl.enableVertexAttribArray(0);
+    return b;
+  };
+  let b1=tempbuf(buf),b2=tempbuf(nrm),b3=tempbuf(buf.map(()=>c[0])),b4=tempbuf(buf.map(()=>g)),b5=tempbuf(buf.map(()=>t));
+  gl.drawArrays(gl.TRIANGLES,0,buf.length/3);
+  [b1,b2,b3,b4,b5].forEach(b=>gl.deleteBuffer(b));
+}
+function drawBillboard(pvm,view,pos,color,s){
+  let [x,y,z]=pos;
+  let arr=[x-s,y-s,z, x+s,y-s,z, x+s,y+s,z, x-s,y+s,z];
+  let b1=gpuBuf(arr),b2=gpuBuf([0,0,1,0,0,1,0,0,1,0,0,1]),
+      b3=gpuBuf([...color.reverse(),...color.reverse(),...color.reverse(),...color.reverse()]),
+      b4=gpuBuf([1,1,1,1]),b5=gpuBuf([0,0,0,0]);
+  setAttribs({vbo:[b1,b2,b3,b4,b5]});
+  gl.drawArrays(gl.TRIANGLE_FAN,0,4);
+  [b1,b2,b3,b4,b5].forEach(b=>gl.deleteBuffer(b));
+}
+
+// ==== VR Session BEGIN button ====
+document.querySelector("#vrui button").onclick = main;
+</script>
+</body>
+</html>

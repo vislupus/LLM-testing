@@ -1,0 +1,1789 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Alien Planet Explorer - WebXR</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;font-family:'Courier New',monospace}
+#overlay{position:fixed;top:0;left:0;width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10;background:radial-gradient(ellipse at center,#0a1628 0%,#000 70%)}
+#overlay h1{color:#7fffd4;font-size:2.5em;text-shadow:0 0 30px #7fffd4,0 0 60px #008b8b;margin-bottom:10px;letter-spacing:4px}
+#overlay h2{color:#4a9eff;font-size:1em;margin-bottom:30px;opacity:.7}
+#overlay p{color:#8ab4f8;font-size:.85em;max-width:500px;text-align:center;line-height:1.6;margin-bottom:8px}
+#startBtn{margin-top:30px;padding:18px 50px;font-size:1.2em;font-family:'Courier New',monospace;background:transparent;color:#7fffd4;border:2px solid #7fffd4;cursor:pointer;letter-spacing:3px;text-transform:uppercase;transition:all .3s}
+#startBtn:hover{background:#7fffd4;color:#000;box-shadow:0 0 40px #7fffd4}
+#startBtn:disabled{opacity:.3;cursor:not-allowed}
+#hud{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#7fffd4;font-size:.75em;z-index:5;opacity:.6;text-align:center;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="overlay">
+<h1>⬡ XENOWORLD ⬡</h1>
+<h2>Alien Planet Exploration Experience</h2>
+<p>Explore a mysterious alien world with strange biomes, ancient ruins, glowing caves, and exotic wildlife. Discover artifacts and unravel the secrets of this forgotten planet.</p>
+<p style="color:#4a9eff;font-size:.75em">🎮 Use VR controllers to move, grab objects, and interact with the environment</p>
+<button id="startBtn" onclick="startXR()">ENTER VR</button>
+</div>
+<div id="hud">🌍 Xenoworld Explorer | Artifacts: <span id="artifactCount">0</span>/12 | Biomes Discovered: <span id="biomeCount">0</span>/5</div>
+<canvas id="c"></canvas>
+
+<script>
+"use strict";
+
+// ==================== GLOBALS ====================
+const canvas = document.getElementById('c');
+let gl, xrSession, xrRefSpace, xrGL;
+let frameCount = 0;
+let time = 0;
+let playerPos = [0, 5, 0];
+let playerVel = [0, 0, 0];
+let playerOnGround = false;
+let artifacts = [];
+let collectedArtifacts = 0;
+let discoveredBiomes = new Set();
+let creatures = [];
+let particles = [];
+let weatherIntensity = 0;
+let weatherType = 0;
+let weatherTimer = 0;
+let cavePositions = [];
+let ruinPositions = [];
+let interactionObjects = [];
+let grabbedObject = null;
+let controllerPoses = [[0,0,0],[0,0,0]];
+let controllerButtons = [[0,0],[0,0]];
+let hapticPulse = [0, 0];
+let audioCtx, masterGain;
+let ambientSounds = [];
+let terrainData = null;
+let biomeMap = null;
+
+// ==================== MATH UTILITIES ====================
+const PI = Math.PI, TAU = PI * 2;
+const sin = Math.sin, cos = Math.cos, tan = Math.tan, sqrt = Math.sqrt;
+const abs = Math.abs, min = Math.min, max = Math.max, floor = Math.floor;
+const random = Math.random, pow = Math.pow, exp = Math.exp, log = Math.log;
+const atan2 = Math.atan2, acos = Math.acos;
+
+function vec3(x,y,z){return[x,y,z]}
+function v3add(a,b){return[a[0]+b[0],a[1]+b[1],a[2]+b[2]]}
+function v3sub(a,b){return[a[0]-b[0],a[1]-b[1],a[2]-b[2]]}
+function v3mul(a,s){return[a[0]*s,a[1]*s,a[2]*s]}
+function v3dot(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]}
+function v3cross(a,b){return[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]}
+function v3len(a){return sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2])}
+function v3norm(a){let l=v3len(a);return l>1e-8?[a[0]/l,a[1]/l,a[2]/l]:[0,0,0]}
+function v3lerp(a,b,t){return[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t]}
+function v3dist(a,b){return v3len(v3sub(a,b))}
+
+function mat4(){return new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1])}
+function m4perspective(fov,asp,near,far){
+  let f=1/tan(fov/2),nf=1/(near-far),o=new Float32Array(16);
+  o[0]=f/asp;o[5]=f;o[10]=(far+near)*nf;o[11]=-1;o[14]=2*far*near*nf;return o;
+}
+function m4lookAt(eye,center,up){
+  let z=v3norm(v3sub(eye,center)),x=v3norm(v3cross(up,z)),y=v3cross(z,x);
+  let o=new Float32Array(16);
+  o[0]=x[0];o[1]=y[0];o[2]=z[0];o[4]=x[1];o[5]=y[1];o[6]=z[1];
+  o[8]=x[2];o[9]=y[2];o[10]=z[2];
+  o[12]=-v3dot(x,eye);o[13]=-v3dot(y,eye);o[14]=-v3dot(z,eye);return o;
+}
+function m4mul(a,b){
+  let o=new Float32Array(16);
+  for(let i=0;i<4;i++)for(let j=0;j<4;j++){
+    o[j*4+i]=a[i]*b[j*4]+a[4+i]*b[j*4+1]+a[8+i]*b[j*4+2]+a[12+i]*b[j*4+3];
+  }return o;
+}
+function m4translate(x,y,z){let o=mat4();o[12]=x;o[13]=y;o[14]=z;return o}
+function m4scale(x,y,z){let o=mat4();o[0]=x;o[5]=y;o[10]=z;return o}
+function m4rotX(a){let o=mat4(),c=cos(a),s=sin(a);o[5]=c;o[6]=s;o[9]=-s;o[10]=c;return o}
+function m4rotY(a){let o=mat4(),c=cos(a),s=sin(a);o[0]=c;o[2]=-s;o[8]=s;o[10]=c;return o}
+function m4rotZ(a){let o=mat4(),c=cos(a),s=sin(a);o[0]=c;o[1]=s;o[4]=-s;o[5]=c;return o}
+function m4identity(){return mat4()}
+
+function quatFromRot(m){
+  let t=m[0]+m[5]+m[10],q=[0,0,0,1];
+  if(t>0){let s=sqrt(t+1)*2;q[3]=s/4;q[0]=(m[6]-m[9])/s;q[1]=(m[8]-m[2])/s;q[2]=(m[1]-m[4])/s}
+  else if(m[0]>m[5]&&m[0]>m[10]){let s=sqrt(1+m[0]-m[5]-m[10])*2;q[3]=(m[6]-m[9])/s;q[0]=s/4;q[1]=(m[1]+m[4])/s;q[2]=(m[8]+m[2])/s}
+  else if(m[5]>m[10]){let s=sqrt(1+m[5]-m[0]-m[10])*2;q[3]=(m[8]-m[2])/s;q[0]=(m[1]+m[4])/s;q[1]=s/4;q[2]=(m[6]+m[9])/s}
+  else{let s=sqrt(1+m[10]-m[0]-m[5])*2;q[3]=(m[1]-m[4])/s;q[0]=(m[8]+m[2])/s;q[1]=(m[6]+m[9])/s;q[2]=s/4}
+  return q;
+}
+
+// ==================== NOISE FUNCTIONS ====================
+function hash(x,y){
+  let n=sin(x*127.1+y*311.7)*43758.5453;
+  return n-floor(n);
+}
+function hash3(x,y,z){
+  let n=sin(x*127.1+y*311.7+z*74.7)*43758.5453;
+  return n-floor(n);
+}
+function noise2D(x,y){
+  let ix=floor(x),iy=floor(y),fx=x-ix,fy=y-iy;
+  fx=fx*fx*(3-2*fx);fy=fy*fy*(3-2*fy);
+  let a=hash(ix,iy),b=hash(ix+1,iy),c=hash(ix,iy+1),d=hash(ix+1,iy+1);
+  return a+(b-a)*fx+(c-a)*fy+(a-b-c+d)*fx*fy;
+}
+function noise3D(x,y,z){
+  let ix=floor(x),iy=floor(y),iz=floor(z),fx=x-ix,fy=y-iy,fz=z-iz;
+  fx=fx*fx*(3-2*fx);fy=fy*fy*(3-2*fy);fz=fz*fz*(3-2*fz);
+  let a=hash3(ix,iy,iz),b=hash3(ix+1,iy,iz),c=hash3(ix,iy+1,iz),d=hash3(ix+1,iy+1,iz);
+  let e=hash3(ix,iy,iz+1),f=hash3(ix+1,iy,iz+1),g=hash3(ix,iy+1,iz+1),h=hash3(ix+1,iy+1,iz+1);
+  let l1=a+(b-a)*fx+(c-a)*fy+(a-b-c+d)*fx*fy;
+  let l2=e+(f-e)*fx+(g-e)*fy+(e-f-g+h)*fx*fy;
+  return l1+(l2-l1)*fz;
+}
+function fbm2D(x,y,oct){
+  let v=0,a=.5,f=1;
+  for(let i=0;i<oct;i++){v+=a*noise2D(x*f,y*f);a*=.5;f*=2}
+  return v;
+}
+function fbm3D(x,y,z,oct){
+  let v=0,a=.5,f=1;
+  for(let i=0;i<oct;i++){v+=a*noise3D(x*f,y*f,z*f);a*=.5;f*=2}
+  return v;
+}
+
+// ==================== WEBGL SETUP ====================
+function initGL(){
+  gl=canvas.getContext('webgl2',{xrCompatible:true,antialias:true,alpha:false});
+  if(!gl){alert('WebGL2 required');return false}
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+  gl.clearColor(0.02,0.02,0.06,1);
+  return true;
+}
+
+function compileShader(src,type){
+  let s=gl.createShader(type);
+  gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s),src);return null;
+  }return s;
+}
+function createProgram(vs,fs){
+  let p=gl.createProgram();
+  gl.attachShader(p,compileShader(vs,gl.VERTEX_SHADER));
+  gl.attachShader(p,compileShader(fs,gl.FRAGMENT_SHADER));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)){
+    console.error(gl.getProgramInfoLog(p));return null;
+  }
+  let u={},a={},n=gl.getProgramParameter(p,gl.ACTIVE_UNIFORMS);
+  for(let i=0;i<n;i++){let info=gl.getActiveUniform(p,i);u[info.name]=gl.getUniformLocation(p,info.name)}
+  n=gl.getProgramParameter(p,gl.ACTIVE_ATTRIBUTES);
+  for(let i=0;i<n;i++){let info=gl.getActiveAttrib(p,i);a[info.name]=gl.getAttribLocation(p,info.name)}
+  return{program:p,uniforms:u,attribs:a};
+}
+
+// ==================== SHADER SOURCES ====================
+const terrainVS=`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNorm;
+layout(location=2) in vec3 aColor;
+uniform mat4 uProj,uView,uModel;
+uniform float uTime;
+out vec3 vPos,vNorm,vColor,vWorldPos;
+out float vFog;
+void main(){
+  vec4 wp=uModel*vec4(aPos,1);
+  vWorldPos=wp.xyz;
+  vPos=aPos;vNorm=normalize(mat3(uModel)*aNorm);vColor=aColor;
+  vec4 vp=uView*wp;
+  gl_Position=uProj*vp;
+  vFog=clamp(length(vp.xyz)/300.0,0.0,1.0);
+}`;
+
+const terrainFS=`#version 300 es
+precision highp float;
+in vec3 vPos,vNorm,vColor,vWorldPos;
+in float vFog;
+uniform float uTime;
+uniform vec3 uSunDir,uCamPos;
+uniform vec3 uFogColor;
+uniform float uGlow;
+out vec4 fragColor;
+void main(){
+  vec3 N=normalize(vNorm);
+  vec3 L=normalize(uSunDir);
+  float diff=max(dot(N,L),0.0);
+  float amb=0.15;
+  vec3 V=normalize(uCamPos-vWorldPos);
+  vec3 H=normalize(L+V);
+  float spec=pow(max(dot(N,H),0.0),32.0)*0.3;
+  vec3 col=vColor*(amb+diff*0.85)+vec3(1.0,0.9,0.8)*spec;
+  // Bioluminescent glow
+  float glow=uGlow*max(0.0,sin(uTime*2.0+vWorldPos.x*0.5+vWorldPos.z*0.3))*0.5+0.5;
+  col+=vColor*glow*0.4;
+  // Fog
+  float fog=vFog*vFog;
+  col=mix(col,uFogColor,fog);
+  // Atmospheric scattering hint
+  col+=vec3(0.05,0.08,0.15)*fog*0.5;
+  fragColor=vec4(col,1.0);
+}`;
+
+const skyVS=`#version 300 es
+layout(location=0) in vec3 aPos;
+uniform mat4 uProj,uView;
+uniform float uTime;
+out vec3 vDir;
+void main(){
+  vDir=aPos;
+  mat4 v=uView;
+  v[3]=vec4(0,0,0,1);
+  gl_Position=(uProj*v*vec4(aPos*500.0,1.0)).xyww;
+}`;
+
+const skyFS=`#version 300 es
+precision highp float;
+in vec3 vDir;
+uniform float uTime;
+uniform vec3 uSunDir;
+out vec4 fragColor;
+
+float hashStar(vec2 p){
+  return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);
+}
+
+void main(){
+  vec3 d=normalize(vDir);
+  float y=d.y*0.5+0.5;
+  // Alien sky gradient
+  vec3 col=mix(vec3(0.02,0.01,0.06),vec3(0.05,0.02,0.12),y);
+  col=mix(col,vec3(0.1,0.03,0.15),smoothstep(0.3,0.7,y));
+  // Nebula
+  float nebula=sin(d.x*3.0+d.z*2.0+uTime*0.05)*0.5+0.5;
+  nebula*=sin(d.y*4.0-d.x*1.5+uTime*0.03)*0.5+0.5;
+  col+=vec3(0.15,0.05,0.2)*nebula*0.3;
+  // Two moons
+  float moon1=smoothstep(0.997,0.999,dot(d,normalize(vec3(0.5,0.6,0.3))));
+  float moon2=smoothstep(0.998,0.999,dot(d,normalize(vec3(-0.3,0.4,-0.7))));
+  col+=vec3(0.8,0.9,1.0)*moon1*0.8;
+  col+=vec3(0.6,0.4,0.9)*moon2*0.5;
+  // Stars
+  vec2 sp=floor(d.xz/d.y*200.0);
+  float star=step(0.97,hashStar(sp))*smoothstep(0.0,0.3,d.y);
+  float twinkle=sin(uTime*3.0+hashStar(sp)*6.28)*0.5+0.5;
+  col+=star*twinkle*0.8;
+  // Sun glow
+  float sun=max(0.0,dot(d,uSunDir));
+  col+=vec3(1.0,0.6,0.3)*pow(sun,64.0)*2.0;
+  col+=vec3(0.5,0.3,0.2)*pow(sun,8.0)*0.3;
+  // Horizon haze
+  float haze=exp(-abs(d.y)*4.0);
+  col=mix(col,vec3(0.1,0.08,0.15),haze*0.5);
+  fragColor=vec4(col,1.0);
+}`;
+
+const glowVS=`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aColor;
+uniform mat4 uProj,uView,uModel;
+out vec3 vColor,vWorldPos;
+out float vFog;
+void main(){
+  vec4 wp=uModel*vec4(aPos,1);
+  vWorldPos=wp.xyz;vColor=aColor;
+  vec4 vp=uView*wp;
+  gl_Position=uProj*vp;
+  vFog=clamp(length(vp.xyz)/200.0,0.0,1.0);
+}`;
+
+const glowFS=`#version 300 es
+precision highp float;
+in vec3 vColor,vWorldPos;
+in float vFog;
+uniform float uTime;
+uniform vec3 uCamPos;
+uniform vec3 uFogColor;
+out vec4 fragColor;
+void main(){
+  float pulse=sin(uTime*3.0+vWorldPos.x*2.0+vWorldPos.z*1.5)*0.3+0.7;
+  vec3 col=vColor*pulse;
+  float dist=length(uCamPos-vWorldPos);
+  float glow=exp(-dist*0.02)*0.5;
+  col+=vColor*glow;
+  col=mix(col,uFogColor,vFog*vFog);
+  fragColor=vec4(col,1.0);
+}`;
+
+const particleVS=`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec4 aData;
+uniform mat4 uProj,uView;
+uniform float uTime;
+out vec4 vData;
+void main(){
+  vData=aData;
+  vec3 p=aPos;
+  p.y+=sin(uTime*aData.w+aData.x*10.0)*0.5;
+  p.x+=cos(uTime*aData.w*0.7+aData.z*8.0)*0.3;
+  vec4 vp=uView*vec4(p,1);
+  gl_Position=uProj*vp;
+  gl_PointSize=max(2.0,20.0/length(vp.xyz));
+}`;
+
+const particleFS=`#version 300 es
+precision highp float;
+in vec4 vData;
+uniform float uTime;
+out vec4 fragColor;
+void main(){
+  float d=length(gl_PointCoord-0.5)*2.0;
+  if(d>1.0)discard;
+  float alpha=(1.0-d*d)*vData.a;
+  fragColor=vec4(vData.rgb*alpha,alpha);
+}`;
+
+const creatureVS=`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNorm;
+layout(location=2) in vec3 aColor;
+uniform mat4 uProj,uView,uModel;
+uniform float uTime;
+out vec3 vNorm,vColor,vWorldPos;
+in float vFog;
+void main(){
+  vec4 wp=uModel*vec4(aPos,1);
+  vWorldPos=wp.xyz;vNorm=normalize(mat3(uModel)*aNorm);vColor=aColor;
+  vec4 vp=uView*wp;
+  gl_Position=uProj*vp;
+  vFog=clamp(length(vp.xyz)/250.0,0.0,1.0);
+}`;
+
+const creatureFS=`#version 300 es
+precision highp float;
+in vec3 vNorm,vColor,vWorldPos;
+in float vFog;
+uniform float uTime;
+uniform vec3 uSunDir,uCamPos,uFogColor;
+out vec4 fragColor;
+void main(){
+  vec3 N=normalize(vNorm);
+  float diff=max(dot(N,normalize(uSunDir)),0.0);
+  vec3 col=vColor*(0.2+diff*0.8);
+  float glow=sin(uTime*4.0+vWorldPos.y*5.0)*0.3+0.7;
+  col+=vColor*glow*0.2;
+  col=mix(col,uFogColor,vFog*vFog);
+  fragColor=vec4(col,1.0);
+}`;
+
+const artifactVS=`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNorm;
+uniform mat4 uProj,uView,uModel;
+uniform float uTime;
+out vec3 vNorm,vWorldPos;
+out float vFog;
+void main(){
+  vec4 wp=uModel*vec4(aPos,1);
+  vWorldPos=wp.xyz;vNorm=normalize(mat3(uModel)*aNorm);
+  vec4 vp=uView*wp;
+  gl_Position=uProj*vp;
+  vFog=clamp(length(vp.xyz)/200.0,0.0,1.0);
+}`;
+
+const artifactFS=`#version 300 es
+precision highp float;
+in vec3 vNorm,vWorldPos;
+in float vFog;
+uniform float uTime,uCollected;
+uniform vec3 uSunDir,uCamPos,uFogColor,uArtifactColor;
+out vec4 fragColor;
+void main(){
+  if(uCollected>0.5)discard;
+  vec3 N=normalize(vNorm);
+  float diff=max(dot(N,normalize(uSunDir)),0.0);
+  vec3 col=uArtifactColor*(0.3+diff*0.7);
+  float pulse=sin(uTime*5.0)*0.3+0.7;
+  col+=uArtifactColor*pulse*0.5;
+  float rim=1.0-max(0.0,dot(N,normalize(uCamPos-vWorldPos)));
+  col+=uArtifactColor*rim*rim*0.8;
+  col=mix(col,uFogColor,vFog*vFog);
+  fragColor=vec4(col,1.0);
+}`;
+
+const waterVS=`#version 300 es
+layout(location=0) in vec3 aPos;
+uniform mat4 uProj,uView,uModel;
+uniform float uTime;
+out vec3 vWorldPos;
+out float vFog;
+void main(){
+  vec3 p=aPos;
+  p.y+=sin(p.x*0.5+uTime)*0.3+cos(p.z*0.3+uTime*0.7)*0.2;
+  vec4 wp=uModel*vec4(p,1);
+  vWorldPos=wp.xyz;
+  vec4 vp=uView*wp;
+  gl_Position=uProj*vp;
+  vFog=clamp(length(vp.xyz)/250.0,0.0,1.0);
+}`;
+
+const waterFS=`#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in float vFog;
+uniform float uTime;
+uniform vec3 uCamPos,uSunDir,uFogColor,uWaterColor;
+out vec4 fragColor;
+void main(){
+  vec3 V=normalize(uCamPos-vWorldPos);
+  vec3 N=normalize(vec3(
+    cos(vWorldPos.x*0.5+uTime)*0.3,1.0,sin(vWorldPos.z*0.3+uTime*0.7)*0.2
+  ));
+  float fresnel=pow(1.0-max(0.0,dot(N,V)),3.0);
+  float diff=max(0.0,dot(N,normalize(uSunDir)));
+  vec3 col=uWaterColor*(0.2+diff*0.5)+vec3(0.5,0.7,1.0)*fresnel*0.4;
+  float spec=pow(max(0.0,dot(N,normalize(uSunDir+V))),64.0);
+  col+=vec3(1.0)*spec*0.5;
+  col=mix(col,uFogColor,vFog*vFog);
+  fragColor=vec4(col,0.75);
+}`;
+
+// ==================== MESH GENERATION ====================
+function createBuffer(data,type){
+  let b=gl.createBuffer();
+  gl.bindBuffer(type||gl.ARRAY_BUFFER,b);
+  gl.bufferData(type||gl.ARRAY_BUFFER,data,gl.STATIC_DRAW);
+  return b;
+}
+
+function genSphere(r,seg){
+  let pos=[],norm=[],idx=[];
+  for(let lat=0;lat<=seg;lat++){
+    let t=lat/seg*PI,st=sin(t),ct=cos(t);
+    for(let lon=0;lon<=seg;lon++){
+      let s=lon/seg*TAU,ss=sin(s),cs=cos(s);
+      let x=cs*st,y=ct,z=ss*st;
+      pos.push(x*r,y*r,z*r);norm.push(x,y,z);
+    }
+  }
+  for(let lat=0;lat<seg;lat++)for(let lon=0;lon<seg;lon++){
+    let a=lat*(seg+1)+lon,b=a+seg+1;
+    idx.push(a,b,a+1,b,b+1,a+1);
+  }
+  return{pos:new Float32Array(pos),norm:new Float32Array(norm),idx:new Uint16Array(idx)};
+}
+
+function genBox(w,h,d){
+  let hw=w/2,hh=h/2,hd=d/2;
+  let pos=[
+    -hw,-hh,-hd, hw,-hh,-hd, hw,hh,-hd, -hw,hh,-hd,
+    -hw,-hh,hd, hw,-hh,hd, hw,hh,hd, -hw,hh,hd,
+    -hw,hh,-hd, hw,hh,-hd, hw,hh,hd, -hw,hh,hd,
+    -hw,-hh,-hd, hw,-hh,-hd, hw,-hh,hd, -hw,-hh,hd,
+    hw,-hh,-hd, hw,hh,-hd, hw,hh,hd, hw,-hh,hd,
+    -hw,-hh,-hd, -hw,hh,-hd, -hw,hh,hd, -hw,-hh,hd
+  ];
+  let norm=[
+    0,0,-1,0,0,-1,0,0,-1,0,0,-1,
+    0,0,1,0,0,1,0,0,1,0,0,1,
+    0,1,0,0,1,0,0,1,0,0,1,0,
+    0,-1,0,0,-1,0,0,-1,0,0,-1,0,
+    1,0,0,1,0,0,1,0,0,1,0,0,
+    -1,0,0,-1,0,0,-1,0,0,-1,0,0
+  ];
+  let idx=[];
+  for(let i=0;i<6;i++){let o=i*4;idx.push(o,o+1,o+2,o,o+2,o+3)}
+  return{pos:new Float32Array(pos),norm:new Float32Array(norm),idx:new Uint16Array(idx)};
+}
+
+function genCylinder(rTop,rBot,h,seg){
+  let pos=[],norm=[],idx=[];
+  for(let i=0;i<=seg;i++){
+    let a=i/seg*TAU,c=cos(a),s=sin(a);
+    pos.push(c*rBot,0,s*rBot);norm.push(c,0,s);
+    pos.push(c*rTop,h,s*rTop);norm.push(c,0,s);
+  }
+  for(let i=0;i<seg;i++){
+    let a=i*2,b=a+1,c=a+2,d=a+3;
+    idx.push(a,c,b,b,c,d);
+  }
+  // Caps
+  let topCenter=pos.length/3;
+  pos.push(0,h,0);norm.push(0,1,0);
+  for(let i=0;i<=seg;i++){
+    let a=i/seg*TAU,c=cos(a),s=sin(a);
+    pos.push(c*rTop,h,s*rTop);norm.push(0,1,0);
+  }
+  for(let i=0;i<seg;i++)idx.push(topCenter,topCenter+i+1,topCenter+i+2);
+  let botCenter=pos.length/3;
+  pos.push(0,0,0);norm.push(0,-1,0);
+  for(let i=0;i<=seg;i++){
+    let a=i/seg*TAU,c=cos(a),s=sin(a);
+    pos.push(c*rBot,0,s*rBot);norm.push(0,-1,0);
+  }
+  for(let i=0;i<seg;i++)idx.push(botCenter,botCenter+i+2,botCenter+i+1);
+  return{pos:new Float32Array(pos),norm:new Float32Array(norm),idx:new Uint16Array(idx)};
+}
+
+function genCone(r,h,seg){
+  let pos=[],norm=[],idx=[];
+  let sl=sqrt(r*r+h*h);
+  for(let i=0;i<=seg;i++){
+    let a=i/seg*TAU,c=cos(a),s=sin(a);
+    pos.push(0,h,0);norm.push(c*h/sl,r/sl,s*h/sl);
+    pos.push(c*r,0,s*r);norm.push(c*h/sl,r/sl,s*h/sl);
+  }
+  for(let i=0;i<seg;i++){let a=i*2;idx.push(a,a+2,a+1,a+1,a+2,a+3)}
+  // Bottom cap
+  let bc=pos.length/3;
+  pos.push(0,0,0);norm.push(0,-1,0);
+  for(let i=0;i<=seg;i++){
+    let a=i/seg*TAU,c=cos(a),s=sin(a);
+    pos.push(c*r,0,s*r);norm.push(0,-1,0);
+  }
+  for(let i=0;i<seg;i++)idx.push(bc,bc+i+2,bc+i+1);
+  return{pos:new Float32Array(pos),norm:new Float32Array(norm),idx:new Uint16Array(idx)};
+}
+
+function genTorus(R,r,seg,tubeSeg){
+  let pos=[],norm=[],idx=[];
+  for(let i=0;i<=seg;i++){
+    let u=i/seg*TAU,cu=cos(u),su=sin(u);
+    for(let j=0;j<=tubeSeg;j++){
+      let v=j/tubeSeg*TAU,cv=cos(v),sv=sin(v);
+      let x=(R+r*cv)*cu,y=r*sv,z=(R+r*cv)*su;
+      pos.push(x,y,z);
+      norm.push(cv*cu,sv,cv*su);
+    }
+  }
+  for(let i=0;i<seg;i++)for(let j=0;j<tubeSeg;j++){
+    let a=i*(tubeSeg+1)+j,b=a+tubeSeg+1;
+    idx.push(a,b,a+1,b,b+1,a+1);
+  }
+  return{pos:new Float32Array(pos),norm:new Float32Array(norm),idx:new Uint16Array(idx)};
+}
+
+function genTerrain(size,res){
+  let pos=[],norm=[],col=[],idx=[];
+  let half=size/2,step=size/res;
+  let heights=[];
+
+  for(let iz=0;iz<=res;iz++){
+    heights[iz]=[];
+    for(let ix=0;ix<=res;ix++){
+      let x=ix*step-half,z=iz*step-half;
+      // Biome determination
+      let biomeNoise=fbm2D(x*0.005+100,z*0.005+100,4);
+      let biome=floor(biomeNoise*5);
+      biome=min(biome,4);
+
+      // Height based on biome
+      let h=0;
+      let nx=x*0.01,nz=z*0.01;
+      switch(biome){
+        case 0: // Crystal Forest - tall spires
+          h=fbm2D(nx*2,nz*2,6)*25+fbm2D(nx*8,nz*8,4)*5;
+          h=max(h,0);
+          break;
+        case 1: // Fungal Wasteland - rolling hills
+          h=fbm2D(nx*1.5,nz*1.5,5)*15+5;
+          break;
+        case 2: // Bioluminescent Swamp - low, wet
+          h=fbm2D(nx*3,nz*3,4)*8+2;
+          break;
+        case 3: // Obsidian Desert - flat with dunes
+          h=fbm2D(nx*2,nz*2,5)*10+3;
+          break;
+        case 4: // Floating Islands area - dramatic cliffs
+          h=fbm2D(nx*1.5,nz*1.5,6)*35+10;
+          break;
+      }
+
+      // Add cave entrances as depressions
+      let caveNoise=fbm2D(x*0.02+50,z*0.02+50,3);
+      if(caveNoise>0.75){
+        h*=(1.0-(caveNoise-0.75)*4.0);
+        h=max(h,-5);
+      }
+
+      heights[iz][ix]=h;
+    }
+  }
+
+  // Smooth and generate vertices
+  for(let iz=0;iz<=res;iz++){
+    for(let ix=0;ix<=res;ix++){
+      let x=ix*step-half,z=iz*step-half;
+      let h=heights[iz][ix];
+
+      // Compute normal from neighbors
+      let hl=ix>0?heights[iz][ix-1]:h;
+      let hr=ix<res?heights[iz][ix+1]:h;
+      let hd=iz>0?heights[iz-1][ix]:h;
+      let hu=iz<res?heights[iz+1][ix]:h;
+      let n=v3norm([hl-hr,2*step,hd-hu]);
+
+      pos.push(x,h,z);
+      norm.push(n[0],n[1],n[2]);
+
+      // Color based on biome and height
+      let biomeNoise=fbm2D(x*0.005+100,z*0.005+100,4);
+      let biome=floor(biomeNoise*5);
+      biome=min(biome,4);
+      let r,g,b;
+      switch(biome){
+        case 0: // Crystal Forest - purple/blue
+          r=0.2+noise2D(x*0.1,z*0.1)*0.15;
+          g=0.1+noise2D(x*0.13,z*0.13)*0.1;
+          b=0.4+noise2D(x*0.11,z*0.11)*0.2;
+          break;
+        case 1: // Fungal - orange/brown
+          r=0.5+noise2D(x*0.1,z*0.1)*0.2;
+          g=0.25+noise2D(x*0.13,z*0.13)*0.1;
+          b=0.1+noise2D(x*0.11,z*0.11)*0.05;
+          break;
+        case 2: // Swamp - teal/green
+          r=0.05+noise2D(x*0.1,z*0.1)*0.05;
+          g=0.3+noise2D(x*0.13,z*0.13)*0.15;
+          b=0.25+noise2D(x*0.11,z*0.11)*0.1;
+          break;
+        case 3: // Desert - dark gray/red
+          r=0.2+noise2D(x*0.1,z*0.1)*0.1;
+          g=0.12+noise2D(x*0.13,z*0.13)*0.05;
+          b=0.1+noise2D(x*0.11,z*0.11)*0.05;
+          break;
+        case 4: // Cliffs - blue/white
+          r=0.15+noise2D(x*0.1,z*0.1)*0.1;
+          g=0.2+noise2D(x*0.13,z*0.13)*0.1;
+          b=0.4+noise2D(x*0.11,z*0.11)*0.15;
+          break;
+      }
+      // Height-based variation
+      if(h<0){r*=0.5;g*=0.6;b*=0.7} // underwater darker
+      if(h>20){r=mix(r,0.9,0.3);g=mix(g,0.9,0.3);b=mix(b,0.95,0.3)} // snow on peaks
+
+      col.push(r,g,b);
+    }
+  }
+
+  for(let iz=0;iz<res;iz++)for(let ix=0;ix<res;ix++){
+    let a=iz*(res+1)+ix,b=a+1,c=a+res+1,d=c+1;
+    idx.push(a,c,b,b,c,d);
+  }
+
+  return{
+    pos:new Float32Array(pos),
+    norm:new Float32Array(norm),
+    col:new Float32Array(col),
+    idx:new Uint32Array(idx),
+    heights:heights,
+    size:size,res:res,step:step
+  };
+}
+
+function getTerrainHeight(x,z){
+  if(!terrainData)return 0;
+  let td=terrainData;
+  let half=td.size/2;
+  let gx=(x+half)/td.step;
+  let gz=(z+half)/td.step;
+  let ix=floor(gx),iz=floor(gz);
+  if(ix<0||ix>=td.res||iz<0||iz>=td.res)return 0;
+  let fx=gx-ix,fz=gz-iz;
+  let h00=td.heights[iz][ix],h10=td.heights[iz][min(ix+1,td.res)];
+  let h01=td.heights[min(iz+1,td.res)][ix],h11=td.heights[min(iz+1,td.res)][min(ix+1,td.res)];
+  return h00*(1-fx)*(1-fz)+h10*fx*(1-fz)+h01*(1-fx)*fz+h11*fx*fz;
+}
+
+function getBiomeAt(x,z){
+  let bn=fbm2D(x*0.005+100,z*0.005+100,4);
+  return min(floor(bn*5),4);
+}
+
+function genMeshBuffer(mesh){
+  let vao=gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  let pb=createBuffer(mesh.pos);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+  if(mesh.norm){
+    let nb=createBuffer(mesh.norm);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1,3,gl.FLOAT,false,0,0);
+  }
+  if(mesh.col){
+    let cb=createBuffer(mesh.col);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2,3,gl.FLOAT,false,0,0);
+  }
+  let ib=createBuffer(mesh.idx,gl.ELEMENT_ARRAY_BUFFER);
+  gl.bindVertexArray(null);
+  return{vao:vao,count:mesh.idx.length,ib:ib};
+}
+
+// ==================== PROCEDURAL AUDIO ====================
+function initAudio(){
+  audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  masterGain=audioCtx.createGain();
+  masterGain.gain.value=0.3;
+  masterGain.connect(audioCtx.destination);
+}
+
+function playAmbientDrone(freq,detune){
+  let osc=audioCtx.createOscillator();
+  let gain=audioCtx.createGain();
+  let filter=audioCtx.createBiquadFilter();
+  osc.type='sine';
+  osc.frequency.value=freq;
+  osc.detune.value=detune;
+  filter.type='lowpass';
+  filter.frequency.value=400;
+  filter.Q.value=2;
+  gain.gain.value=0.05;
+  osc.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+  osc.start();
+  ambientSounds.push({osc,gain,filter});
+}
+
+function playWindSound(){
+  let bufferSize=audioCtx.sampleRate*2;
+  let buffer=audioCtx.createBuffer(1,bufferSize,audioCtx.sampleRate);
+  let data=buffer.getChannelData(0);
+  for(let i=0;i<bufferSize;i++)data[i]=(random()*2-1);
+  let src=audioCtx.createBufferSource();
+  src.buffer=buffer;
+  src.loop=true;
+  let filter=audioCtx.createBiquadFilter();
+  filter.type='bandpass';
+  filter.frequency.value=300;
+  filter.Q.value=0.5;
+  let gain=audioCtx.createGain();
+  gain.gain.value=0.03;
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+  src.start();
+  ambientSounds.push({osc:src,gain,filter});
+}
+
+function playCreatureSound(pos){
+  let dist=v3dist(playerPos,pos);
+  if(dist>80)return;
+  let vol=max(0,1-dist/80)*0.15;
+  let osc=audioCtx.createOscillator();
+  let gain=audioCtx.createGain();
+  osc.type=random()>0.5?'sawtooth':'triangle';
+  osc.frequency.value=80+random()*200;
+  osc.frequency.exponentialRampToValueAtTime(40+random()*100,audioCtx.currentTime+0.5);
+  gain.gain.value=vol;
+  gain.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.8);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start();
+  osc.stop(audioCtx.currentTime+0.8);
+}
+
+function playCollectSound(){
+  let osc=audioCtx.createOscillator();
+  let gain=audioCtx.createGain();
+  osc.type='sine';
+  osc.frequency.value=800;
+  osc.frequency.exponentialRampToValueAtTime(1600,audioCtx.currentTime+0.3);
+  gain.gain.value=0.2;
+  gain.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.5);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start();
+  osc.stop(audioCtx.currentTime+0.5);
+}
+
+function startAmbientAudio(){
+  playAmbientDrone(55,0);
+  playAmbientDrone(55.5,7);
+  playAmbientDrone(82.5,-5);
+  playAmbientDrone(110,3);
+  playWindSound();
+}
+
+// ==================== SCENE OBJECTS ====================
+let terrainMesh,skyMesh;
+let treeMeshes=[],glowPlantMeshes=[],crystalMeshes=[];
+let ruinMeshes=[],caveMeshes=[];
+let artifactMeshes=[];
+let creatureMeshes=[];
+let waterMesh;
+let particleBuffer;
+
+let terrainProg,skyProg,glowProg,particleProg,creatureProg,artifactProg,waterProg;
+
+function initShaders(){
+  terrainProg=createProgram(terrainVS,terrainFS);
+  skyProg=createProgram(skyVS,skyFS);
+  glowProg=createProgram(glowVS,glowFS);
+  particleProg=createProgram(particleVS,particleFS);
+  creatureProg=createProgram(creatureVS,creatureFS);
+  artifactProg=createProgram(artifactVS,artifactFS);
+  waterProg=createProgram(waterVS,waterFS);
+}
+
+function initScene(){
+  // Terrain
+  terrainData=genTerrain(400,120);
+  terrainMesh=genMeshBuffer(terrainData);
+
+  // Sky dome
+  let sky=genSphere(1,16);
+  skyMesh=genMeshBuffer(sky);
+
+  // Water plane
+  let waterPos=[],waterIdx=[];
+  let ws=200,wres=40,wstep=ws/wres;
+  for(let iz=0;iz<=wres;iz++)for(let ix=0;ix<=wres;ix++){
+    waterPos.push(ix*wstep-ws/2,0,iz*wstep-ws/2);
+  }
+  for(let iz=0;iz<wres;iz++)for(let ix=0;ix<wres;ix++){
+    let a=iz*(wres+1)+ix;
+    waterIdx.push(a,a+wres+1,a+1,a+1,a+wres+1,a+wres+2);
+  }
+  waterMesh=genMeshBuffer({
+    pos:new Float32Array(waterPos),
+    norm:new Float32Array(waterPos.length/3*3).fill(0),
+    idx:new Uint16Array(waterIdx)
+  });
+
+  // Generate vegetation and features per biome
+  generateVegetation();
+  generateRuins();
+  generateCaves();
+  generateArtifacts();
+  generateCreatures();
+  generateParticles();
+}
+
+function generateVegetation(){
+  // Crystal trees for biome 0
+  let crystalTree=genCylinder(0.3,0.8,8,6);
+  let crystalTop=genCone(2,4,8);
+  treeMeshes.push({
+    trunk:genMeshBuffer(crystalTree),
+    top:genMeshBuffer(crystalTop),
+    type:'crystal'
+  });
+
+  // Fungal mushrooms for biome 1
+  let mushStem=genCylinder(0.5,0.6,3,8);
+  let mushCap=genSphere(2.5,8);
+  treeMeshes.push({
+    trunk:genMeshBuffer(mushStem),
+    top:genMeshBuffer(mushCap),
+    type:'mushroom'
+  });
+
+  // Swamp tendrils for biome 2
+  let tendril=genCylinder(0.1,0.15,6,4);
+  treeMeshes.push({
+    trunk:genMeshBuffer(tendril),
+    top:null,
+    type:'tendril'
+  });
+
+  // Desert obelisks for biome 3
+  let obelisk=genCone(0.5,12,4);
+  treeMeshes.push({
+    trunk:genMeshBuffer(obelisk),
+    top:null,
+    type:'obelisk'
+  });
+
+  // Floating island crystals for biome 4
+  let floatCrystal=genCone(1.5,6,6);
+  treeMeshes.push({
+    trunk:genMeshBuffer(floatCrystal),
+    top:null,
+    type:'floatcrystal'
+  });
+
+  // Glow plants
+  let glowSphere=genSphere(0.3,6);
+  let glowPlant=genMeshBuffer(glowSphere);
+  glowPlantMeshes.push(glowPlant);
+
+  // Crystal clusters
+  let crystalCluster=genCone(0.4,3,5);
+  crystalMeshes.push(genMeshBuffer(crystalCluster));
+}
+
+function generateRuins(){
+  let pillarMesh=genCylinder(0.8,1.0,10,8);
+  let archMesh=genTorus(3,0.5,12,8);
+  let wallMesh=genBox(8,6,1);
+  let floorMesh=genBox(10,0.5,10);
+
+  ruinPositions=[];
+  for(let i=0;i<15;i++){
+    let x=(random()-0.5)*350;
+    let z=(random()-0.5)*350;
+    let y=getTerrainHeight(x,z);
+    if(y<1)continue;
+    ruinPositions.push({
+      pos:[x,y,z],
+      rot:random()*TAU,
+      scale:0.5+random()*1.5,
+      type:floor(random()*4),
+      pillars:floor(2+random()*6),
+      hasArch:random()>0.5,
+      hasWalls:random()>0.3
+    });
+  }
+
+  ruinMeshes=[
+    genMeshBuffer(pillarMesh),
+    genMeshBuffer(archMesh),
+    genMeshBuffer(wallMesh),
+    genMeshBuffer(floorMesh)
+  ];
+}
+
+function generateCaves(){
+  cavePositions=[];
+  for(let i=0;i<8;i++){
+    let x=(random()-0.5)*300;
+    let z=(random()-0.5)*300;
+    let y=getTerrainHeight(x,z);
+    cavePositions.push({
+      pos:[x,min(y-2,-1),z],
+      radius:5+random()*10,
+      depth:10+random()*20,
+      glowColor:[random()*0.5+0.5,random()*0.5+0.5,random()*0.5+0.5]
+    });
+  }
+  let caveMesh=genSphere(1,10);
+  caveMeshes.push(genMeshBuffer(caveMesh));
+}
+
+function generateArtifacts(){
+  let artifactShapes=[
+    genTorus(0.5,0.15,12,8),
+    genSphere(0.4,8),
+    genCone(0.3,0.8,6),
+    genBox(0.5,0.5,0.5),
+    genTorus(0.4,0.1,8,6)
+  ];
+
+  let artifactColors=[
+    [1,0.3,0.8],[0.3,1,0.8],[0.8,0.3,1],[1,0.8,0.3],[0.3,0.8,1],
+    [1,0.5,0.3],[0.5,1,0.5],[1,0.2,0.5],[0.2,0.8,0.9],[0.9,0.9,0.2],
+    [0.6,0.2,1],[1,0.6,0.6]
+  ];
+
+  artifacts=[];
+  for(let i=0;i<12;i++){
+    let x=(random()-0.5)*350;
+    let z=(random()-0.5)*350;
+    let y=getTerrainHeight(x,z)+2+random()*3;
+    artifacts.push({
+      pos:[x,y,z],
+      mesh:genMeshBuffer(artifactShapes[i%artifactShapes.length]),
+      color:artifactColors[i],
+      collected:false,
+      rotSpeed:0.5+random()*2,
+      bobSpeed:1+random()*2,
+      bobPhase:random()*TAU
+    });
+  }
+}
+
+function generateCreatures(){
+  let bodyMesh=genSphere(1,8);
+  let wingMesh=genBox(3,0.1,1);
+  let legMesh=genCylinder(0.1,0.15,1.5,4);
+  let eyeMesh=genSphere(0.15,4);
+
+  let creatureTypes=[
+    {name:'FloatJelly',bodyColor:[0.3,0.8,1],size:1.5,speed:2,flight:true,glow:true},
+    {name:'CrystalBeetle',bodyColor:[0.8,0.3,1],size:0.8,speed:3,flight:false,glow:true},
+    {name:'ShadowStalker',bodyColor:[0.1,0.1,0.2],size:2,speed:4,flight:false,glow:false},
+    {name:'GlowMoth',bodyColor:[1,0.9,0.3],size:0.5,speed:5,flight:true,glow:true},
+    {name:'RockWorm',bodyColor:[0.4,0.3,0.2],size:1.2,speed:1.5,flight:false,glow:false}
+  ];
+
+  creatures=[];
+  for(let i=0;i<30;i++){
+    let type=creatureTypes[floor(random()*creatureTypes.length)];
+    let x=(random()-0.5)*350;
+    let z=(random()-0.5)*350;
+    let y=type.flight?getTerrainHeight(x,z)+5+random()*15:getTerrainHeight(x,z)+type.size;
+    creatures.push({
+      pos:[x,y,z],
+      vel:[(random()-0.5)*2,(random()-0.5)*0.5,(random()-0.5)*2],
+      type:type,
+      phase:random()*TAU,
+      targetPos:[x,y,z],
+      retargetTime:0,
+      bodyMesh:genMeshBuffer(genSphere(type.size,6)),
+      eyeMesh:genMeshBuffer(genSphere(type.size*0.2,4))
+    });
+  }
+}
+
+function generateParticles(){
+  particles=[];
+  for(let i=0;i<500;i++){
+    particles.push({
+      pos:[(random()-0.5)*300,random()*50,(random()-0.5)*300],
+      data:[random(),random(),random(),0.5+random()*2],
+      vel:[(random()-0.5)*0.5,(random()-0.5)*0.3,(random()-0.5)*0.5]
+    });
+  }
+  updateParticleBuffer();
+}
+
+function updateParticleBuffer(){
+  let data=[];
+  for(let p of particles){
+    data.push(p.pos[0],p.pos[1],p.pos[2],p.data[0],p.data[1],p.data[2],p.data[3]);
+  }
+  if(particleBuffer)gl.deleteBuffer(particleBuffer);
+  particleBuffer=createBuffer(new Float32Array(data));
+}
+
+// ==================== RENDERING ====================
+function setUniforms(prog,uniforms){
+  for(let name in uniforms){
+    let loc=prog.uniforms[name];
+    if(!loc)continue;
+    let v=uniforms[name];
+    if(typeof v==='number')gl.uniform1f(loc,v);
+    else if(v.length===3)gl.uniform3fv(loc,v);
+    else if(v.length===4)gl.uniform4fv(loc,v);
+    else if(v.length===16)gl.uniformMatrix4fv(loc,false,v);
+  }
+}
+
+function drawMesh(prog,mesh,uniforms){
+  gl.useProgram(prog.program);
+  setUniforms(prog,uniforms);
+  gl.bindVertexArray(mesh.vao);
+  gl.drawElements(gl.TRIANGLES,mesh.count,gl.UNSIGNED_SHORT,0);
+  gl.bindVertexArray(null);
+}
+
+function drawMeshUI32(prog,mesh,uniforms){
+  gl.useProgram(prog.program);
+  setUniforms(prog,uniforms);
+  gl.bindVertexArray(mesh.vao);
+  gl.drawElements(gl.TRIANGLES,mesh.count,gl.UNSIGNED_INT,0);
+  gl.bindVertexArray(null);
+}
+
+function getSunDir(){
+  let t=time*0.05;
+  return v3norm([cos(t)*0.5,0.3+sin(t*0.3)*0.2,sin(t)*0.5]);
+}
+
+function getFogColor(){
+  let biome=getBiomeAt(playerPos[0],playerPos[2]);
+  let colors=[
+    [0.05,0.02,0.1],[0.1,0.05,0.02],[0.02,0.08,0.06],
+    [0.08,0.04,0.03],[0.03,0.05,0.12]
+  ];
+  return colors[biome]||[0.05,0.05,0.1];
+}
+
+function renderScene(viewMatrix,projMatrix,camPos){
+  let sunDir=getSunDir();
+  let fogCol=getFogColor();
+
+  // Update weather
+  weatherTimer-=1/60;
+  if(weatherTimer<=0){
+    weatherType=floor(random()*3);
+    weatherIntensity=random()*0.5+0.1;
+    weatherTimer=30+random()*60;
+  }
+
+  // Clear
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+
+  // Sky
+  gl.depthMask(false);
+  gl.disable(gl.DEPTH_TEST);
+  drawMesh(skyProg,skyMesh,{
+    uProj:projMatrix,uView:viewMatrix,uTime:time
+  });
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+
+  // Terrain
+  drawMeshUI32(terrainProg,terrainMesh,{
+    uProj:projMatrix,uView:viewMatrix,uModel:m4identity(),
+    uTime:time,uSunDir:sunDir,uCamPos:camPos,
+    uFogColor:fogCol,uGlow:0.3
+  });
+
+  // Water
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  let waterModel=m4translate(0,-2,0);
+  drawMesh(waterProg,waterMesh,{
+    uProj:projMatrix,uView:viewMatrix,uModel:waterModel,
+    uTime:time,uCamPos:camPos,uSunDir:sunDir,
+    uFogColor:fogCol,uWaterColor:[0.1,0.3,0.4]
+  });
+
+  // Vegetation instances
+  drawVegetation(viewMatrix,projMatrix,camPos,sunDir,fogCol);
+
+  // Ruins
+  drawRuins(viewMatrix,projMatrix,camPos,sunDir,fogCol);
+
+  // Caves
+  drawCaves(viewMatrix,projMatrix,camPos,sunDir,fogCol);
+
+  // Artifacts
+  drawArtifacts(viewMatrix,projMatrix,camPos,sunDir,fogCol);
+
+  // Creatures
+  drawCreatures(viewMatrix,projMatrix,camPos,sunDir,fogCol);
+
+  // Glow plants
+  drawGlowPlants(viewMatrix,projMatrix,camPos,fogCol);
+
+  // Particles
+  drawParticles(viewMatrix,projMatrix,camPos,fogCol);
+
+  gl.disable(gl.BLEND);
+}
+
+function drawVegetation(viewMatrix,projMatrix,camPos,sunDir,fogCol){
+  let half=terrainData.size/2;
+  let step=terrainData.step;
+  let res=terrainData.res;
+
+  for(let iz=0;iz<res;iz+=3){
+    for(let ix=0;ix<res;ix+=3){
+      let x=ix*step-half;
+      let z=iz*step-half;
+      let dist=v3dist(camPos,[x,0,z]);
+      if(dist>120)continue;
+
+      let y=getTerrainHeight(x,z);
+      let biome=getBiomeAt(x,z);
+      let treeType=treeMeshes[biome];
+      if(!treeType)continue;
+
+      let density=fbm2D(x*0.05+200,z*0.05+200,3);
+      if(density<0.4)continue;
+
+      let scale=0.5+density*1.5;
+      let rot=hash(x,z)*TAU;
+
+      // Trunk
+      let model=m4mul(m4translate(x,y,z),m4mul(m4rotY(rot),m4scale(scale,scale,scale)));
+      drawMesh(terrainProg,treeType.trunk,{
+        uProj:projMatrix,uView:viewMatrix,uModel:model,
+        uTime:time,uSunDir:sunDir,uCamPos:camPos,
+        uFogColor:fogCol,uGlow:biome===0||biome===2?0.8:0.0
+      });
+
+      // Top
+      if(treeType.top){
+        let topY=biome===0?8:biome===1?3:6;
+        let topModel=m4mul(m4translate(x,y+topY*scale,z),
+          m4mul(m4rotY(rot),m4scale(scale*0.8,scale*0.8,scale*0.8)));
+        drawMesh(glowProg,treeType.top,{
+          uProj:projMatrix,uView:viewMatrix,uModel:topModel,
+          uTime:time,uCamPos:camPos,uFogColor:fogCol
+        });
+      }
+    }
+  }
+}
+
+function drawRuins(viewMatrix,projMatrix,camPos,sunDir,fogCol){
+  for(let ruin of ruinPositions){
+    let dist=v3dist(camPos,ruin.pos);
+    if(dist>150)continue;
+
+    let s=ruin.scale;
+    let baseModel=m4mul(m4translate(ruin.pos[0],ruin.pos[1],ruin.pos[2]),m4rotY(ruin.rot));
+
+    // Floor
+    drawMesh(terrainProg,ruinMeshes[3],{
+      uProj:projMatrix,uView:viewMatrix,
+      uModel:m4mul(baseModel,m4scale(s,s*0.3,s)),
+      uTime:time,uSunDir:sunDir,uCamPos:camPos,
+      uFogColor:fogCol,uGlow:0.0
+    });
+
+    // Pillars
+    for(let p=0;p<ruin.pillars;p++){
+      let angle=p/ruin.pillars*TAU;
+      let px=cos(angle)*4*s;
+      let pz=sin(angle)*4*s;
+      let pillarModel=m4mul(baseModel,m4mul(m4translate(px,0,pz),m4scale(s*0.5,s,s*0.5)));
+      drawMesh(terrainProg,ruinMeshes[0],{
+        uProj:projMatrix,uView:viewMatrix,uModel:pillarModel,
+        uTime:time,uSunDir:sunDir,uCamPos:camPos,
+        uFogColor:fogCol,uGlow:0.2
+      });
+    }
+
+    // Arch
+    if(ruin.hasArch){
+      let archModel=m4mul(baseModel,m4mul(m4translate(0,8*s,0),m4scale(s,s,s)));
+      drawMesh(glowProg,ruinMeshes[1],{
+        uProj:projMatrix,uView:viewMatrix,uModel:archModel,
+        uTime:time,uCamPos:camPos,uFogColor:fogCol
+      });
+    }
+
+    // Walls
+    if(ruin.hasWalls){
+      for(let w=0;w<2;w++){
+        let wallModel=m4mul(baseModel,m4mul(
+          m4translate((w===0?1:-1)*5*s,3*s,0),
+          m4scale(s*0.3,s*0.6,s)
+        ));
+        drawMesh(terrainProg,ruinMeshes[2],{
+          uProj:projMatrix,uView:viewMatrix,uModel:wallModel,
+          uTime:time,uSunDir:sunDir,uCamPos:camPos,
+          uFogColor:fogCol,uGlow:0.1
+        });
+      }
+    }
+  }
+}
+
+function drawCaves(viewMatrix,projMatrix,camPos,sunDir,fogCol){
+  for(let cave of cavePositions){
+    let dist=v3dist(camPos,cave.pos);
+    if(dist>100)continue;
+
+    // Cave entrance
+    let model=m4mul(m4translate(cave.pos[0],cave.pos[1],cave.pos[2]),
+      m4scale(cave.radius,cave.radius*0.6,cave.radius));
+    drawMesh(glowProg,caveMeshes[0],{
+      uProj:projMatrix,uView:viewMatrix,uModel:model,
+      uTime:time,uCamPos:camPos,uFogColor:fogCol
+    });
+
+    // Glow inside cave
+    let glowModel=m4mul(m4translate(cave.pos[0],cave.pos[1]-1,cave.pos[2]),
+      m4scale(cave.radius*0.5,cave.radius*0.3,cave.radius*0.5));
+    drawMesh(glowProg,caveMeshes[0],{
+      uProj:projMatrix,uView:viewMatrix,uModel:glowModel,
+      uTime:time,uCamPos:camPos,uFogColor:fogCol
+    });
+  }
+}
+
+function drawArtifacts(viewMatrix,projMatrix,camPos,sunDir,fogCol){
+  for(let i=0;i<artifacts.length;i++){
+    let art=artifacts[i];
+    if(art.collected)continue;
+    let dist=v3dist(camPos,art.pos);
+    if(dist>100)continue;
+
+    let bobY=sin(time*art.bobSpeed+art.bobPhase)*0.5;
+    let model=m4mul(
+      m4translate(art.pos[0],art.pos[1]+bobY,art.pos[2]),
+      m4mul(m4rotY(time*art.rotSpeed),m4rotX(time*art.rotSpeed*0.7))
+    );
+
+    drawMesh(artifactProg,art.mesh,{
+      uProj:projMatrix,uView:viewMatrix,uModel:model,
+      uTime:time,uSunDir:sunDir,uCamPos:camPos,
+      uFogColor:fogCol,uCollected:0,
+      uArtifactColor:art.color
+    });
+  }
+}
+
+function drawCreatures(viewMatrix,projMatrix,camPos,sunDir,fogCol){
+  for(let creature of creatures){
+    let dist=v3dist(camPos,creature.pos);
+    if(dist>100)continue;
+
+    let s=creature.type.size;
+    let model=m4mul(
+      m4translate(creature.pos[0],creature.pos[1],creature.pos[2]),
+      m4scale(s,s,s)
+    );
+
+    let prog=creature.type.glow?glowProg:creatureProg;
+    let uniforms={
+      uProj:projMatrix,uView:viewMatrix,uModel:model,
+      uTime:time,uCamPos:camPos,uFogColor:fogCol
+    };
+    if(prog===creatureProg){
+      uniforms.uSunDir=sunDir;
+    }
+
+    drawMesh(prog,creature.bodyMesh,uniforms);
+
+    // Eyes
+    let eyeModel=m4mul(
+      m4translate(creature.pos[0]+s*0.5,creature.pos[1]+s*0.3,creature.pos[2]),
+      m4scale(s*0.3,s*0.3,s*0.3)
+    );
+    drawMesh(glowProg,creature.eyeMesh,{
+      uProj:projMatrix,uView:viewMatrix,uModel:eyeModel,
+      uTime:time,uCamPos:camPos,uFogColor:fogCol
+    });
+  }
+}
+
+function drawGlowPlants(viewMatrix,projMatrix,camPos,fogCol){
+  let half=terrainData.size/2;
+  let step=terrainData.step;
+  let res=terrainData.res;
+
+  for(let iz=0;iz<res;iz+=4){
+    for(let ix=0;ix<res;ix+=4){
+      let x=ix*step-half;
+      let z=iz*step-half;
+      let dist=v3dist(camPos,[x,0,z]);
+      if(dist>80)continue;
+
+      let glowDensity=fbm2D(x*0.08+300,z*0.08+300,3);
+      if(glowDensity<0.5)continue;
+
+      let y=getTerrainHeight(x,z)+0.5;
+      let scale=0.3+glowDensity*0.7;
+      let model=m4mul(m4translate(x,y,z),m4scale(scale,scale,scale));
+
+      let glowColor;
+      let biome=getBiomeAt(x,z);
+      switch(biome){
+        case 0:glowColor=[0.5,0.3,1];break;
+        case 1:glowColor=[1,0.6,0.2];break;
+        case 2:glowColor=[0.2,1,0.6];break;
+        case 3:glowColor=[1,0.3,0.5];break;
+        case 4:glowColor=[0.3,0.8,1];break;
+        default:glowColor=[0.5,0.5,1];
+      }
+
+      drawMesh(glowProg,glowPlantMeshes[0],{
+        uProj:projMatrix,uView:viewMatrix,uModel:model,
+        uTime:time,uCamPos:camPos,uFogColor:fogCol
+      });
+    }
+  }
+}
+
+function drawParticles(viewMatrix,projMatrix,camPos,fogCol){
+  // Update particle positions
+  for(let p of particles){
+    p.pos[0]+=p.vel[0]+sin(time*0.5+p.data[0]*10)*0.2;
+    p.pos[1]+=p.vel[1]+cos(time*0.3+p.data[1]*10)*0.1;
+    p.pos[2]+=p.vel[2]+sin(time*0.4+p.data[2]*10)*0.2;
+
+    // Wrap around
+    if(p.pos[0]>200)p.pos[0]=-200;
+    if(p.pos[0]<-200)p.pos[0]=200;
+    if(p.pos[1]>60)p.pos[1]=0;
+    if(p.pos[1]<0)p.pos[1]=60;
+    if(p.pos[2]>200)p.pos[2]=-200;
+    if(p.pos[2]<-200)p.pos[2]=200;
+
+    // Weather effect
+    if(weatherType===0){ // Spore rain
+      p.vel[1]=-0.5-weatherIntensity;
+      p.vel[0]=sin(time+p.data[0]*TAU)*0.3;
+    }else if(weatherType===1){ // Energy storm
+      p.vel[0]+=sin(time*2+p.pos[2]*0.1)*0.05;
+      p.vel[2]+=cos(time*2+p.pos[0]*0.1)*0.05;
+    }else{ // Calm floating
+      p.vel[1]=sin(time*0.5+p.data[0]*TAU)*0.1;
+    }
+  }
+  updateParticleBuffer();
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE);
+  gl.depthMask(false);
+
+  gl.useProgram(particleProg.program);
+  setUniforms(particleProg,{uProj:projMatrix,uView:viewMatrix,uTime:time});
+
+  gl.bindBuffer(gl.ARRAY_BUFFER,particleBuffer);
+  let loc=particleProg.attribs.aPos;
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc,3,gl.FLOAT,false,28,0);
+  loc=particleProg.attribs.aData;
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc,4,gl.FLOAT,false,28,12);
+
+  gl.drawArrays(gl.POINTS,0,particles.length);
+
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+// ==================== CREATURE AI ====================
+function updateCreatures(dt){
+  for(let c of creatures){
+    c.retargetTime-=dt;
+    if(c.retargetTime<=0){
+      c.retargetTime=2+random()*5;
+      let range=30;
+      c.targetPos=[
+        c.pos[0]+(random()-0.5)*range,
+        c.type.flight?c.pos[1]+(random()-0.5)*10:getTerrainHeight(c.pos[0],c.pos[2])+c.type.size,
+        c.pos[2]+(random()-0.5)*range
+      ];
+    }
+
+    let dir=v3norm(v3sub(c.targetPos,c.pos));
+    let speed=c.type.speed*dt;
+    c.pos[0]+=dir[0]*speed;
+    c.pos[1]+=dir[1]*speed*0.3;
+    c.pos[2]+=dir[2]*speed;
+
+    // Keep above terrain
+    let groundY=getTerrainHeight(c.pos[0],c.pos[2]);
+    if(!c.type.flight){
+      c.pos[1]=max(c.pos[1],groundY+c.type.size);
+    }else{
+      c.pos[1]=max(c.pos[1],groundY+3);
+    }
+
+    // Boundary
+    let bound=180;
+    if(abs(c.pos[0])>bound)c.vel[0]*=-1;
+    if(abs(c.pos[2])>bound)c.vel[2]*=-1;
+
+    // Random sounds
+    if(random()<0.002)playCreatureSound(c.pos);
+  }
+}
+
+// ==================== INTERACTION ====================
+function checkInteractions(){
+  // Check artifact collection
+  for(let i=0;i<artifacts.length;i++){
+    let art=artifacts[i];
+    if(art.collected)continue;
+    for(let c=0;c<2;c++){
+      let dist=v3dist(controllerPoses[c],art.pos);
+      if(dist<2&&controllerButtons[c][0]>0.5){
+        art.collected=true;
+        collectedArtifacts++;
+        document.getElementById('artifactCount').textContent=collectedArtifacts;
+        playCollectSound();
+        hapticPulse[c]=1;
+        break;
+      }
+    }
+    // Also check player proximity
+    if(v3dist(playerPos,art.pos)<3){
+      art.collected=true;
+      collectedArtifacts++;
+      document.getElementById('artifactCount').textContent=collectedArtifacts;
+      playCollectSound();
+    }
+  }
+
+  // Track discovered biomes
+  let currentBiome=getBiomeAt(playerPos[0],playerPos[2]);
+  if(!discoveredBiomes.has(currentBiome)){
+    discoveredBiomes.add(currentBiome);
+    document.getElementById('biomeCount').textContent=discoveredBiomes.size;
+  }
+}
+
+// ==================== PHYSICS ====================
+function updatePlayer(dt){
+  // Gravity
+  playerVel[1]-=15*dt;
+
+  // Movement from XR controllers (thumbstick)
+  let moveSpeed=8;
+  let moveX=0,moveZ=0;
+  // We'll get this from XR input sources in the frame loop
+
+  // Apply velocity
+  playerPos[0]+=playerVel[0]*dt;
+  playerPos[1]+=playerVel[1]*dt;
+  playerPos[2]+=playerVel[2]*dt;
+
+  // Terrain collision
+  let groundY=getTerrainHeight(playerPos[0],playerPos[2]);
+  groundY=max(groundY,-1.5); // Water level
+  if(playerPos[1]<groundY+1.7){
+    playerPos[1]=groundY+1.7;
+    playerVel[1]=0;
+    playerOnGround=true;
+  }else{
+    playerOnGround=false;
+  }
+
+  // Boundaries
+  let bound=190;
+  playerPos[0]=max(-bound,min(bound,playerPos[0]));
+  playerPos[2]=max(-bound,min(bound,playerPos[2]));
+}
+
+// ==================== XR SESSION ====================
+async function startXR(){
+  if(!navigator.xr){
+    alert('WebXR not supported. Try a VR-capable browser.');
+    return;
+  }
+
+  let supported=await navigator.xr.isSessionSupported('immersive-vr').catch(()=>false);
+  if(!supported){
+    // Try inline as absolute last resort for testing
+    supported=await navigator.xr.isSessionSupported('inline').catch(()=>false);
+    if(!supported){alert('No XR session supported');return}
+    startInlineSession();
+    return;
+  }
+
+  try{
+    xrSession=await navigator.xr.requestSession('immersive-vr',{
+      requiredFeatures:['local-floor'],
+      optionalFeatures:['bounded-floor','hand-tracking']
+    });
+  }catch(e){
+    console.error('XR session failed:',e);
+    alert('Failed to start XR session: '+e.message);
+    return;
+  }
+
+  document.getElementById('overlay').style.display='none';
+  initGL();
+  initShaders();
+  initScene();
+  initAudio();
+  startAmbientAudio();
+
+  xrGL=new XRWebGLLayer(xrSession,gl);
+  xrSession.updateRenderState({baseLayer:xrGL});
+
+  xrRefSpace=await xrSession.requestReferenceSpace('local-floor').catch(async()=>{
+    return await xrSession.requestReferenceSpace('local');
+  });
+
+  xrSession.addEventListener('end',()=>{
+    xrSession=null;
+    document.getElementById('overlay').style.display='flex';
+  });
+
+  // Input sources
+  xrSession.inputSources.forEach(processInputSource);
+  xrSession.addEventListener('inputsourceschange',e=>{
+    e.added.forEach(processInputSource);
+  });
+
+  xrSession.requestAnimationFrame(onXRFrame);
+}
+
+async function startInlineSession(){
+  try{
+    xrSession=await navigator.xr.requestSession('inline');
+  }catch(e){
+    alert('Inline session failed: '+e.message);
+    return;
+  }
+
+  document.getElementById('overlay').style.display='none';
+  initGL();
+  initShaders();
+  initScene();
+  initAudio();
+  startAmbientAudio();
+
+  xrGL=new XRWebGLLayer(xrSession,gl);
+  xrSession.updateRenderState({baseLayer:xrGL});
+
+  xrRefSpace=await xrSession.requestReferenceSpace('viewer');
+
+  xrSession.addEventListener('end',()=>{
+    xrSession=null;
+    document.getElementById('overlay').style.display='flex';
+  });
+
+  xrSession.requestAnimationFrame(onXRFrame);
+}
+
+let inputSources=[null,null];
+let gamepadRefs=[null,null];
+
+function processInputSource(source){
+  if(source.handedness==='left')inputSources[0]=source;
+  else if(source.handedness==='right')inputSources[1]=source;
+  else{
+    if(!inputSources[0])inputSources[0]=source;
+    else if(!inputSources[1])inputSources[1]=source;
+  }
+  if(source.gamepad){
+    let idx=source.handedness==='left'?0:1;
+    gamepadRefs[idx]=source.gamepad;
+  }
+}
+
+function onXRFrame(ts,frame){
+  if(!xrSession)return;
+  xrSession.requestAnimationFrame(onXRFrame);
+
+  time=ts/1000;
+  frameCount++;
+
+  let pose=frame.getViewerPose(xrRefSpace);
+  if(!pose)return;
+
+  // Process input
+  for(let i=0;i<2;i++){
+    if(inputSources[i]){
+      let srcPose=frame.getPose(inputSources[i].targetRaySpace,xrRefSpace);
+      if(srcPose){
+        let t=srcPose.transform;
+        controllerPoses[i]=[t.position.x,t.position.y,t.position.z];
+      }
+      if(inputSources[i].gamepad){
+        let gp=inputSources[i].gamepad;
+        if(gp.buttons.length>0)controllerButtons[i][0]=gp.buttons[0].value;
+        if(gp.buttons.length>1)controllerButtons[i][1]=gp.buttons[1].value;
+
+        // Thumbstick movement
+        if(gp.axes.length>=2){
+          let ax=gp.axes[0],ay=gp.axes[1];
+          if(abs(ax)>0.15||abs(ay)>0.15){
+            // Get forward direction from view
+            let view=pose.views[0];
+            let fwd=[-view.transform.orientation.z,0,-view.transform.orientation.w];
+            // This is simplified; proper implementation would use the view matrix
+            let moveSpeed=6/60;
+            playerPos[0]+=ax*moveSpeed;
+            playerPos[2]+=ay*moveSpeed;
+          }
+        }
+      }
+      // Haptic feedback
+      if(hapticPulse[i]>0&&inputSources[i].gamepad){
+        let gp=inputSources[i].gamepad;
+        if(gp.hapticActuators&&gp.hapticActuators.length>0){
+          gp.hapticActuators[0].pulse(hapticPulse[i],100);
+        }
+        hapticPulse[i]=0;
+      }
+    }
+  }
+
+  // Update
+  updatePlayer(1/60);
+  updateCreatures(1/60);
+  checkInteractions();
+
+  // Render
+  let glLayer=xrSession.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER,glLayer.framebuffer);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+
+  for(let view of pose.views){
+    let viewport=glLayer.getViewport(view);
+    gl.viewport(viewport.x,viewport.y,viewport.width,viewport.height);
+
+    let projMatrix=view.projectionMatrix;
+    let viewMatrix=view.transform.inverse.matrix;
+    let camPos=[view.transform.position.x,view.transform.position.y,view.transform.position.z];
+
+    renderScene(viewMatrix,projMatrix,camPos);
+  }
+}
+
+// ==================== NON-VR FALLBACK RENDERING ====================
+// For testing without VR headset - mouse/keyboard controls
+let keys={};
+let mouseDown=false,mouseX=0,mouseY=0;
+let camYaw=0,camPitch=0;
+let nonVRMode=false;
+
+document.addEventListener('keydown',e=>{keys[e.code]=true});
+document.addEventListener('keyup',e=>{keys[e.code]=false});
+canvas.addEventListener('mousedown',e=>{mouseDown=true;canvas.requestPointerLock()});
+canvas.addEventListener('mouseup',()=>mouseDown=false);
+document.addEventListener('mousemove',e=>{
+  if(document.pointerLockElement===canvas){
+    camYaw+=e.movementX*0.002;
+    camPitch+=e.movementY*0.002;
+    camPitch=max(-PI/2+0.1,min(PI/2-0.1,camPitch));
+  }
+});
+
+function startNonVR(){
+  nonVRMode=true;
+  document.getElementById('overlay').style.display='none';
+  initGL();
+  initShaders();
+  initScene();
+  initAudio();
+  startAmbientAudio();
+  canvas.width=window.innerWidth;
+  canvas.height=window.innerHeight;
+  gl.viewport(0,0,canvas.width,canvas.height);
+  requestAnimationFrame(nonVRLoop);
+}
+
+function nonVRLoop(ts){
+  if(!nonVRMode)return;
+  requestAnimationFrame(nonVRLoop);
+  time=ts/1000;
+  frameCount++;
+
+  canvas.width=window.innerWidth;
+  canvas.height=window.innerHeight;
+  gl.viewport(0,0,canvas.width,canvas.height);
+
+  // Movement
+  let speed=0.15;
+  let fwd=[-sin(camYaw)*cos(camPitch),sin(camPitch),-cos(camYaw)*cos(camPitch)];
+  let right=[cos(camYaw),0,-sin(camYaw)];
+
+  if(keys['KeyW']||keys['ArrowUp']){playerPos[0]+=fwd[0]*speed;playerPos[2]+=fwd[2]*speed}
+  if(keys['KeyS']||keys['ArrowDown']){playerPos[0]-=fwd[0]*speed;playerPos[2]-=fwd[2]*speed}
+  if(keys['KeyA']||keys['ArrowLeft']){playerPos[0]-=right[0]*speed;playerPos[2]-=right[2]*speed}
+  if(keys['KeyD']||keys['ArrowRight']){playerPos[0]+=right[0]*speed;playerPos[2]+=right[2]*speed}
+  if(keys['Space']&&playerOnGround)playerVel[1]=8;
+  if(keys['ShiftLeft'])speed*=2;
+
+  updatePlayer(1/60);
+  updateCreatures(1/60);
+
+  // Check artifact collection by proximity
+  for(let art of artifacts){
+    if(art.collected)continue;
+    if(v3dist(playerPos,art.pos)<3){
+      art.collected=true;
+      collectedArtifacts++;
+      document.getElementById('artifactCount').textContent=collectedArtifacts;
+      playCollectSound();
+    }
+  }
+  let currentBiome=getBiomeAt(playerPos[0],playerPos[2]);
+  if(!discoveredBiomes.has(currentBiome)){
+    discoveredBiomes.add(currentBiome);
+    document.getElementById('biomeCount').textContent=discoveredBiomes.size;
+  }
+
+  let aspect=canvas.width/canvas.height;
+  let projMatrix=m4perspective(PI/3,aspect,0.1,500);
+  let eye=playerPos;
+  let target=v3add(eye,fwd);
+  let viewMatrix=m4lookAt(eye,target,[0,1,0]);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  renderScene(viewMatrix,projMatrix,eye);
+}
+
+// Add non-VR button
+let nonVRBtn=document.createElement('button');
+nonVRBtn.textContent='EXPLORE WITHOUT VR';
+nonVRBtn.style.cssText='margin-top:15px;padding:12px 30px;font-size:0.9em;font-family:Courier New,monospace;background:transparent;color:#4a9eff;border:1px solid #4a9eff;cursor:pointer;letter-spacing:2px';
+nonVRBtn.onclick=startNonVR;
+document.getElementById('overlay').appendChild(nonVRBtn);
+
+// ==================== INIT ====================
+console.log('Xenoworld initialized. Click ENTER VR or EXPLORE WITHOUT VR to begin.');
+</script>
+</body>
+</html>

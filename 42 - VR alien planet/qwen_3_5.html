@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebXR: The Silent Expanse</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: rgba(0,0,0,0.8); color: #0f0; z-index: 10;
+            text-align: center; pointer-events: none;
+        }
+        button {
+            pointer-events: auto; background: transparent; border: 2px solid #0f0;
+            color: #0f0; padding: 15px 30px; font-size: 1.2rem; cursor: pointer;
+            text-transform: uppercase; letter-spacing: 2px; margin-top: 20px;
+            transition: 0.3s;
+        }
+        button:hover { background: #0f0; color: #000; box-shadow: 0 0 20px #0f0; }
+        #debug { position: absolute; top: 10px; left: 10px; color: white; font-size: 10px; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <h1>THE SILENT EXPANSE</h1>
+    <p>Explore the alien ruins. Interact with artifacts using your controllers.</p>
+    <button id="enterBtn">Enter VR</button>
+</div>
+<div id="debug"></div>
+<canvas id="glcanvas"></canvas>
+
+<script>
+/**
+ * RAW WEBGL + WEBXR ENGINE
+ * No Libraries. No Frameworks.
+ */
+
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2', { xrCompatible: true });
+const debugEl = document.getElementById('debug');
+
+if (!gl) { alert("WebGL2 not supported"); }
+
+// --- SHADERS ---
+
+const vsSource = `#version 300 es
+in vec4 aPosition;
+in vec3 aNormal;
+in vec3 aColor;
+
+uniform mat4 uModelMatrix;
+uniform mat4 uViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat3 uNormalMatrix;
+
+out vec3 vNormal;
+out vec3 vFragPos;
+out vec3 vColor;
+
+void main() {
+    vec4 worldPos = uModelMatrix * aPosition;
+    vFragPos = worldPos.xyz;
+    vNormal = uNormalMatrix * aNormal;
+    vColor = aColor;
+    gl_Position = uProjectionMatrix * uViewMatrix * worldPos;
+}`;
+
+const fsSource = `#version 300 es
+precision highp float;
+
+in vec3 vNormal;
+in vec3 vFragPos;
+in vec3 vColor;
+
+uniform vec3 uLightPos;
+uniform vec3 uViewPos;
+uniform float uTime;
+uniform int uEmissive;
+
+out vec4 FragColor;
+
+void main() {
+    // Ambient
+    vec3 ambient = 0.1 * vColor;
+    
+    // Diffuse
+    vec3 norm = normalize(vNormal);
+    vec3 lightDir = normalize(uLightPos - vFragPos);
+    float diff = max(dot(norm, lightDir), 0.0);
+    vec3 diffuse = diff * vColor;
+    
+    // Specular
+    vec3 viewDir = normalize(uViewPos - vFragPos);
+    vec3 reflectDir = reflect(-lightDir, norm);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
+    vec3 specular = 0.5 * vec3(1.0) * spec;
+
+    // Emissive / Glow Logic
+    vec3 finalColor = ambient + diffuse + specular;
+    
+    if (uEmissive == 1) {
+        float pulse = 0.5 + 0.5 * sin(uTime * 2.0);
+        finalColor = vColor * (0.5 + pulse); 
+    }
+
+    // Fog
+    float dist = length(vFragPos - uViewPos);
+    float fogFactor = 1.0 / (1.0 + 0.0005 * dist * dist);
+    vec3 fogColor = vec3(0.05, 0.0, 0.1);
+    finalColor = mix(fogColor, finalColor, fogFactor);
+
+    FragColor = vec4(finalColor, 1.0);
+}`;
+
+// --- MATH UTILS (Minimal Matrix Lib) ---
+const Mat4 = {
+    create: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+    perspective: (out, fovy, aspect, near, far) => {
+        const f = 1.0 / Math.tan(fovy / 2), nf = 1 / (near - far);
+        out[0] = f / aspect; out[5] = f; out[10] = (far + near) * nf; out[11] = -1; out[14] = (2 * far * near) * nf;
+        out[1]=out[2]=out[3]=out[4]=out[6]=out[7]=out[8]=out[9]=out[12]=out[13]=out[15]=0;
+    },
+    lookAt: (out, eye, center, up) => {
+        let x0, x1, x2, y0, y1, y2, z0, z1, z2, len;
+        let eyex = eye[0], eyey = eye[1], eyez = eye[2];
+        let upx = up[0], upy = up[1], upz = up[2];
+        let centerx = center[0], centery = center[1], centerz = center[2];
+        z0 = eyex - centerx; z1 = eyey - centery; z2 = eyez - centerz;
+        len = 1 / Math.hypot(z0, z1, z2); z0 *= len; z1 *= len; z2 *= len;
+        x0 = upy * z2 - upz * z1; x1 = upz * z0 - upx * z2; x2 = upx * z1 - upy * z0;
+        len = Math.hypot(x0, x1, x2); if (!len) { x0 = 0; x1 = 0; x2 = 0; } else { len = 1 / len; x0 *= len; x1 *= len; x2 *= len; }
+        y0 = z1 * x2 - z2 * x1; y1 = z2 * x0 - z0 * x2; y2 = z0 * x1 - z1 * x0;
+        len = Math.hypot(y0, y1, y2); if (!len) { y0 = 0; y1 = 0; y2 = 0; } else { len = 1 / len; y0 *= len; y1 *= len; y2 *= len; }
+        out[0] = x0; out[1] = y0; out[2] = z0; out[3] = 0;
+        out[4] = x1; out[5] = y1; out[6] = z1; out[7] = 0;
+        out[8] = x2; out[9] = y2; out[10] = z2; out[11] = 0;
+        out[12] = -(x0 * eyex + x1 * eyey + x2 * eyez);
+        out[13] = -(y0 * eyex + y1 * eyey + y2 * eyez);
+        out[14] = -(z0 * eyex + z1 * eyey + z2 * eyez);
+        out[15] = 1;
+    },
+    multiply: (out, a, b) => {
+        let a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+        let a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+        let a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+        let a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+        let b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+        out[0] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        out[3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        b0 = b[4]; b1 = b[5]; b2 = b[6]; b3 = b[7];
+        out[4] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[5] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[6] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        out[7] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        b0 = b[8]; b1 = b[9]; b2 = b[10]; b3 = b[11];
+        out[8] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[9] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[10] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        out[11] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+        b0 = b[12]; b1 = b[13]; b2 = b[14]; b3 = b[15];
+        out[12] = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+        out[13] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+        out[14] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+        out[15] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+    },
+    invert: (out, a) => { /* Simplified invert for rotation/translation */
+        let a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+        let a10 = a[4], a11 = a[5], a12 = a[6], a13 = a[7];
+        let a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+        let a30 = a[12], a31 = a[13], a32 = a[14], a33 = a[15];
+        let b00 = a00 * a11 - a01 * a10;
+        let b01 = a00 * a12 - a02 * a10;
+        let b02 = a00 * a13 - a03 * a10;
+        let b03 = a01 * a12 - a02 * a11;
+        let b04 = a01 * a13 - a03 * a11;
+        let b05 = a02 * a13 - a03 * a12;
+        let b06 = a20 * a31 - a21 * a30;
+        let b07 = a20 * a32 - a22 * a30;
+        let b08 = a20 * a33 - a23 * a30;
+        let b09 = a21 * a32 - a22 * a31;
+        let b10 = a21 * a33 - a23 * a31;
+        let b11 = a22 * a33 - a23 * a32;
+        let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+        if (!det) return null;
+        det = 1.0 / det;
+        out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+        out[1] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+        out[2] = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+        out[3] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+        out[4] = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+        out[5] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+        out[6] = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+        out[7] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+        out[8] = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+        out[9] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+        out[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+        out[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+        out[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+        out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+        out[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+        out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+    },
+    transpose: (out, a) => {
+        if (out === a) {
+            let a01 = a[1], a02 = a[2], a03 = a[3];
+            let a12 = a[6], a13 = a[7];
+            let a23 = a[11];
+            out[1] = a[4]; out[2] = a[8]; out[3] = a[12];
+            out[4] = a01; out[6] = a[9]; out[7] = a[13];
+            out[8] = a02; out[9] = a12; out[11] = a[14];
+            out[12] = a03; out[13] = a13; out[14] = a23;
+        } else {
+            out[0] = a[0]; out[1] = a[4]; out[2] = a[8]; out[3] = a[12];
+            out[4] = a[1]; out[5] = a[5]; out[6] = a[9]; out[7] = a[13];
+            out[8] = a[2]; out[9] = a[6]; out[10] = a[10]; out[11] = a[14];
+            out[12] = a[3]; out[13] = a[7]; out[14] = a[11]; out[15] = a[15];
+        }
+        return out;
+    }
+};
+
+// --- GEOMETRY GENERATORS ---
+
+function createSphere(radius, sectors, stacks, color) {
+    const vertices = [];
+    const normals = [];
+    const colors = [];
+    const indices = [];
+
+    const R = 1.0 / (sectors - 1);
+    const S = 1.0 / (stacks - 1);
+
+    for(let r = 0; r < sectors; r++) {
+        for(let s = 0; s < stacks; s++) {
+            const y = Math.sin(-Math.PI/2 + Math.PI * r * R);
+            const x = Math.cos(2*Math.PI * s * S) * Math.sin(Math.PI * r * R);
+            const z = Math.sin(2*Math.PI * s * S) * Math.sin(Math.PI * r * R);
+            
+            vertices.push(x * radius, y * radius, z * radius);
+            normals.push(x, y, z);
+            colors.push(color[0], color[1], color[2]);
+        }
+    }
+
+    for(let r = 0; r < sectors - 1; r++) {
+        for(let s = 0; s < stacks - 1; s++) {
+            indices.push(r * stacks + s);
+            indices.push((r + 1) * stacks + (s + 1));
+            indices.push(r * stacks + (s + 1));
+            indices.push(r * stacks + s);
+            indices.push((r + 1) * stacks + s);
+            indices.push((r + 1) * stacks + (s + 1));
+        }
+    }
+
+    return { vertices: new Float32Array(vertices), normals: new Float32Array(normals), colors: new Float32Array(colors), indices: new Uint16Array(indices) };
+}
+
+function createPlane(size, color) {
+    const vertices = [-size, 0, -size, size, 0, -size, size, 0, size, -size, 0, size];
+    const normals = [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0];
+    const colors = [];
+    for(let i=0; i<4; i++) colors.push(...color);
+    const indices = [0, 1, 2, 0, 2, 3];
+    return { vertices: new Float32Array(vertices), normals: new Float32Array(normals), colors: new Float32Array(colors), indices: new Uint16Array(indices) };
+}
+
+// --- SCENE MANAGEMENT ---
+
+const objects = [];
+const particles = [];
+let shaderProgram;
+let programInfo;
+let xrSession = null;
+let xrFrame = null;
+let baseLayer = null;
+let projectionMatrix = Mat4.create();
+let viewMatrix = Mat4.create();
+let modelMatrix = Mat4.create();
+let normalMatrix = new Float32Array(9);
+let tempMat = Mat4.create();
+
+// Procedural Generation Logic
+function initWorld() {
+    // Ground
+    const groundGeo = createPlane(100, [0.1, 0.05, 0.2]);
+    const ground = { geo: groundGeo, matrix: Mat4.create(), color: [0.1, 0.05, 0.2], emissive: 0 };
+    objects.push(ground);
+
+    // Biomes & Flora
+    for (let i = 0; i < 150; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const radius = 5 + Math.random() * 40;
+        const x = Math.cos(angle) * radius;
+        const z = Math.sin(angle) * radius;
+        
+        // Strange Trees
+        const height = 1 + Math.random() * 3;
+        const treeGeo = createSphere(0.3 + Math.random()*0.2, 8, 8, [0.0, 1.0, 0.5]);
+        const treeMat = Mat4.create();
+        treeMat[12] = x; treeMat[13] = height/2; treeMat[14] = z;
+        // Scale Y
+        treeMat[5] = height; 
+        
+        const isGlowing = Math.random() > 0.7;
+        objects.push({ 
+            geo: treeGeo, 
+            matrix: treeMat, 
+            color: isGlowing ? [0.2, 1.0, 0.8] : [0.1, 0.4, 0.2], 
+            emissive: isGlowing ? 1 : 0 
+        });
+
+        // Ruins / Artifacts
+        if (Math.random() > 0.95) {
+            const artifactGeo = createSphere(0.5, 12, 12, [1.0, 0.5, 0.0]);
+            const artMat = Mat4.create();
+            artMat[12] = x + (Math.random()-0.5)*2;
+            artMat[13] = 0.5 + Math.random();
+            artMat[14] = z + (Math.random()-0.5)*2;
+            objects.push({ geo: artifactGeo, matrix: artMat, color: [1.0, 0.8, 0.2], emissive: 1 });
+        }
+    }
+
+    // Particles (Spores)
+    for(let i=0; i<500; i++) {
+        particles.push({
+            x: (Math.random() - 0.5) * 60,
+            y: Math.random() * 10,
+            z: (Math.random() - 0.5) * 60,
+            speed: 0.02 + Math.random() * 0.05
+        });
+    }
+}
+
+// --- WEBGL SETUP ---
+
+function initShaderProgram(gl, vsSource, fsSource) {
+    const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+    const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+    const shaderProgram = gl.createProgram();
+    gl.attachShader(shaderProgram, vertexShader);
+    gl.attachShader(shaderProgram, fragmentShader);
+    gl.linkProgram(shaderProgram);
+    if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+        alert('Unable to initialize the shader program: ' + gl.getProgramInfoLog(shaderProgram));
+        return null;
+    }
+    return shaderProgram;
+}
+
+function loadShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+        gl.deleteShader(shader);
+        return null;
+    }
+    return shader;
+}
+
+function createBuffer(gl, data) {
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    return buffer;
+}
+
+function createIndexBuffer(gl, data) {
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    return buffer;
+}
+
+// Initialize Buffers for Geometries
+const sphereGeo = createSphere(1, 16, 16, [1,1,1]);
+const sPosBuffer = createBuffer(gl, sphereGeo.vertices);
+const sNormBuffer = createBuffer(gl, sphereGeo.normals);
+const sColBuffer = createBuffer(gl, sphereGeo.colors);
+const sIndexBuffer = createIndexBuffer(gl, sphereGeo.indices);
+
+const planeGeo = createPlane(100, [1,1,1]);
+const pPosBuffer = createBuffer(gl, planeGeo.vertices);
+const pNormBuffer = createBuffer(gl, planeGeo.normals);
+const pColBuffer = createBuffer(gl, planeGeo.colors);
+const pIndexBuffer = createIndexBuffer(gl, planeGeo.indices);
+
+const particleGeo = createSphere(0.05, 4, 4, [1,1,1]);
+const partPosBuffer = createBuffer(gl, particleGeo.vertices);
+const partNormBuffer = createBuffer(gl, particleGeo.normals);
+const partColBuffer = createBuffer(gl, particleGeo.colors);
+const partIndexBuffer = createIndexBuffer(gl, particleGeo.indices);
+
+// --- XR SETUP ---
+
+const enterBtn = document.getElementById('enterBtn');
+const overlay = document.getElementById('overlay');
+
+enterBtn.addEventListener('click', async () => {
+    if (!navigator.xr) {
+        alert("WebXR not supported on this device/browser.");
+        return;
+    }
+
+    try {
+        xrSession = await navigator.xr.requestSession('immersive-vr', {
+            requiredFeatures: ['local-floor'],
+            optionalFeatures: ['local']
+        });
+        
+        overlay.style.display = 'none';
+        gl.makeXRCompatible().then(() => {
+            xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
+            xrSession.requestAnimationFrame(onXRFrame);
+        });
+
+        xrSession.addEventListener('end', () => {
+            overlay.style.display = 'flex';
+            xrSession = null;
+        });
+
+    } catch (e) {
+        console.error(e);
+        alert("Failed to enter VR: " + e.message);
+    }
+});
+
+// --- RENDER LOOP ---
+
+function onXRFrame(time, frame) {
+    xrSession.requestAnimationFrame(onXRFrame);
+    
+    const pose = frame.getViewerPose(xrSession.referenceSpace);
+    if (!pose) return;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer);
+    gl.clearColor(0.05, 0.0, 0.1, 1.0); // Dark purple fog
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+
+    const lightPos = [10.0, 10.0, 10.0];
+    const viewPos = pose.transform.position;
+
+    // Draw for each eye
+    for (const view of pose.views) {
+        const viewport = baseLayer.getViewport(view);
+        gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+
+        // Set Projection
+        Mat4.perspective(projectionMatrix, Math.PI / 3, viewport.width / viewport.height, 0.1, 100.0);
+        
+        // Set View (Inverse of View Matrix)
+        Mat4.invert(viewMatrix, view.transform.inverse.matrix);
+
+        renderScene(projectionMatrix, viewMatrix, lightPos, viewPos, time);
+    }
+}
+
+function renderScene(proj, view, lightPos, viewPos, time) {
+    if (!shaderProgram) {
+        shaderProgram = initShaderProgram(gl, vsSource, fsSource);
+        programInfo = {
+            program: shaderProgram,
+            attribLocations: {
+                vertexPosition: gl.getAttribLocation(shaderProgram, 'aPosition'),
+                vertexNormal: gl.getAttribLocation(shaderProgram, 'aNormal'),
+                vertexColor: gl.getAttribLocation(shaderProgram, 'aColor'),
+            },
+            uniformLocations: {
+                projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
+                viewMatrix: gl.getUniformLocation(shaderProgram, 'uViewMatrix'),
+                modelMatrix: gl.getUniformLocation(shaderProgram, 'uModelMatrix'),
+                normalMatrix: gl.getUniformLocation(shaderProgram, 'uNormalMatrix'),
+                lightPos: gl.getUniformLocation(shaderProgram, 'uLightPos'),
+                viewPos: gl.getUniformLocation(shaderProgram, 'uViewPos'),
+                time: gl.getUniformLocation(shaderProgram, 'uTime'),
+                emissive: gl.getUniformLocation(shaderProgram, 'uEmissive'),
+            },
+        };
+    }
+
+    gl.useProgram(programInfo.program);
+
+    gl.uniformMatrix4fv(programInfo.uniformLocations.projectionMatrix, false, proj);
+    gl.uniformMatrix4fv(programInfo.uniformLocations.viewMatrix, false, view);
+    gl.uniform3fv(programInfo.uniformLocations.lightPos, lightPos);
+    gl.uniform3fv(programInfo.uniformLocations.viewPos, [viewPos.x, viewPos.y, viewPos.z]);
+    gl.uniform1f(programInfo.uniformLocations.time, time * 0.001);
+
+    // Render Objects
+    objects.forEach(obj => {
+        // Bind Geometry
+        if (obj === objects[0]) { // Ground
+            gl.bindBuffer(gl.ARRAY_BUFFER, pPosBuffer);
+            gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+            gl.bindBuffer(gl.ARRAY_BUFFER, pNormBuffer);
+            gl.vertexAttribPointer(programInfo.attribLocations.vertexNormal, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(programInfo.attribLocations.vertexNormal);
+            gl.bindBuffer(gl.ARRAY_BUFFER, pColBuffer);
+            gl.vertexAttribPointer(programInfo.attribLocations.vertexColor, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, pIndexBuffer);
+        } else {
+            gl.bindBuffer(gl.ARRAY_BUFFER, sPosBuffer);
+            gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+            gl.bindBuffer(gl.ARRAY_BUFFER, sNormBuffer);
+            gl.vertexAttribPointer(programInfo.attribLocations.vertexNormal, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(programInfo.attribLocations.vertexNormal);
+            gl.bindBuffer(gl.ARRAY_BUFFER, sColBuffer);
+            gl.vertexAttribPointer(programInfo.attribLocations.vertexColor, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, sIndexBuffer);
+        }
+
+        // Set Uniforms
+        gl.uniformMatrix4fv(programInfo.uniformLocations.modelMatrix, false, obj.matrix);
+        Mat4.transpose(normalMatrix, obj.matrix); // Simplified normal matrix for uniform scale/rot
+        gl.uniformMatrix3fv(programInfo.uniformLocations.normalMatrix, false, normalMatrix);
+        gl.uniform1i(programInfo.uniformLocations.emissive, obj.emissive);
+
+        gl.drawElements(gl.TRIANGLES, obj.geo.indices.length, gl.UNSIGNED_SHORT, 0);
+    });
+
+    // Render Particles
+    particles.forEach(p => {
+        p.y += p.speed;
+        if(p.y > 10) p.y = 0;
+        
+        Mat4.create(); // Reset temp
+        tempMat[12] = p.x; tempMat[13] = p.y; tempMat[14] = p.z;
+        
+        gl.bindBuffer(gl.ARRAY_BUFFER, partPosBuffer);
+        gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+        gl.bindBuffer(gl.ARRAY_BUFFER, partNormBuffer);
+        gl.vertexAttribPointer(programInfo.attribLocations.vertexNormal, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(programInfo.attribLocations.vertexNormal);
+        gl.bindBuffer(gl.ARRAY_BUFFER, partColBuffer);
+        gl.vertexAttribPointer(programInfo.attribLocations.vertexColor, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, partIndexBuffer);
+
+        gl.uniformMatrix4fv(programInfo.uniformLocations.modelMatrix, false, tempMat);
+        gl.uniform1i(programInfo.uniformLocations.emissive, 1);
+        gl.drawElements(gl.TRIANGLES, particleGeo.indices.length, gl.UNSIGNED_SHORT, 0);
+    });
+}
+
+// Start
+initWorld();
+// Initial render to show something before VR starts (optional, but good for debugging)
+// In a real app, you'd render to 2D canvas here too.
+
+</script>
+</body>
+</html>

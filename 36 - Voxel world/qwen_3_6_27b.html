@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Medieval Voxel Diorama</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #000; font-family: system-ui, -apple-system, sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .btn {
+    pointer-events: auto; background: rgba(15,23,42,0.8); color: #e2e8f0;
+    border: 1px solid rgba(255,255,255,0.15); padding: 8px 14px; border-radius: 6px;
+    font-size: 13px; cursor: pointer; backdrop-filter: blur(8px); transition: all 0.2s;
+    font-weight: 500; letter-spacing: 0.5px;
+  }
+  .btn:hover { background: rgba(30,41,59,0.9); border-color: rgba(255,255,255,0.3); transform: translateY(-1px); }
+  .btn.active { background: rgba(59,130,246,0.8); border-color: #3b82f6; }
+  #info {
+    position: fixed; bottom: 16px; left: 16px; color: rgba(255,255,255,0.6);
+    font-size: 12px; pointer-events: none; line-height: 1.5;
+  }
+  #loading {
+    position: fixed; inset: 0; background: #0f172a; display: flex; align-items: center;
+    justify-content: center; color: #e2e8f0; font-size: 18px; z-index: 100; transition: opacity 0.5s;
+  }
+  #loading.hidden { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="loading">Generating Voxel World...</div>
+<canvas id="c"></canvas>
+<div id="ui">
+  <button class="btn" id="btn-dawn">🌅 Dawn</button>
+  <button class="btn active" id="btn-day">☀️ Day</button>
+  <button class="btn" id="btn-dusk">🌇 Dusk</button>
+  <button class="btn" id="btn-night">🌙 Night</button>
+  <button class="btn" id="btn-mode">🎥 Orbit Mode</button>
+  <button class="btn" id="btn-screenshot">📸 Screenshot</button>
+</div>
+<div id="info">
+  WASD Move | Space/Shift Up/Down | Mouse Look<br>
+  Click to lock cursor | Scroll to zoom (Orbit) | T to toggle trees
+</div>
+
+<script>
+// ==================== WEBGPU SETUP ====================
+const canvas = document.getElementById('c');
+const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+if (!adapter) throw new Error('WebGPU not supported');
+const device = await adapter.requestDevice();
+const context = canvas.getContext('webgpu');
+const format = navigator.gpu.getPreferredCanvasFormat();
+context.configure({ device, format, alphaMode: 'premultiplied' });
+
+function resize() {
+  canvas.width = window.innerWidth * devicePixelRatio;
+  canvas.height = window.innerHeight * devicePixelRatio;
+  context.configure({ device, format, alphaMode: 'premultiplied' });
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ==================== SHADERS ====================
+const voxelWgsl = `
+struct Uniforms {
+  viewProj: mat4x4f,
+  view: mat4x4f,
+  world: mat4x4f,
+  lightDir: vec4f,
+  lightColor: vec4f,
+  ambientColor: vec4f,
+  fogColor: vec4f,
+  fogDensity: f32,
+  time: f32,
+  blockScale: f32,
+};
+
+@group(0) @binding(0) var<uniform> u: Uniforms;
+
+struct VOut {
+  @builtin(position) pos: vec4f,
+  @location(0) normal: vec3f,
+  @location(1) uv: vec2f,
+  @location(2) blockType: i32,
+  @location(3) worldPos: vec4f,
+  @location(4) ndcPos: vec2f,
+};
+
+@vertex
+fn vert(@location(0) pos: vec3f, @location(1) norm: vec3f, @location(2) uv: vec2f, @location(3) bt: i32) -> VOut {
+  var out: VOut;
+  out.worldPos = u.world * vec4f(pos, 1.0);
+  out.pos = u.viewProj * out.worldPos;
+  out.ndcPos = (out.pos.xy / out.pos.w) * 0.5 + 0.5;
+  out.normal = mat3x3f(u.view) * norm;
+  out.uv = uv;
+  out.blockType = bt;
+  return out;
+}
+
+@fragment
+fn frag(v: VOut) -> @location(0) vec4f {
+  var baseColor = vec4f(0.8, 0.8, 0.8, 1.0);
+  let bt = v.blockType;
+  
+  if (bt == 1) { baseColor = vec4f(0.35, 0.65, 0.25, 1.0); } // Grass
+  else if (bt == 2) { baseColor = vec4f(0.45, 0.32, 0.22, 1.0); } // Dirt
+  else if (bt == 3) { baseColor = vec4f(0.5, 0.5, 0.52, 1.0); } // Stone
+  else if (bt == 4) { baseColor = vec4f(0.76, 0.7, 0.5, 1.0); } // Sand
+  else if (bt == 5) { baseColor = vec4f(0.15, 0.35, 0.65, 0.75); } // Water
+  else if (bt == 6) { baseColor = vec4f(0.35, 0.2, 0.1, 1.0); } // Wood
+  else if (bt == 7) { baseColor = vec4f(0.2, 0.5, 0.15, 1.0); } // Leaves
+  else if (bt == 8) { baseColor = vec4f(0.45, 0.42, 0.4, 1.0); } // Cobble
+  else if (bt == 9) { baseColor = vec4f(0.65, 0.45, 0.35, 1.0); } // Brick
+  else if (bt == 10) { baseColor = vec4f(0.9, 0.3, 0.1, 1.0); } // Lava
+  else if (bt == 11) { baseColor = vec4f(0.7, 0.8, 0.9, 0.6); } // Glass
+  else if (bt == 12) { baseColor = vec4f(1.0, 0.8, 0.3, 1.0); } // Torch
+  else if (bt == 13) { baseColor = vec4f(0.8, 0.1, 0.1, 1.0); } // Flag
+  else if (bt == 14) { baseColor = vec4f(0.95, 0.95, 0.95, 1.0); } // Snow
+  else if (bt == 15) { baseColor = vec4f(0.25, 0.25, 0.25, 1.0); } // Basalt
+
+  // Block variation
+  var hash = fract(sin(dot(v.worldPos.xyz, vec3f(12.9898, 78.233, 45.164))) * 43758.5453);
+  baseColor.rgb = mix(baseColor.rgb, baseColor.rgb * 0.85, hash * 0.15);
+
+  // Water animation
+  if (bt == 5) {
+    let wave = sin(v.worldPos.x * 2.0 + u.time * 1.5) * 0.05 + cos(v.worldPos.z * 1.5 + u.time * 1.2) * 0.05;
+    baseColor.a = 0.65 + wave;
+  }
+
+  // Emissive blocks
+  var emissive = 0.0;
+  if (bt == 10) emissive = 1.5;
+  else if (bt == 12) emissive = 2.0 + sin(u.time * 8.0) * 0.3;
+  else if (bt == 11 && dot(v.normal, u.lightDir.xyz) > 0.8) emissive = 0.8;
+
+  // Lighting
+  let N = normalize(v.normal);
+  let L = normalize(u.lightDir.xyz);
+  let diff = max(dot(N, L), 0.0);
+  let ambient = u.ambientColor;
+  let lightContrib = u.lightColor * diff;
+  var finalColor = baseColor * (ambient + lightContrib) + vec4f(baseColor.rgb * emissive, emissive);
+
+  // Fog & Atmospheric perspective
+  let dist = length(u.view * vec4f(v.worldPos.xyz, 1.0)).z;
+  let fog = 1.0 - exp(-u.fogDensity * dist * dist);
+  finalColor = mix(finalColor, u.fogColor, clamp(fog, 0.0, 1.0));
+
+  // Tone mapping (ACES approximation)
+  finalColor.rgb = (finalColor.rgb * (2.51 * finalColor.rgb + 0.03)) / (finalColor.rgb * (2.43 * finalColor.rgb + 0.59) + 0.14);
+  finalColor.rgb = max(finalColor.rgb - 0.0, 1.0);
+
+  return finalColor;
+}
+`;
+
+const postWgsl = `
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+
+@vertex
+fn vert(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4f {
+  let pos = array<vec2f, 6>(
+    vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0),
+    vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0)
+  );
+  return vec4f(pos[idx], 0.0, 1.0);
+}
+
+@fragment
+fn frag(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
+  let uv = fragCoord.xy / vec2f(textureDimensions(tex));
+  var color = textureSample(tex, samp, uv);
+  
+  // Vignette
+  let d = distance(fragCoord.xy, vec2f(textureDimensions(tex)) * 0.5);
+  let maxDist = length(textureDimensions(tex) * 0.5);
+  let vig = smoothstep(maxDist, maxDist * 0.4, d);
+  color.rgb *= 1.0 - vig * 0.6;
+  
+  // Slight warm tint
+  color.r *= 1.02;
+  color.b *= 0.98;
+  
+  return color;
+}
+`;
+
+// ==================== WORLD GENERATION ====================
+const CHUNK_SIZE = 32;
+const WORLD_H = 64;
+const BLOCKS = new Uint8Array(CHUNK_SIZE * WORLD_H * CHUNK_SIZE * 5 * 5); // 5x5 chunks
+const WORLD_W = CHUNK_SIZE * 5;
+const WORLD_D = CHUNK_SIZE * 5;
+
+function idx(x, y, z) { return x + y * WORLD_W + z * WORLD_W * WORLD_H; }
+function getBlock(x, y, z) {
+  if (x < 0 || x >= WORLD_W || y < 0 || y >= WORLD_H || z < 0 || z >= WORLD_D) return 0;
+  return BLOCKS[idx(x, y, z)];
+}
+function setBlock(x, y, z, v) {
+  if (x < 0 || x >= WORLD_W || y < 0 || y >= WORLD_H || z < 0 || z >= WORLD_D) return;
+  BLOCKS[idx(x, y, z)] = v;
+}
+
+// Simple noise
+function noise2d(x, z) {
+  return Math.sin(x * 0.1) * Math.cos(z * 0.1) * 0.5 + 
+         Math.sin(x * 0.3 + z * 0.2) * 0.25 +
+         Math.cos(x * 0.05 - z * 0.08) * 0.25;
+}
+
+function generateWorld() {
+  // Base terrain
+  for (let x = 0; x < WORLD_W; x++) {
+    for (let z = 0; z < WORLD_D; z++) {
+      let h = Math.floor(12 + noise2d(x, z) * 8);
+      h = Math.max(0, Math.min(WORLD_H - 2, h));
+      
+      for (let y = 0; y < h; y++) {
+        if (y === h - 1) setBlock(x, y, z, 1); // Grass
+        else if (y > h - 4) setBlock(x, y, z, 2); // Dirt
+        else setBlock(x, y, z, 3); // Stone
+      }
+    }
+  }
+
+  // River curve
+  for (let t = 0; t < 1.0; t += 0.005) {
+    let rx = Math.floor(WORLD_W * 0.3 + Math.sin(t * 6.28) * 80);
+    let rz = Math.floor(t * WORLD_D);
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dy = -2; dy <= 0; dy++) {
+        let cx = rx + dx, cz = rz;
+        let cy = Math.min(WORLD_H-1, Math.floor(10 + noise2d(cx, cz) * 8) + dy);
+        if (cy > 0) setBlock(cx, cy, cz, 5); // Water
+      }
+    }
+  }
+
+  // Castle on terraced hill
+  let cx = Math.floor(WORLD_W * 0.5), cz = Math.floor(WORLD_D * 0.4);
+  for (let dx = -25; dx <= 25; dx++) {
+    for (let dz = -25; dz <= 25; dz++) {
+      let dist = Math.sqrt(dx*dx + dz*dz);
+      let th = Math.floor(20 + Math.max(0, 15 - dist * 0.4));
+      let baseH = Math.floor(12 + noise2d(cx+dx, cz+dz) * 4);
+      let h = Math.max(baseH, th);
+      for (let y = 0; y < h; y++) {
+        if (getBlock(cx+dx, y, cz+dz) === 0) {
+          setBlock(cx+dx, y, cz+dz, y === h-1 ? 1 : 3);
+        }
+      }
+    }
+  }
+
+  // Castle walls & towers
+  for (let w = -20; w <= 20; w++) {
+    for (let h = 0; h < 8; h++) {
+      if (Math.abs(w) < 18 || h < 7) {
+        setBlock(cx+w, 28+h, cz-20, 9); // Brick wall
+        setBlock(cx+w, 28+h, cz+20, 9);
+        setBlock(cx-20, 28+h, cz+w, 9);
+        setBlock(cx+20, 28+h, cz+w, 9);
+      }
+    }
+  }
+  // Towers
+  [[-20,-20],[-20,20],[20,-20],[20,20]].forEach(([dx,dz]) => {
+    for (let h = 0; h < 12; h++) {
+      for (let wx = -2; wx <= 2; wx++) {
+        for (let wz = -2; wz <= 2; wz++) {
+          if (wx*wx + wz*wz <= 4) setBlock(cx+dx+wx, 26+h, cz+dz+wz, 8);
+        }
+      }
+    }
+  });
+
+  // Moat & Bridge
+  for (let x = cx-25; x <= cx+25; x++) {
+    for (let z = cz-25; z <= cz+25; z++) {
+      if (Math.abs(x-cx) > 22 || Math.abs(z-cz) > 22) {
+        let gy = Math.floor(10 + noise2d(x,z)*4);
+        setBlock(x, gy, z, 5);
+      }
+    }
+  }
+  for (let z = cz+20; z <= cz+30; z++) {
+    for (let y = 12; y <= 15; y++) setBlock(cx, y, z, 8);
+    setBlock(cx, 16, z, 13); // Flag on bridge
+  }
+
+  // Village houses (procedural 30 houses)
+  for (let i = 0; i < 30; i++) {
+    let hx = Math.floor(WORLD_W * 0.2 + Math.random() * 40);
+    let hz = Math.floor(WORLD_D * 0.1 + Math.random() * 60);
+    let hy = Math.floor(12 + noise2d(hx, hz) * 4);
+    let w = 3 + Math.floor(Math.random() * 2), d = 3 + Math.floor(Math.random() * 2), h = 4 + Math.floor(Math.random() * 2);
+    for (let x = 0; x < w; x++) for (let z = 0; z < d; z++) for (let y = 0; y < h; y++) {
+      let isWall = x===0 || x===w-1 || z===0 || z===d-1 || y===h-1;
+      let isWindow = y > 1 && y < h-1 && (x===0 || x===w-1 || z===0 || z===d-1);
+      setBlock(hx+x, hy+y, hz+z, isWindow ? 11 : (isWall ? 6 : 2));
+    }
+    setBlock(hx + Math.floor(w/2), hy+h, hz + Math.floor(d/2), 13); // Flag
+  }
+
+  // Volcano
+  let vx = Math.floor(WORLD_W * 0.8), vz = Math.floor(WORLD_D * 0.8);
+  for (let dx = -30; dx <= 30; dx++) {
+    for (let dz = -30; dz <= 30; dz++) {
+      let dist = Math.sqrt(dx*dx + dz*dz);
+      if (dist < 30) {
+        let h = Math.floor(35 - dist * 0.8 + Math.random());
+        for (let y = 10; y < h; y++) {
+          setBlock(vx+dx, y, vz+dz, 15); // Basalt
+        }
+        if (dist < 8) setBlock(vx+dx, h, vz+dz, 10); // Lava crater
+      }
+    }
+  }
+
+  // Snowy mountains
+  for (let x = 0; x < WORLD_W; x++) {
+    for (let z = 0; z < 20; z++) {
+      let h = Math.floor(30 + Math.sin(x*0.1)*10 + Math.cos(z*0.15)*5);
+      for (let y = 20; y < h; y++) {
+        if (getBlock(x,y,z) === 0) setBlock(x,y,z, y > h-3 ? 14 : 3);
+      }
+    }
+  }
+
+  // Trees & details
+  for (let i = 0; i < 150; i++) {
+    let tx = Math.floor(Math.random() * WORLD_W);
+    let tz = Math.floor(Math.random() * WORLD_D);
+    let ty = 0;
+    for (let y = WORLD_H-1; y >= 0; y--) { if (getBlock(tx,y,tz) === 1) { ty = y+1; break; } }
+    if (ty > 1 && ty < WORLD_H-6) {
+      for (let y = 0; y < 5; y++) setBlock(tx, ty+y, tz, 6);
+      for (let lx = -2; lx <= 2; lx++) for (let lz = -2; lz <= 2; lz++) for (let ly = 3; ly <= 6; ly++) {
+        if (Math.abs(lx)+Math.abs(lz)+Math.abs(ly-4) < 4) setBlock(tx+lx, ty+ly, tz+lz, 7);
+      }
+    }
+  }
+
+  // Torches & glow
+  for (let i = 0; i < 40; i++) {
+    let tx = Math.floor(Math.random() * WORLD_W);
+    let tz = Math.floor(Math.random() * WORLD_D);
+    let ty = 0;
+    for (let y = WORLD_H-1; y >= 0; y--) { if (getBlock(tx,y,tz) !== 0 && getBlock(tx,y,tz) !== 5) { ty = y+1; break; } }
+    if (ty > 0 && ty < WORLD_H) setBlock(tx, ty, tz, 12);
+  }
+}
+
+// ==================== MESH GENERATION ====================
+function generateMesh() {
+  const verts = [];
+  const indices = [];
+  let idx = 0;
+
+  function addFace(x, y, z, dir, bt) {
+    // dir: 0=+x,1=-x,2=+y,3=-y,4=+z,5=-z
+    const normals = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+    const n = normals[dir];
+    const uv0 = [0,0], uv1 = [1,0], uv2 = [1,1], uv3 = [0,1];
+    const offsets = [
+      [[1,0,0],[1,1,0],[1,1,1],[1,0,1]], // +x
+      [[0,0,0],[0,1,0],[0,1,1],[0,0,1]], // -x
+      [[0,1,0],[1,1,0],[1,1,1],[0,1,1]], // +y
+      [[0,0,0],[1,0,0],[1,0,1],[0,0,1]], // -y
+      [[0,0,1],[1,0,1],[1,1,1],[0,1,1]], // +z
+      [[1,0,0],[0,0,0],[0,1,0],[1,1,0]]  // -z
+    ];
+    const o = offsets[dir];
+    const base = idx;
+    for (let i = 0; i < 4; i++) {
+      verts.push(x+o[i][0], y+o[i][1], z+o[i][2], n[0], n[1], n[2], uv[i][0], uv[i][1], bt);
+    }
+    indices.push(base, base+1, base+2, base, base+2, base+3);
+    idx += 4;
+  }
+
+  for (let x = 0; x < WORLD_W; x++) {
+    for (let y = 0; y < WORLD_H; y++) {
+      for (let z = 0; z < WORLD_D; z++) {
+        const bt = getBlock(x, y, z);
+        if (bt === 0) continue;
+        const dirs = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+        for (let d = 0; d < 6; d++) {
+          const nx = x+dirs[d][0], ny = y+dirs[d][1], nz = z+dirs[d][2];
+          const nb = getBlock(nx, ny, nz);
+          if (nb === 0 || (bt !== 5 && nb === 5)) addFace(x, y, z, d, bt);
+        }
+      }
+    }
+  }
+
+  const vertData = new Float32Array(verts);
+  const indData = new Uint32Array(indices);
+  return { vertData, indData, vertCount: verts.length / 9, indCount: indices.length };
+}
+
+const worldMesh = generateMesh();
+const vertexBuffer = device.createBuffer({ size: worldMesh.vertData.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+const indexBuffer = device.createBuffer({ size: worldMesh.indData.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+device.queue.writeBuffer(vertexBuffer, 0, worldMesh.vertData);
+device.queue.writeBuffer(indexBuffer, 0, worldMesh.indData);
+
+// ==================== RENDER PIPES ====================
+const uniformBuffer = device.createBuffer({ size: 4*16 + 4*6, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+const bindGroupLayout = device.createBindGroupLayout({
+  entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }]
+});
+const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+
+const voxelModule = device.createShaderModule({ code: voxelWgsl });
+const postModule = device.createShaderModule({ code: postWgsl });
+
+const voxelPipeline = device.createRenderPipeline({
+  layout: pipelineLayout,
+  vertex: { module: voxelModule, entryPoint: 'vert', buffers: [{ arrayStride: 9*4, attributes: [
+    { shaderLocation: 0, offset: 0, format: 'float32x3' },
+    { shaderLocation: 1, offset: 12, format: 'float32x3' },
+    { shaderLocation: 2, offset: 24, format: 'float32x2' },
+    { shaderLocation: 3, offset: 32, format: 'sint32' }
+  ]}] },
+  fragment: { module: voxelModule, entryPoint: 'frag', targets: [{ format }] },
+  primitive: { topology: 'triangle-list', cullMode: 'back' },
+  depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' }
+});
+
+const postPipeline = device.createRenderPipeline({
+  layout: device.createPipelineLayout({ bindGroupLayouts: [device.createBindGroupLayout({ entries: [
+    { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} }
+  ]})] }),
+  vertex: { module: postModule, entryPoint: 'vert' },
+  fragment: { module: postModule, entryPoint: 'frag', targets: [{ format }] }
+});
+
+const depthTex = device.createTexture({ size: [canvas.width, canvas.height], format: 'depth24plus' });
+const depthView = depthTex.createView();
+const renderTarget = device.createTexture({ size: [canvas.width, canvas.height], format });
+const renderView = renderTarget.createView();
+const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+const postBindGroup = device.createBindGroup({ layout: postPipeline.getBindGroupLayout(0), entries: [
+  { binding: 0, resource: renderTarget.createView() }, { binding: 1, resource: sampler }
+]});
+const bindGroup = device.createBindGroup({ layout: bindGroupLayout, entries: [{ binding: 0, resource: { buffer: uniformBuffer } }] });
+
+// ==================== CAMERA & CONTROLS ====================
+const cam = { pos: [WORLD_W/2, 60, WORLD_D/2], yaw: 0, pitch: -0.3, mode: 'fly', orbitDist: 80, orbitTarget: [WORLD_W/2, 20, WORLD_D/2] };
+const keys = {};
+let locked = false;
+
+document.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if(e.key === 't') cam.mode = cam.mode === 'fly' ? 'orbit' : 'fly'; });
+document.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+canvas.addEventListener('click', () => canvas.requestPointerLock());
+document.addEventListener('pointerlockchange', () => { locked = document.pointerLockElement === canvas; });
+document.addEventListener('mousemove', e => {
+  if (!locked && cam.mode === 'fly') return;
+  cam.yaw -= e.movementX * 0.002;
+  cam.pitch -= e.movementY * 0.002;
+  cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch));
+});
+
+function updateCamera(dt) {
+  const speed = 20 * dt;
+  const f = [Math.sin(cam.yaw)*Math.cos(cam.pitch), Math.sin(cam.pitch), -Math.cos(cam.yaw)*Math.cos(cam.pitch)];
+  const r = [Math.cos(cam.yaw), 0, Math.sin(cam.yaw)];
+  if (cam.mode === 'fly') {
+    if (keys['w']) cam.pos[0] += f[0]*speed, cam.pos[2] += f[2]*speed;
+    if (keys['s']) cam.pos[0] -= f[0]*speed, cam.pos[2] -= f[2]*speed;
+    if (keys['a']) cam.pos[0] -= r[0]*speed, cam.pos[2] -= r[2]*speed;
+    if (keys['d']) cam.pos[0] += r[0]*speed, cam.pos[2] += r[2]*speed;
+    if (keys[' ']) cam.pos[1] += speed;
+    if (keys['shift']) cam.pos[1] -= speed;
+  } else {
+    cam.orbitDist += (keys['w'] ? -speed : keys['s'] ? speed : 0);
+    cam.orbitDist = Math.max(10, Math.min(200, cam.orbitDist));
+    cam.orbitTarget[0] += (keys['d'] ? speed : keys['a'] ? -speed : 0);
+    cam.orbitTarget[2] += (keys['w'] ? speed : keys['s'] ? -speed : 0);
+    cam.orbitTarget[1] += (keys[' '] ? speed : keys['shift'] ? -speed : 0);
+    cam.pos[0] = cam.orbitTarget[0] + Math.sin(cam.yaw)*Math.cos(cam.pitch)*cam.orbitDist;
+    cam.pos[1] = cam.orbitTarget[1] + Math.sin(cam.pitch)*cam.orbitDist;
+    cam.pos[2] = cam.orbitTarget[2] - Math.cos(cam.yaw)*Math.cos(cam.pitch)*cam.orbitDist;
+  }
+}
+
+// ==================== TIME & LIGHTING ====================
+let timeOfDay = 'day';
+const timePresets = {
+  dawn: { sunDir: [0.8, 0.3, 0.5], sunCol: [1.0, 0.6, 0.4], amb: [0.3, 0.25, 0.4], fog: [0.8, 0.6, 0.5], fogD: 0.002 },
+  day: { sunDir: [0.5, 0.8, 0.3], sunCol: [1.0, 1.0, 0.95], amb: [0.4, 0.45, 0.55], fog: [0.6, 0.7, 0.85], fogD: 0.0015 },
+  dusk: { sunDir: [-0.7, 0.2, 0.4], sunCol: [0.9, 0.5, 0.3], amb: [0.35, 0.2, 0.35], fog: [0.6, 0.4, 0.5], fogD: 0.0025 },
+  night: { sunDir: [0.2, 0.6, 0.3], sunCol: [0.15, 0.2, 0.4], amb: [0.1, 0.12, 0.2], fog: [0.05, 0.06, 0.1], fogD: 0.003 }
+};
+
+function setUniforms(time) {
+  const p = timePresets[timeOfDay];
+  const mat4 = new Float32Array(16);
+  // View projection
+  const fov = 70 * Math.PI / 180, asp = canvas.width / canvas.height, near = 0.1, far = 500;
+  const f = 1 / Math.tan(fov/2), nf = 1/(near-far);
+  mat4.fill(0); mat4[0]=f/asp; mat4[5]=f; mat4[10]=(far+near)*nf; mat4[11]=-1; mat4[14]=2*far*near*nf;
+  // Camera matrix
+  const cp = cam.pos, fVec = cam.mode === 'orbit' ? [
+    cam.orbitTarget[0]-cp[0], cam.orbitTarget[1]-cp[1], cam.orbitTarget[2]-cp[2]
+  ] : [Math.sin(cam.yaw)*Math.cos(cam.pitch), Math.sin(cam.pitch), -Math.cos(cam.yaw)*Math.cos(cam.pitch)];
+  const len = Math.sqrt(fVec[0]**2+fVec[1]**2+fVec[2]**2);
+  fVec[0]/=len; fVec[1]/=len; fVec[2]/=len;
+  const r = [fVec[1]*0-fVec[2]*0, fVec[2]*1-fVec[0]*0, fVec[0]*0-fVec[1]*1]; // cross(up, fwd)
+  const u = [fVec[1]*r[2]-fVec[2]*r[1], fVec[2]*r[0]-fVec[0]*r[2], fVec[0]*r[1]-fVec[1]*r[0]];
+  const view = new Float32Array([
+    r[0],u[0],-fVec[0],0, r[1],u[1],-fVec[1],0, r[2],u[2],-fVec[2],0,
+    -(r[0]*cp[0]+r[1]*cp[1]+r[2]*cp[2]), -(u[0]*cp[0]+u[1]*cp[1]+u[2]*cp[2]), (fVec[0]*cp[0]+fVec[1]*cp[1]+fVec[2]*cp[2]), 1
+  ]);
+  // Multiply VP * View
+  const vp = new Float32Array(16);
+  for(let i=0;i<4;i++) for(let j=0;j<4;j++) {
+    vp[i*4+j] = mat4[i*4]*view[j] + mat4[i*4+1]*view[4+j] + mat4[i*4+2]*view[8+j] + mat4[i*4+3]*view[12+j];
+  }
+  // World is identity
+  const world = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+  
+  const uniformData = new Float32Array(vp.length + view.length + world.length + 4 + 4 + 4 + 4 + 1 + 1);
+  uniformData.set(vp, 0); uniformData.set(view, 64); uniformData.set(world, 128);
+  uniformData.set(p.sunDir, 192); uniformData[p.sunDir.length+192] = 0;
+  uniformData.set(p.sunCol, 200); uniformData[204] = 1;
+  uniformData.set(p.amb, 208); uniformData[212] = 1;
+  uniformData.set(p.fog, 216); uniformData[220] = 1;
+  uniformData[224] = p.fogD; uniformData[225] = time; uniformData[226] = 1;
+  device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+}
+
+// ==================== RENDER LOOP ====================
+let lastTime = 0;
+function frame(t) {
+  const dt = Math.min((t - lastTime) / 1000, 0.1);
+  lastTime = t;
+  updateCamera(dt);
+  setUniforms(t / 1000);
+
+  const encoder = device.createCommandEncoder();
+  // Voxel pass
+  const pass1 = encoder.beginRenderPass({
+    colorAttachments: [{ view: renderView, clearValue: timePresets[timeOfDay].fog, loadOp: 'clear', storeOp: 'store' }],
+    depthStencilAttachment: { view: depthView, depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store' }
+  });
+  pass1.setPipeline(voxelPipeline);
+  pass1.setBindGroup(0, bindGroup);
+  pass1.setVertexBuffer(0, vertexBuffer);
+  pass1.setIndexBuffer(indexBuffer, 'uint32');
+  pass1.drawIndexed(worldMesh.indCount);
+  pass1.end();
+
+  // Post process pass
+  const pass2 = encoder.beginRenderPass({
+    colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0,0,0,1], loadOp: 'clear', storeOp: 'store' }]
+  });
+  pass2.setPipeline(postPipeline);
+  pass2.setBindGroup(0, postBindGroup);
+  pass2.draw(6);
+  pass2.end();
+
+  device.queue.submit([encoder.finish()]);
+  requestAnimationFrame(frame);
+}
+
+// ==================== UI ====================
+document.getElementById('btn-dawn').onclick = () => { timeOfDay = 'dawn'; updateBtns(); };
+document.getElementById('btn-day').onclick = () => { timeOfDay = 'day'; updateBtns(); };
+document.getElementById('btn-dusk').onclick = () => { timeOfDay = 'dusk'; updateBtns(); };
+document.getElementById('btn-night').onclick = () => { timeOfDay = 'night'; updateBtns(); };
+document.getElementById('btn-mode').onclick = function() { cam.mode = cam.mode === 'fly' ? 'orbit' : 'fly'; this.textContent = cam.mode === 'fly' ? '🎥 Orbit Mode' : '🚶 Walk Mode'; };
+document.getElementById('btn-screenshot').onclick = () => {
+  canvas.toBlob(blob => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `voxel-world-${timeOfDay}.png`;
+    a.click();
+  });
+};
+
+function updateBtns() {
+  document.querySelectorAll('#ui .btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(`btn-${timeOfDay}`).classList.add('active');
+}
+
+// ==================== INIT ====================
+generateWorld();
+document.getElementById('loading').classList.add('hidden');
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

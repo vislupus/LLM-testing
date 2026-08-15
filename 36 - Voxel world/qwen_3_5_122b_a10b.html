@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>WebGPU Fantasy Voxel World</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, sans-serif; color: white; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #ui { position: absolute; top: 20px; left: 20px; pointer-events: none; }
+        h1 { margin: 0; font-size: 24px; text-shadow: 0 2px 4px rgba(0,0,0,0.8); letter-spacing: 1px; }
+        p { margin: 4px 0; font-size: 14px; opacity: 0.8; text-shadow: 0 1px 2px black; }
+        .controls { pointer-events: auto; margin-top: 15px; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; display: inline-block; backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.1); }
+        button { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 5px 12px; cursor: pointer; font-weight: bold; transition: 0.2s; margin-right: 5px; }
+        button:hover { background: rgba(255,255,255,0.3); }
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 24px; font-weight: bold; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { opacity: 0.5; } 50% { opacity: 1; } 100% { opacity: 0.5; } }
+    </style>
+</head>
+<body>
+    <div id="loading">Generating World...</div>
+    <canvas id="canvas"></canvas>
+    <div id="ui" style="display:none;">
+        <h1>FANTASY VOXEL WORLD</h1>
+        <p>WASD to Move • SPACE/Q to Up/Down • Mouse to Look</p>
+        <div class="controls">
+            <strong>Time of Day:</strong><br>
+            <button onclick="app.setTime(0.2)">Morning</button>
+            <button onclick="app.setTime(0.5)">Noon</button>
+            <button onclick="app.setTime(0.8)">Dusk</button>
+            <button onclick="app.setTime(0.95)">Night</button>
+            <br><br>
+            <button onclick="app.toggleCam()">Toggle Camera Mode</button>
+            <button onclick="app.screenshot()">Screenshot</button>
+        </div>
+    </div>
+
+<script>
+// --- SHADERS (WGSL) ---
+const shaderCode = `
+struct Uniforms {
+    viewProjection : mat4x4<f32>,
+    model          : mat4x4<f32>,
+    sunPos         : vec3<f32>,
+    time           : f32,
+    fogColor       : vec3<f32>,
+    fogNear        : f32,
+    fogFar         : f32,
+};
+@group(0) @binding(0) var<uniform> uniforms : Uniforms;
+
+struct VertexOutput {
+    @builtin(position) Position : vec4<f32>,
+    @location(0) color : vec4<f32>,
+    @location(1) normal : vec3<f32>,
+};
+
+struct Instance {
+    pos : vec3<f32>,
+    scaleType : f32, // Encodes type index
+    meta : f32,      // Encodes flags/flags
+};
+@group(0) @binding(1) var<storage, read> instances : array<Instance>;
+
+// Color Palette Map
+fn getColor(typeId : f32) -> vec3<f32> {
+    let t = typeId;
+    if t == 0.0 { return vec3<f32>(0.1, 0.5, 0.1); } // Grass
+    if t == 1.0 { return vec3<f32>(0.4, 0.3, 0.2); } // Dirt
+    if t == 2.0 { return vec3<f32>(0.5, 0.5, 0.5); } // Stone
+    if t == 3.0 { return vec3<f32>(0.6, 0.6, 0.7); } // Cobble
+    if t == 4.0 { return vec3<f32>(0.3, 0.2, 0.1); } // Wood Log
+    if t == 5.0 { return vec3<f32>(0.1, 0.6, 0.2); } // Leaves
+    if t == 6.0 { return vec3<f32>(0.3, 0.7, 1.0); } // Water
+    if t == 7.0 { return vec3<f32>(0.9, 0.9, 0.8); } // Sand
+    if t == 8.0 { return vec3<f32>(0.9, 0.9, 1.0); } // Snow
+    if t == 9.0 { return vec3<f32>(1.0, 0.1, 0.1); } // Lava
+    if t == 10.0 { return vec3<f32>(0.05, 0.05, 0.05); } // Basalt/Obsidian
+    if t == 11.0 { return vec3<f32>(0.8, 0.5, 0.3); } // Wood Plank/House
+    if t == 12.0 { return vec3<f32>(0.7, 0.3, 0.1); } // Brick/Red
+    if t == 13.0 { return vec3<f32>(0.1, 0.8, 1.0); } // Glowing Window
+    if t == 14.0 { return vec3<f32>(1.0, 0.8, 0.2); } // Torch/Fire
+    if t == 15.0 { return vec3<f32>(0.4, 0.3, 0.5); } // Flower/Detail
+    if t == 16.0 { return vec3<f32>(0.7, 0.3, 0.6); } // Flag/Roof
+    return vec3<f32>(1.0, 0.0, 1.0); // Error Pink
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertexIndex : u32, instanceId : u32) -> VertexOutput {
+    let i = instances[instanceId];
+    
+    // Cube Geometry definition
+    var positions = array<vec3<f32>, 8>(
+        vec3<f32>(-0.5, -0.5, -0.5), vec3<f32>(0.5, -0.5, -0.5),
+        vec3<f32>(0.5, 0.5, -0.5), vec3<f32>(-0.5, 0.5, -0.5),
+        vec3<f32>(-0.5, -0.5, 0.5), vec3<f32>(0.5, -0.5, 0.5),
+        vec3<f32>(0.5, 0.5, 0.5), vec3<f32>(-0.5, 0.5, 0.5)
+    );
+
+    // Indices
+    var indices = array<u32, 36>(
+        // Front
+        0u, 1u, 2u, 0u, 2u, 3u,
+        // Back
+        5u, 4u, 7u, 5u, 7u, 6u,
+        // Top
+        4u, 5u, 1u, 4u, 1u, 0u,
+        // Bottom
+        3u, 2u, 6u, 3u, 6u, 7u,
+        // Right
+        1u, 5u, 6u, 1u, 6u, 2u,
+        // Left
+        4u, 0u, 3u, 4u, 3u, 7u
+    );
+
+    var vPos = positions[indices[vertexIndex]];
+    
+    // Scaling
+    let isFlat = i.scaleType > 99.0;
+    if (isFlat) { vPos.y = 0.0; } 
+    
+    vPos = vPos * vec3<f32>(1.0, 1.0, 1.0); // Base scale
+
+    // Animation (Flag waving / Fire flicker)
+    let type = floor(i.scaleType);
+    var offset = vec3<f32>(0.0, 0.0, 0.0);
+    
+    // Torch flicker
+    if (type == 14.0) {
+        offset.y = sin(uniforms.time * 10.0 + i.meta) * 0.05;
+    }
+    // Wind effect
+    offset.z = sin(uniforms.time * 2.0 + i.pos.x * 0.5) * 0.05;
+
+    let finalPos = i.pos + vPos + offset;
+    
+    var output : VertexOutput;
+    output.Position = uniforms.viewProjection * vec4<f32>(finalPos, 1.0);
+    output.color = vec4<f32>(getColor(type), 1.0);
+    
+    // Basic Normal calculation for lighting
+    // Simplified: Pre-calculating normals based on face would be better, 
+    // but calculating from geometry here works for standard cubes
+    var normalMat = uniforms.model;
+    // Transform normals isn't strictly necessary for boxy look, using object space
+    if(indices[vertexIndex]==0||indices[vertexIndex]==3||indices[vertexIndex]==4||indices[vertexIndex]==7) output.normal = vec3<f32>(-1.0, 0.0, 0.0);
+    else if(indices[vertexIndex]==1||indices[vertexIndex]==2||indices[vertexIndex]==5||indices[vertexIndex]==6) output.normal = vec3<f32>(1.0, 0.0, 0.0);
+    else if(indices[vertexIndex]==0||indices[vertexIndex]==1||indices[vertexIndex]==4||indices[vertexIndex]==5) output.normal = vec3<f32>(0.0, -1.0, 0.0);
+    else if(indices[vertexIndex]==2||indices[vertexIndex]==3||indices[vertexIndex]==6||indices[vertexIndex]==7) output.normal = vec3<f32>(0.0, 1.0, 0.0);
+    else if(indices[vertexIndex]==1||indices[vertexIndex]==2||indices[vertexIndex]==5||indices[vertexIndex]==6) output.normal = vec3<f32>(0.0, 0.0, 1.0); // Rough approximation
+    else output.normal = vec3<f32>(0.0, 0.0, -1.0); // Rough approximation
+    
+    output.normal = normalize(output.normal); // Ensure normalized
+
+    return output;
+}
+
+@fragment
+fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
+    var col = in.color.rgb;
+    
+    // Lighting
+    let lightDir = normalize(uniforms.sunPos);
+    let diff = max(dot(in.normal, lightDir), 0.0);
+    
+    // Ambient Occlusion (Fake)
+    let ao = 0.6 + (diff * 0.4); 
+
+    // Shadows / Darkening on bottom
+    if (in.normal.y < -0.9) { col = col * 0.7; }
+
+    col = col * ao;
+    
+    // Glow for fire/windows/blocks
+    if (col.r > 0.9 && col.b < 0.5) { col *= 1.2; } // Fire glow
+    if (col.b > 0.8 && col.r < 0.2) { col *= 1.4; } // Magic glass
+
+    // Fog / Atmosphere
+    let dist = length(in.Position.xyz); // Approximate clip space distance
+    let fogFactor = clamp((dist - uniforms.fogNear) / (uniforms.fogFar - uniforms.fogNear), 0.0, 1.0);
+    col = mix(col, uniforms.fogColor, pow(fogFactor, 2.0));
+
+    // Tone Mapping (Reinhard-ish)
+    col = col / (col + vec3<f32>(1.0));
+
+    return vec4<f32>(col, 1.0);
+}
+`;
+
+// --- UTILS & MATH ---
+class Vec3 { constructor(x,y,z){this.x=x;this.y=y;this.z=z;} }
+function createMat4() { return new Float32Array(16); }
+function perspective(fov, aspect, near, far) {
+    const f = 1.0 / Math.tan(fov / 2);
+    const nf = 1 / (near - far);
+    return new Float32Array([
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, (far + near) * nf, -1,
+        0, 0, (2 * far * near) * nf, 0
+    ]);
+}
+function lookAt(eye, center, up) {
+    const z = new Vec3(eye.x-center.x, eye.y-center.y, eye.z-center.z);
+    const len = Math.sqrt(z.x*z.x+z.y*z.y+z.z*z.z);
+    z.x/=len;z.y/=len;z.z/=len; // forward
+    const x = new Vec3(up.y*z.z-up.z*z.y, up.z*z.x-up.x*z.z, up.x*z.y-up.y*z.x);
+    const xl = Math.sqrt(x.x*x.x+x.y*x.y+x.z*x.z); x.x/=xl;x.y/=xl;x.z/=xl; // right
+    const y = new Vec3(z.y*x.z-z.z*x.y, z.z*x.x-z.x*x.z, z.x*x.y-z.y*x.x); // true up
+    
+    const m = createMat4();
+    m[0]=x.x; m[1]=y.x; m[2]=z.x; m[3]=0;
+    m[4]=x.y; m[5]=y.y; m[6]=z.y; m[7]=0;
+    m[8]=x.z; m[9]=y.z; m[10]=z.z; m[11]=0;
+    m[12]=-(x.x*eye.x+x.y*eye.y+x.z*eye.z);
+    m[13]=-(y.x*eye.x+y.y*eye.y+y.z*eye.z);
+    m[14]=-(z.x*eye.x+z.y*eye.y+z.z*eye.z);
+    m[15]=1;
+    return m;
+}
+function multiplyMat4(a,b) {
+    const r = createMat4();
+    for(let i=0;i<4;i++){
+        for(let j=0;j<4;j++){
+            let sum=0;
+            for(let k=0;k<4;k++) sum+=a[i*4+k]*b[k*4+j];
+            r[i*4+j]=sum;
+        }
+    }
+    return r;
+}
+
+// --- APP LOGIC ---
+class App {
+    constructor() {
+        this.canvas = document.getElementById('canvas');
+        this.width = this.canvas.width = window.innerWidth;
+        this.height = this.canvas.height = window.innerHeight;
+        
+        // Params
+        this.chunkSize = 64; // Width/Depth
+        this.worldHeight = 48; // Max Y
+        
+        this.data = []; // Stores packed Integers: (Type << 12) | (Meta?)
+        // We use a 1D array for a grid [x + z*width] -> stores Uint16 height value
+        // But wait, we need full 3D data for caves/volcanoes.
+        // Let's use a sparse approach or direct 3D indexing.
+        // Given memory limits in a single file, we map X,Z to a height column.
+        this.worldMap = new Uint8Array(this.chunkSize * this.chunkSize * 10); // Packed: 3 bits for height index? No, let's do dense 3D array.
+        // Actually, Uint16Array(width * depth * height) is efficient.
+        // 64*64*48 ≈ 200k entries. Trivial.
+        this.grid = new Uint8Array(this.chunkSize * this.chunkSize * this.worldHeight);
+        
+        this.instances = []; // Array of objects {x,y,z,type,animOffset}
+        this.gpuInstancesBuffer = null;
+        
+        this.camera = { x: -40, y: 50, z: -40, pitch: -0.3, yaw: -0.7 };
+        this.controls = { forward:0, backward:0, left:0, right:0, up:0, down:0 };
+        this.time = 0;
+        this.mode = 'fly'; // 'fly' or 'orbit'
+        this.sunAngle = 0.5; // 0..1
+        
+        this.init();
+    }
+
+    async init() {
+        if (!navigator.gpu) { alert("WebGPU not supported"); return; }
+        const adapter = await navigator.gpu.requestAdapter();
+        this.device = await adapter.requestDevice();
+        const context = this.canvas.getContext('webgpu');
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        context.configure({ device: this.device, format: format });
+        
+        // Create Shaders
+        this.pipeline = this.device.createRenderPipeline({
+            layout: 'auto',
+            vertex: { module: this.device.createShaderModule({ code: shaderCode }), entryPoint: 'vs_main' },
+            fragment: { module: this.device.createShaderModule({ code: shaderCode }), entryPoint: 'fs_main', targets: [{ format }] },
+            primitive: { topology: 'triangle-list' },
+            depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus' }
+        });
+
+        // Uniforms
+        this.uniformBuffer = this.device.createBuffer({ size: 64*2 + 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        
+        // Bind Groups
+        this.bindGroup = this.device.createBindGroup({
+            layout: this.pipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: this.uniformBuffer } }
+            ]
+        });
+
+        this.generateWorld();
+        this.updateMesh();
+        
+        // Input
+        window.addEventListener('resize', () => this.onResize());
+        window.addEventListener('keydown', e => this.handleKey(e, true));
+        window.addEventListener('keyup', e => this.handleKey(e, false));
+        this.canvas.addEventListener('mousemove', e => {
+            if (document.pointerLockElement === this.canvas) {
+                this.camera.yaw -= e.movementX * 0.002;
+                this.camera.pitch -= e.movementY * 0.002;
+                this.camera.pitch = Math.max(-1.5, Math.min(1.5, this.camera.pitch));
+            }
+        });
+        this.canvas.addEventListener('click', () => this.canvas.requestPointerLock());
+
+        // Start Loop
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('ui').style.display = 'block';
+        this.lastTs = 0;
+        this.loop();
+    }
+
+    handleKey(e, state) {
+        if(e.code==='KeyW') this.controls.forward=state;
+        if(e.code==='KeyS') this.controls.backward=state;
+        if(e.code==='KeyA') this.controls.left=state;
+        if(e.code==='KeyD') this.controls.right=state;
+        if(e.code==='Space') this.controls.up=state;
+        if(e.code==='KeyQ') this.controls.down=state;
+        if(e.code==='Digit1') this.setTime(0.2);
+        if(e.code==='Digit2') this.setTime(0.5);
+        if(e.code==='Digit3') this.setTime(0.8);
+        if(e.code==='Digit4') this.setTime(0.95);
+    }
+
+    onResize() {
+        this.width = this.canvas.width = window.innerWidth;
+        this.height = this.canvas.height = window.innerHeight;
+    }
+
+    setTime(t) {
+        this.sunAngle = t;
+        // Calculate Sun Pos and Sky Color
+        const angle = t * Math.PI * 2;
+        this.sunDir = { x: Math.cos(angle)*50, y: Math.sin(angle)*50, z: Math.cos(angle+0.5)*20 };
+        
+        let skyCol = [0.5, 0.7, 0.9]; // Noon
+        if(t < 0.25) skyCol = [0.9, 0.6, 0.4]; // Dawn
+        else if (t > 0.7) skyCol = [0.3, 0.1, 0.2]; // Dusk/Night
+        
+        this.fogColor = new Float32Array([...skyCol]);
+    }
+    toggleCam() { this.mode = this.mode === 'fly' ? 'orbit' : 'fly'; }
+    screenshot() {
+        this.canvas.toBlob(b => {
+            const l = document.createElement('a'); l.href = URL.createObjectURL(b); l.download='world.png'; l.click();
+        });
+    }
+
+    generateWorld() {
+        const W = this.chunkSize; const H = this.worldHeight;
+        
+        // --- GENERATION FUNCTIONS ---
+        
+        // Helper to check bounds
+        const set = (x, y, z, type) => {
+            if(x>=0&&x<W&&z>=0&&z<W&&y>=0&&y<H) {
+                this.grid[z*W*H + y*W + x] = type;
+                this.addInstance(x, y, z, type);
+            }
+        };
+
+        // 1. Terrain Noise (Simple Sine Superposition)
+        for (let z = 0; z < W; z++) {
+            for (let x = 0; x < W; x++) {
+                let n = Math.sin(x * 0.1) * Math.cos(z * 0.1) * 4;
+                n += Math.sin(x * 0.05 + z * 0.05) * 8;
+                
+                // River valley
+                let dToCenter = Math.sqrt(Math.pow(x-W/2,2)+Math.pow(z-W/2,2));
+                let curve = Math.sin(x * 0.1) * 15;
+                let riverLevel = (curve - z) > -5 && (curve - z) < 5;
+                
+                let h = Math.max(1, Math.floor(n + 8));
+                
+                // Volume filling
+                for(let y=0; y<h; y++) {
+                    if(y===h-1) set(x,y,z,riverLevel?7:0); // Sand or Grass
+                    else if(y > h-4) set(x,y,z,1); // Dirt
+                    else set(x,y,z,2); // Stone
+                    
+                    // Snow on high peaks
+                    if(h > 25) {
+                        if(y===h-1) set(x,y,z,8);
+                        else if(y > h-6) set(x,y,z,2); // Rock
+                        else set(x,y,z,1);
+                    }
+                }
+
+                // Volcano Region (Top Right quadrant)
+                if (x > 30 && z > 30) {
+                   let dx = x-48; let dz = z-48;
+                   let dist = Math.sqrt(dx*dx + dz*dz);
+                   if(dist < 12) {
+                       // Carve Volcano
+                       let volH = 20 - dist * 1.5;
+                       if(volH > h) {
+                            // Re-do this column as volcano
+                            for(let y=0; y<volH; y++) {
+                                set(x,y,z,10); // Basalt
+                            }
+                            // Crater
+                            if(dist < 6) {
+                                for(let y=Math.floor(volH)-5; y<volH; y++) set(x,y,z,9); // Lava
+                                h = Math.floor(volH)-5;
+                            }
+                       }
+                   }
+                }
+            }
+        }
+
+        // 2. River
+        for(let x=0; x<W; x++) {
+            let rZ = Math.sin(x*0.1) * 15 + 32;
+            let w = 6;
+            for(let z=rZ-w; z<rZ+w; z++) {
+                if(z>=0 && z<W) {
+                   let key = z*W + x;
+                   // Find ground level roughly (scanning up)
+                   for(let y=H-1; y>=0; y--) {
+                       if(this.grid[y*W*W + key] > 0) {
+                           if(this.grid[y*W*W + key] !== 9 && this.grid[y*W*W + key] !== 10) {
+                               set(x, y, z, 6); // Water
+                               if(this.grid[(y+1)*W*W + key] === 0) set(x, y+1, z, 7); // Sand bank
+                           }
+                           break;
+                       }
+                   }
+                }
+            }
+        }
+
+        // 3. Castle (Center Hill)
+        // Base
+        for(let x=30; x<=40; x++) for(let z=30; z<=40; z++) for(let y=0; y<5; y++) set(x,y,z,2);
+        // Walls
+        const wallH = 8;
+        for(let y=wallH-1; y>=0; y--) {
+            // N/S/E/W
+            for(let xx=30; xx<=40; xx++) { set(xx, y, 30, 2); set(xx, y, 40, 2); }
+            for(let zz=30; zz<=40; zz++) { set(30, y, zz, 2); set(40, y, zz, 2); }
+            // Battlements (Top strip)
+            if(y===wallH-1) {
+                 for(let xx=30; xx<=40; xx+=2) set(xx, wallH, 30, 12); set(xx, wallH, 40, 12);
+                 for(let zz=30; zz<=40; zz+=2) set(30, wallH, zz, 12); set(40, wallH, zz, 12);
+            }
+        }
+        // Gates
+        for(let y=0; y<6; y++) set(40, y, 35, 4); set(40, y, 36, 4);
+        
+        // Keep (Inside)
+        for(let x=34; x<=37; x++) for(let z=34; z<=37; z++) for(let y=5; y<15; y++) {
+             if(x===34||x===37||z===34||z===37) set(x,y,z,3); // Walls
+             else if(y>11) set(x,y,z,11); // Roof (Plank color used as wood)
+             else if(y<7) set(x,y,z,1); // Floor
+             else if(Math.random()>0.9) set(x,y,z,13); // Windows
+        }
+        // Flag
+        set(35, 15, 35, 16); set(35, 16, 35, 16);
+
+        // 4. Village
+        // Center town square
+        for(let x=15; x<25; x++) for(let z=15; z<25; z++) set(x,0,z,7); // Sand road
+
+        // House Function
+        const buildHouse = (hx, hz, roofType) => {
+            // Walls
+            for(let y=1; y<=3; y++) {
+                for(let w=-2; w<=2; w++) {
+                    set(hx+w, y, hz-2, 11); set(hx+w, y, hz+2, 11);
+                }
+                for(let w=-2; w<=2; w++) {
+                    set(hx-2, y, hz+w, 11); set(hx+2, y, hz+w, 11);
+                }
+                // Door/Window
+                if(w===0 && y===1) set(hx, 1, hz-2, 0); else { /* leave hole */ }
+            }
+            // Roof
+            for(let ry=4; ry<=6; ry++) {
+                let shr = ry-4;
+                for(let w=-shr; w<=2+shr; w++) for(let d=-shr; d<=2+shr; d++) {
+                     if(shr==2) set(hx+w, ry, hz+d, 12); // Red roof
+                     else set(hx+w, ry, hz+d, 1); // Thatch
+                }
+            }
+            // Chimney
+            set(hx+2, 4, hz, 2); set(hx+2, 5, hz, 14); // Fire tip
+        };
+
+        buildHouse(18, 18, 'red');
+        buildHouse(22, 22, 'thatch');
+        buildHouse(18, 22, 'red');
+        
+        // Bridge over river
+        let bx = 22; let bz = Math.sin(bx*0.1)*15+32;
+        for(let x=bx-2; x<=bx+2; x++) for(let z=bz-2; z<=bz+2; z++) set(x,5,z,4); // Wood bridge
+        for(let x=bx-2; x<=bx+2; x++) set(x,6,z,4); // Railings
+
+        // Trees & Details scattered
+        for(let i=0; i<30; i++) {
+            let tx = Math.floor(Math.random()*W);
+            let tz = Math.floor(Math.random()*W);
+            // Find ground
+            for(let ty=H-1; ty>0; ty--) {
+                if(this.grid[ty*W*W + tz*W + tx] > 0) {
+                     // Don't overwrite buildings
+                     if(this.grid[ty*W*W + tz*W + tx] < 10) {
+                         // Tree
+                         for(let tr=0; tr<4; tr++) set(tx, ty+tr, tz, 4);
+                         if(Math.random()>0.5) {
+                             for(let lx=-1; lx<=1; lx++) for(lz=-1; lz<=1; lz++) {
+                                 if(Math.abs(lx)+Math.abs(lz)<2) set(tx+lx, ty+4, tz+lz, 5);
+                             }
+                             set(tx, ty+5, tz, 5);
+                         }
+                     }
+                     break;
+                }
+            }
+        }
+    }
+
+    addInstance(x, y, z, type) {
+        this.instances.push({x, y, z, type});
+    }
+
+    updateMesh() {
+        // Convert array to buffer
+        const arr = new Float32Array(this.instances.length * 4);
+        for(let i=0; i<this.instances.length; i++) {
+            const ins = this.instances[i];
+            arr[i*4 + 0] = ins.x;
+            arr[i*4 + 1] = ins.y;
+            arr[i*4 + 2] = ins.z;
+            arr[i*4 + 3] = ins.type + (ins.type >= 14 ? 100.0 : 0.0); // Meta flag
+        }
+        if(this.gpuInstancesBuffer) this.gpuInstancesBuffer.destroy();
+        this.gpuInstancesBuffer = this.device.createBuffer({
+            label: 'instances',
+            mappedAtCreation: true,
+            size: arr.byteLength,
+            usage: GPUBufferUsage.STORAGE
+        });
+        new Float32Array(this.gpuInstancesBuffer.getMappedRange()).set(arr);
+        this.gpuInstancesBuffer.unmap();
+    }
+
+    loop(ts) {
+        if(!this.lastTs) this.lastTs = ts;
+        const dt = (ts - this.lastTs) / 1000;
+        this.lastTs = ts;
+        this.time += dt;
+
+        // Controls Movement
+        const speed = 20 * dt;
+        const moveFwd = Math.sin(this.camera.yaw) * this.controls.forward - Math.cos(this.camera.yaw) * this.controls.forward;
+        const moveRght = Math.sin(this.camera.yaw) * this.controls.right - Math.cos(this.camera.yaw) * this.controls.right;
+        
+        // Orbit logic
+        if(this.mode === 'orbit') {
+            this.camera.x = Math.cos(this.camera.yaw) * 60;
+            this.camera.z = Math.sin(this.camera.yaw) * 60;
+            this.camera.y = 50 + Math.sin(this.camera.pitch)*20;
+        } else {
+            this.camera.x += moveFwd * speed + moveRght * speed;
+            this.camera.z += moveRght * speed + moveFwd * speed;
+            if(this.controls.up) this.camera.y += speed;
+            if(this.controls.down) this.camera.y -= speed;
+            // Gravity / Ground Collision (Very Simple)
+            // Ideally raycast, but let's just float for now or simple floor check
+            if(this.camera.y < 0) this.camera.y = 0;
+        }
+
+        // Matrices
+        const proj = perspective(Math.PI/3, this.width/this.height, 0.1, 200);
+        const view = lookAt({x:this.camera.x, y:this.camera.y, z:this.camera.z}, {x:0, y:10, z:0}, {x:0, y:1, z:0});
+        const vp = multiplyMat4(proj, view);
+
+        const uBuf = new Float32Array(6); // ViewProj (16 floats) + Model (Identity) + SunPos(3) + Time(1)
+        // Packing:
+        uBuf.set(vp); // 16 floats
+        // Model Identity skipped
+        uBuf[20] = this.sunDir.x; uBuf[21] = this.sunDir.y; uBuf[22] = this.sunDir.z;
+        uBuf[23] = this.time;
+        uBuf[24] = this.fogColor[0]; uBuf[25] = this.fogColor[1]; uBuf[26] = this.fogColor[2];
+        uBuf[27] = 10.0; // Near
+        uBuf[28] = 100.0; // Far
+
+        this.device.queue.writeBuffer(this.uniformBuffer, 0, uBuf.buffer);
+
+        // Render
+        const encoder = this.device.createCommandEncoder();
+        const pass = encoder.beginRenderPass({
+            colorAttachments: [{
+                view: this.context.getCurrentTexture().createView(),
+                clearValue: {r:0.1, g:0.1, b:0.1, a:1},
+                loadOp:'clear', storeOp:'store'
+            }],
+            depthStencilAttachment: {
+                view: this.depthTexture.getView(),
+                depthClearValue: 1.0,
+                depthLoadOp:'clear', depthStoreOp:'store'
+            }
+        });
+        pass.setPipeline(this.pipeline);
+        pass.setBindGroup(0, this.bindGroup);
+        pass.setVertexBuffer(0, this.gpuInstancesBuffer); // Logic handled in shader storage bind
+        pass.draw(36, this.instances.length, 0, 0); // 36 verts per cube
+        pass.end();
+        this.device.queue.submit([encoder.finish()]);
+
+        requestAnimationFrame(t => this.loop(t));
+    }
+}
+
+window.onload = () => { app = new App(); };
+</script>
+</body>
+</html>

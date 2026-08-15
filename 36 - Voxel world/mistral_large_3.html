@@ -1,0 +1,2709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medieval Fantasy Voxel World</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #111;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        button {
+            background: rgba(0,0,0,0.7);
+            color: white;
+            border: 1px solid #444;
+            padding: 5px 10px;
+            margin: 2px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: rgba(50,50,50,0.7);
+        }
+        #screenshot {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.5);
+            padding: 5px;
+            border-radius: 3px;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="loading">Loading WebGPU...</div>
+    <div id="ui">
+        <div>Controls: WASD + Space/Shift + Mouse</div>
+        <div>Time of Day:</div>
+        <button id="dawn">Dawn</button>
+        <button id="day">Day</button>
+        <button id="dusk">Dusk</button>
+        <button id="night">Night</button>
+        <div>Camera Mode:</div>
+        <button id="fly">Fly</button>
+        <button id="walk">Walk</button>
+        <button id="orbit">Orbit</button>
+        <div>Effects:</div>
+        <button id="bloom">Toggle Bloom</button>
+        <button id="fog">Toggle Fog</button>
+    </div>
+    <div id="screenshot">
+        <button id="takeScreenshot">Take Screenshot</button>
+    </div>
+
+    <script>
+        // Main WebGPU initialization
+        async function init() {
+            const canvas = document.getElementById('canvas');
+            const loading = document.getElementById('loading');
+
+            // Initialize WebGPU
+            if (!navigator.gpu) {
+                loading.textContent = 'WebGPU not supported in your browser';
+                return;
+            }
+
+            const adapter = await navigator.gpu.requestAdapter();
+            if (!adapter) {
+                loading.textContent = 'Could not request WebGPU adapter';
+                return;
+            }
+
+            const device = await adapter.requestDevice();
+            const context = canvas.getContext('webgpu');
+            const format = navigator.gpu.getPreferredCanvasFormat();
+
+            context.configure({
+                device: device,
+                format: format,
+                alphaMode: 'premultiplied'
+            });
+
+            // Set canvas size
+            function resizeCanvas() {
+                const width = window.innerWidth;
+                const height = window.innerHeight;
+                canvas.width = width;
+                canvas.height = height;
+                return { width, height };
+            }
+
+            const { width, height } = resizeCanvas();
+            window.addEventListener('resize', () => {
+                const { width, height } = resizeCanvas();
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+            });
+
+            // Camera setup
+            const camera = {
+                position: [0, 100, 0],
+                target: [0, 0, 0],
+                up: [0, 1, 0],
+                fov: 60 * Math.PI / 180,
+                aspect: width / height,
+                near: 0.1,
+                far: 1000,
+                mode: 'orbit', // orbit, fly, walk
+                orbitDistance: 150,
+                orbitAngle: [0, 0],
+                speed: 0.5,
+                rotationSpeed: 0.005,
+
+                updateProjectionMatrix: function() {
+                    const fovY = this.fov;
+                    const f = 1.0 / Math.tan(fovY / 2);
+                    const nf = 1 / (this.near - this.far);
+
+                    this.projectionMatrix = [
+                        f / this.aspect, 0, 0, 0,
+                        0, f, 0, 0,
+                        0, 0, (this.far + this.near) * nf, -1,
+                        0, 0, 2 * this.far * this.near * nf, 0
+                    ];
+                },
+
+                updateViewMatrix: function() {
+                    if (this.mode === 'orbit') {
+                        // Orbit camera
+                        const cosY = Math.cos(this.orbitAngle[1]);
+                        const sinY = Math.sin(this.orbitAngle[1]);
+                        const cosX = Math.cos(this.orbitAngle[0]);
+                        const sinX = Math.sin(this.orbitAngle[0]);
+
+                        const x = this.orbitDistance * cosY * sinX;
+                        const y = this.orbitDistance * cosX;
+                        const z = this.orbitDistance * sinY * sinX;
+
+                        this.position = [
+                            this.target[0] + x,
+                            this.target[1] + y,
+                            this.target[2] + z
+                        ];
+
+                        vec3.subtract(this.forward, this.target, this.position);
+                        vec3.normalize(this.forward, this.forward);
+                    } else {
+                        // Fly/walk camera
+                        const cosY = Math.cos(this.orbitAngle[1]);
+                        const sinY = Math.sin(this.orbitAngle[1]);
+                        const cosX = Math.cos(this.orbitAngle[0]);
+                        const sinX = Math.sin(this.orbitAngle[0]);
+
+                        this.forward = [
+                            cosY * sinX,
+                            -sinX,
+                            sinY * sinX
+                        ];
+
+                        this.right = [
+                            sinY,
+                            0,
+                            -cosY
+                        ];
+
+                        vec3.normalize(this.right, this.right);
+                        vec3.cross(this.up, this.right, this.forward);
+                    }
+
+                    const lookAt = mat4.create();
+                    mat4.lookAt(lookAt, this.position, vec3.add([], this.position, this.forward), this.up);
+                    this.viewMatrix = lookAt;
+                },
+
+                getViewProjectionMatrix: function() {
+                    const viewProj = mat4.create();
+                    mat4.multiply(viewProj, this.projectionMatrix, this.viewMatrix);
+                    return viewProj;
+                }
+            };
+
+            camera.updateProjectionMatrix();
+            camera.updateViewMatrix();
+
+            // Input handling
+            const keys = {};
+            const mouse = {
+                x: 0,
+                y: 0,
+                down: false,
+                sensitivity: 0.002
+            };
+
+            window.addEventListener('keydown', (e) => {
+                keys[e.key.toLowerCase()] = true;
+            });
+
+            window.addEventListener('keyup', (e) => {
+                keys[e.key.toLowerCase()] = false;
+            });
+
+            canvas.addEventListener('mousedown', (e) => {
+                mouse.down = true;
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+            });
+
+            window.addEventListener('mouseup', () => {
+                mouse.down = false;
+            });
+
+            canvas.addEventListener('mousemove', (e) => {
+                if (!mouse.down) return;
+
+                const dx = e.clientX - mouse.x;
+                const dy = e.clientY - mouse.y;
+
+                if (camera.mode === 'orbit') {
+                    camera.orbitAngle[1] += dx * mouse.sensitivity;
+                    camera.orbitAngle[0] += dy * mouse.sensitivity;
+                    camera.orbitAngle[0] = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, camera.orbitAngle[0]));
+                } else {
+                    camera.orbitAngle[1] -= dx * mouse.sensitivity;
+                    camera.orbitAngle[0] -= dy * mouse.sensitivity;
+                    camera.orbitAngle[0] = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, camera.orbitAngle[0]));
+                }
+
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+                camera.updateViewMatrix();
+            });
+
+            canvas.addEventListener('wheel', (e) => {
+                if (camera.mode === 'orbit') {
+                    camera.orbitDistance = Math.max(10, Math.min(500, camera.orbitDistance - e.deltaY * 0.1));
+                    camera.updateViewMatrix();
+                }
+            });
+
+            // Time of day
+            const timeOfDay = {
+                current: 0.5, // 0-1 (night to day)
+                speed: 0.0001,
+                cycle: true,
+                set: function(value) {
+                    this.current = value;
+                    this.cycle = false;
+                },
+                update: function() {
+                    if (this.cycle) {
+                        this.current = (this.current + this.speed) % 1;
+                    }
+                }
+            };
+
+            // UI controls
+            document.getElementById('dawn').addEventListener('click', () => {
+                timeOfDay.set(0.25);
+            });
+
+            document.getElementById('day').addEventListener('click', () => {
+                timeOfDay.set(0.5);
+            });
+
+            document.getElementById('dusk').addEventListener('click', () => {
+                timeOfDay.set(0.75);
+            });
+
+            document.getElementById('night').addEventListener('click', () => {
+                timeOfDay.set(0.0);
+            });
+
+            document.getElementById('fly').addEventListener('click', () => {
+                camera.mode = 'fly';
+                camera.speed = 0.5;
+            });
+
+            document.getElementById('walk').addEventListener('click', () => {
+                camera.mode = 'walk';
+                camera.speed = 0.2;
+                camera.position[1] = getHeightAt(camera.position[0], camera.position[2]) + 1.8;
+            });
+
+            document.getElementById('orbit').addEventListener('click', () => {
+                camera.mode = 'orbit';
+                camera.orbitDistance = 150;
+                camera.orbitAngle = [0.5, 0.5];
+                camera.updateViewMatrix();
+            });
+
+            document.getElementById('bloom').addEventListener('click', () => {
+                bloomEnabled = !bloomEnabled;
+            });
+
+            document.getElementById('fog').addEventListener('click', () => {
+                fogEnabled = !fogEnabled;
+            });
+
+            document.getElementById('takeScreenshot').addEventListener('click', () => {
+                canvas.toBlob((blob) => {
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'medieval-voxel-world.png';
+                    a.click();
+                });
+            });
+
+            // Voxel world setup
+            const CHUNK_SIZE = 32;
+            const WORLD_SIZE = 8; // chunks in each direction
+            const world = {
+                chunks: new Map(),
+                chunkMeshes: new Map(),
+                chunkNeedsUpdate: new Set()
+            };
+
+            // Voxel types
+            const VoxelType = {
+                AIR: 0,
+                GRASS: 1,
+                DIRT: 2,
+                STONE: 3,
+                WOOD: 4,
+                PLANKS: 5,
+                COBBLESTONE: 6,
+                BRICK: 7,
+                SAND: 8,
+                WATER: 9,
+                GLASS: 10,
+                LEAVES: 11,
+                WOOL: 12,
+                GLOWSTONE: 13,
+                LAVA: 14,
+                SNOW: 15,
+                BASALT: 16,
+                GOLD: 17,
+                IRON: 18,
+                COAL: 19,
+                DIAMOND: 20
+            };
+
+            // Voxel properties
+            const voxelProperties = [
+                { name: 'Air', color: [0, 0, 0, 0], solid: false, transparent: true, emissive: false },
+                { name: 'Grass', color: [0.2, 0.8, 0.2, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Dirt', color: [0.5, 0.35, 0.15, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Stone', color: [0.5, 0.5, 0.5, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Wood', color: [0.4, 0.25, 0.1, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Planks', color: [0.6, 0.4, 0.2, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Cobblestone', color: [0.4, 0.4, 0.4, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Brick', color: [0.7, 0.3, 0.3, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Sand', color: [0.9, 0.8, 0.5, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Water', color: [0.1, 0.3, 0.8, 0.7], solid: false, transparent: true, emissive: false, animated: true },
+                { name: 'Glass', color: [0.7, 0.9, 1, 0.5], solid: true, transparent: true, emissive: false },
+                { name: 'Leaves', color: [0.1, 0.6, 0.1, 0.8], solid: true, transparent: true, emissive: false },
+                { name: 'Wool', color: [0.9, 0.9, 0.9, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Glowstone', color: [1, 0.8, 0.6, 1], solid: true, transparent: false, emissive: true, emissiveColor: [1, 0.8, 0.6] },
+                { name: 'Lava', color: [1, 0.3, 0, 0.8], solid: false, transparent: true, emissive: true, emissiveColor: [1, 0.3, 0], animated: true },
+                { name: 'Snow', color: [0.9, 0.95, 1, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Basalt', color: [0.2, 0.2, 0.25, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Gold', color: [1, 0.8, 0.1, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Iron', color: [0.7, 0.7, 0.7, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Coal', color: [0.1, 0.1, 0.1, 1], solid: true, transparent: false, emissive: false },
+                { name: 'Diamond', color: [0.2, 0.8, 0.8, 1], solid: true, transparent: true, emissive: true, emissiveColor: [0.2, 0.8, 0.8] }
+            ];
+
+            // Create world
+            function createWorld() {
+                // Generate terrain
+                for (let cx = -WORLD_SIZE; cx <= WORLD_SIZE; cx++) {
+                    for (let cz = -WORLD_SIZE; cz <= WORLD_SIZE; cz++) {
+                        const chunkId = `${cx},${cz}`;
+                        world.chunks.set(chunkId, generateChunk(cx, cz));
+                        world.chunkNeedsUpdate.add(chunkId);
+                    }
+                }
+
+                // Create castle
+                createCastle();
+
+                // Create village
+                createVillage();
+
+                // Create volcano
+                createVolcano();
+
+                // Create forests and natural features
+                createForests();
+                createRivers();
+                createMountains();
+                createRuins();
+            }
+
+            // Generate chunk
+            function generateChunk(cx, cz) {
+                const chunk = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE).fill(VoxelType.AIR);
+
+                const worldX = cx * CHUNK_SIZE;
+                const worldZ = cz * CHUNK_SIZE;
+
+                // Simple terrain generation
+                for (let x = 0; x < CHUNK_SIZE; x++) {
+                    for (let z = 0; z < CHUNK_SIZE; z++) {
+                        const wx = worldX + x;
+                        const wz = worldZ + z;
+
+                        // Base terrain height
+                        let height = 32 + Math.sin(wx * 0.05) * 5 + Math.cos(wz * 0.05) * 5;
+
+                        // Add some hills
+                        if (Math.random() < 0.05) {
+                            height += Math.random() * 20;
+                        }
+
+                        // Create terrain
+                        for (let y = 0; y < CHUNK_SIZE; y++) {
+                            const wy = y;
+
+                            if (wy < height - 5) {
+                                chunk[getIndex(x, y, z)] = VoxelType.STONE;
+                            } else if (wy < height - 1) {
+                                chunk[getIndex(x, y, z)] = VoxelType.DIRT;
+                            } else if (wy === Math.floor(height) - 1) {
+                                chunk[getIndex(x, y, z)] = VoxelType.GRASS;
+                            } else if (wy < height) {
+                                chunk[getIndex(x, y, z)] = VoxelType.DIRT;
+                            }
+                        }
+                    }
+                }
+
+                return chunk;
+            }
+
+            // Create castle
+            function createCastle() {
+                const castleCenterX = 0;
+                const castleCenterZ = 0;
+                const castleSize = 40;
+                const towerHeight = 60;
+                const wallHeight = 30;
+
+                // Castle base
+                for (let x = -castleSize; x <= castleSize; x++) {
+                    for (let z = -castleSize; z <= castleSize; z++) {
+                        const distance = Math.sqrt(x * x + z * z);
+                        if (distance < castleSize) {
+                            setVoxel(castleCenterX + x, 32, castleCenterZ + z, VoxelType.STONE);
+                        }
+                    }
+                }
+
+                // Castle walls
+                for (let x = -castleSize; x <= castleSize; x++) {
+                    for (let z = -castleSize; z <= castleSize; z++) {
+                        const distance = Math.sqrt(x * x + z * z);
+                        if (distance > castleSize - 2 && distance < castleSize) {
+                            for (let y = 33; y <= 33 + wallHeight; y++) {
+                                setVoxel(castleCenterX + x, y, castleCenterZ + z, VoxelType.COBBLESTONE);
+                            }
+                        }
+                    }
+                }
+
+                // Castle towers
+                const towerPositions = [
+                    [-castleSize, -castleSize],
+                    [castleSize, -castleSize],
+                    [castleSize, castleSize],
+                    [-castleSize, castleSize]
+                ];
+
+                for (const [tx, tz] of towerPositions) {
+                    for (let x = -3; x <= 3; x++) {
+                        for (let z = -3; z <= 3; z++) {
+                            for (let y = 33; y <= 33 + towerHeight; y++) {
+                                setVoxel(castleCenterX + tx + x, y, castleCenterZ + tz + z, VoxelType.COBBLESTONE);
+                            }
+                        }
+                    }
+
+                    // Tower roofs
+                    for (let x = -5; x <= 5; x++) {
+                        for (let z = -5; z <= 5; z++) {
+                            const distance = Math.sqrt(x * x + z * z);
+                            if (distance <= 5) {
+                                setVoxel(castleCenterX + tx + x, 33 + towerHeight, castleCenterZ + tz + z, VoxelType.BRICK);
+                            }
+                        }
+                    }
+                }
+
+                // Castle keep
+                const keepSize = 20;
+                for (let x = -keepSize; x <= keepSize; x++) {
+                    for (let z = -keepSize; z <= keepSize; z++) {
+                        for (let y = 33; y <= 33 + wallHeight + 20; y++) {
+                            if (Math.abs(x) === keepSize || Math.abs(z) === keepSize) {
+                                setVoxel(castleCenterX + x, y, castleCenterZ + z, VoxelType.BRICK);
+                            }
+                        }
+                    }
+                }
+
+                // Castle roof
+                for (let x = -keepSize - 2; x <= keepSize + 2; x++) {
+                    for (let z = -keepSize - 2; z <= keepSize + 2; z++) {
+                        const distance = Math.sqrt(x * x + z * z);
+                        if (distance <= keepSize + 2) {
+                            setVoxel(castleCenterX + x, 33 + wallHeight + 20, castleCenterZ + z, VoxelType.BRICK);
+                        }
+                    }
+                }
+
+                // Castle gate
+                for (let y = 33; y <= 33 + wallHeight / 2; y++) {
+                    for (let x = -5; x <= 5; x++) {
+                        setVoxel(castleCenterX + x, y, castleCenterZ - castleSize, VoxelType.AIR);
+                    }
+                }
+
+                // Castle bridge
+                for (let x = -10; x <= 10; x++) {
+                    for (let z = -castleSize - 10; z <= -castleSize; z++) {
+                        setVoxel(castleCenterX + x, 32, castleCenterZ + z, VoxelType.PLANKS);
+                    }
+                }
+
+                // Castle moat
+                for (let x = -castleSize - 15; x <= castleSize + 15; x++) {
+                    for (let z = -castleSize - 15; z <= castleSize + 15; z++) {
+                        const distance = Math.sqrt(x * x + z * z);
+                        if (distance > castleSize + 5 && distance < castleSize + 10) {
+                            for (let y = 25; y <= 32; y++) {
+                                setVoxel(castleCenterX + x, y, castleCenterZ + z, VoxelType.WATER);
+                            }
+                        }
+                    }
+                }
+
+                // Castle flags
+                for (const [tx, tz] of towerPositions) {
+                    for (let y = 33 + towerHeight + 5; y <= 33 + towerHeight + 10; y++) {
+                        setVoxel(castleCenterX + tx, y, castleCenterZ + tz, VoxelType.WOOL);
+                    }
+                }
+
+                // Castle windows
+                for (let x = -keepSize + 2; x <= keepSize - 2; x += 4) {
+                    for (let z = -keepSize + 2; z <= keepSize - 2; z += 4) {
+                        if (Math.abs(x) === keepSize - 2 || Math.abs(z) === keepSize - 2) {
+                            for (let y = 35; y <= 35 + wallHeight; y += 3) {
+                                setVoxel(castleCenterX + x, y, castleCenterZ + z, VoxelType.GLASS);
+                                setVoxel(castleCenterX + x, y + 1, castleCenterZ + z, VoxelType.GLOWSTONE);
+                            }
+                        }
+                    }
+                }
+
+                // Castle torches
+                for (let x = -castleSize + 2; x <= castleSize - 2; x += 6) {
+                    for (let z = -castleSize + 2; z <= castleSize - 2; z += 6) {
+                        if (Math.abs(x) === castleSize - 2 || Math.abs(z) === castleSize - 2) {
+                            setVoxel(castleCenterX + x, 33 + wallHeight / 2, castleCenterZ + z, VoxelType.GLOWSTONE);
+                        }
+                    }
+                }
+            }
+
+            // Create village
+            function createVillage() {
+                const villageCenterX = 100;
+                const villageCenterZ = 0;
+                const villageSize = 50;
+
+                // Village terrain
+                for (let x = -villageSize; x <= villageSize; x++) {
+                    for (let z = -villageSize; z <= villageSize; z++) {
+                        const distance = Math.sqrt(x * x + z * z);
+                        if (distance < villageSize) {
+                            const height = 32 + Math.sin(x * 0.1) * 2 + Math.cos(z * 0.1) * 2;
+                            for (let y = 25; y <= height; y++) {
+                                if (y < height - 1) {
+                                    setVoxel(villageCenterX + x, y, villageCenterZ + z, VoxelType.DIRT);
+                                } else {
+                                    setVoxel(villageCenterX + x, y, villageCenterZ + z, VoxelType.GRASS);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Village houses
+                const houseTypes = [
+                    { size: [5, 5], height: 6, roofHeight: 3, wall: VoxelType.PLANKS, roof: VoxelType.WOOD },
+                    { size: [6, 4], height: 5, roofHeight: 2, wall: VoxelType.COBBLESTONE, roof: VoxelType.BRICK },
+                    { size: [4, 6], height: 7, roofHeight: 4, wall: VoxelType.WOOD, roof: VoxelType.PLANKS },
+                    { size: [7, 7], height: 8, roofHeight: 4, wall: VoxelType.BRICK, roof: VoxelType.WOOD }
+                ];
+
+                const housePositions = [];
+                for (let i = 0; i < 30; i++) {
+                    let x, z, valid;
+                    do {
+                        x = Math.floor(Math.random() * villageSize * 2) - villageSize;
+                        z = Math.floor(Math.random() * villageSize * 2) - villageSize;
+                        valid = true;
+
+                        // Check distance from other houses
+                        for (const pos of housePositions) {
+                            const dx = x - pos[0];
+                            const dz = z - pos[1];
+                            if (Math.sqrt(dx * dx + dz * dz) < 10) {
+                                valid = false;
+                                break;
+                            }
+                        }
+
+                        // Check distance from river
+                        if (Math.abs(z) < 15) {
+                            valid = false;
+                        }
+                    } while (!valid);
+
+                    housePositions.push([x, z]);
+                    const houseType = houseTypes[Math.floor(Math.random() * houseTypes.length)];
+
+                    // House base
+                    for (let hx = -houseType.size[0]; hx <= houseType.size[0]; hx++) {
+                        for (let hz = -houseType.size[1]; hz <= houseType.size[1]; hz++) {
+                            for (let hy = 0; hy <= houseType.height; hy++) {
+                                if (hx === -houseType.size[0] || hx === houseType.size[0] ||
+                                    hz === -houseType.size[1] || hz === houseType.size[1] ||
+                                    hy === 0 || hy === houseType.height) {
+                                    setVoxel(villageCenterX + x + hx, 33 + hy, villageCenterZ + z + hz, houseType.wall);
+                                } else if (hy < houseType.height) {
+                                    setVoxel(villageCenterX + x + hx, 33 + hy, villageCenterZ + z + hz, VoxelType.AIR);
+                                }
+                            }
+                        }
+                    }
+
+                    // House roof
+                    for (let hx = -houseType.size[0] - 1; hx <= houseType.size[0] + 1; hx++) {
+                        for (let hz = -houseType.size[1] - 1; hz <= houseType.size[1] + 1; hz++) {
+                            const distanceX = Math.abs(hx) - houseType.size[0];
+                            const distanceZ = Math.abs(hz) - houseType.size[1];
+                            const maxDistance = Math.max(distanceX, distanceZ);
+
+                            if (maxDistance <= 0) {
+                                for (let hy = houseType.height + 1; hy <= houseType.height + houseType.roofHeight; hy++) {
+                                    setVoxel(villageCenterX + x + hx, 33 + hy, villageCenterZ + z + hz, houseType.roof);
+                                }
+                            } else if (maxDistance === 1) {
+                                for (let hy = houseType.height + 1; hy <= houseType.height + houseType.roofHeight - maxDistance; hy++) {
+                                    setVoxel(villageCenterX + x + hx, 33 + hy, villageCenterZ + z + hz, houseType.roof);
+                                }
+                            }
+                        }
+                    }
+
+                    // House door
+                    const doorSide = Math.floor(Math.random() * 4);
+                    if (doorSide === 0) { // Front
+                        setVoxel(villageCenterX + x, 33 + 1, villageCenterZ + z - houseType.size[1], VoxelType.AIR);
+                        setVoxel(villageCenterX + x, 33 + 2, villageCenterZ + z - houseType.size[1], VoxelType.AIR);
+                    } else if (doorSide === 1) { // Back
+                        setVoxel(villageCenterX + x, 33 + 1, villageCenterZ + z + houseType.size[1], VoxelType.AIR);
+                        setVoxel(villageCenterX + x, 33 + 2, villageCenterZ + z + houseType.size[1], VoxelType.AIR);
+                    } else if (doorSide === 2) { // Left
+                        setVoxel(villageCenterX + x - houseType.size[0], 33 + 1, villageCenterZ + z, VoxelType.AIR);
+                        setVoxel(villageCenterX + x - houseType.size[0], 33 + 2, villageCenterZ + z, VoxelType.AIR);
+                    } else { // Right
+                        setVoxel(villageCenterX + x + houseType.size[0], 33 + 1, villageCenterZ + z, VoxelType.AIR);
+                        setVoxel(villageCenterX + x + houseType.size[0], 33 + 2, villageCenterZ + z, VoxelType.AIR);
+                    }
+
+                    // House windows
+                    for (let hy = 3; hy <= houseType.height - 1; hy += 2) {
+                        const windowSides = [
+                            [0, -houseType.size[1]], // Front
+                            [0, houseType.size[1]],  // Back
+                            [-houseType.size[0], 0], // Left
+                            [houseType.size[0], 0]   // Right
+                        ];
+
+                        for (const [wx, wz] of windowSides) {
+                            if (Math.random() < 0.5) {
+                                setVoxel(villageCenterX + x + wx, 33 + hy, villageCenterZ + z + wz, VoxelType.GLASS);
+                            }
+                        }
+                    }
+
+                    // House chimney
+                    if (Math.random() < 0.7) {
+                        const chimneyX = Math.floor(Math.random() * (houseType.size[0] * 2 - 2)) - houseType.size[0] + 1;
+                        const chimneyZ = Math.floor(Math.random() * (houseType.size[1] * 2 - 2)) - houseType.size[1] + 1;
+
+                        for (let hy = houseType.height + 1; hy <= houseType.height + 3; hy++) {
+                            setVoxel(villageCenterX + x + chimneyX, 33 + hy, villageCenterZ + z + chimneyZ, VoxelType.BRICK);
+                        }
+                    }
+
+                    // House garden
+                    if (Math.random() < 0.5) {
+                        for (let gx = -houseType.size[0] - 2; gx <= houseType.size[0] + 2; gx++) {
+                            for (let gz = -houseType.size[1] - 2; gz <= houseType.size[1] + 2; gz++) {
+                                if (Math.random() < 0.3) {
+                                    setVoxel(villageCenterX + x + gx, 33, villageCenterZ + z + gz, VoxelType.GRASS);
+                                    if (Math.random() < 0.2) {
+                                        setVoxel(villageCenterX + x + gx, 34, villageCenterZ + z + gz, VoxelType.LEAVES);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Village marketplace
+                const marketCenterX = villageCenterX;
+                const marketCenterZ = villageCenterZ + 30;
+                const marketSize = 15;
+
+                for (let x = -marketSize; x <= marketSize; x++) {
+                    for (let z = -marketSize; z <= marketSize; z++) {
+                        setVoxel(marketCenterX + x, 33, marketCenterZ + z, VoxelType.COBBLESTONE);
+                    }
+                }
+
+                // Market stalls
+                for (let i = 0; i < 5; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const distance = Math.random() * marketSize * 0.8;
+                    const x = Math.floor(Math.cos(angle) * distance);
+                    const z = Math.floor(Math.sin(angle) * distance);
+
+                    // Stall base
+                    for (let sx = -1; sx <= 1; sx++) {
+                        for (let sz = -1; sz <= 1; sz++) {
+                            setVoxel(marketCenterX + x + sx, 33, marketCenterZ + z + sz, VoxelType.PLANKS);
+                        }
+                    }
+
+                    // Stall roof
+                    for (let sx = -2; sx <= 2; sx++) {
+                        for (let sz = -2; sz <= 2; sz++) {
+                            if (Math.abs(sx) === 2 || Math.abs(sz) === 2) {
+                                setVoxel(marketCenterX + x + sx, 34, marketCenterZ + z + sz, VoxelType.WOOD);
+                            }
+                        }
+                    }
+
+                    // Stall goods
+                    for (let sx = -1; sx <= 1; sx++) {
+                        for (let sz = -1; sz <= 1; sz++) {
+                            if (Math.random() < 0.5) {
+                                setVoxel(marketCenterX + x + sx, 34, marketCenterZ + z + sz, Math.random() < 0.5 ? VoxelType.WOOL : VoxelType.GOLD);
+                            }
+                        }
+                    }
+                }
+
+                // Village blacksmith
+                const smithX = villageCenterX - 30;
+                const smithZ = villageCenterZ;
+
+                // Building
+                for (let x = -4; x <= 4; x++) {
+                    for (let z = -3; z <= 3; z++) {
+                        for (let y = 0; y <= 6; y++) {
+                            if (x === -4 || x === 4 || z === -3 || z === 3 || y === 0 || y === 6) {
+                                setVoxel(smithX + x, 33 + y, smithZ + z, VoxelType.STONE);
+                            } else if (y < 6) {
+                                setVoxel(smithX + x, 33 + y, smithZ + z, VoxelType.AIR);
+                            }
+                        }
+                    }
+                }
+
+                // Roof
+                for (let x = -5; x <= 5; x++) {
+                    for (let z = -4; z <= 4; z++) {
+                        const distanceX = Math.abs(x) - 4;
+                        const distanceZ = Math.abs(z) - 3;
+                        const maxDistance = Math.max(distanceX, distanceZ);
+
+                        if (maxDistance <= 0) {
+                            for (let y = 7; y <= 9; y++) {
+                                setVoxel(smithX + x, 33 + y, smithZ + z, VoxelType.WOOD);
+                            }
+                        } else if (maxDistance === 1) {
+                            for (let y = 7; y <= 8; y++) {
+                                setVoxel(smithX + x, 33 + y, smithZ + z, VoxelType.WOOD);
+                            }
+                        }
+                    }
+                }
+
+                // Forge
+                for (let x = -2; x <= 2; x++) {
+                    for (let z = -1; z <= 1; z++) {
+                        setVoxel(smithX + x, 33, smithZ + z, VoxelType.STONE);
+                    }
+                }
+                setVoxel(smithX, 34, smithZ, VoxelType.LAVA);
+
+                // Anvil
+                setVoxel(smithX + 2, 34, smithZ, VoxelType.IRON);
+                setVoxel(smithX + 2, 35, smithZ, VoxelType.IRON);
+
+                // Village tavern
+                const tavernX = villageCenterX + 30;
+                const tavernZ = villageCenterZ;
+
+                // Building
+                for (let x = -5; x <= 5; x++) {
+                    for (let z = -4; z <= 4; z++) {
+                        for (let y = 0; y <= 7; y++) {
+                            if (x === -5 || x === 5 || z === -4 || z === 4 || y === 0 || y === 7) {
+                                setVoxel(tavernX + x, 33 + y, tavernZ + z, VoxelType.PLANKS);
+                            } else if (y < 7) {
+                                setVoxel(tavernX + x, 33 + y, tavernZ + z, VoxelType.AIR);
+                            }
+                        }
+                    }
+                }
+
+                // Roof
+                for (let x = -6; x <= 6; x++) {
+                    for (let z = -5; z <= 5; z++) {
+                        const distanceX = Math.abs(x) - 5;
+                        const distanceZ = Math.abs(z) - 4;
+                        const maxDistance = Math.max(distanceX, distanceZ);
+
+                        if (maxDistance <= 0) {
+                            for (let y = 8; y <= 10; y++) {
+                                setVoxel(tavernX + x, 33 + y, tavernZ + z, VoxelType.WOOD);
+                            }
+                        } else if (maxDistance === 1) {
+                            for (let y = 8; y <= 9; y++) {
+                                setVoxel(tavernX + x, 33 + y, tavernZ + z, VoxelType.WOOD);
+                            }
+                        }
+                    }
+                }
+
+                // Sign
+                setVoxel(tavernX, 34, tavernZ - 5, VoxelType.WOOD);
+                setVoxel(tavernX, 35, tavernZ - 5, VoxelType.WOOL);
+
+                // Village chapel
+                const chapelX = villageCenterX;
+                const chapelZ = villageCenterZ - 30;
+
+                // Building
+                for (let x = -3; x <= 3; x++) {
+                    for (let z = -5; z <= 5; z++) {
+                        for (let y = 0; y <= 8; y++) {
+                            if (x === -3 || x === 3 || z === -5 || z === 5 || y === 0 || y === 8) {
+                                setVoxel(chapelX + x, 33 + y, chapelZ + z, VoxelType.STONE);
+                            } else if (y < 8) {
+                                setVoxel(chapelX + x, 33 + y, chapelZ + z, VoxelType.AIR);
+                            }
+                        }
+                    }
+                }
+
+                // Roof
+                for (let x = -4; x <= 4; x++) {
+                    for (let z = -6; z <= 6; z++) {
+                        const distanceX = Math.abs(x) - 3;
+                        const distanceZ = Math.abs(z) - 5;
+                        const maxDistance = Math.max(distanceX, distanceZ);
+
+                        if (maxDistance <= 0) {
+                            for (let y = 9; y <= 12; y++) {
+                                setVoxel(chapelX + x, 33 + y, chapelZ + z, VoxelType.BRICK);
+                            }
+                        } else if (maxDistance === 1) {
+                            for (let y = 9; y <= 11; y++) {
+                                setVoxel(chapelX + x, 33 + y, chapelZ + z, VoxelType.BRICK);
+                            }
+                        }
+                    }
+                }
+
+                // Steeple
+                for (let y = 13; y <= 20; y++) {
+                    setVoxel(chapelX, 33 + y, chapelZ, VoxelType.BRICK);
+                }
+                for (let x = -1; x <= 1; x++) {
+                    for (let z = -1; z <= 1; z++) {
+                        setVoxel(chapelX + x, 33 + 20, chapelZ + z, VoxelType.BRICK);
+                    }
+                }
+
+                // Cross
+                setVoxel(chapelX, 33 + 21, chapelZ, VoxelType.GOLD);
+                setVoxel(chapelX, 33 + 22, chapelZ, VoxelType.GOLD);
+                setVoxel(chapelX - 1, 33 + 22, chapelZ, VoxelType.GOLD);
+                setVoxel(chapelX + 1, 33 + 22, chapelZ, VoxelType.GOLD);
+
+                // Village farms
+                for (let i = 0; i < 5; i++) {
+                    const farmX = villageCenterX + Math.floor(Math.random() * 40) - 20;
+                    const farmZ = villageCenterZ + Math.floor(Math.random() * 40) - 20 + 40;
+
+                    const farmSize = 8 + Math.floor(Math.random() * 5);
+
+                    // Farm field
+                    for (let x = -farmSize; x <= farmSize; x++) {
+                        for (let z = -farmSize; z <= farmSize; z++) {
+                            setVoxel(farmX + x, 33, farmZ + z, VoxelType.DIRT);
+                            if (Math.random() < 0.3) {
+                                setVoxel(farmX + x, 34, farmZ + z, VoxelType.LEAVES);
+                            }
+                        }
+                    }
+
+                    // Farm fence
+                    for (let x = -farmSize - 1; x <= farmSize + 1; x++) {
+                        for (let z = -farmSize - 1; z <= farmSize + 1; z++) {
+                            if (Math.abs(x) === farmSize + 1 || Math.abs(z) === farmSize + 1) {
+                                setVoxel(farmX + x, 33, farmZ + z, VoxelType.WOOD);
+                                setVoxel(farmX + x, 34, farmZ + z, VoxelType.WOOD);
+                            }
+                        }
+                    }
+                }
+
+                // Village docks
+                const dockX = villageCenterX - 20;
+                const dockZ = villageCenterZ + 50;
+
+                // Docks
+                for (let x = -10; x <= 10; x++) {
+                    for (let z = 0; z <= 15; z++) {
+                        setVoxel(dockX + x, 32, dockZ + z, VoxelType.PLANKS);
+                    }
+                }
+
+                // Boats
+                for (let i = 0; i < 3; i++) {
+                    const boatX = dockX + Math.floor(Math.random() * 15) - 7;
+                    const boatZ = dockZ + 15 + Math.floor(Math.random() * 5);
+
+                    // Boat hull
+                    for (let x = -2; x <= 2; x++) {
+                        for (let z = -3; z <= 3; z++) {
+                            setVoxel(boatX + x, 32, boatZ + z, VoxelType.WOOD);
+                        }
+                    }
+
+                    // Boat mast
+                    setVoxel(boatX, 33, boatZ, VoxelType.WOOD);
+                    setVoxel(boatX, 34, boatZ, VoxelType.WOOD);
+                    setVoxel(boatX, 35, boatZ, VoxelType.WOOD);
+
+                    // Boat sail
+                    for (let x = -1; x <= 1; x++) {
+                        setVoxel(boatX + x, 34, boatZ, VoxelType.WOOL);
+                    }
+                }
+
+                // Village watermill
+                const millX = villageCenterX + 20;
+                const millZ = villageCenterZ + 50;
+
+                // Building
+                for (let x = -3; x <= 3; x++) {
+                    for (let z = -3; z <= 3; z++) {
+                        for (let y = 0; y <= 5; y++) {
+                            if (x === -3 || x === 3 || z === -3 || z === 3 || y === 0 || y === 5) {
+                                setVoxel(millX + x, 33 + y, millZ + z, VoxelType.WOOD);
+                            } else if (y < 5) {
+                                setVoxel(millX + x, 33 + y, millZ + z, VoxelType.AIR);
+                            }
+                        }
+                    }
+                }
+
+                // Roof
+                for (let x = -4; x <= 4; x++) {
+                    for (let z = -4; z <= 4; z++) {
+                        const distanceX = Math.abs(x) - 3;
+                        const distanceZ = Math.abs(z) - 3;
+                        const maxDistance = Math.max(distanceX, distanceZ);
+
+                        if (maxDistance <= 0) {
+                            for (let y = 6; y <= 8; y++) {
+                                setVoxel(millX + x, 33 + y, millZ + z, VoxelType.WOOD);
+                            }
+                        } else if (maxDistance === 1) {
+                            for (let y = 6; y <= 7; y++) {
+                                setVoxel(millX + x, 33 + y, millZ + z, VoxelType.WOOD);
+                            }
+                        }
+                    }
+                }
+
+                // Water wheel
+                for (let z = 4; z <= 8; z++) {
+                    for (let y = -2; y <= 2; y++) {
+                        setVoxel(millX, 33 + y, millZ + z, VoxelType.WOOD);
+                    }
+                }
+
+                // Village bridge to castle
+                const bridgeStartX = villageCenterX;
+                const bridgeStartZ = villageCenterZ - 50;
+                const bridgeEndX = 0;
+                const bridgeEndZ = -30;
+
+                const bridgeLength = Math.sqrt(
+                    Math.pow(bridgeEndX - bridgeStartX, 2) +
+                    Math.pow(bridgeEndZ - bridgeStartZ, 2)
+                );
+
+                for (let i = 0; i <= bridgeLength; i++) {
+                    const t = i / bridgeLength;
+                    const x = bridgeStartX + (bridgeEndX - bridgeStartX) * t;
+                    const z = bridgeStartZ + (bridgeEndZ - bridgeStartZ) * t;
+
+                    for (let bx = -2; bx <= 2; bx++) {
+                        for (let bz = -1; bz <= 1; bz++) {
+                            setVoxel(Math.floor(x) + bx, 33, Math.floor(z) + bz, VoxelType.COBBLESTONE);
+                        }
+                    }
+                }
+
+                // Village streets
+                const streetPoints = [
+                    [villageCenterX - 40, villageCenterZ],
+                    [villageCenterX - 20, villageCenterZ],
+                    [villageCenterX, villageCenterZ],
+                    [villageCenterX + 20, villageCenterZ],
+                    [villageCenterX + 40, villageCenterZ],
+                    [villageCenterX, villageCenterZ - 20],
+                    [villageCenterX, villageCenterZ + 20],
+                    [villageCenterX - 20, villageCenterZ + 20],
+                    [villageCenterX + 20, villageCenterZ + 20],
+                    [villageCenterX - 20, villageCenterZ - 20],
+                    [villageCenterX + 20, villageCenterZ - 20]
+                ];
+
+                for (let i = 0; i < streetPoints.length; i++) {
+                    for (let j = i + 1; j < streetPoints.length; j++) {
+                        const [x1, z1] = streetPoints[i];
+                        const [x2, z2] = streetPoints[j];
+
+                        const distance = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(z2 - z1, 2));
+                        if (distance < 30) {
+                            for (let t = 0; t <= 1; t += 0.01) {
+                                const x = x1 + (x2 - x1) * t;
+                                const z = z1 + (z2 - z1) * t;
+
+                                for (let sx = -1; sx <= 1; sx++) {
+                                    for (let sz = -1; sz <= 1; sz++) {
+                                        setVoxel(Math.floor(x) + sx, 33, Math.floor(z) + sz, VoxelType.COBBLESTONE);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Create volcano
+            function createVolcano() {
+                const volcanoX = -150;
+                const volcanoZ = 0;
+                const volcanoSize = 50;
+                const craterSize = 15;
+
+                // Volcano base
+                for (let x = -volcanoSize; x <= volcanoSize; x++) {
+                    for (let z = -volcanoSize; z <= volcanoSize; z++) {
+                        const distance = Math.sqrt(x * x + z * z);
+                        if (distance < volcanoSize) {
+                            const height = 32 + Math.floor((1 - distance / volcanoSize) * 80);
+                            for (let y = 32; y <= height; y++) {
+                                setVoxel(volcanoX + x, y, volcanoZ + z, VoxelType.BASALT);
+                            }
+                        }
+                    }
+                }
+
+                // Volcano crater
+                for (let x = -craterSize; x <= craterSize; x++) {
+                    for (let z = -craterSize; z <= craterSize; z++) {
+                        const distance = Math.sqrt(x * x + z * z);
+                        if (distance < craterSize) {
+                            for (let y = 32 + 70; y <= 32 + 80; y++) {
+                                setVoxel(volcanoX + x, y, volcanoZ + z, VoxelType.AIR);
+                            }
+                            if (distance < craterSize * 0.7) {
+                                setVoxel(volcanoX + x, 32 + 70, volcanoZ + z, VoxelType.LAVA);
+                            }
+                        }
+                    }
+                }
+
+                // Lava flows
+                for (let i = 0; i < 5; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const length = Math.random() * 30 + 20;
+
+                    for (let t = 0; t <= length; t++) {
+                        const x = Math.floor(Math.cos(angle) * t);
+                        const z = Math.floor(Math.sin(angle) * t);
+                        const height = getHeightAt(volcanoX + x, volcanoZ + z);
+
+                        for (let y = height; y <= height + 2; y++) {
+                            setVoxel(volcanoX + x, y, volcanoZ + z, VoxelType.LAVA);
+                        }
+                    }
+                }
+
+                // Volcano smoke (particles)
+                volcanoSmoke.push({
+                    position: [volcanoX, 32 + 85, volcanoZ],
+                    velocity: [0, 0.5, 0],
+                    size: 10,
+                    life: 1000
+                });
+
+                // Dead trees
+                for (let i = 0; i < 20; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const distance = Math.random() * volcanoSize * 0.8;
+                    const x = Math.floor(Math.cos(angle) * distance);
+                    const z = Math.floor(Math.sin(angle) * distance);
+                    const height = getHeightAt(volcanoX + x, volcanoZ + z);
+
+                    if (height > 32) {
+                        // Trunk
+                        const trunkHeight = Math.floor(Math.random() * 3) + 3;
+                        for (let y = 0; y < trunkHeight; y++) {
+                            setVoxel(volcanoX + x, height + y, volcanoZ + z, VoxelType.WOOD);
+                        }
+
+                        // Branches
+                        for (let j = 0; j < 3; j++) {
+                            const branchLength = Math.floor(Math.random() * 3) + 1;
+                            const branchAngle = Math.random() * Math.PI * 2;
+                            const branchX = Math.floor(Math.cos(branchAngle) * branchLength);
+                            const branchZ = Math.floor(Math.sin(branchAngle) * branchLength);
+
+                            for (let k = 0; k < branchLength; k++) {
+                                const t = k / branchLength;
+                                const bx = Math.floor(branchX * t);
+                                const bz = Math.floor(branchZ * t);
+                                setVoxel(volcanoX + x + bx, height + trunkHeight - 1, volcanoZ + z + bz, VoxelType.WOOD);
+                            }
+                        }
+                    }
+                }
+
+                // Ancient ruins
+                const ruinX = volcanoX + 30;
+                const ruinZ = volcanoZ + 30;
+
+                // Ruined temple
+                for (let x = -10; x <= 10; x++) {
+                    for (let z = -10; z <= 10; z++) {
+                        const distance = Math.sqrt(x * x + z * z);
+                        if (distance < 10) {
+                            const height = 32 + Math.floor((1 - distance / 10) * 10);
+                            for (let y = 32; y <= height; y++) {
+                                if (Math.random() < 0.7) { // 30% chance of being destroyed
+                                    setVoxel(ruinX + x, y, ruinZ + z, VoxelType.STONE);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Ruined columns
+                for (let i = 0; i < 8; i++) {
+                    const angle = (i / 8) * Math.PI * 2;
+                    const x = Math.floor(Math.cos(angle) * 12);
+                    const z = Math.floor(Math.sin(angle) * 12);
+
+                    const columnHeight = Math.floor(Math.random() * 5) + 3;
+                    for (let y = 0; y < columnHeight; y++) {
+                        if (Math.random() < 0.8) { // 20% chance of being destroyed
+                            setVoxel(ruinX + x, 32 + y, ruinZ + z, VoxelType.STONE);
+                        }
+                    }
+                }
+            }
+
+            // Create forests
+            function createForests() {
+                // Forest 1
+                createForest(100, -100, 40);
+
+                // Forest 2
+                createForest(-100, 100, 30);
+
+                // Forest 3
+                createForest(150, 150, 25);
+
+                // Forest near village
+                createForest(100, 50, 20);
+            }
+
+            function createForest(centerX, centerZ, size) {
+                for (let i = 0; i < size * 10; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const distance = Math.random() * size;
+                    const x = Math.floor(Math.cos(angle) * distance);
+                    const z = Math.floor(Math.sin(angle) * distance);
+                    const height = getHeightAt(centerX + x, centerZ + z);
+
+                    if (height > 32 && height < 50) {
+                        createTree(centerX + x, height, centerZ + z);
+                    }
+                }
+            }
+
+            function createTree(x, y, z) {
+                const treeType = Math.floor(Math.random() * 3);
+
+                if (treeType === 0) { // Oak tree
+                    const trunkHeight = Math.floor(Math.random() * 3) + 4;
+                    const leavesSize = Math.floor(Math.random() * 2) + 3;
+
+                    // Trunk
+                    for (let ty = 0; ty < trunkHeight; ty++) {
+                        setVoxel(x, y + ty, z, VoxelType.WOOD);
+                    }
+
+                    // Leaves
+                    for (let lx = -leavesSize; lx <= leavesSize; lx++) {
+                        for (let lz = -leavesSize; lz <= leavesSize; lz++) {
+                            for (let ly = -leavesSize; ly <= leavesSize; ly++) {
+                                const distance = Math.sqrt(lx * lx + lz * lz + ly * ly);
+                                if (distance <= leavesSize && distance > leavesSize - 1) {
+                                    setVoxel(x + lx, y + trunkHeight + ly, z + lz, VoxelType.LEAVES);
+                                }
+                            }
+                        }
+                    }
+                } else if (treeType === 1) { // Pine tree
+                    const trunkHeight = Math.floor(Math.random() * 4) + 5;
+                    const leavesLayers = Math.floor(Math.random() * 2) + 3;
+
+                    // Trunk
+                    for (let ty = 0; ty < trunkHeight; ty++) {
+                        setVoxel(x, y + ty, z, VoxelType.WOOD);
+                    }
+
+                    // Leaves
+                    for (let layer = 0; layer < leavesLayers; layer++) {
+                        const layerSize = Math.floor((leavesLayers - layer) * 0.5) + 1;
+                        for (let lx = -layerSize; lx <= layerSize; lx++) {
+                            for (let lz = -layerSize; lz <= layerSize; lz++) {
+                                if (Math.abs(lx) === layerSize || Math.abs(lz) === layerSize) {
+                                    setVoxel(x + lx, y + trunkHeight + layer, z + lz, VoxelType.LEAVES);
+                                }
+                            }
+                        }
+                    }
+                } else { // Bush
+                    const size = Math.floor(Math.random() * 2) + 2;
+                    for (let lx = -size; lx <= size; lx++) {
+                        for (let lz = -size; lz <= size; lz++) {
+                            for (let ly = 0; ly <= size; ly++) {
+                                const distance = Math.sqrt(lx * lx + lz * lz + ly * ly);
+                                if (distance <= size) {
+                                    setVoxel(x + lx, y + ly, z + lz, VoxelType.LEAVES);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Create rivers
+            function createRivers() {
+                // Main river
+                createRiver(150, -100, -150, 100, 5);
+
+                // Tributary 1
+                createRiver(50, -50, 100, 50, 3);
+
+                // Tributary 2
+                createRiver(-50, -100, -100, 0, 3);
+            }
+
+            function createRiver(x1, z1, x2, z2, width) {
+                const length = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(z2 - z1, 2));
+                const steps = Math.floor(length * 2);
+
+                for (let i = 0; i <= steps; i++) {
+                    const t = i / steps;
+                    const x = x1 + (x2 - x1) * t;
+                    const z = z1 + (z2 - z1) * t;
+
+                    // Get the terrain height
+                    const height = getHeightAt(x, z);
+
+                    // Create river bed
+                    for (let wx = -width; wx <= width; wx++) {
+                        for (let wz = -width; wz <= width; wz++) {
+                            const distance = Math.sqrt(wx * wx + wz * wz);
+                            if (distance <= width) {
+                                // Carve out the river
+                                for (let y = height - 3; y <= height; y++) {
+                                    setVoxel(Math.floor(x) + wx, y, Math.floor(z) + wz, VoxelType.AIR);
+                                }
+
+                                // Add water
+                                setVoxel(Math.floor(x) + wx, height - 1, Math.floor(z) + wz, VoxelType.WATER);
+                            }
+                        }
+                    }
+                }
+
+                // Add waterfalls
+                if (Math.random() < 0.3) {
+                    const waterfallX = x1 + (x2 - x1) * Math.random();
+                    const waterfallZ = z1 + (z2 - z1) * Math.random();
+                    const waterfallHeight = Math.floor(Math.random() * 5) + 3;
+
+                    for (let y = 0; y < waterfallHeight; y++) {
+                        setVoxel(Math.floor(waterfallX), getHeightAt(waterfallX, waterfallZ) - 1 - y, Math.floor(waterfallZ), VoxelType.WATER);
+                    }
+                }
+            }
+
+            // Create mountains
+            function createMountains() {
+                // Snowy mountains
+                createMountain(-100, -150, 40, 80, true);
+                createMountain(-150, -100, 35, 70, true);
+                createMountain(-200, -50, 30, 60, true);
+
+                // Regular mountains
+                createMountain(150, -150, 30, 50, false);
+                createMountain(200, -100, 25, 40, false);
+            }
+
+            function createMountain(centerX, centerZ, size, height, snowy) {
+                for (let x = -size; x <= size; x++) {
+                    for (let z = -size; z <= size; z++) {
+                        const distance = Math.sqrt(x * x + z * z);
+                        if (distance < size) {
+                            const mountainHeight = Math.floor((1 - distance / size) * height);
+                            const baseHeight = getHeightAt(centerX + x, centerZ + z);
+
+                            for (let y = baseHeight; y <= baseHeight + mountainHeight; y++) {
+                                if (snowy && y > baseHeight + mountainHeight * 0.7) {
+                                    setVoxel(centerX + x, y, centerZ + z, VoxelType.SNOW);
+                                } else {
+                                    setVoxel(centerX + x, y, centerZ + z, VoxelType.STONE);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Create ruins
+            function createRuins() {
+                // Ruin 1
+                createRuin(50, -100, 15);
+
+                // Ruin 2
+                createRuin(-50, 100, 10);
+            }
+
+            function createRuin(centerX, centerZ, size) {
+                // Ruined walls
+                for (let x = -size; x <= size; x++) {
+                    for (let z = -size; z <= size; z++) {
+                        if (Math.abs(x) === size || Math.abs(z) === size) {
+                            const height = Math.floor(Math.random() * 5) + 3;
+                            for (let y = 0; y < height; y++) {
+                                if (Math.random() < 0.7) { // 30% chance of being destroyed
+                                    setVoxel(centerX + x, 32 + y, centerZ + z, VoxelType.STONE);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Ruined columns
+                for (let i = 0; i < 4; i++) {
+                    const angle = (i / 4) * Math.PI * 2;
+                    const x = Math.floor(Math.cos(angle) * (size - 2));
+                    const z = Math.floor(Math.sin(angle) * (size - 2));
+
+                    const columnHeight = Math.floor(Math.random() * 4) + 2;
+                    for (let y = 0; y < columnHeight; y++) {
+                        if (Math.random() < 0.8) { // 20% chance of being destroyed
+                            setVoxel(centerX + x, 32 + y, centerZ + z, VoxelType.STONE);
+                        }
+                    }
+                }
+
+                // Ruined floor
+                for (let x = -size + 1; x <= size - 1; x++) {
+                    for (let z = -size + 1; z <= size - 1; z++) {
+                        if (Math.random() < 0.5) { // 50% chance of being intact
+                            setVoxel(centerX + x, 32, centerZ + z, VoxelType.COBBLESTONE);
+                        }
+                    }
+                }
+            }
+
+            // Helper functions
+            function getIndex(x, y, z) {
+                return x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE;
+            }
+
+            function getVoxel(x, y, z) {
+                const cx = Math.floor(x / CHUNK_SIZE);
+                const cz = Math.floor(z / CHUNK_SIZE);
+                const chunkId = `${cx},${cz}`;
+
+                if (!world.chunks.has(chunkId)) {
+                    return VoxelType.AIR;
+                }
+
+                const chunk = world.chunks.get(chunkId);
+                const lx = ((x % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+                const ly = y;
+                const lz = ((z % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+
+                if (ly < 0 || ly >= CHUNK_SIZE) {
+                    return VoxelType.AIR;
+                }
+
+                return chunk[getIndex(lx, ly, lz)];
+            }
+
+            function setVoxel(x, y, z, type) {
+                const cx = Math.floor(x / CHUNK_SIZE);
+                const cz = Math.floor(z / CHUNK_SIZE);
+                const chunkId = `${cx},${cz}`;
+
+                if (!world.chunks.has(chunkId)) {
+                    world.chunks.set(chunkId, new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE).fill(VoxelType.AIR));
+                }
+
+                const chunk = world.chunks.get(chunkId);
+                const lx = ((x % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+                const ly = y;
+                const lz = ((z % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+
+                if (ly >= 0 && ly < CHUNK_SIZE) {
+                    chunk[getIndex(lx, ly, lz)] = type;
+                    world.chunkNeedsUpdate.add(chunkId);
+
+                    // Mark neighboring chunks for update if on edge
+                    if (lx === 0) world.chunkNeedsUpdate.add(`${cx - 1},${cz}`);
+                    if (lx === CHUNK_SIZE - 1) world.chunkNeedsUpdate.add(`${cx + 1},${cz}`);
+                    if (lz === 0) world.chunkNeedsUpdate.add(`${cx},${cz - 1}`);
+                    if (lz === CHUNK_SIZE - 1) world.chunkNeedsUpdate.add(`${cx},${cz + 1}`);
+                }
+            }
+
+            function getHeightAt(x, z) {
+                const cx = Math.floor(x / CHUNK_SIZE);
+                const cz = Math.floor(z / CHUNK_SIZE);
+                const chunkId = `${cx},${cz}`;
+
+                if (!world.chunks.has(chunkId)) {
+                    return 32;
+                }
+
+                const chunk = world.chunks.get(chunkId);
+                const lx = ((x % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+                const lz = ((z % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+
+                for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
+                    const voxel = chunk[getIndex(lx, y, lz)];
+                    if (voxel !== VoxelType.AIR && voxel !== VoxelType.WATER) {
+                        return y + 1;
+                    }
+                }
+
+                return 32;
+            }
+
+            // Create the world
+            createWorld();
+
+            // Meshing
+            function createChunkMesh(chunkId) {
+                const [cx, cz] = chunkId.split(',').map(Number);
+                const chunk = world.chunks.get(chunkId);
+                if (!chunk) return null;
+
+                const vertices = [];
+                const colors = [];
+                const indices = [];
+                const emissives = [];
+                const indexOffset = 0;
+
+                for (let x = 0; x < CHUNK_SIZE; x++) {
+                    for (let y = 0; y < CHUNK_SIZE; y++) {
+                        for (let z = 0; z < CHUNK_SIZE; z++) {
+                            const voxel = chunk[getIndex(x, y, z)];
+                            if (voxel === VoxelType.AIR) continue;
+
+                            const properties = voxelProperties[voxel];
+
+                            // Check neighboring voxels
+                            const neighbors = [
+                                getVoxel(cx * CHUNK_SIZE + x, y, cz * CHUNK_SIZE + z - 1), // front
+                                getVoxel(cx * CHUNK_SIZE + x, y, cz * CHUNK_SIZE + z + 1), // back
+                                getVoxel(cx * CHUNK_SIZE + x - 1, y, cz * CHUNK_SIZE + z), // left
+                                getVoxel(cx * CHUNK_SIZE + x + 1, y, cz * CHUNK_SIZE + z), // right
+                                getVoxel(cx * CHUNK_SIZE + x, y + 1, cz * CHUNK_SIZE + z), // top
+                                getVoxel(cx * CHUNK_SIZE + x, y - 1, cz * CHUNK_SIZE + z)  // bottom
+                            ];
+
+                            // Add faces for exposed sides
+                            if (neighbors[0] === VoxelType.AIR || voxelProperties[neighbors[0]].transparent) {
+                                // Front face
+                                vertices.push(
+                                    x, y, z,
+                                    x + 1, y, z,
+                                    x + 1, y + 1, z,
+                                    x, y + 1, z
+                                );
+
+                                colors.push(...properties.color, ...properties.color, ...properties.color, ...properties.color);
+                                indices.push(indexOffset, indexOffset + 1, indexOffset + 2, indexOffset, indexOffset + 2, indexOffset + 3);
+                                emissives.push(
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0
+                                );
+                                indexOffset += 4;
+                            }
+
+                            if (neighbors[1] === VoxelType.AIR || voxelProperties[neighbors[1]].transparent) {
+                                // Back face
+                                vertices.push(
+                                    x + 1, y, z + 1,
+                                    x, y, z + 1,
+                                    x, y + 1, z + 1,
+                                    x + 1, y + 1, z + 1
+                                );
+
+                                colors.push(...properties.color, ...properties.color, ...properties.color, ...properties.color);
+                                indices.push(indexOffset, indexOffset + 1, indexOffset + 2, indexOffset, indexOffset + 2, indexOffset + 3);
+                                emissives.push(
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0
+                                );
+                                indexOffset += 4;
+                            }
+
+                            if (neighbors[2] === VoxelType.AIR || voxelProperties[neighbors[2]].transparent) {
+                                // Left face
+                                vertices.push(
+                                    x, y, z + 1,
+                                    x, y, z,
+                                    x, y + 1, z,
+                                    x, y + 1, z + 1
+                                );
+
+                                colors.push(...properties.color, ...properties.color, ...properties.color, ...properties.color);
+                                indices.push(indexOffset, indexOffset + 1, indexOffset + 2, indexOffset, indexOffset + 2, indexOffset + 3);
+                                emissives.push(
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0
+                                );
+                                indexOffset += 4;
+                            }
+
+                            if (neighbors[3] === VoxelType.AIR || voxelProperties[neighbors[3]].transparent) {
+                                // Right face
+                                vertices.push(
+                                    x + 1, y, z,
+                                    x + 1, y, z + 1,
+                                    x + 1, y + 1, z + 1,
+                                    x + 1, y + 1, z
+                                );
+
+                                colors.push(...properties.color, ...properties.color, ...properties.color, ...properties.color);
+                                indices.push(indexOffset, indexOffset + 1, indexOffset + 2, indexOffset, indexOffset + 2, indexOffset + 3);
+                                emissives.push(
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0
+                                );
+                                indexOffset += 4;
+                            }
+
+                            if (neighbors[4] === VoxelType.AIR || voxelProperties[neighbors[4]].transparent) {
+                                // Top face
+                                vertices.push(
+                                    x, y + 1, z,
+                                    x + 1, y + 1, z,
+                                    x + 1, y + 1, z + 1,
+                                    x, y + 1, z + 1
+                                );
+
+                                colors.push(...properties.color, ...properties.color, ...properties.color, ...properties.color);
+                                indices.push(indexOffset, indexOffset + 1, indexOffset + 2, indexOffset, indexOffset + 2, indexOffset + 3);
+                                emissives.push(
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0
+                                );
+                                indexOffset += 4;
+                            }
+
+                            if (neighbors[5] === VoxelType.AIR || voxelProperties[neighbors[5]].transparent) {
+                                // Bottom face
+                                vertices.push(
+                                    x, y, z + 1,
+                                    x + 1, y, z + 1,
+                                    x + 1, y, z,
+                                    x, y, z
+                                );
+
+                                colors.push(...properties.color, ...properties.color, ...properties.color, ...properties.color);
+                                indices.push(indexOffset, indexOffset + 1, indexOffset + 2, indexOffset, indexOffset + 2, indexOffset + 3);
+                                emissives.push(
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0,
+                                    properties.emissive ? properties.emissiveColor[0] : 0,
+                                    properties.emissive ? properties.emissiveColor[1] : 0,
+                                    properties.emissive ? properties.emissiveColor[2] : 0
+                                );
+                                indexOffset += 4;
+                            }
+                        }
+                    }
+                }
+
+                if (vertices.length === 0) {
+                    return null;
+                }
+
+                return {
+                    vertices: new Float32Array(vertices),
+                    colors: new Float32Array(colors),
+                    indices: new Uint32Array(indices),
+                    emissives: new Float32Array(emissives),
+                    vertexCount: indices.length
+                };
+            }
+
+            // WebGPU resources
+            const vertexBufferLayout = {
+                arrayStride: 12, // 3 floats * 4 bytes each
+                attributes: [{
+                    format: 'float32x3',
+                    offset: 0,
+                    shaderLocation: 0
+                }]
+            };
+
+            const colorBufferLayout = {
+                arrayStride: 16, // 4 floats * 4 bytes each
+                attributes: [{
+                    format: 'float32x4',
+                    offset: 0,
+                    shaderLocation: 1
+                }]
+            };
+
+            const emissiveBufferLayout = {
+                arrayStride: 12, // 3 floats * 4 bytes each
+                attributes: [{
+                    format: 'float32x3',
+                    offset: 0,
+                    shaderLocation: 2
+                }]
+            };
+
+            // Create shader modules
+            const shaderModule = device.createShaderModule({
+                code: `
+                    struct Uniforms {
+                        viewProjMatrix: mat4x4<f32>,
+                        time: f32,
+                        cameraPosition: vec3<f32>,
+                        fogColor: vec3<f32>,
+                        fogNear: f32,
+                        fogFar: f32,
+                        bloomThreshold: f32,
+                        bloomStrength: f32
+                    };
+
+                    @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+                    @group(0) @binding(1) var textureSampler: sampler;
+                    @group(0) @binding(2) var colorTexture: texture_2d<f32>;
+                    @group(0) @binding(3) var bloomTexture: texture_2d<f32>;
+
+                    struct VertexInput {
+                        @location(0) position: vec3<f32>,
+                        @location(1) color: vec4<f32>,
+                        @location(2) emissive: vec3<f32>
+                    };
+
+                    struct VertexOutput {
+                        @builtin(position) clipPosition: vec4<f32>,
+                        @location(0) worldPosition: vec3<f32>,
+                        @location(1) color: vec4<f32>,
+                        @location(2) emissive: vec3<f32>,
+                        @location(3) @interpolate(flat) isEmissive: u32
+                    };
+
+                    @vertex
+                    fn vertexMain(input: VertexInput) -> VertexOutput {
+                        var output: VertexOutput;
+                        output.clipPosition = uniforms.viewProjMatrix * vec4<f32>(input.position, 1.0);
+                        output.worldPosition = input.position;
+                        output.color = input.color;
+
+                        // Animate water and lava
+                        if (input.color.a < 1.0) {
+                            let wave = sin(input.position.x * 0.1 + uniforms.time * 2.0) *
+                                       cos(input.position.z * 0.1 + uniforms.time * 2.0) * 0.1;
+                            output.clipPosition.y += wave;
+                            output.worldPosition.y += wave;
+                        }
+
+                        output.emissive = input.emissive;
+                        output.isEmissive = u32(input.emissive.x > 0.0 || input.emissive.y > 0.0 || input.emissive.z > 0.0);
+                        return output;
+                    }
+
+                    @fragment
+                    fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+                        // Calculate fog
+                        let fogDistance = length(input.worldPosition - uniforms.cameraPosition);
+                        let fogFactor = clamp((fogDistance - uniforms.fogNear) / (uniforms.fogFar - uniforms.fogNear), 0.0, 1.0);
+                        let fogColor = mix(input.color.rgb, uniforms.fogColor, fogFactor);
+
+                        // Apply bloom threshold
+                        let brightness = dot(fogColor, vec3<f32>(0.299, 0.587, 0.114));
+                        let bloomColor = vec3<f32>(0.0);
+                        if (brightness > uniforms.bloomThreshold) {
+                            bloomColor = fogColor * uniforms.bloomStrength;
+                        }
+
+                        // For emissive objects, add their emissive color
+                        if (input.isEmissive != 0) {
+                            fogColor += input.emissive;
+                            bloomColor += input.emissive * uniforms.bloomStrength;
+                        }
+
+                        // Sample bloom texture for final composition
+                        let texColor = textureSample(colorTexture, textureSampler, input.clipPosition.xy / input.clipPosition.w);
+                        let bloomSample = textureSample(bloomTexture, textureSampler, input.clipPosition.xy / input.clipPosition.w);
+
+                        // Combine with bloom
+                        let finalColor = fogColor + bloomSample.rgb * 0.5;
+
+                        return vec4<f32>(finalColor, input.color.a);
+                    }
+                `
+            });
+
+            // Create pipeline
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: shaderModule,
+                    entryPoint: 'vertexMain',
+                    buffers: [vertexBufferLayout, colorBufferLayout, emissiveBufferLayout]
+                },
+                fragment: {
+                    module: shaderModule,
+                    entryPoint: 'fragmentMain',
+                    targets: [{
+                        format: format,
+                        blend: {
+                            color: {
+                                srcFactor: 'src-alpha',
+                                dstFactor: 'one-minus-src-alpha',
+                                operation: 'add'
+                            },
+                            alpha: {
+                                srcFactor: 'one',
+                                dstFactor: 'one-minus-src-alpha',
+                                operation: 'add'
+                            }
+                        }
+                    }]
+                },
+                primitive: {
+                    topology: 'triangle-list',
+                    cullMode: 'back'
+                },
+                depthStencil: {
+                    format: 'depth24plus',
+                    depthWriteEnabled: true,
+                    depthCompare: 'less'
+                }
+            });
+
+            // Create depth texture
+            const depthTexture = device.createTexture({
+                size: [width, height],
+                format: 'depth24plus',
+                usage: GPUTextureUsage.RENDER_ATTACHMENT
+            });
+
+            // Create uniform buffer
+            const uniformBufferSize = 4 * (16 + 1 + 3 + 3 + 1 + 1 + 1 + 1); // viewProjMatrix + time + cameraPosition + fogColor + fogNear + fogFar + bloomThreshold + bloomStrength
+            const uniformBuffer = device.createBuffer({
+                size: uniformBufferSize,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+            });
+
+            // Create uniform bind group
+            const uniformBindGroupLayout = pipeline.getBindGroupLayout(0);
+            let uniformBindGroup;
+
+            // Create textures for post-processing
+            const colorTexture = device.createTexture({
+                size: [width, height],
+                format: format,
+                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+            });
+
+            const colorTextureView = colorTexture.createView();
+
+            const bloomTexture = device.createTexture({
+                size: [width, height],
+                format: format,
+                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+            });
+
+            const bloomTextureView = bloomTexture.createView();
+
+            // Create sampler
+            const sampler = device.createSampler({
+                magFilter: 'linear',
+                minFilter: 'linear'
+            });
+
+            // Create bloom pipeline
+            const bloomPipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: device.createShaderModule({
+                        code: `
+                            @vertex
+                            fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
+                                let pos = array(
+                                    vec2<f32>(-1.0, -1.0),
+                                    vec2<f32>(-1.0,  1.0),
+                                    vec2<f32>( 1.0, -1.0),
+                                    vec2<f32>( 1.0,  1.0),
+                                    vec2<f32>(-1.0,  1.0),
+                                    vec2<f32>( 1.0, -1.0)
+                                );
+                                return vec4<f32>(pos[vertexIndex], 0.0, 1.0);
+                            }
+                        `
+                    }),
+                    entryPoint: 'vertexMain'
+                },
+                fragment: {
+                    module: device.createShaderModule({
+                        code: `
+                            @group(0) @binding(0) var textureSampler: sampler;
+                            @group(0) @binding(1) var colorTexture: texture_2d<f32>;
+
+                            @fragment
+                            fn fragmentMain(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+                                let uv = pos.xy / vec2<f32>(textureDimensions(colorTexture));
+                                let color = textureSample(colorTexture, textureSampler, uv);
+
+                                // Simple bloom effect - just blur bright areas
+                                let sum = vec3<f32>(0.0);
+                                let samples = 0.0;
+
+                                for (var x = -2; x <= 2; x++) {
+                                    for (var y = -2; y <= 2; y++) {
+                                        let offset = vec2<f32>(f32(x), f32(y)) / vec2<f32>(textureDimensions(colorTexture));
+                                        let sampleColor = textureSample(colorTexture, textureSampler, uv + offset);
+                                        let brightness = dot(sampleColor.rgb, vec3<f32>(0.299, 0.587, 0.114));
+
+                                        if (brightness > 0.8) {
+                                            sum += sampleColor.rgb;
+                                            samples += 1.0;
+                                        }
+                                    }
+                                }
+
+                                if (samples > 0.0) {
+                                    sum /= samples;
+                                }
+
+                                return vec4<f32>(sum, 1.0);
+                            }
+                        `
+                    }),
+                    entryPoint: 'fragmentMain',
+                    targets: [{
+                        format: format
+                    }]
+                },
+                primitive: {
+                    topology: 'triangle-list'
+                }
+            });
+
+            // Create bloom bind group
+            const bloomBindGroup = device.createBindGroup({
+                layout: bloomPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: sampler },
+                    { binding: 1, resource: colorTextureView }
+                ]
+            });
+
+            // Create final pipeline
+            const finalPipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: device.createShaderModule({
+                        code: `
+                            @vertex
+                            fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
+                                let pos = array(
+                                    vec2<f32>(-1.0, -1.0),
+                                    vec2<f32>(-1.0,  1.0),
+                                    vec2<f32>( 1.0, -1.0),
+                                    vec2<f32>( 1.0,  1.0),
+                                    vec2<f32>(-1.0,  1.0),
+                                    vec2<f32>( 1.0, -1.0)
+                                );
+                                return vec4<f32>(pos[vertexIndex], 0.0, 1.0);
+                            }
+                        `
+                    }),
+                    entryPoint: 'vertexMain'
+                },
+                fragment: {
+                    module: device.createShaderModule({
+                        code: `
+                            @group(0) @binding(0) var textureSampler: sampler;
+                            @group(0) @binding(1) var colorTexture: texture_2d<f32>;
+                            @group(0) @binding(2) var bloomTexture: texture_2d<f32>;
+
+                            @fragment
+                            fn fragmentMain(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+                                let uv = pos.xy / vec2<f32>(textureDimensions(colorTexture));
+                                let color = textureSample(colorTexture, textureSampler, uv);
+                                let bloom = textureSample(bloomTexture, textureSampler, uv);
+
+                                // Combine with bloom
+                                let finalColor = color.rgb + bloom.rgb * 0.5;
+
+                                // Vignette effect
+                                let vignette = 1.0 - dot(uv - 0.5, uv - 0.5) * 0.5;
+                                finalColor *= vignette;
+
+                                return vec4<f32>(finalColor, color.a);
+                            }
+                        `
+                    }),
+                    entryPoint: 'fragmentMain',
+                    targets: [{
+                        format: format
+                    }]
+                },
+                primitive: {
+                    topology: 'triangle-list'
+                }
+            });
+
+            // Create final bind group
+            const finalBindGroup = device.createBindGroup({
+                layout: finalPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: sampler },
+                    { binding: 1, resource: colorTextureView },
+                    { binding: 2, resource: bloomTextureView }
+                ]
+            });
+
+            // Create vertex buffers for each chunk
+            function createChunkBuffers(chunkId) {
+                const mesh = createChunkMesh(chunkId);
+                if (!mesh) return null;
+
+                const vertexBuffer = device.createBuffer({
+                    size: mesh.vertices.byteLength,
+                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                    mappedAtCreation: true
+                });
+                new Float32Array(vertexBuffer.getMappedRange()).set(mesh.vertices);
+                vertexBuffer.unmap();
+
+                const colorBuffer = device.createBuffer({
+                    size: mesh.colors.byteLength,
+                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                    mappedAtCreation: true
+                });
+                new Float32Array(colorBuffer.getMappedRange()).set(mesh.colors);
+                colorBuffer.unmap();
+
+                const emissiveBuffer = device.createBuffer({
+                    size: mesh.emissives.byteLength,
+                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                    mappedAtCreation: true
+                });
+                new Float32Array(emissiveBuffer.getMappedRange()).set(mesh.emissives);
+                emissiveBuffer.unmap();
+
+                const indexBuffer = device.createBuffer({
+                    size: mesh.indices.byteLength,
+                    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+                    mappedAtCreation: true
+                });
+                new Uint32Array(indexBuffer.getMappedRange()).set(mesh.indices);
+                indexBuffer.unmap();
+
+                return {
+                    vertexBuffer,
+                    colorBuffer,
+                    emissiveBuffer,
+                    indexBuffer,
+                    vertexCount: mesh.vertexCount
+                };
+            }
+
+            // Create chunk buffers
+            const chunkBuffers = new Map();
+            for (const chunkId of world.chunks.keys()) {
+                const buffers = createChunkBuffers(chunkId);
+                if (buffers) {
+                    chunkBuffers.set(chunkId, buffers);
+                }
+            }
+
+            // Particles for smoke, fire, etc.
+            const particles = [];
+            const volcanoSmoke = [];
+
+            // Add some birds
+            for (let i = 0; i < 20; i++) {
+                particles.push({
+                    position: [
+                        Math.random() * 400 - 200,
+                        50 + Math.random() * 50,
+                        Math.random() * 400 - 200
+                    ],
+                    velocity: [
+                        (Math.random() - 0.5) * 0.5,
+                        (Math.random() - 0.5) * 0.1,
+                        (Math.random() - 0.5) * 0.5
+                    ],
+                    size: 0.5 + Math.random() * 0.5,
+                    color: [0.8, 0.8, 0.8, 1],
+                    life: 1000,
+                    type: 'bird'
+                });
+            }
+
+            // Add some clouds
+            for (let i = 0; i < 10; i++) {
+                particles.push({
+                    position: [
+                        Math.random() * 800 - 400,
+                        100 + Math.random() * 50,
+                        Math.random() * 800 - 400
+                    ],
+                    velocity: [
+                        (Math.random() - 0.5) * 0.1,
+                        0,
+                        (Math.random() - 0.5) * 0.1
+                    ],
+                    size: 20 + Math.random() * 30,
+                    color: [0.9, 0.9, 0.95, 0.8],
+                    life: 1000,
+                    type: 'cloud'
+                });
+            }
+
+            // Add some fireflies
+            for (let i = 0; i < 50; i++) {
+                particles.push({
+                    position: [
+                        Math.random() * 400 - 200,
+                        10 + Math.random() * 30,
+                        Math.random() * 400 - 200
+                    ],
+                    velocity: [
+                        (Math.random() - 0.5) * 0.2,
+                        (Math.random() - 0.5) * 0.1,
+                        (Math.random() - 0.5) * 0.2
+                    ],
+                    size: 0.2 + Math.random() * 0.3,
+                    color: [0.8, 0.8, 0.2, 1],
+                    life: 1000,
+                    type: 'firefly'
+                });
+            }
+
+            // Create particle buffers
+            const particleVertices = new Float32Array(particles.length * 12);
+            const particleColors = new Float32Array(particles.length * 16);
+            const particleIndices = new Uint32Array(particles.length * 6);
+
+            for (let i = 0; i < particles.length; i++) {
+                const particle = particles[i];
+
+                // Vertices (billboard)
+                particleVertices.set([
+                    -particle.size, -particle.size, 0,
+                    particle.size, -particle.size, 0,
+                    particle.size, particle.size, 0,
+                    -particle.size, particle.size, 0
+                ], i * 12);
+
+                // Colors
+                for (let j = 0; j < 4; j++) {
+                    particleColors.set(particle.color, i * 16 + j * 4);
+                }
+
+                // Indices
+                particleIndices.set([
+                    i * 4, i * 4 + 1, i * 4 + 2,
+                    i * 4, i * 4 + 2, i * 4 + 3
+                ], i * 6);
+            }
+
+            const particleVertexBuffer = device.createBuffer({
+                size: particleVertices.byteLength,
+                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                mappedAtCreation: true
+            });
+            new Float32Array(particleVertexBuffer.getMappedRange()).set(particleVertices);
+            particleVertexBuffer.unmap();
+
+            const particleColorBuffer = device.createBuffer({
+                size: particleColors.byteLength,
+                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                mappedAtCreation: true
+            });
+            new Float32Array(particleColorBuffer.getMappedRange()).set(particleColors);
+            particleColorBuffer.unmap();
+
+            const particleIndexBuffer = device.createBuffer({
+                size: particleIndices.byteLength,
+                usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+                mappedAtCreation: true
+            });
+            new Uint32Array(particleIndexBuffer.getMappedRange()).set(particleIndices);
+            particleIndexBuffer.unmap();
+
+            // Particle pipeline
+            const particlePipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: device.createShaderModule({
+                        code: `
+                            struct Uniforms {
+                                viewProjMatrix: mat4x4<f32>,
+                                time: f32,
+                                cameraPosition: vec3<f32>
+                            };
+
+                            @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+                            struct VertexInput {
+                                @location(0) position: vec3<f32>,
+                                @location(1) color: vec4<f32>
+                            };
+
+                            struct VertexOutput {
+                                @builtin(position) clipPosition: vec4<f32>,
+                                @location(0) color: vec4<f32>,
+                                @location(1) worldPosition: vec3<f32>
+                            };
+
+                            @vertex
+                            fn vertexMain(input: VertexInput, @builtin(instance_index) instanceIndex: u32) -> VertexOutput {
+                                var output: VertexOutput;
+
+                                // Get particle data (would normally use storage buffers)
+                                let particlePosition = vec3<f32>(
+                                    ${particles.map(p => p.position[0]).join(', ')},
+                                    ${particles.map(p => p.position[1]).join(', ')},
+                                    ${particles.map(p => p.position[2]).join(', ')}
+                                );
+
+                                let particleSize = f32(${particles.map(p => p.size).join(', ')});
+                                let particleType = u32(${particles.map(p => p.type === 'bird' ? 0 : p.type === 'cloud' ? 1 : 2).join(', ')});
+
+                                // Billboard the particle
+                                let cameraRight = normalize(vec3<f32>(uniforms.viewProjMatrix[0].xyz));
+                                let cameraUp = normalize(vec3<f32>(uniforms.viewProjMatrix[1].xyz));
+
+                                let worldPosition = particlePosition;
+                                let worldSize = particleSize;
+
+                                // Animate based on type
+                                if (particleType == 0u) { // Bird
+                                    worldPosition.y += sin(uniforms.time * 2.0 + f32(instanceIndex) * 0.5) * 0.5;
+                                    worldSize *= 0.8 + sin(uniforms.time * 3.0 + f32(instanceIndex)) * 0.2;
+                                } else if (particleType == 1u) { // Cloud
+                                    worldSize *= 1.0 + sin(uniforms.time * 0.5 + f32(instanceIndex)) * 0.1;
+                                } else { // Firefly
+                                    worldPosition += vec3<f32>(
+                                        sin(uniforms.time * 2.0 + f32(instanceIndex)) * 0.5,
+                                        sin(uniforms.time * 3.0 + f32(instanceIndex)) * 0.3,
+                                        cos(uniforms.time * 2.0 + f32(instanceIndex)) * 0.5
+                                    );
+                                }
+
+                                let vertexPosition = worldPosition +
+                                    cameraRight * input.position.x * worldSize +
+                                    cameraUp * input.position.y * worldSize;
+
+                                output.clipPosition = uniforms.viewProjMatrix * vec4<f32>(vertexPosition, 1.0);
+                                output.color = input.color;
+                                output.worldPosition = vertexPosition;
+
+                                return output;
+                            }
+                        `
+                    }),
+                    entryPoint: 'vertexMain',
+                    buffers: [
+                        {
+                            arrayStride: 12,
+                            attributes: [{
+                                format: 'float32x3',
+                                offset: 0,
+                                shaderLocation: 0
+                            }]
+                        },
+                        {
+                            arrayStride: 16,
+                            attributes: [{
+                                format: 'float32x4',
+                                offset: 0,
+                                shaderLocation: 1
+                            }]
+                        }
+                    ]
+                },
+                fragment: {
+                    module: device.createShaderModule({
+                        code: `
+                            @fragment
+                            fn fragmentMain(@location(0) color: vec4<f32>) -> @location(0) vec4<f32> {
+                                return color;
+                            }
+                        `
+                    }),
+                    entryPoint: 'fragmentMain',
+                    targets: [{
+                        format: format,
+                        blend: {
+                            color: {
+                                srcFactor: 'src-alpha',
+                                dstFactor: 'one-minus-src-alpha',
+                                operation: 'add'
+                            },
+                            alpha: {
+                                srcFactor: 'one',
+                                dstFactor: 'one-minus-src-alpha',
+                                operation: 'add'
+                            }
+                        }
+                    }]
+                },
+                primitive: {
+                    topology: 'triangle-list',
+                    cullMode: 'none'
+                }
+            });
+
+            // Particle uniform buffer
+            const particleUniformBuffer = device.createBuffer({
+                size: 4 * (16 + 1 + 3), // viewProjMatrix + time + cameraPosition
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+            });
+
+            // Particle bind group
+            const particleBindGroup = device.createBindGroup({
+                layout: particlePipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: particleUniformBuffer } }
+                ]
+            });
+
+            // Game state
+            let lastTime = 0;
+            let frameCount = 0;
+            let bloomEnabled = true;
+            let fogEnabled = true;
+            let time = 0;
+
+            // Initial camera position for cinematic start
+            camera.position = [0, 150, 200];
+            camera.target = [0, 50, 0];
+            camera.mode = 'orbit';
+            camera.orbitDistance = 250;
+            camera.orbitAngle = [0.5, 0.0];
+
+            // Animation loop
+            function frame(currentTime) {
+                const deltaTime = (currentTime - lastTime) / 1000;
+                lastTime = currentTime;
+                time += deltaTime;
+                frameCount++;
+
+                // Update time of day
+                timeOfDay.update();
+                const timeOfDayValue = timeOfDay.current;
+
+                // Update camera
+                if (camera.mode === 'fly' || camera.mode === 'walk') {
+                    const moveSpeed = camera.speed * (keys['shift'] ? 2 : 1) * (keys['control'] ? 0.5 : 1);
+
+                    if (keys['w']) {
+                        camera.position[0] += camera.forward[0] * moveSpeed;
+                        camera.position[2] += camera.forward[2] * moveSpeed;
+                    }
+                    if (keys['s']) {
+                        camera.position[0] -= camera.forward[0] * moveSpeed;
+                        camera.position[2] -= camera.forward[2] * moveSpeed;
+                    }
+                    if (keys['a']) {
+                        camera.position[0] -= camera.right[0] * moveSpeed;
+                        camera.position[2] -= camera.right[2] * moveSpeed;
+                    }
+                    if (keys['d']) {
+                        camera.position[0] += camera.right[0] * moveSpeed;
+                        camera.position[2] += camera.right[2] * moveSpeed;
+                    }
+                    if (keys[' ']) {
+                        camera.position[1] += moveSpeed;
+                    }
+                    if (keys['shift']) {
+                        camera.position[1] -= moveSpeed;
+                    }
+
+                    if (camera.mode === 'walk') {
+                        camera.position[1] = getHeightAt(camera.position[0], camera.position[2]) + 1.8;
+                    }
+
+                    camera.updateViewMatrix();
+                }
+
+                // Update particles
+                for (let i = 0; i < particles.length; i++) {
+                    const particle = particles[i];
+
+                    // Update position
+                    particle.position[0] += particle.velocity[0] * deltaTime * 10;
+                    particle.position[1] += particle.velocity[1] * deltaTime * 10;
+                    particle.position[2] += particle.velocity[2] * deltaTime * 10;
+
+                    // Update life
+                    particle.life -= deltaTime * 1000;
+
+                    // Reset particles that are out of bounds or dead
+                    if (particle.life <= 0 ||
+                        particle.position[0] < -400 || particle.position[0] > 400 ||
+                        particle.position[2] < -400 || particle.position[2] > 400) {
+
+                        if (particle.type === 'bird') {
+                            particle.position = [
+                                Math.random() * 400 - 200,
+                                50 + Math.random() * 50,
+                                Math.random() * 400 - 200
+                            ];
+                            particle.velocity = [
+                                (Math.random() - 0.5) * 0.5,
+                                (Math.random() - 0.5) * 0.1,
+                                (Math.random() - 0.5) * 0.5
+                            ];
+                        } else if (particle.type === 'cloud') {
+                            particle.position = [
+                                Math.random() * 800 - 400,
+                                100 + Math.random() * 50,
+                                Math.random() * 800 - 400
+                            ];
+                            particle.velocity = [
+                                (Math.random() - 0.5) * 0.1,
+                                0,
+                                (Math.random() - 0.5) * 0.1
+                            ];
+                        } else if (particle.type === 'firefly') {
+                            particle.position = [
+                                Math.random() * 400 - 200,
+                                10 + Math.random() * 30,
+                                Math.random() * 400 - 200
+                            ];
+                            particle.velocity = [
+                                (Math.random() - 0.5) * 0.2,
+                                (Math.random() - 0.5) * 0.1,
+                                (Math.random() - 0.5) * 0.2
+                            ];
+                        }
+
+                        particle.life = 1000;
+                    }
+                }
+
+                // Update volcano smoke
+                for (let i = 0; i < volcanoSmoke.length; i++) {
+                    const smoke = volcanoSmoke[i];
+
+                    smoke.position[0] += smoke.velocity[0] * deltaTime;
+                    smoke.position[1] += smoke.velocity[1] * deltaTime;
+                    smoke.position[2] += smoke.velocity[2] * deltaTime;
+
+                    smoke.size += deltaTime * 0.5;
+                    smoke.life -= deltaTime * 1000;
+
+                    if (smoke.life <= 0) {
+                        volcanoSmoke.splice(i, 1);
+                        i--;
+                    }
+                }
+
+                // Add new volcano smoke
+                if (Math.random() < 0.1) {
+                    volcanoSmoke.push({
+                        position: [-150, 110, 0],
+                        velocity: [
+                            (Math.random() - 0.5) * 0.5,
+                            0.5 + Math.random() * 0.5,
+                            (Math.random() - 0.5) * 0.5
+                        ],
+                        size: 2 + Math.random() * 3,
+                        life: 5000 + Math.random() * 5000,
+                        color: [0.3, 0.3, 0.3, 0.5]
+                    });
+                }
+
+                // Update chunk meshes if needed
+                if (world.chunkNeedsUpdate.size > 0) {
+                    for (const chunkId of world.chunkNeedsUpdate) {
+                        const buffers = createChunkBuffers(chunkId);
+                        if (buffers) {
+                            chunkBuffers.set(chunkId, buffers);
+                        }
+                    }
+                    world.chunkNeedsUpdate.clear();
+                }
+
+                // Update uniforms
+                const viewProjMatrix = camera.getViewProjectionMatrix();
+                const fogColor = getFogColor(timeOfDayValue);
+                const fogNear = 50;
+                const fogFar = 300;
+
+                const uniformData = new Float32Array([
+                    ...viewProjMatrix,
+                    time,
+                    ...camera.position,
+                    ...fogColor,
+                    fogNear,
+                    fogFar,
+                    bloomEnabled ? 0.8 : 100.0, // bloom threshold
+                    bloomEnabled ? 1.0 : 0.0    // bloom strength
+                ]);
+
+                device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
+                // Update particle uniforms
+                const particleUniformData = new Float32Array([
+                    ...viewProjMatrix,
+                    time,
+                    ...camera.position
+                ]);
+
+                device.queue.writeBuffer(particleUniformBuffer, 0, particleUniformData);
+
+                // Create command encoder
+                const commandEncoder = device.createCommandEncoder();
+
+                // First pass - render scene to color texture
+                const colorPassDescriptor = {
+                    colorAttachments: [{
+                        view: colorTextureView,
+                        clearValue: { r: fogColor[0], g: fogColor[1], b: fogColor[2], a: 1.0 },
+                        loadOp: 'clear',
+                        storeOp: 'store'
+                    }],
+                    depthStencilAttachment: {
+                        view: depthTexture.createView(),
+                        depthClearValue: 1.0,
+                        depthLoadOp: 'clear',
+                        depthStoreOp: 'store'
+                    }
+                };
+
+                const colorPass = commandEncoder.beginRenderPass(colorPassDescriptor);
+
+                // Render chunks
+                colorPass.setPipeline(pipeline);
+
+                if (!uniformBindGroup) {
+                    uniformBindGroup = device.createBindGroup({
+                        layout: uniformBindGroupLayout,
+                        entries: [
+                            { binding: 0, resource: { buffer: uniformBuffer } },
+                            { binding: 1, resource: sampler },
+                            { binding: 2, resource: colorTextureView },
+                            { binding: 3, resource: bloomTextureView }
+                        ]
+                    });
+                }
+
+                colorPass.setBindGroup(0, uniformBindGroup);
+
+                for (const [chunkId, buffers] of chunkBuffers) {
+                    colorPass.setVertexBuffer(0, buffers.vertexBuffer);
+                    colorPass.setVertexBuffer(1, buffers.colorBuffer);
+                    colorPass.setVertexBuffer(2, buffers.emissiveBuffer);
+                    colorPass.setIndexBuffer(buffers.indexBuffer, 'uint32');
+                    colorPass.drawIndexed(buffers.vertexCount);
+                }
+
+                // Render particles
+                colorPass.setPipeline(particlePipeline);
+                colorPass.setBindGroup(0, particleBindGroup);
+                colorPass.setVertexBuffer(0, particleVertexBuffer);
+                colorPass.setVertexBuffer(1, particleColorBuffer);
+                colorPass.setIndexBuffer(particleIndexBuffer, 'uint32');
+                colorPass.drawIndexed(particleIndices.length, particles.length);
+
+                colorPass.end();
+
+                // Second pass - bloom
+                if (bloomEnabled) {
+                    const bloomPassDescriptor = {
+                        colorAttachments: [{
+                            view: bloomTextureView,
+                            clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                            loadOp: 'clear',
+                            storeOp: 'store'
+                        }]
+                    };
+
+                    const bloomPass = commandEncoder.beginRenderPass(bloomPassDescriptor);
+                    bloomPass.setPipeline(bloomPipeline);
+                    bloomPass.setBindGroup(0, bloomBindGroup);
+                    bloomPass.draw(6);
+                    bloomPass.end();
+                }
+
+                // Third pass - final composition
+                const finalPassDescriptor = {
+                    colorAttachments: [{
+                        view: context.getCurrentTexture().createView(),
+                        clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                        loadOp: 'clear',
+                        storeOp: 'store'
+                    }]
+                };
+
+                const finalPass = commandEncoder.beginRenderPass(finalPassDescriptor);
+                finalPass.setPipeline(finalPipeline);
+                finalPass.setBindGroup(0, finalBindGroup);
+                finalPass.draw(6);
+                finalPass.end();
+
+                // Submit commands
+                device.queue.submit([commandEncoder.finish()]);
+
+                // Request next frame
+                requestAnimationFrame(frame);
+            }
+
+            // Helper function to get fog color based on time of day
+            function getFogColor(timeOfDay) {
+                // Dawn
+                if (timeOfDay < 0.25) {
+                    const t = timeOfDay / 0.25;
+                    return [
+                        0.3 * t + 0.1 * (1 - t),
+                        0.4 * t + 0.2 * (1 - t),
+                        0.6 * t + 0.3 * (1 - t)
+                    ];
+                }
+                // Day
+                else if (timeOfDay < 0.5) {
+                    const t = (timeOfDay - 0.25) / 0.25;
+                    return [
+                        0.3 * (1 - t) + 0.5 * t,
+                        0.4 * (1 - t) + 0.7 * t,
+                        0.6 * (1 - t) + 0.9 * t
+                    ];
+                }
+                // Dusk
+                else if (timeOfDay < 0.75) {
+                    const t = (timeOfDay - 0.5) / 0.25;
+                    return [
+                        0.5 * (1 - t) + 0.8 * t,
+                        0.7 * (1 - t) + 0.4 * t,
+                        0.9 * (1 - t) + 0.2 * t
+                    ];
+                }
+                // Night
+                else {
+                    const t = (timeOfDay - 0.75) / 0.25;
+                    return [
+                        0.8 * (1 - t) + 0.1 * t,
+                        0.4 * (1 - t) + 0.1 * t,
+                        0.2 * (1 - t) + 0.2 * t
+                    ];
+                }
+            }
+
+            // Start the animation loop
+            loading.style.display = 'none';
+            requestAnimationFrame(frame);
+        }
+
+        // Initialize
+        init();
+    </script>
+</body>
+</html>

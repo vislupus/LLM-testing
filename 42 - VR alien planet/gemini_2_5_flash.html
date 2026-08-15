@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Xenoscape VR</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; color: #0cf; font-family: 'Courier New', monospace; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; text-shadow: 0 0 10px #0cf; }
+        h1 { font-size: 5vw; margin: 0; }
+        p { font-size: 2vw; }
+        #start-btn { pointer-events: auto; background: rgba(0, 25, 50, 0.8); border: 2px solid #0cf; color: #0cf; padding: 20px 40px; font-size: 24px; cursor: pointer; text-transform: uppercase; letter-spacing: 4px; box-shadow: 0 0 20px rgba(0, 200, 255, 0.5); transition: all 0.3s; }
+        #start-btn:hover { background: rgba(0, 200, 255, 0.2); box-shadow: 0 0 40px rgba(0, 200, 255, 0.8); }
+        #status { position: absolute; bottom: 10px; left: 10px; width: calc(100% - 20px); font-size: 14px; text-align: center; opacity: 0.8; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <canvas id="renderCanvas"></canvas>
+    <div id="ui">
+        <div id="intro">
+            <h1>XENOSCAPE VR</h1>
+            <p>Reach out and press TRIGGER to collect the artifacts.</p>
+            <button id="start-btn">Enter VR</button>
+        </div>
+        <div id="status">System Standby... Awaiting VR Link.</div>
+    </div>
+
+<script>
+// --- Core Engine ---
+const canvas = document.getElementById('renderCanvas');
+const statusEl = document.getElementById('status');
+const gl = canvas.getContext('webgl2', { xrCompatible: true });
+
+let xrSession = null;
+let xrRefSpace = null;
+let time = 0;
+let lastTime = 0;
+
+// --- Math Library ---
+class Vec3 {
+    constructor(x=0, y=0, z=0) { this.x=x; this.y=y; this.z=z; }
+    set(x,y,z){this.x=x;this.y=y;this.z=z;return this;}
+    add(v){this.x+=v.x;this.y+=v.y;this.z+=v.z;return this;}
+    sub(v){this.x-=v.x;this.y-=v.y;this.z-=v.z;return this;}
+    scale(s){this.x*=s;this.y*=s;this.z*=s;return this;}
+    length(){return Math.sqrt(this.x*this.x+this.y*this.y+this.z*this.z);}
+    normalize(){const l=this.length();if(l>0)this.scale(1/l);return this;}
+    clone(){return new Vec3(this.x,this.y,this.z);}
+    static distance(a, b) {const dx=a.x-b.x,dy=a.y-b.y,dz=a.z-b.z;return Math.sqrt(dx*dx+dy*dy+dz*dz);}
+}
+class Mat4 extends Float32Array {
+    constructor(){super(16);this.identity();}
+    identity(){this.set([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);return this;}
+    multiply(b){const a=this,c=new Mat4();for(let i=0;i<4;i++)for(let j=0;j<4;j++){let s=0;for(let k=0;k<4;k++)s+=a[i+k*4]*b[j*4+k];c[i+j*4]=s;}this.set(c);return this;}
+    translate(v){const t=new Mat4();t[12]=v.x;t[13]=v.y;t[14]=v.z;return this.multiply(t);}
+    fromTransform(t){this.set(t.matrix);return this;}
+}
+
+// --- Noise Generator ---
+class SimplexNoise {
+    constructor(){const p="".split("").map((_,i)=>i);for(let i=255;i>0;i--){const j=Math.floor(Math.random()*(i+1));[p[i],p[j]]=[p[j],p[i]];}this.perm=new Uint8Array(512).map((_,i)=>p[i&255]);}
+    noise3D(x,y,z){const p=this.perm,F3=1/3,G3=1/6;let s=(x+y+z)*F3,i=Math.floor(x+s),j=Math.floor(y+s),k=Math.floor(z+s),t=(i+j+k)*G3,X0=i-t,Y0=j-t,Z0=k-t,x0=x-X0,y0=y-Y0,z0=z-Z0;let i1,j1,k1,i2,j2,k2;if(x0>=y0){if(y0>=z0){i1=1;j1=0;k1=0;i2=1;j2=1;k2=0;}else if(x0>=z0){i1=1;j1=0;k1=0;i2=1;j2=0;k2=1;}else{i1=0;j1=0;k1=1;i2=1;j2=0;k2=1;}}else{if(y0<z0){i1=0;j1=0;k1=1;i2=0;j2=1;k2=1;}else if(x0<z0){i1=0;j1=1;k1=0;i2=0;j2=1;k2=1;}else{i1=0;j1=1;k1=0;i2=1;j2=1;k2=0;}}let x1=x0-i1+G3,y1=y0-j1+G3,z1=z0-k1+G3,x2=x0-i2+2*G3,y2=y0-j2+2*G3,z2=z0-k2+2*G3,x3=x0-1+3*G3,y3=y0-1+3*G3,z3=z0-1+3*G3;let n0,n1,n2,n3;let t0=0.6-x0*x0-y0*y0-z0*z0;if(t0<0)n0=0;else{const g=p[(i&255)+p[(j&255)+p[k&255]&255]&255]%12,dot=(v,x,y,z)=>v<4?x:v<8?y:z,gr=(v,x,y)=>(v&1?x:y)*(v&2?-1:1);t0*=t0;n0=t0*t0*(gr(g,x0,y0)+gr(g>>1,y0,z0)+gr(g>>2,z0,x0));}let t1=0.6-x1*x1-y1*y1-z1*z1;if(t1<0)n1=0;else{const g=p[(i+i1&255)+p[(j+j1&255)+p[k+k1&255]&255]&255]%12;t1*=t1;n1=t1*t1*(gr(g,x1,y1)+gr(g>>1,y1,z1)+gr(g>>2,z1,x1));}let t2=0.6-x2*x2-y2*y2-z2*z2;if(t2<0)n2=0;else{const g=p[(i+i2&255)+p[(j+j2&255)+p[k+k2&255]&255]&255]%12;t2*=t2;n2=t2*t2*(gr(g,x2,y2)+gr(g>>1,y2,z2)+gr(g>>2,z2,x2));}let t3=0.6-x3*x3-y3*y3-z3*z3;if(t3<0)n3=0;else{const g=p[(i+1&255)+p[(j+1&255)+p[k+1&255]&255]&255]%12;t3*=t3;n3=t3*t3*(gr(g,x3,y3)+gr(g>>1,y3,z3)+gr(g>>2,z3,x3));}return 32*(n0+n1+n2+n3);}
+}
+const noise = new SimplexNoise();
+
+// --- Shaders ---
+const VS_SRC = `#version 300 es
+precision highp float;
+in vec3 a_pos;
+in vec3 a_color;
+in float a_glow;
+uniform mat4 u_proj;
+uniform mat4 u_view;
+uniform mat4 u_model;
+uniform float u_time;
+
+out vec3 v_color;
+out float v_glow;
+out float v_depth;
+
+vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }
+float snoise(vec2 v) {
+  const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+  vec2 i  = floor(v + dot(v, C.yy) );
+  vec2 x0 = v -   i + dot(i, C.xx);
+  vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+  vec4 x12 = x0.xyxy + C.xxzz;
+  x12.xy -= i1;
+  i = mod289(i);
+  vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 )) + i.x + vec3(0.0, i1.x, 1.0 ));
+  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+  m = m*m; m = m*m;
+  vec3 x = 2.0 * fract(p * C.www) - 1.0;
+  vec3 h = abs(x) - 0.5;
+  vec3 ox = floor(x + 0.5);
+  vec3 a0 = x - ox;
+  m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
+  vec3 g;
+  g.x  = a0.x  * x0.x  + h.x  * x0.y;
+  g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+  return 130.0 * dot(m, g);
+}
+
+void main() {
+    vec4 worldPos = u_model * vec4(a_pos, 1.0);
+    
+    // Sky-ray animation
+    if (a_glow > 90.0) {
+        float flap = sin(u_time * 5.0 + worldPos.x * 0.5) * 2.0;
+        worldPos.y += flap * a_pos.x * 0.2;
+    }
+
+    gl_Position = u_proj * u_view * worldPos;
+    v_color = a_color;
+    v_glow = a_glow;
+    v_depth = gl_Position.w;
+}`;
+const FS_SRC = `#version 300 es
+precision highp float;
+in vec3 v_color;
+in float v_glow;
+in float v_depth;
+uniform float u_time;
+uniform vec3 u_fogColor;
+uniform float u_fogDensity;
+
+out vec4 fragColor;
+
+void main() {
+    float pulse = 1.0;
+    if (v_glow > 0.0 && v_glow < 10.0) {
+        pulse += sin(u_time * 3.0 + v_glow * 10.0) * 0.5;
+    }
+    vec3 color = v_color * pulse;
+
+    float fogFactor = 1.0 - exp(-u_fogDensity * v_depth * v_depth * 0.0001);
+    vec3 finalColor = mix(color, u_fogColor, clamp(fogFactor, 0.0, 1.0));
+    
+    fragColor = vec4(finalColor, 1.0);
+}`;
+
+// --- WebGL Utilities ---
+function createShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+    }
+    return shader;
+}
+const program = gl.createProgram();
+gl.attachShader(program, createShader(gl.VERTEX_SHADER, VS_SRC));
+gl.attachShader(program, createShader(gl.FRAGMENT_SHADER, FS_SRC));
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error('Program link error:', gl.getProgramInfoLog(program));
+}
+const locs = {
+    pos: gl.getAttribLocation(program, 'a_pos'),
+    color: gl.getAttribLocation(program, 'a_color'),
+    glow: gl.getAttribLocation(program, 'a_glow'),
+    proj: gl.getUniformLocation(program, 'u_proj'),
+    view: gl.getUniformLocation(program, 'u_view'),
+    model: gl.getUniformLocation(program, 'u_model'),
+    time: gl.getUniformLocation(program, 'u_time'),
+    fogColor: gl.getUniformLocation(program, 'u_fogColor'),
+    fogDensity: gl.getUniformLocation(program, 'u_fogDensity'),
+};
+gl.enable(gl.DEPTH_TEST);
+
+// --- Geometry & World Generation ---
+const world = {
+    verts: [],
+    colors: [],
+    glows: [],
+    indices: [],
+    objects: [],
+    artifacts: [],
+    wildlife: [],
+    add: function(v,c,g,i){
+        const base = this.verts.length/3;
+        this.verts.push(...v); this.colors.push(...c); this.glows.push(...g);
+        this.indices.push(...i.map(idx=>idx+base));
+    },
+    build: function(){
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+        const buffer = (data, loc, size) => {
+            const buf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+            gl.enableVertexAttribArray(loc);
+            gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+        };
+        buffer(this.verts, locs.pos, 3);
+        buffer(this.colors, locs.color, 3);
+        buffer(this.glows, locs.glow, 1);
+        const ibo = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(this.indices), gl.STATIC_DRAW);
+        gl.bindVertexArray(null);
+        this.vao = vao;
+        this.indexCount = this.indices.length;
+    }
+};
+
+// Terrain
+const size = 300, divs = 100, step = size/divs;
+const heightMap = [];
+for (let z=0; z<=divs; z++) {
+    heightMap[z] = [];
+    for (let x=0; x<=divs; x++) {
+        const wx = (x - divs/2) * step, wz = (z - divs/2) * step;
+        const h1 = noise.noise3D(wx*0.01, wz*0.01, 0) * 15;
+        const h2 = noise.noise3D(wx*0.05, wz*0.05, 0) * 3;
+        const h3 = noise.noise3D(wx*0.2, wz*0.2, 0) * 0.5;
+        const caveFactor = 1 - Math.max(0, (noise.noise3D(wx*0.04, wz*0.04, 10) - 0.4) * 5);
+        heightMap[z][x] = (h1 + h2 + h3) * caveFactor;
+    }
+}
+for (let z=0; z<divs; z++) {
+    for (let x=0; x<divs; x++) {
+        const x1=(x-divs/2)*step, z1=(z-divs/2)*step, y1=heightMap[z][x];
+        const x2=(x+1-divs/2)*step, z2=(z-divs/2)*step, y2=heightMap[z][x+1];
+        const x3=(x-divs/2)*step, z3=(z+1-divs/2)*step, y3=heightMap[z+1][x];
+        const x4=(x+1-divs/2)*step, z4=(z+1-divs/2)*step, y4=heightMap[z+1][x+1];
+        
+        const biome = noise.noise3D(x1*0.005, z1*0.005, 5);
+        let r,g,b,glw;
+        if(biome > 0.3) { [r,g,b,glw] = [0.1, 0.7, 0.8, 0.8]; } // Crystal Biome
+        else if (biome < -0.3) { [r,g,b,glw] = [0.6, 0.2, 0.5, 0.6]; } // Fungal Biome
+        else { [r,g,b,glw] = [0.2, 0.4, 0.2, 0.0]; } // Default Biome
+
+        world.add([x1,y1,z1, x2,y2,z2, x3,y3,z3, x4,y4,z4], [r,g,b, r,g,b, r,g,b, r,g,b], [glw,glw,glw,glw], [0,2,1, 1,2,3]);
+    }
+}
+
+// Flora, Ruins, Caves
+for(let i=0; i<1500; i++){
+    const x = (Math.random()-0.5)*size, z = (Math.random()-0.5)*size;
+    const y = heightMap[Math.floor((z/step)+divs/2)][Math.floor((x/step)+divs/2)];
+    if(y < -10) continue; // Don't place in deep caves
+
+    const biome = noise.noise3D(x*0.005, z*0.005, 5);
+    const type = Math.random();
+
+    if(biome > 0.3 && type < 0.2) { // Crystal
+        const h=1+Math.random()*4;
+        world.add([0,0,0, -0.5,h,-0.5, 0.5,h,-0.5, 0.5,h,0.5, -0.5,h,0.5].map((val,idx)=>val+(idx%3==0?x:idx%3==1?y:z)),
+                  [0.2,0.8,1, 0.2,0.8,1, 0.2,0.8,1, 0.2,0.8,1, 0.2,0.8,1], [2,2,2,2,2], [0,1,2, 0,2,3, 0,3,4, 0,4,1]);
+    } else if (biome < -0.3 && type < 0.2) { // Fungus
+        const h=0.5+Math.random()*2, r=h*0.8;
+        world.add([0,0,0, 0,h,0, r,h,0, r*0.7,h,r*0.7, 0,h,r, -r*0.7,h,r*0.7, -r,h,0, -r*0.7,h,-r*0.7, 0,h,-r, r*0.7,h,-r*0.7].map((val,idx)=>val+(idx%3==0?x:idx%3==1?y:z)),
+                  Array(10).fill([0.8,0.3,0.7]).flat(), [3,3,3,3,3,3,3,3,3,3], [0,1,2, 1,3,2, 1,4,3, 1,5,4, 1,6,5, 1,7,6, 1,8,7, 1,2,8]);
+    } else if (type < 0.02) { // Ruin
+        const h=10+Math.random()*20, w=1+Math.random()*3;
+        const pos = [x,y,z];
+        [-w,h,-w, w,h,-w, w,h,w, -w,h,w, -w,0,-w, w,0,-w, w,0,w, -w,0,w].forEach((val,idx)=>pos.push(val+(idx%3==0?x:idx%3==1?y:z)));
+        world.add(pos.slice(3), Array(8).fill([0.3,0.3,0.35]).flat(), Array(8).fill(0), [0,1,2, 0,2,3, 4,5,1, 4,1,0, 5,6,2, 5,2,1, 6,7,3, 6,3,2, 7,4,0, 7,0,3, 4,5,6, 4,6,7]);
+    }
+}
+// Cave Entrances (simple dark holes)
+for(let i=0; i<10; i++){
+    const x = (Math.random()-0.5)*size*0.8, z = (Math.random()-0.5)*size*0.8;
+    const y = heightMap[Math.floor((z/step)+divs/2)][Math.floor((x/step)+divs/2)];
+    if(y > 5) {
+        world.add([-5,0,-5, 5,0,-5, 5,0,5, -5,0,5].map((v,idx)=>v+(idx%3==0?x:idx%3==1?y-0.1:z)), Array(4).fill([0,0,0]).flat(), [0,0,0,0], [0,1,2, 0,2,3]);
+    }
+}
+
+// Artifacts
+for (let i = 0; i < 15; i++) {
+    const x = (Math.random() - 0.5) * size * 0.9;
+    const z = (Math.random() - 0.5) * size * 0.9;
+    const y = heightMap[Math.floor((z/step)+divs/2)][Math.floor((x/step)+divs/2)] + 2.5;
+    const r = 0.4;
+    world.artifacts.push({
+        pos: new Vec3(x, y, z),
+        model: new Mat4().translate({x,y,z}),
+        verts: [0,-r,0, -r,0,r, r,0,r, r,0,-r, -r,0,-r, 0,r,0],
+        colors: Array(6).fill([1,0.8,0.2]).flat(),
+        glows: Array(6).fill(5),
+        indices: [0,1,2, 0,2,3, 0,3,4, 0,4,1, 5,2,1, 5,3,2, 5,4,3, 5,1,4],
+        collected: false
+    });
+}
+world.artifacts.forEach(a => world.add(a.verts.map((v,i)=>v+(i%3==0?a.pos.x:i%3==1?a.pos.y:a.pos.z)), a.colors, a.glows, a.indices));
+let artifactsCollected = 0;
+
+// Wildlife (Sky-rays)
+for(let i=0; i<20; i++){
+    const pathRadius = 50 + Math.random()*80;
+    const speed = 0.5 + Math.random();
+    const y = 30 + Math.random()*40;
+    for(let j=0; j<5; j++) {
+        const offset = j*10;
+        world.wildlife.push({
+            center: new Vec3((Math.random()-0.5)*size*0.5, y, (Math.random()-0.5)*size*0.5),
+            radius: pathRadius, speed: speed, offset: offset,
+            pos: new Vec3(), model: new Mat4(),
+        });
+    }
+}
+const rayGeo = { verts: [-2,0,0, 2,0,0, 2,0.5,3, -2,0.5,3], colors: Array(4).fill([0.5,0.9,0.8]).flat(), glows: [99,99,99,99], indices: [0,1,2, 0,2,3] };
+world.wildlife.forEach(w => world.add(rayGeo.verts, rayGeo.colors, rayGeo.glows, rayGeo.indices));
+
+// Weather Particles
+const particles = [];
+for (let i = 0; i < 500; i++) {
+    particles.push(new Vec3((Math.random()-0.5)*size, Math.random()*80, (Math.random()-0.5)*size));
+}
+world.add(particles.map(p=>[p.x, p.y, p.z]).flat(), Array(particles.length).fill([0.1, 0.8, 0.5]).flat(), Array(particles.length).fill(1.5), []);
+
+// Controller representation
+const controllerGeo = {verts:[], colors:[], glows:[], indices:[]};
+const r=0.05, detail=8;
+for(let i=0; i<=detail; i++){
+    for(let j=0; j<=detail; j++){
+        const a1 = i/detail*Math.PI, a2=j/detail*Math.PI*2;
+        controllerGeo.verts.push(r*Math.sin(a1)*Math.cos(a2), r*Math.cos(a1), r*Math.sin(a1)*Math.sin(a2));
+        controllerGeo.colors.push(0.5, 0.9, 1.0); controllerGeo.glows.push(4.0);
+    }
+}
+for(let i=0; i<detail; i++){
+    for(let j=0; j<detail; j++){
+        const a=i*(detail+1)+j, b=a+1, c=a+detail+1, d=c+1;
+        controllerGeo.indices.push(a,b,c, b,d,c);
+    }
+}
+world.add(controllerGeo.verts, controllerGeo.colors, controllerGeo.glows, controllerGeo.indices); // Left
+world.add(controllerGeo.verts, controllerGeo.colors, controllerGeo.glows, controllerGeo.indices); // Right
+
+world.build();
+
+// --- Main Loop & Interaction ---
+function onXRFrame(timestamp, frame) {
+    xrSession.requestAnimationFrame(onXRFrame);
+    const dt = (timestamp - lastTime) * 0.001;
+    lastTime = timestamp;
+    time += dt;
+
+    const pose = frame.getViewerPose(xrRefSpace);
+    if (!pose) return;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, xrSession.renderState.baseLayer.framebuffer);
+    gl.useProgram(program);
+    gl.bindVertexArray(world.vao);
+
+    gl.uniform1f(locs.time, time);
+    gl.uniform3f(locs.fogColor, 0.0, 0.0, 0.1);
+    gl.uniform1f(locs.fogDensity, 1.5);
+    
+    // Update and check interactions
+    const controllerPos = [];
+    for (const source of xrSession.inputSources) {
+        if (source.gripSpace) {
+            const gripPose = frame.getPose(source.gripSpace, xrRefSpace);
+            if (gripPose) {
+                const p = gripPose.transform.position;
+                controllerPos.push(new Vec3(p.x, p.y, p.z));
+
+                for (const artifact of world.artifacts) {
+                    if (!artifact.collected && Vec3.distance(artifact.pos, controllerPos[controllerPos.length-1]) < 0.5) {
+                        if (source.gamepad && source.gamepad.buttons[0].pressed) {
+                            artifact.collected = true;
+                            artifactsCollected++;
+                            statusEl.textContent = `Artifacts Collected: ${artifactsCollected} / ${world.artifacts.length}`;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Dynamic Object Updates ---
+    const modelMatrix = new Mat4();
+    const baseVerts = world.verts.length / 3;
+    const baseIndices = world.indices.length;
+    let offset = 0;
+
+    // Terrain, Flora, Ruins (Static)
+    const staticCount = baseIndices - world.wildlife.length * rayGeo.indices.length - particles.length - 2 * controllerGeo.indices.length - world.artifacts.filter(a=>!a.collected).length * 24;
+    gl.uniformMatrix4fv(locs.model, false, modelMatrix);
+    //gl.drawElements(gl.TRIANGLES, staticCount, gl.UNSIGNED_INT, 0); // This is complex to separate, easier to just update all models
+    
+    // Wildlife
+    offset = baseIndices - (world.wildlife.length * rayGeo.indices.length + particles.length + 2 * controllerGeo.indices.length + world.artifacts.length * 24);
+    world.wildlife.forEach(w => {
+        const angle = time * w.speed + w.offset;
+        w.pos.set(w.center.x + Math.cos(angle) * w.radius, w.center.y, w.center.z + Math.sin(angle) * w.radius);
+        w.model.identity().translate(w.pos).multiply(new Mat4().set(Mat4.lookAt(w.pos, new Vec3(w.center.x,w.center.y,w.center.z), new Vec3(0,1,0))));
+        // Simplified: update vertex buffer instead of using model matrix for animated parts
+    });
+    // For this single-file, single-VAO approach, we'd have to update the vertex buffer, which is slow.
+    // The vertex shader approach for wildlife animation is more efficient here.
+
+    // --- Render All Views ---
+    for (const view of pose.views) {
+        const viewport = xrSession.renderState.baseLayer.getViewport(view);
+        gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+        gl.uniformMatrix4fv(locs.proj, false, view.projectionMatrix);
+        gl.uniformMatrix4fv(locs.view, false, view.transform.inverse.matrix);
+
+        // Render world
+        gl.uniformMatrix4fv(locs.model, false, modelMatrix.identity());
+        gl.drawElements(gl.TRIANGLES, world.indexCount, gl.UNSIGNED_INT, 0);
+
+        // Update Controller Models
+        let i = 0;
+        for (const source of xrSession.inputSources) {
+             if (source.gripSpace) {
+                const gripPose = frame.getPose(source.gripSpace, xrRefSpace);
+                if(gripPose){
+                    const controllerModelMatrix = new Mat4().fromTransform(gripPose.transform);
+                    // This is a hack for single-VAO. In a real engine, you'd draw the controller separately.
+                    // This will render ALL controllers at the same spot if not handled carefully in the VAO.
+                    // The VAO was built with 2 controller meshes at the end, so we can target them.
+                    const controllerOffset = world.indexCount - (2-i) * controllerGeo.indices.length;
+                    gl.uniformMatrix4fv(locs.model, false, controllerModelMatrix);
+                    gl.drawElements(gl.TRIANGLES, controllerGeo.indices.length, gl.UNSIGNED_INT, controllerOffset * 4);
+                    i++;
+                }
+             }
+        }
+    }
+}
+
+// --- XR Session Management ---
+async function startXRExperience() {
+    if (!navigator.xr) {
+        statusEl.textContent = 'Error: WebXR not supported on this device/browser.';
+        return;
+    }
+    try {
+        xrSession = await navigator.xr.requestSession('immersive-vr', {
+            requiredFeatures: ['local-floor']
+        });
+        xrSession.addEventListener('end', () => {
+            xrSession = null;
+            document.getElementById('intro').classList.remove('hidden');
+            statusEl.textContent = 'VR Session Ended.';
+        });
+        
+        const glLayer = new XRWebGLLayer(xrSession, gl);
+        xrSession.updateRenderState({ baseLayer: glLayer });
+        xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
+        
+        document.getElementById('intro').classList.add('hidden');
+        statusEl.textContent = `Artifacts Collected: ${artifactsCollected} / ${world.artifacts.length}`;
+        
+        lastTime = performance.now();
+        xrSession.requestAnimationFrame(onXRFrame);
+
+    } catch (e) {
+        statusEl.textContent = `Error starting VR session: ${e.message}`;
+        console.error(e);
+    }
+}
+
+document.getElementById('start-btn').addEventListener('click', startXRExperience);
+</script>
+</body>
+</html>

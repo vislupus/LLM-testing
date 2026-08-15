@@ -1,0 +1,1679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Medieval Fantasy Voxel World - WebGPU</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; }
+        canvas { display: block; width: 100%; height: 100vh; }
+        #ui {
+            position: absolute; top: 10px; left: 10px; z-index: 100;
+            background: rgba(0,0,0,0.6); padding: 12px; border-radius: 8px;
+            backdrop-filter: blur(8px); color: #eee; font-size: 13px;
+        }
+        #ui button {
+            background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.2);
+            color: #fff; padding: 6px 12px; margin: 4px; border-radius: 4px;
+            cursor: pointer; transition: all 0.2s;
+        }
+        #ui button:hover { background: rgba(255,255,255,0.25); }
+        #ui button.active { background: #4a6baf; border-color: #6a8bc4; }
+        #ui h2 { margin: 0 0 8px 0; font-size: 14px; color: #aad4ff; }
+        #ui p { margin: 4px 0; color: #ccc; }
+        #controls {
+            position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.6); padding: 8px; border-radius: 8px;
+            backdrop-filter: blur(8px); color: #eee; font-size: 12px;
+            display: flex; gap: 10px; align-items: center;
+        }
+        #fps { position: absolute; bottom: 10px; right: 10px; color: #aaa; font-size: 12px; }
+        .tooltip {
+            position: absolute; background: rgba(0,0,0,0.9); padding: 6px 10px;
+            border-radius: 4px; font-size: 11px; pointer-events: none;
+            visibility: hidden; z-index: 200;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="ui">
+        <h2>Medieval Fantasy World</h2>
+        <p>WASD: Move | Space: Up | Shift: Down | Mouse: Look</p>
+        <p>1: Free Camera | 2: Orbit Mode | 3: Screenshot Mode</p>
+        <div>
+            <button id="day" class="active" data-tooltip="Daytime">☀️ Day</button>
+            <button id="dusk" data-tooltip="Dusk">🌇 Dusk</button>
+            <button id="night" data-tooltip="Night">🌙 Night</button>
+            <button id="dawn" data-tooltip="Dawn">🌅 Dawn</button>
+        </div>
+        <div>
+            <button id="fog" class="active" data-tooltip="Toggle Fog">🌫️ Fog</button>
+            <button id="bloom" data-tooltip="Toggle Bloom">✨ Bloom</button>
+            <button id="wireframe" data-tooltip="Toggle Wireframe">🔲 Wireframe</button>
+        </div>
+    </div>
+    <div id="controls">
+        <span>Camera Mode: <span id="mode">Free</span></span>
+        <span>Position: <span id="pos">0, 0, 0</span></span>
+    </div>
+    <div id="fps">FPS: 0</div>
+    <div class="tooltip" id="tooltip"></div>
+
+    <script>
+        // =============================================
+        // CONFIGURATION & CONSTANTS
+        // =============================================
+        const WORLD_SIZE = 128;
+        const CHUNK_SIZE = 16;
+        const VOXEL_SCALE = 1.0;
+        const MAX_VOXEL_TYPES = 32;
+        const NEAR = 0.1;
+        const FAR = 1000.0;
+        const FOV = 70 * Math.PI / 180;
+        const MOUSE_SENSITIVITY = 0.002;
+        const MOVE_SPEED = 0.2;
+        const ORBIT_DISTANCE = 40;
+        const ORBIT_HEIGHT = 25;
+
+        // =============================================
+        // VOXEL TYPES & COLORS
+        // =============================================
+        const VOXEL = {
+            AIR: 0,
+            GRASS: 1,
+            STONE: 2,
+            WOOD: 3,
+            WATER: 4,
+            LAVA: 5,
+            TORCH: 6,
+            SNOW: 7,
+            SAND: 8,
+            BRICK: 9,
+            ROOF: 10,
+            GLOWSTONE: 11,
+            LEAF: 12,
+            COBBLE: 13,
+            GLASS: 14,
+            BASALT: 15,
+            ASH: 16,
+            FLAG: 17,
+            GOLD: 18,
+            IRON: 19
+        };
+
+        const VOXEL_COLORS = [
+            [0, 0, 0, 0],                // AIR (invisible)
+            [0.2, 0.6, 0.2, 1],          // GRASS
+            [0.5, 0.5, 0.5, 1],          // STONE
+            [0.4, 0.25, 0.15, 1],        // WOOD
+            [0.1, 0.3, 0.8, 0.7],        // WATER
+            [0.9, 0.3, 0.1, 1],          // LAVA
+            [1.0, 0.8, 0.5, 1],          // TORCH
+            [0.9, 0.95, 1.0, 1],         // SNOW
+            [0.8, 0.7, 0.5, 1],          // SAND
+            [0.7, 0.3, 0.2, 1],          // BRICK
+            [0.4, 0.2, 0.1, 1],          // ROOF
+            [0.9, 0.85, 0.6, 1],         // GLOWSTONE
+            [0.1, 0.4, 0.1, 1],          // LEAF
+            [0.4, 0.4, 0.4, 1],          // COBBLE
+            [0.6, 0.8, 0.9, 0.5],        // GLASS
+            [0.2, 0.2, 0.2, 1],          // BASALT
+            [0.4, 0.4, 0.4, 1],          // ASH
+            [0.8, 0.1, 0.1, 1],          // FLAG
+            [0.9, 0.8, 0.1, 1],          // GOLD
+            [0.6, 0.6, 0.6, 1]           // IRON
+        ];
+
+        const VOXEL_EMISSIVE = [
+            false, false, false, false, true, true, false, false, false, false, false, true, false, false, false, false, false, false, false, false
+        ];
+
+        // =============================================
+        // WORLD GENERATION (Handcrafted Diorama)
+        // =============================================
+        class VoxelWorld {
+            constructor(size) {
+                this.size = size;
+                this.data = new Uint8Array(size * size * size);
+                this.generate();
+            }
+
+            set(x, y, z, type) {
+                if (x < 0 || x >= this.size || y < 0 || y >= this.size || z < 0 || z >= this.size) return;
+                this.data[x + y * this.size + z * this.size * this.size] = type;
+            }
+
+            get(x, y, z) {
+                if (x < 0 || x >= this.size || y < 0 || y >= this.size || z < 0 || z >= this.size) return VOXEL.AIR;
+                return this.data[x + y * this.size + z * this.size * this.size];
+            }
+
+            generate() {
+                // Clear world
+                this.data.fill(VOXEL.AIR);
+
+                // ======================
+                // TERRAIN BASE
+                // ======================
+                // Create heightmap with hills and valleys
+                for (let x = 0; x < this.size; x++) {
+                    for (let z = 0; z < this.size; z++) {
+                        // Base terrain height (perlin-like noise approximation)
+                        const dx = x / this.size * 2 - 1;
+                        const dz = z / this.size * 2 - 1;
+                        let height = Math.floor(3 + Math.sin(dx * 3) * 2 + Math.cos(dz * 3) * 2 +
+                                              Math.sin(dx * 7 + dz * 5) * 1.5);
+
+                        // River valley
+                        const riverDist = Math.min(
+                            Math.abs((z - 32) - Math.sin(x / 16) * 10),
+                            Math.abs((z - 32) - Math.sin(x / 16) * 10 - 15)
+                        );
+                        if (riverDist < 8) {
+                            height = Math.max(1, height - 3 - (8 - riverDist));
+                        }
+
+                        // Castle hill
+                        const castleDist = Math.sqrt(Math.pow(x - 64, 2) + Math.pow(z - 64, 2));
+                        if (castleDist < 20) {
+                            height = Math.max(height, 10 - castleDist * 0.4);
+                        }
+
+                        // Volcano
+                        const volcanoDist = Math.sqrt(Math.pow(x - 96, 2) + Math.pow(z - 96, 2));
+                        if (volcanoDist < 15) {
+                            height = Math.max(height, 15 - volcanoDist * 0.8);
+                        }
+
+                        // Snowy mountain
+                        const mountainDist = Math.sqrt(Math.pow(x - 16, 2) + Math.pow(z - 16, 2));
+                        if (mountainDist < 20) {
+                            height = Math.max(height, 12 - mountainDist * 0.5);
+                        }
+
+                        // Fill terrain
+                        for (let y = 0; y < Math.floor(height); y++) {
+                            if (y === Math.floor(height) - 1) {
+                                if (riverDist < 4) {
+                                    this.set(x, y, z, VOXEL.SAND);
+                                } else if (volcanoDist < 10) {
+                                    this.set(x, y, z, VOXEL.BASALT);
+                                } else if (mountainDist < 15) {
+                                    this.set(x, y, z, VOXEL.SNOW);
+                                } else {
+                                    this.set(x, y, z, VOXEL.GRASS);
+                                }
+                            } else if (y < Math.floor(height) - 3) {
+                                this.set(x, y, z, VOXEL.STONE);
+                            } else {
+                                this.set(x, y, z, VOXEL.COBBLE);
+                            }
+                        }
+
+                        // River water
+                        if (riverDist < 4 && height > 1) {
+                            this.set(x, Math.floor(height) - 1, z, VOXEL.WATER);
+                            if (riverDist < 2) {
+                                this.set(x, Math.floor(height), z, VOXEL.WATER);
+                            }
+                        }
+                    }
+                }
+
+                // ======================
+                // CASTLE ON THE HILL
+                // ======================
+                this.generateCastle(64, 10, 64);
+
+                // ======================
+                // MEDIEVAL VILLAGE
+                // ======================
+                this.generateVillage(32, 3, 48);
+
+                // ======================
+                // VOLCANO
+                // ======================
+                this.generateVolcano(96, 15, 96);
+
+                // ======================
+                // FOREST AREAS
+                // ======================
+                this.generateForest(48, 4, 80, 15, 15);
+                this.generateForest(80, 4, 32, 12, 12);
+
+                // ======================
+                // RUINS
+                // ======================
+                this.generateRuins(16, 5, 80);
+
+                // ======================
+                // WATCHTOWERS
+                // ======================
+                this.generateWatchtower(48, 10, 96);
+                this.generateWatchtower(80, 10, 48);
+
+                // ======================
+                // WATERFALL
+                // ======================
+                this.generateWaterfall(90, 20, 80);
+
+                // ======================
+                // DOCKS & BOATS
+                // ======================
+                this.generateDocks(32, 2, 36);
+            }
+
+            generateCastle(cx, baseY, cz) {
+                // Outer walls (20x20)
+                for (let x = cx - 10; x <= cx + 10; x++) {
+                    for (let z = cz - 10; z <= cz + 10; z++) {
+                        if (Math.abs(x - cx) === 10 || Math.abs(z - cz) === 10) {
+                            // Walls
+                            for (let y = baseY; y < baseY + 8; y++) {
+                                this.set(x, y, z, VOXEL.STONE);
+                            }
+                            // Battlements
+                            if ((x - cx + 10 + z - cz + 10) % 4 < 2) {
+                                this.set(x, baseY + 8, z, VOXEL.STONE);
+                                this.set(x, baseY + 9, z, VOXEL.STONE);
+                            }
+                        }
+                    }
+                }
+
+                // Gates
+                this.set(cx - 10, baseY, cz, VOXEL.AIR);
+                this.set(cx - 10, baseY + 1, cz, VOXEL.AIR);
+                this.set(cx + 10, baseY, cz, VOXEL.AIR);
+                this.set(cx + 10, baseY + 1, cz, VOXEL.AIR);
+                this.set(cx, baseY, cz - 10, VOXEL.AIR);
+                this.set(cx, baseY + 1, cz - 10, VOXEL.AIR);
+
+                // Gate structures
+                for (let y = baseY; y < baseY + 5; y++) {
+                    this.set(cx - 10, y, cz, VOXEL.BRICK);
+                    this.set(cx - 10, y, cz - 1, VOXEL.BRICK);
+                    this.set(cx - 10, y, cz + 1, VOXEL.BRICK);
+                    this.set(cx + 10, y, cz, VOXEL.BRICK);
+                    this.set(cx + 10, y, cz - 1, VOXEL.BRICK);
+                    this.set(cx + 10, y, cz + 1, VOXEL.BRICK);
+                    this.set(cx, y, cz - 10, VOXEL.BRICK);
+                    this.set(cx - 1, y, cz - 10, VOXEL.BRICK);
+                    this.set(cx + 1, y, cz - 10, VOXEL.BRICK);
+                }
+
+                // Towers at corners
+                const towers = [
+                    [cx - 10, cz - 10], [cx + 10, cz - 10],
+                    [cx - 10, cz + 10], [cx + 10, cz + 10]
+                ];
+                towers.forEach(([tx, tz]) => {
+                    for (let y = baseY; y < baseY + 12; y++) {
+                        for (let dx = -2; dx <= 2; dx++) {
+                            for (let dz = -2; dz <= 2; dz++) {
+                                if (Math.abs(dx) === 2 || Math.abs(dz) === 2) {
+                                    this.set(tx + dx, y, tz + dz, VOXEL.STONE);
+                                }
+                            }
+                        }
+                    }
+                    // Tower roof
+                    for (let dx = -1; dx <= 1; dx++) {
+                        for (let dz = -1; dz <= 1; dz++) {
+                            this.set(tx + dx, baseY + 12, tz + dz, VOXEL.ROOF);
+                        }
+                    }
+                    this.set(tx, baseY + 13, tz, VOXEL.ROOF);
+                });
+
+                // Main keep
+                for (let x = cx - 3; x <= cx + 3; x++) {
+                    for (let z = cz - 3; z <= cz + 3; z++) {
+                        for (let y = baseY; y < baseY + 15; y++) {
+                            if (Math.abs(x - cx) <= 3 && Math.abs(z - cz) <= 3) {
+                                this.set(x, y, z, VOXEL.BRICK);
+                            }
+                        }
+                    }
+                }
+
+                // Keep roof
+                for (let x = cx - 4; x <= cx + 4; x++) {
+                    for (let z = cz - 4; z <= cz + 4; z++) {
+                        if (Math.abs(x - cx) + Math.abs(z - cz) <= 4) {
+                            this.set(x, baseY + 15, z, VOXEL.ROOF);
+                        }
+                    }
+                }
+                for (let x = cx - 3; x <= cx + 3; x++) {
+                    for (let z = cz - 3; z <= cz + 3; z++) {
+                        this.set(x, baseY + 16, z, VOXEL.ROOF);
+                    }
+                }
+                this.set(cx, baseY + 17, cz, VOXEL.ROOF);
+
+                // Windows (glowing)
+                for (let y = baseY + 2; y < baseY + 14; y += 3) {
+                    for (let side = 0; side < 4; side++) {
+                        let x = cx, z = cz;
+                        if (side === 0) x = cx - 3;
+                        if (side === 1) x = cx + 3;
+                        if (side === 2) z = cz - 3;
+                        if (side === 3) z = cz + 3;
+                        this.set(x, y, z, VOXEL.GLASS);
+                        this.set(x, y, z, VOXEL.GLOWSTONE); // Light inside
+                    }
+                }
+
+                // Flag on main keep
+                this.set(cx, baseY + 18, cz, VOXEL.FLAG);
+
+                // Courtyard
+                for (let x = cx - 2; x <= cx + 2; x++) {
+                    for (let z = cz - 2; z <= cz + 2; z++) {
+                        this.set(x, baseY, z, VOXEL.COBBLE);
+                    }
+                }
+
+                // Chapel
+                for (let x = cx - 8; x <= cx - 4; x++) {
+                    for (let z = cz + 4; z <= cz + 8; z++) {
+                        for (let y = baseY; y < baseY + 6; y++) {
+                            if (x === cx - 8 || x === cx - 4 || z === cz + 4 || z === cz + 8) {
+                                this.set(x, y, z, VOXEL.STONE);
+                            }
+                        }
+                    }
+                }
+                // Chapel roof
+                for (let x = cx - 8; x <= cx - 4; x++) {
+                    for (let z = cz + 4; z <= cz + 8; z++) {
+                        this.set(x, baseY + 6, z, VOXEL.ROOF);
+                    }
+                }
+            }
+
+            generateVillage(cx, baseY, cz) {
+                // Main street (curved)
+                for (let i = 0; i < 20; i++) {
+                    const angle = i * 0.15;
+                    const x = cx + Math.sin(angle) * 8;
+                    const z = cz + Math.cos(angle) * 8;
+                    for (let w = -1; w <= 1; w++) {
+                        this.set(Math.round(x), baseY, Math.round(z + w), VOXEL.COBBLE);
+                    }
+                }
+
+                // Houses (25-35)
+                const houseTypes = [
+                    { width: 4, depth: 3, height: 3, roof: true },
+                    { width: 3, depth: 4, height: 3, roof: true },
+                    { width: 5, depth: 5, height: 4, roof: true },
+                    { width: 3, depth: 3, height: 2, roof: false }
+                ];
+
+                for (let i = 0; i < 30; i++) {
+                    const angle = i * 0.2 + Math.random() * 0.3;
+                    const dist = 10 + Math.random() * 10;
+                    const x = cx + Math.sin(angle) * dist;
+                    const z = cz + Math.cos(angle) * dist;
+                    const type = houseTypes[Math.floor(Math.random() * houseTypes.length)];
+
+                    // Foundation
+                    for (let dx = -1; dx <= type.width; dx++) {
+                        for (let dz = -1; dz <= type.depth; dz++) {
+                            this.set(Math.round(x + dx), baseY - 1, Math.round(z + dz), VOXEL.COBBLE);
+                        }
+                    }
+
+                    // Walls
+                    for (let y = baseY; y < baseY + type.height; y++) {
+                        for (let dx = 0; dx < type.width; dx++) {
+                            this.set(Math.round(x + dx), y, Math.round(z), VOXEL.WOOD);
+                            this.set(Math.round(x + dx), y, Math.round(z + type.depth - 1), VOXEL.WOOD);
+                        }
+                        for (let dz = 0; dz < type.depth; dz++) {
+                            this.set(Math.round(x), y, Math.round(z + dz), VOXEL.WOOD);
+                            this.set(Math.round(x + type.width - 1), y, Math.round(z + dz), VOXEL.WOOD);
+                        }
+                    }
+
+                    // Roof
+                    if (type.roof) {
+                        for (let dx = 0; dx <= type.width; dx++) {
+                            for (let dz = 0; dz <= type.depth; dz++) {
+                                this.set(Math.round(x + dx - 0.5), baseY + type.height, Math.round(z + dz - 0.5), VOXEL.ROOF);
+                            }
+                        }
+                        for (let dx = 0; dx < type.width; dx++) {
+                            for (let dz = 0; dz < type.depth; dz++) {
+                                if ((dx + dz) % 2 === 0) {
+                                    this.set(Math.round(x + dx), baseY + type.height + 1, Math.round(z + dz), VOXEL.ROOF);
+                                }
+                            }
+                        }
+                    }
+
+                    // Windows
+                    if (type.height >= 3) {
+                        for (let side = 0; side < 2; side++) {
+                            const wx = side === 0 ? Math.round(x) : Math.round(x + type.width - 1);
+                            const wz = Math.round(z + Math.floor(type.depth / 2));
+                            this.set(wx, baseY + 1, wz, VOXEL.GLASS);
+                            this.set(wx, baseY + 1, wz, VOXEL.GLOWSTONE);
+                        }
+                    }
+
+                    // Door
+                    const doorSide = Math.random() > 0.5 ? 0 : 1;
+                    const dx = doorSide === 0 ? Math.round(x + Math.floor(type.width / 2)) : Math.round(x);
+                    const dz = doorSide === 0 ? Math.round(z) : Math.round(z + Math.floor(type.depth / 2));
+                    this.set(dx, baseY, dz, VOXEL.AIR);
+                    this.set(dx, baseY + 1, dz, VOXEL.AIR);
+                    this.set(dx, baseY, dz, VOXEL.WOOD); // Door frame
+                }
+
+                // Marketplace
+                for (let x = cx - 3; x <= cx + 3; x++) {
+                    for (let z = cz - 3; z <= cz + 3; z++) {
+                        this.set(x, baseY, z, VOXEL.COBBLE);
+                    }
+                }
+
+                // Market stalls
+                for (let i = 0; i < 4; i++) {
+                    const angle = i * Math.PI / 2;
+                    const x = cx + Math.sin(angle) * 5;
+                    const z = cz + Math.cos(angle) * 5;
+                    for (let y = baseY; y < baseY + 2; y++) {
+                        this.set(Math.round(x), y, Math.round(z), VOXEL.WOOD);
+                        this.set(Math.round(x + 1), y, Math.round(z), VOXEL.WOOD);
+                        this.set(Math.round(x), y, Math.round(z + 1), VOXEL.WOOD);
+                    }
+                    // Stall roof
+                    this.set(Math.round(x), baseY + 2, Math.round(z), VOXEL.ROOF);
+                    this.set(Math.round(x + 1), baseY + 2, Math.round(z + 1), VOXEL.ROOF);
+                }
+
+                // Blacksmith
+                for (let x = cx + 12; x <= cx + 16; x++) {
+                    for (let z = cz + 8; z <= cz + 12; z++) {
+                        for (let y = baseY; y < baseY + 4; y++) {
+                            if (x === cx + 12 || x === cx + 16 || z === cz + 8 || z === cz + 12) {
+                                this.set(x, y, z, VOXEL.STONE);
+                            }
+                        }
+                    }
+                }
+                // Blacksmith roof
+                for (let x = cx + 12; x <= cx + 16; x++) {
+                    for (let z = cz + 8; z <= cz + 12; z++) {
+                        this.set(x, baseY + 4, z, VOXEL.ROOF);
+                    }
+                }
+                // Chimney
+                for (let y = baseY + 4; y < baseY + 7; y++) {
+                    this.set(cx + 14, y, cz + 10, VOXEL.BRICK);
+                }
+                // Anvil
+                this.set(cx + 14, baseY + 1, cz + 10, VOXEL.IRON);
+
+                // Tavern
+                for (let x = cx - 12; x <= cx - 8; x++) {
+                    for (let z = cz + 8; z <= cz + 12; z++) {
+                        for (let y = baseY; y < baseY + 5; y++) {
+                            if (x === cx - 12 || x === cx - 8 || z === cz + 8 || z === cz + 12) {
+                                this.set(x, y, z, VOXEL.WOOD);
+                            }
+                        }
+                    }
+                }
+                // Tavern roof
+                for (let x = cx - 12; x <= cx - 8; x++) {
+                    for (let z = cz + 8; z <= cz + 12; z++) {
+                        this.set(x, baseY + 5, z, VOXEL.ROOF);
+                    }
+                }
+                // Sign
+                this.set(cx - 10, baseY + 4, cz + 10, VOXEL.FLAG);
+
+                // Chapel
+                for (let x = cx - 8; x <= cx - 4; x++) {
+                    for (let z = cz - 12; z <= cz - 8; z++) {
+                        for (let y = baseY; y < baseY + 6; y++) {
+                            if (x === cx - 8 || x === cx - 4 || z === cz - 12 || z === cz - 8) {
+                                this.set(x, y, z, VOXEL.STONE);
+                            }
+                        }
+                    }
+                }
+                // Chapel roof
+                for (let x = cx - 8; x <= cx - 4; x++) {
+                    for (let z = cz - 12; z <= cz - 8; z++) {
+                        this.set(x, baseY + 6, z, VOXEL.ROOF);
+                    }
+                }
+                // Steeple
+                for (let y = baseY + 6; y < baseY + 10; y++) {
+                    this.set(cx - 6, y, cz - 10, VOXEL.STONE);
+                }
+                this.set(cx - 6, baseY + 10, cz - 10, VOXEL.GOLD);
+
+                // Farms
+                for (let i = 0; i < 3; i++) {
+                    const x = cx + 18 + i * 8;
+                    const z = cz - 5;
+                    for (let dx = 0; dx < 6; dx++) {
+                        for (let dz = 0; dz < 6; dz++) {
+                            this.set(x + dx, baseY, z + dz, VOXEL.GRASS);
+                        }
+                    }
+                    // Fence
+                    for (let dx = 0; dx < 6; dx++) {
+                        this.set(x + dx, baseY + 1, z, VOXEL.WOOD);
+                        this.set(x + dx, baseY + 1, z + 5, VOXEL.WOOD);
+                    }
+                    for (let dz = 0; dz < 6; dz++) {
+                        this.set(x, baseY + 1, z + dz, VOXEL.WOOD);
+                        this.set(x + 5, baseY + 1, z + dz, VOXEL.WOOD);
+                    }
+                    // Scarecrow
+                    this.set(x + 2, baseY + 1, z + 2, VOXEL.WOOD);
+                    this.set(x + 2, baseY + 2, z + 2, VOXEL.WOOD);
+                    this.set(x + 2, baseY + 3, z + 2, VOXEL.LEAF);
+                }
+
+                // Wells
+                for (let i = 0; i < 2; i++) {
+                    const x = cx + 20 + i * 20;
+                    const z = cz + 15;
+                    for (let y = baseY; y < baseY + 3; y++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            for (let dz = -1; dz <= 1; dz++) {
+                                if (Math.abs(dx) === 1 || Math.abs(dz) === 1) {
+                                    this.set(x + dx, y, z + dz, VOXEL.STONE);
+                                }
+                            }
+                        }
+                    }
+                    this.set(x, baseY + 3, z, VOXEL.WOOD); // Well roof
+                }
+
+                // Carts and barrels
+                for (let i = 0; i < 5; i++) {
+                    const x = cx + Math.random() * 20 - 10;
+                    const z = cz + Math.random() * 20 - 10;
+                    this.set(Math.round(x), baseY + 1, Math.round(z), VOXEL.WOOD);
+                    this.set(Math.round(x + 1), baseY + 1, Math.round(z), VOXEL.WOOD);
+                }
+
+                // Lanterns
+                for (let i = 0; i < 8; i++) {
+                    const x = cx + Math.random() * 30 - 15;
+                    const z = cz + Math.random() * 30 - 15;
+                    const y = baseY + 2 + Math.floor(Math.random() * 3);
+                    this.set(Math.round(x), y, Math.round(z), VOXEL.TORCH);
+                }
+            }
+
+            generateVolcano(cx, baseY, cz) {
+                // Volcano cone
+                for (let r = 0; r < 12; r++) {
+                    for (let angle = 0; angle < Math.PI * 2; angle += 0.1) {
+                        const x = cx + Math.cos(angle) * r;
+                        const z = cz + Math.sin(angle) * r;
+                        const height = baseY + 15 - r;
+                        for (let y = baseY; y < height; y++) {
+                            this.set(Math.round(x), y, Math.round(z), VOXEL.BASALT);
+                        }
+                    }
+                }
+
+                // Crater
+                for (let r = 0; r < 5; r++) {
+                    for (let angle = 0; angle < Math.PI * 2; angle += 0.1) {
+                        const x = cx + Math.cos(angle) * r;
+                        const z = cz + Math.sin(angle) * r;
+                        this.set(Math.round(x), baseY + 15, Math.round(z), VOXEL.LAVA);
+                    }
+                }
+
+                // Lava river
+                for (let i = 0; i < 15; i++) {
+                    const x = cx + 12 + i;
+                    const z = cz;
+                    this.set(x, baseY + 14 - Math.floor(i / 3), z, VOXEL.LAVA);
+                }
+
+                // Smoke/ash particles (static for now)
+                for (let i = 0; i < 20; i++) {
+                    const x = cx + Math.random() * 6 - 3;
+                    const z = cz + Math.random() * 6 - 3;
+                    const y = baseY + 16 + Math.random() * 5;
+                    this.set(Math.round(x), Math.floor(y), Math.round(z), VOXEL.ASH);
+                }
+
+                // Dead trees
+                for (let i = 0; i < 5; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 8 + Math.random() * 5;
+                    const x = cx + Math.cos(angle) * dist;
+                    const z = cz + Math.sin(angle) * dist;
+                    for (let y = baseY + 1; y < baseY + 5; y++) {
+                        this.set(Math.round(x), y, Math.round(z), VOXEL.BASALT);
+                    }
+                    // Branches
+                    for (let j = 0; j < 3; j++) {
+                        const bx = Math.cos(angle + j * 0.5) * 2;
+                        const bz = Math.sin(angle + j * 0.5) * 2;
+                        this.set(Math.round(x + bx), baseY + 4, Math.round(z + bz), VOXEL.BASALT);
+                    }
+                }
+
+                // Ancient ruins
+                for (let x = cx - 4; x <= cx + 4; x++) {
+                    for (let z = cz - 4; z <= cz + 4; z++) {
+                        if (Math.random() > 0.7) {
+                            for (let y = baseY; y < baseY + 2; y++) {
+                                this.set(x, y, z, VOXEL.STONE);
+                            }
+                        }
+                    }
+                }
+            }
+
+            generateForest(cx, baseY, cz, width, depth) {
+                for (let x = cx; x < cx + width; x++) {
+                    for (let z = cz; z < cz + depth; z++) {
+                        if (Math.random() > 0.3) {
+                            const treeHeight = 3 + Math.floor(Math.random() * 4);
+                            // Trunk
+                            for (let y = baseY; y < baseY + treeHeight; y++) {
+                                this.set(x, y, z, VOXEL.WOOD);
+                            }
+                            // Leaves
+                            for (let dx = -1; dx <= 1; dx++) {
+                                for (let dz = -1; dz <= 1; dz++) {
+                                    for (let y = baseY + treeHeight - 1; y < baseY + treeHeight + 2; y++) {
+                                        if (Math.random() > 0.3) {
+                                            this.set(x + dx, y, z + dz, VOXEL.LEAF);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            generateRuins(cx, baseY, cz) {
+                // Broken walls
+                for (let x = cx; x < cx + 10; x++) {
+                    for (let z = cz; z < cz + 10; z++) {
+                        if (x === cx || x === cx + 9 || z === cz || z === cz + 9) {
+                            if (Math.random() > 0.5) {
+                                for (let y = baseY; y < baseY + 3; y++) {
+                                    this.set(x, y, z, VOXEL.STONE);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Pillar
+                for (let y = baseY; y < baseY + 5; y++) {
+                    this.set(cx + 4, y, cz + 4, VOXEL.STONE);
+                    this.set(cx + 5, y, cz + 4, VOXEL.STONE);
+                    this.set(cx + 4, y, cz + 5, VOXEL.STONE);
+                    this.set(cx + 5, y, cz + 5, VOXEL.STONE);
+                }
+            }
+
+            generateWatchtower(cx, baseY, cz) {
+                // Tower base
+                for (let x = cx - 2; x <= cx + 2; x++) {
+                    for (let z = cz - 2; z <= cz + 2; z++) {
+                        for (let y = baseY; y < baseY + 10; y++) {
+                            this.set(x, y, z, VOXEL.STONE);
+                        }
+                    }
+                }
+                // Roof
+                for (let x = cx - 1; x <= cx + 1; x++) {
+                    for (let z = cz - 1; z <= cz + 1; z++) {
+                        this.set(x, baseY + 10, z, VOXEL.ROOF);
+                    }
+                }
+                this.set(cx, baseY + 11, cz, VOXEL.ROOF);
+                // Flag
+                this.set(cx, baseY + 11, cz, VOXEL.FLAG);
+            }
+
+            generateWaterfall(cx, baseY, cz) {
+                // Cliff
+                for (let x = cx - 2; x <= cx + 2; x++) {
+                    for (let y = baseY; y < baseY + 10; y++) {
+                        this.set(x, y, cz, VOXEL.STONE);
+                    }
+                }
+                // Waterfall
+                for (let y = baseY + 5; y < baseY + 10; y++) {
+                    this.set(cx, y, cz - 1, VOXEL.WATER);
+                    this.set(cx, y, cz - 2, VOXEL.WATER);
+                }
+                // Pool
+                for (let x = cx - 3; x <= cx + 3; x++) {
+                    for (let z = cz - 3; z <= cz; z++) {
+                        this.set(x, baseY, z, VOXEL.WATER);
+                    }
+                }
+            }
+
+            generateDocks(cx, baseY, cz) {
+                // Dock platform
+                for (let x = cx; x < cx + 8; x++) {
+                    for (let z = cz; z < cz + 3; z++) {
+                        this.set(x, baseY, z, VOXEL.WOOD);
+                    }
+                }
+                // Posts
+                for (let x = cx; x <= cx + 8; x += 2) {
+                    for (let z = cz; z <= cz + 2; z += 2) {
+                        this.set(x, baseY + 1, z, VOXEL.WOOD);
+                        this.set(x, baseY + 2, z, VOXEL.WOOD);
+                    }
+                }
+                // Boat
+                for (let x = cx + 2; x < cx + 6; x++) {
+                    for (let z = cz - 1; z < cz + 1; z++) {
+                        this.set(x, baseY, z, VOXEL.WOOD);
+                    }
+                }
+                this.set(cx + 4, baseY + 1, cz, VOXEL.WOOD); // Mast
+                this.set(cx + 4, baseY + 2, cz, VOXEL.FLAG); // Sail
+            }
+        }
+
+        // =============================================
+        // GREEDY MESHING (Optimized Hidden Face Removal)
+        // =============================================
+        class MeshGenerator {
+            constructor(world) {
+                this.world = world;
+                this.vertices = [];
+                this.indices = [];
+            }
+
+            generate() {
+                this.vertices = [];
+                this.indices = [];
+
+                const size = this.world.size;
+                for (let x = 0; x < size; x++) {
+                    for (let y = 0; y < size; y++) {
+                        for (let z = 0; z < size; z++) {
+                            const type = this.world.get(x, y, z);
+                            if (type === VOXEL.AIR) continue;
+
+                            // Check each face
+                            this.checkFace(x, y, z, type, 1, 0, 0, [1, 0, 0]);   // +X
+                            this.checkFace(x, y, z, type, -1, 0, 0, [-1, 0, 0]);  // -X
+                            this.checkFace(x, y, z, type, 0, 1, 0, [0, 1, 0]);   // +Y
+                            this.checkFace(x, y, z, type, 0, -1, 0, [0, -1, 0]);  // -Y
+                            this.checkFace(x, y, z, type, 0, 0, 1, [0, 0, 1]);   // +Z
+                            this.checkFace(x, y, z, type, 0, 0, -1, [0, 0, -1]);  // -Z
+                        }
+                    }
+                }
+
+                return {
+                    vertices: new Float32Array(this.vertices),
+                    indices: new Uint32Array(this.indices)
+                };
+            }
+
+            checkFace(x, y, z, type, nx, ny, nz, normal) {
+                const neighborType = this.world.get(x + nx, y + ny, z + nz);
+                if (neighborType !== VOXEL.AIR) return;
+
+                // Get color
+                const color = VOXEL_COLORS[type];
+
+                // Define quad vertices (two triangles)
+                const v0 = [x + (nx > 0 ? 1 : 0), y + (ny > 0 ? 1 : 0), z + (nz > 0 ? 1 : 0)];
+                const v1 = [x + (nx > 0 ? 1 : 0), y + (ny < 0 ? -1 : (ny > 0 ? 1 : 0)), z + (nz > 0 ? 1 : 0)];
+                const v2 = [x + (nx < 0 ? -1 : 0), y + (ny < 0 ? -1 : (ny > 0 ? 1 : 0)), z + (nz > 0 ? 1 : 0)];
+                const v3 = [x + (nx < 0 ? -1 : 0), y + (ny > 0 ? 1 : 0), z + (nz > 0 ? 1 : 0)];
+
+                // Add vertices with position, normal, color, and UV
+                const addVertex = (pos, norm, col) => {
+                    this.vertices.push(...pos, ...norm, ...col, 0, 0);
+                };
+
+                const idx = this.vertices.length / 8;
+                addVertex(v0, normal, color);
+                addVertex(v1, normal, color);
+                addVertex(v2, normal, color);
+                addVertex(v0, normal, color);
+                addVertex(v2, normal, color);
+                addVertex(v3, normal, color);
+            }
+        }
+
+        // =============================================
+        // WEBGPU RENDERER
+        // =============================================
+        class VoxelRenderer {
+            constructor(canvas, world) {
+                this.canvas = canvas;
+                this.world = world;
+                this.device = null;
+                this.context = null;
+                this.pipeline = null;
+                this.bindGroup = null;
+                this.vertexBuffer = null;
+                this.indexBuffer = null;
+                this.uniformBuffer = null;
+                this.depthTexture = null;
+                this.time = 0;
+                this.camera = {
+                    position: { x: 64, y: 40, z: 64 },
+                    target: { x: 64, y: 10, z: 64 },
+                    up: { x: 0, y: 1, z: 0 },
+                    fov: 70 * Math.PI / 180,
+                    near: NEAR,
+                    far: FAR,
+                    mode: 'free', // 'free', 'orbit', 'screenshot'
+                    orbitDistance: ORBIT_DISTANCE,
+                    orbitHeight: ORBIT_HEIGHT,
+                    orbitAngle: Math.PI / 4,
+                    orbitTarget: { x: 64, y: 10, z: 64 }
+                };
+                this.mouse = { x: 0, y: 0, down: false, rightDown: false };
+                this.keys = {};
+                this.timeOfDay = 0.5; // 0 = night, 0.5 = day
+                this.fogEnabled = true;
+                this.bloomEnabled = false;
+                this.wireframeEnabled = false;
+                this.fps = 0;
+                this.lastTime = performance.now();
+                this.frameCount = 0;
+            }
+
+            async initialize() {
+                // Check WebGPU support
+                if (!navigator.gpu) {
+                    alert("WebGPU is not supported in your browser. Try Chrome 113+, Edge 113+, or Firefox 115+.");
+                    return false;
+                }
+
+                // Initialize WebGPU
+                const adapter = await navigator.gpu.requestAdapter();
+                this.device = await adapter.requestDevice();
+                this.context = this.canvas.getContext('webgpu');
+
+                const format = navigator.gpu.getPreferredCanvasFormat();
+                this.context.configure({
+                    device: this.device,
+                    format: format,
+                    alphaMode: 'opaque'
+                });
+
+                // Create depth texture
+                this.depthTexture = this.device.createTexture({
+                    size: [this.canvas.width, this.canvas.height],
+                    format: 'depth24plus',
+                    usage: GPUTextureUsage.RENDER_ATTACHMENT
+                });
+
+                // Create pipeline
+                await this.createPipeline(format);
+
+                // Generate mesh
+                this.generateMesh();
+
+                // Setup UI
+                this.setupUI();
+
+                // Setup event listeners
+                this.setupEvents();
+
+                return true;
+            }
+
+            async createPipeline(format) {
+                // Vertex shader
+                const vertexShader = `
+                    struct Uniforms {
+                        viewProj: mat4x4<f32>,
+                        model: mat4x4<f32>,
+                        time: f32,
+                        timeOfDay: f32,
+                    };
+
+                    @group(0) @binding(0)
+                    var<uniform> uniforms: Uniforms;
+
+                    struct VertexInput {
+                        @location(0) position: vec3<f32>,
+                        @location(1) normal: vec3<f32>,
+                        @location(2) color: vec3<f32>,
+                        @location(3) uv: vec2<f32>,
+                    };
+
+                    struct VertexOutput {
+                        @builtin(position) clipPosition: vec4<f32>,
+                        @location(0) vNormal: vec3<f32>,
+                        @location(1) vColor: vec3<f32>,
+                        @location(2) vUV: vec2<f32>,
+                        @location(3) vWorldPos: vec3<f32>,
+                    };
+
+                    @vertex
+                    fn main(in: VertexInput) -> VertexOutput {
+                        var out: VertexOutput;
+                        out.clipPosition = uniforms.viewProj * uniforms.model * vec4<f32>(in.position, 1.0);
+                        out.vNormal = in.normal;
+                        out.vColor = in.color;
+                        out.vUV = in.uv;
+                        out.vWorldPos = (uniforms.model * vec4<f32>(in.position, 1.0)).xyz;
+                        return out;
+                    }
+                `;
+
+                // Fragment shader with lighting, fog, and emissive effects
+                const fragmentShader = `
+                    @group(0) @binding(1)
+                    var<uniform> lightDir: vec3<f32>;
+                    @group(0) @binding(2)
+                    var<uniform> lightColor: vec3<f32>;
+                    @group(0) @binding(3)
+                    var<uniform> ambientColor: vec3<f32>;
+                    @group(0) @binding(4)
+                    var<uniform> fogColor: vec3<f32>;
+                    @group(0) @binding(5)
+                    var<uniform> fogDensity: f32;
+                    @group(0) @binding(6)
+                    var<uniform> bloomThreshold: f32;
+                    @group(0) @binding(7)
+                    var<uniform> time: f32;
+
+                    @fragment
+                    fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+                        // Basic lighting
+                        let normal = normalize(in.vNormal);
+                        let light = normalize(lightDir);
+                        let diffuse = max(dot(normal, light), 0.0);
+                        let color = in.vColor * (diffuse * lightColor + ambientColor);
+
+                        // Emissive effect for torches, lava, etc.
+                        let emissive = vec3<f32>(0.0);
+                        if (in.vColor.r > 0.9 && in.vColor.g > 0.7) { // Torch/glowstone
+                            emissive = in.vColor * (0.5 + sin(time * 3.0) * 0.2);
+                        } else if (in.vColor.r > 0.8 && in.vColor.g < 0.4) { // Lava
+                            emissive = vec3<f32>(0.9, 0.3, 0.1) * (0.7 + sin(time * 2.0 + in.vWorldPos.x * 0.5) * 0.2);
+                        } else if (in.vColor.r > 0.8 && in.vColor.g > 0.8) { // Snow
+                            emissive = vec3<f32>(0.9, 0.95, 1.0) * 0.1;
+                        }
+
+                        // Combine lighting and emissive
+                        let finalColor = color + emissive;
+
+                        // Water animation
+                        if (in.vColor.b > 0.7 && in.vColor.r < 0.2) { // Water
+                            let waterFactor = 0.5 + 0.5 * sin(time * 2.0 + in.vWorldPos.x * 0.3 + in.vWorldPos.z * 0.3);
+                            finalColor = mix(finalColor, vec3<f32>(0.2, 0.5, 0.9), waterFactor * 0.3);
+                        }
+
+                        // Fog
+                        let fogFactor = exp(-fogDensity * length(in.vWorldPos - cameraPos));
+                        finalColor = mix(fogColor, finalColor, fogFactor);
+
+                        // Bloom effect (simplified)
+                        let bloom = smoothstep(bloomThreshold - 0.1, bloomThreshold + 0.1, length(finalColor));
+                        finalColor += finalColor * bloom * 0.5;
+
+                        // Tone mapping
+                        finalColor = finalColor / (1.0 + finalColor);
+
+                        // Vignette
+                        let vignette = 1.0 - smoothstep(0.0, 1.0, length(in.vUV * 2.0 - 1.0));
+                        finalColor *= vignette * 0.7 + 0.3;
+
+                        return vec4<f32>(finalColor, 1.0);
+                    }
+                `;
+
+                const vertexShaderModule = this.device.createShaderModule({
+                    code: vertexShader
+                });
+
+                const fragmentShaderModule = this.device.createShaderModule({
+                    code: fragmentShader
+                });
+
+                this.pipeline = this.device.createRenderPipeline({
+                    layout: 'auto',
+                    vertex: {
+                        module: vertexShaderModule,
+                        entryPoint: 'main',
+                        buffers: [{
+                            arrayStride: 32, // position(12) + normal(12) + color(12) + uv(8) = 32
+                            attributes: [
+                                { format: 'float32x3', offset: 0, shaderLocation: 0 },  // position
+                                { format: 'float32x3', offset: 12, shaderLocation: 1 }, // normal
+                                { format: 'float32x3', offset: 24, shaderLocation: 2 }, // color
+                                { format: 'float32x2', offset: 36, shaderLocation: 3 }  // uv (not used but kept)
+                            ]
+                        }]
+                    },
+                    fragment: {
+                        module: fragmentShaderModule,
+                        entryPoint: 'main',
+                        targets: [{
+                            format: format,
+                            blend: {
+                                color: {
+                                    srcFactor: 'one',
+                                    dstFactor: 'one-minus-src-alpha',
+                                    operation: 'add'
+                                },
+                                alpha: {
+                                    srcFactor: 'one',
+                                    dstFactor: 'one-minus-src-alpha',
+                                    operation: 'add'
+                                }
+                            }
+                        }]
+                    },
+                    primitive: {
+                        topology: 'triangle-list',
+                        cullMode: this.wireframeEnabled ? 'none' : 'back'
+                    },
+                    depthStencil: {
+                        depthWriteEnabled: true,
+                        depthCompare: 'less',
+                        format: 'depth24plus'
+                    }
+                });
+
+                // Create uniform buffer
+                this.uniformBuffer = this.device.createBuffer({
+                    size: 128, // Enough for matrices and time
+                    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+                });
+
+                // Create bind group layout
+                const bindGroupLayout = this.device.createBindGroupLayout({
+                    entries: [
+                        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+                        { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+                        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+                        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+                        { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+                        { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+                        { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+                        { binding: 7, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
+                    ]
+                });
+
+                // Create bind group
+                this.bindGroup = this.device.createBindGroup({
+                    layout: bindGroupLayout,
+                    entries: [
+                        { binding: 0, resource: { buffer: this.uniformBuffer } },
+                        { binding: 1, resource: { buffer: this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }) } },
+                        { binding: 2, resource: { buffer: this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }) } },
+                        { binding: 3, resource: { buffer: this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }) } },
+                        { binding: 4, resource: { buffer: this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }) } },
+                        { binding: 5, resource: { buffer: this.device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }) } },
+                        { binding: 6, resource: { buffer: this.device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }) } },
+                        { binding: 7, resource: { buffer: this.device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }) } }
+                    ]
+                });
+
+                // Create pipeline with this bind group layout
+                this.pipeline = this.device.createRenderPipeline({
+                    ...this.pipeline,
+                    layout: this.device.createPipelineLayout({
+                        bindGroupLayouts: [bindGroupLayout]
+                    })
+                });
+            }
+
+            generateMesh() {
+                const meshGen = new MeshGenerator(this.world);
+                const mesh = meshGen.generate();
+
+                // Create vertex buffer
+                this.vertexBuffer = this.device.createBuffer({
+                    size: mesh.vertices.byteLength,
+                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                    mappedAtCreation: true
+                });
+                new Float32Array(this.vertexBuffer.getMappedRange()).set(mesh.vertices);
+                this.vertexBuffer.unmap();
+
+                // Create index buffer
+                this.indexBuffer = this.device.createBuffer({
+                    size: mesh.indices.byteLength,
+                    usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+                    mappedAtCreation: true
+                });
+                new Uint32Array(this.indexBuffer.getMappedRange()).set(mesh.indices);
+                this.indexBuffer.unmap();
+
+                this.vertexCount = mesh.indices.length;
+            }
+
+            setupUI() {
+                document.getElementById('day').addEventListener('click', () => {
+                    this.timeOfDay = 0.5;
+                    this.updateTimeOfDayUI();
+                });
+                document.getElementById('dusk').addEventListener('click', () => {
+                    this.timeOfDay = 0.75;
+                    this.updateTimeOfDayUI();
+                });
+                document.getElementById('night').addEventListener('click', () => {
+                    this.timeOfDay = 0.0;
+                    this.updateTimeOfDayUI();
+                });
+                document.getElementById('dawn').addEventListener('click', () => {
+                    this.timeOfDay = 0.25;
+                    this.updateTimeOfDayUI();
+                });
+
+                document.getElementById('fog').addEventListener('click', () => {
+                    this.fogEnabled = !this.fogEnabled;
+                    document.getElementById('fog').classList.toggle('active', this.fogEnabled);
+                });
+
+                document.getElementById('bloom').addEventListener('click', () => {
+                    this.bloomEnabled = !this.bloomEnabled;
+                    document.getElementById('bloom').classList.toggle('active', this.bloomEnabled);
+                });
+
+                document.getElementById('wireframe').addEventListener('click', () => {
+                    this.wireframeEnabled = !this.wireframeEnabled;
+                    document.getElementById('wireframe').classList.toggle('active', this.wireframeEnabled);
+                    this.createPipeline(navigator.gpu.getPreferredCanvasFormat()).then(() => {
+                        this.generateMesh();
+                    });
+                });
+
+                // Tooltips
+                const buttons = document.querySelectorAll('[data-tooltip]');
+                const tooltip = document.getElementById('tooltip');
+                buttons.forEach(btn => {
+                    btn.addEventListener('mouseenter', (e) => {
+                        tooltip.textContent = btn.dataset.tooltip;
+                        tooltip.style.visibility = 'visible';
+                        tooltip.style.left = (e.pageX + 10) + 'px';
+                        tooltip.style.top = (e.pageY + 10) + 'px';
+                    });
+                    btn.addEventListener('mouseleave', () => {
+                        tooltip.style.visibility = 'hidden';
+                    });
+                    btn.addEventListener('mousemove', (e) => {
+                        tooltip.style.left = (e.pageX + 10) + 'px';
+                        tooltip.style.top = (e.pageY + 10) + 'px';
+                    });
+                });
+            }
+
+            updateTimeOfDayUI() {
+                document.querySelectorAll('#ui button').forEach(btn => {
+                    btn.classList.remove('active');
+                });
+                if (this.timeOfDay === 0.5) document.getElementById('day').classList.add('active');
+                else if (this.timeOfDay === 0.75) document.getElementById('dusk').classList.add('active');
+                else if (this.timeOfDay === 0.0) document.getElementById('night').classList.add('active');
+                else if (this.timeOfDay === 0.25) document.getElementById('dawn').classList.add('active');
+            }
+
+            setupEvents() {
+                // Mouse events
+                this.canvas.addEventListener('mousedown', (e) => {
+                    if (e.button === 0) this.mouse.down = true;
+                    if (e.button === 2) this.mouse.rightDown = true;
+                });
+                this.canvas.addEventListener('mouseup', (e) => {
+                    if (e.button === 0) this.mouse.down = false;
+                    if (e.button === 2) this.mouse.rightDown = false;
+                });
+                this.canvas.addEventListener('mousemove', (e) => {
+                    this.mouse.x = e.clientX;
+                    this.mouse.y = e.clientY;
+                });
+                this.canvas.addEventListener('wheel', (e) => {
+                    if (this.camera.mode === 'orbit') {
+                        this.camera.orbitDistance = Math.max(10, Math.min(150, this.camera.orbitDistance - e.deltaY * 0.1));
+                    }
+                });
+
+                // Keyboard events
+                document.addEventListener('keydown', (e) => {
+                    this.keys[e.code] = true;
+
+                    // Camera mode switching
+                    if (e.key === '1') {
+                        this.camera.mode = 'free';
+                        document.getElementById('mode').textContent = 'Free';
+                    } else if (e.key === '2') {
+                        this.camera.mode = 'orbit';
+                        document.getElementById('mode').textContent = 'Orbit';
+                    } else if (e.key === '3') {
+                        this.camera.mode = 'screenshot';
+                        document.getElementById('mode').textContent = 'Screenshot';
+                        this.takeScreenshot();
+                    }
+                });
+                document.addEventListener('keyup', (e) => {
+                    this.keys[e.code] = false;
+                });
+
+                // Prevent context menu on right click
+                this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+                // Resize handler
+                window.addEventListener('resize', () => {
+                    this.resize();
+                });
+                this.resize();
+            }
+
+            resize() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+
+                // Recreate depth texture
+                this.depthTexture = this.device.createTexture({
+                    size: [this.canvas.width, this.canvas.height],
+                    format: 'depth24plus',
+                    usage: GPUTextureUsage.RENDER_ATTACHMENT
+                });
+
+                // Update camera aspect ratio
+                this.camera.aspect = this.canvas.width / this.canvas.height;
+            }
+
+            updateCamera(dt) {
+                const moveSpeed = MOVE_SPEED * (this.keys['ShiftLeft'] ? 2 : 1) * (this.camera.mode === 'screenshot' ? 0.1 : 1);
+                const rotSpeed = 0.002 * (this.camera.mode === 'screenshot' ? 0.5 : 1);
+
+                if (this.camera.mode === 'free') {
+                    // Rotation
+                    if (this.mouse.down) {
+                        const dx = this.mouse.x - this.canvas.width / 2;
+                        const dy = this.mouse.y - this.canvas.height / 2;
+                        this.camera.yaw -= dx * MOUSE_SENSITIVITY;
+                        this.camera.pitch = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, this.camera.pitch - dy * MOUSE_SENSITIVITY));
+
+                        // Reset mouse to center (simplified pointer lock would be better)
+                        this.canvas.requestPointerLock();
+                    }
+
+                    // Movement
+                    const forward = Math.sin(this.camera.yaw);
+                    const right = Math.cos(this.camera.yaw);
+
+                    if (this.keys['KeyW']) {
+                        this.camera.position.x += forward * moveSpeed;
+                        this.camera.position.z -= right * moveSpeed;
+                    }
+                    if (this.keys['KeyS']) {
+                        this.camera.position.x -= forward * moveSpeed;
+                        this.camera.position.z += right * moveSpeed;
+                    }
+                    if (this.keys['KeyA']) {
+                        this.camera.position.x -= right * moveSpeed;
+                        this.camera.position.z -= forward * moveSpeed;
+                    }
+                    if (this.keys['KeyD']) {
+                        this.camera.position.x += right * moveSpeed;
+                        this.camera.position.z += forward * moveSpeed;
+                    }
+                    if (this.keys['Space']) {
+                        this.camera.position.y += moveSpeed;
+                    }
+                    if (this.keys['ShiftLeft']) {
+                        this.camera.position.y -= moveSpeed;
+                    }
+
+                    // Update camera vectors
+                    this.camera.target.x = this.camera.position.x + forward;
+                    this.camera.target.y = this.camera.position.y;
+                    this.camera.target.z = this.camera.position.z - right;
+
+                } else if (this.camera.mode === 'orbit') {
+                    // Orbit camera
+                    if (this.mouse.down) {
+                        const dx = this.mouse.x - this.canvas.width / 2;
+                        const dy = this.mouse.y - this.canvas.height / 2;
+                        this.camera.orbitAngle += dx * MOUSE_SENSITIVITY * 0.5;
+                        this.camera.orbitHeight = Math.max(5, Math.min(50, this.camera.orbitHeight - dy * MOUSE_SENSITIVITY * 0.5));
+                    }
+
+                    this.camera.position.x = this.camera.orbitTarget.x + Math.cos(this.camera.orbitAngle) * this.camera.orbitDistance;
+                    this.camera.position.z = this.camera.orbitTarget.z + Math.sin(this.camera.orbitAngle) * this.camera.orbitDistance;
+                    this.camera.position.y = this.camera.orbitTarget.y + this.camera.orbitHeight;
+                    this.camera.target = { ...this.camera.orbitTarget };
+                } else if (this.camera.mode === 'screenshot') {
+                    // Screenshot mode - slow movement for precise framing
+                    if (this.mouse.down) {
+                        const dx = this.mouse.x - this.canvas.width / 2;
+                        const dy = this.mouse.y - this.canvas.height / 2;
+                        this.camera.yaw -= dx * MOUSE_SENSITIVITY * 0.2;
+                        this.camera.pitch = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, this.camera.pitch - dy * MOUSE_SENSITIVITY * 0.2));
+                    }
+
+                    const forward = Math.sin(this.camera.yaw);
+                    const right = Math.cos(this.camera.yaw);
+
+                    if (this.keys['KeyW']) {
+                        this.camera.position.x += forward * moveSpeed;
+                        this.camera.position.z -= right * moveSpeed;
+                    }
+                    if (this.keys['KeyS']) {
+                        this.camera.position.x -= forward * moveSpeed;
+                        this.camera.position.z += right * moveSpeed;
+                    }
+                    if (this.keys['KeyA']) {
+                        this.camera.position.x -= right * moveSpeed;
+                        this.camera.position.z -= forward * moveSpeed;
+                    }
+                    if (this.keys['KeyD']) {
+                        this.camera.position.x += right * moveSpeed;
+                        this.camera.position.z += forward * moveSpeed;
+                    }
+                    if (this.keys['Space']) {
+                        this.camera.position.y += moveSpeed;
+                    }
+                    if (this.keys['ShiftLeft']) {
+                        this.camera.position.y -= moveSpeed;
+                    }
+
+                    this.camera.target.x = this.camera.position.x + forward;
+                    this.camera.target.y = this.camera.position.y;
+                    this.camera.target.z = this.camera.position.z - right;
+                }
+
+                // Clamp position to world bounds
+                this.camera.position.x = Math.max(0, Math.min(this.world.size - 1, this.camera.position.x));
+                this.camera.position.z = Math.max(0, Math.min(this.world.size - 1, this.camera.position.z));
+                this.camera.position.y = Math.max(5, Math.min(this.world.size - 1, this.camera.position.y));
+
+                // Update position display
+                document.getElementById('pos').textContent = 
+                    `${Math.round(this.camera.position.x)}, ${Math.round(this.camera.position.y)}, ${Math.round(this.camera.position.z)}`;
+            }
+
+            getViewMatrix() {
+                const eye = this.camera.position;
+                const center = this.camera.target;
+                const up = { x: 0, y: 1, z: 0 };
+
+                // Create vectors
+                const z = {
+                    x: center.x - eye.x,
+                    y: center.y - eye.y,
+                    z: center.z - eye.z
+                };
+                const len = Math.sqrt(z.x * z.x + z.y * z.y + z.z * z.z);
+                z.x /= len; z.y /= len; z.z /= len;
+
+                const x = {
+                    x: up.y * z.z - up.z * z.y,
+                    y: up.z * z.x - up.x * z.z,
+                    z: up.x * z.y - up.y * z.x
+                };
+
+                const y = {
+                    x: z.y * x.z - z.z * x.y,
+                    y: z.z * x.x - z.x * x.z,
+                    z: z.x * x.y - z.y * x.x
+                };
+
+                return [
+                    x.x, y.x, z.x, 0,
+                    x.y, y.y, z.y, 0,
+                    x.z, y.z, z.z, 0,
+                    -(x.x * eye.x + x.y * eye.y + x.z * eye.z),
+                    -(y.x * eye.x + y.y * eye.y + y.z * eye.z),
+                    -(z.x * eye.x + z.y * eye.y + z.z * eye.z),
+                    1
+                ];
+            }
+
+            getProjectionMatrix() {
+                const aspect = this.canvas.width / this.canvas.height;
+                const f = 1.0 / Math.tan(this.camera.fov / 2);
+
+                return [
+                    f / aspect, 0, 0, 0,
+                    0, f, 0, 0,
+                    0, 0, (this.camera.far + this.camera.near) / (this.camera.near - this.camera.far), -1,
+                    0, 0, (2 * this.camera.far * this.camera.near) / (this.camera.near - this.camera.far), 0
+                ];
+            }
+
+            getModelMatrix() {
+                // For now, identity matrix (no model transformation)
+                return [
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    0, 0, 0, 1
+                ];
+            }
+
+            async render() {
+                // Calculate delta time
+                const now = performance.now();
+                const dt = (now - this.lastTime) / 1000;
+                this.lastTime = now;
+                this.time += dt;
+                this.frameCount++;
+
+                // Update FPS counter
+                if (now - this.lastFpsUpdate > 1000) {
+                    this.fps = this.frameCount;
+                    this.frameCount = 0;
+                    this.lastFpsUpdate = now;
+                    document.getElementById('fps').textContent = `FPS: ${this.fps}`;
+                }
+
+                // Update camera
+                this.updateCamera(dt);
+
+                // Get matrices
+                const viewMatrix = this.getViewMatrix();
+                const projMatrix = this.getProjectionMatrix();
+                const modelMatrix = this.getModelMatrix();
+
+                // Calculate view-projection matrix
+                const viewProj = this.multiplyMatrices(projMatrix, viewMatrix);
+
+                // Update time of day (auto-cycle if not in screenshot mode)
+                if (this.camera.mode !== 'screenshot') {
+                    this.timeOfDay = 0.5 + 0.5 * Math.sin(this.time * 0.0003);
+                }
+
+                // Calculate light direction based on time of day
+                const lightAngle = this.timeOfDay * Math.PI * 2;
+                const lightDir = [
+                    Math.sin(lightAngle) * 0.7,
+                    Math.cos(lightAngle) * 0.7,
+                    Math.sin(lightAngle * 0.5) * 0.3
+                ];
+
+                // Normalize light direction
+                const len = Math.sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
+                lightDir[0] /= len; lightDir[1] /= len; lightDir[2] /= len;
+
+                // Calculate light color based on time of day
+                const lightIntensity = 0.5 + 0.5 * Math.sin(this.timeOfDay * Math.PI);
+                const lightColor = [
+                    1.0 * lightIntensity,
+                    0.9 * lightIntensity,
+                    0.8 * lightIntensity
+                ];
+
+                // Calculate ambient color
+                const ambientIntensity = 0.2 + 0.3 * (1 - lightIntensity);
+                const ambientColor = [
+                    0.6 * ambientIntensity,
+                    0.7 * ambientIntensity,
+                    1.0 * ambientIntensity
+                ];
+
+                // Calculate fog color based on time of day
+                const fogColor = [
+                    0.6 * ambientIntensity,
+                    0.7 * ambientIntensity,
+                    1.0 * ambientIntensity
+                ];
+
+                // Create command encoder
+                const commandEncoder = this.device.createCommandEncoder();
+
+                // Update uniform buffer
+                const uniformData = new Float32Array([
+                    ...viewProj,
+                    ...modelMatrix,
+                    this.time,
+                    this.timeOfDay
+                ]);
+                this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
+
+                // Update light uniforms
+                this.device.queue.writeBuffer(
+                    this.bindGroup.entries[1].resource.buffer,
+                    0,
+                    new Float32Array(lightDir)
+                );
+                this.device.queue.writeBuffer(
+                    this.bindGroup.entries[2].resource.buffer,
+                    0,
+                    new Float32Array(lightColor)
+                );
+                this.device.queue.writeBuffer(
+                    this.bindGroup.entries[3].resource.buffer,
+                    0,
+                    new Float32Array(ambientColor)
+                );
+                this.device.queue.writeBuffer(
+                    this.bindGroup.entries[4].resource.buffer,
+                    0,
+                    new Float32Array(fogColor)
+                );
+                this.device.queue.writeBuffer(
+                    this.bindGroup.entries[5].resource.buffer,
+                    0,
+                    new Float32Array([this.fogEnabled ? 0.005 : 0.0])
+                );
+                this.device.queue.writeBuffer(
+                    this.bindGroup.entries[6].resource.buffer,
+                    0,
+                    new Float32Array([this.bloomEnabled ? 0.8 : 1.5])
+                );
+                this.device.queue.writeBuffer(
+                    this.bindGroup.entries[7].resource.buffer,
+                    0,
+                    new Float32Array([this.time])
+                );
+
+                // Start render pass
+                const textureView = this.context.getCurrentTexture().createView();
+                const renderPass = commandEncoder.beginRenderPass({
+                    colorAttachments: [{
+                        view: textureView,
+                        clearValue: {
+                            r: fogColor[0] * 0.3,
+                            g: fogColor[1] * 0.3,
+                            b: fogColor[2] * 0.3,
+                            a: 1.0
+                        },
+                        loadOp: 'clear',
+                        storeOp: 'store'
+                    }],
+                    depthStencilAttachment: {
+                        view: this.depthTexture.createView(),
+                        depthClearValue: 1.0,
+                        depthLoadOp: 'clear',
+                        depthStoreOp: 'store'
+                    }
+                });
+
+                // Set pipeline and bind group
+                renderPass.setPipeline(this.pipeline);
+                renderPass.setBindGroup(0, this.bindGroup);
+
+                // Set vertex and index buffers
+                renderPass.setVertexBuffer(0, this.vertexBuffer);
+                renderPass.setIndexBuffer(this.indexBuffer, 'uint32');
+
+                // Draw
+                renderPass.drawIndexed(this.vertexCount);
+
+                // End render pass
+                renderPass.end();
+
+                // Submit commands
+                this.device.queue.submit([commandEncoder.finish()]);
+
+                // Request next frame
+                requestAnimationFrame(() => this.render());
+            }
+
+            multiplyMatrices(a, b) {
+                const result = new Array(16).fill(0);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        for (let k = 0; k < 4; k++) {
+                            result[i * 4 + j] += a[i * 4 + k] * b[k * 4 + j];
+                        }
+                    }
+                }
+                return result;
+            }
+
+            takeScreenshot() {
+                const link = document.createElement('a');
+                link.download = 'medieval-world-screenshot.png';
+                link.href = this.canvas.toDataURL('image/png');
+                link.click();
+            }
+        }
+
+        // =============================================
+        // MAIN
+        // =============================================
+        async function main() {
+            const canvas = document.getElementById('canvas');
+            const world = new VoxelWorld(WORLD_SIZE);
+
+            const renderer = new VoxelRenderer(canvas, world);
+            if (!(await renderer.initialize())) {
+                return;
+            }
+
+            // Start with aerial view of the castle
+            renderer.camera.position = { x: 64, y: 80, z: 64 };
+            renderer.camera.target = { x: 64, y: 10, z: 64 };
+            renderer.camera.mode = 'orbit';
+            renderer.camera.orbitTarget = { x: 64, y: 15, z: 64 };
+            renderer.camera.orbitDistance = 60;
+            renderer.camera.orbitHeight = 40;
+            document.getElementById('mode').textContent = 'Orbit';
+
+            // Start rendering
+            renderer.render();
+        }
+
+        // Start the application
+        main().catch(console.error);
+    </script>
+</body>
+</html>

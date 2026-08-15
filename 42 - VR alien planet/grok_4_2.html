@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZORATH • Echoes of the Veil</title>
+<style>
+    body { margin:0; overflow:hidden; background:#000; font-family:monospace; }
+    #ui {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        pointer-events: none; color: #0ff; text-shadow: 0 0 20px #0ff;
+        display: flex; flex-direction: column; justify-content: space-between;
+        padding: 20px; box-sizing: border-box; opacity: 0.9;
+    }
+    #title { font-size: 2.5em; letter-spacing: 4px; text-align: center; }
+    #instructions {
+        background: rgba(0,20,40,0.7); padding: 15px; border: 1px solid #0ff;
+        max-width: 420px; align-self: center; border-radius: 8px;
+    }
+    .scan { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+        width: 200px; height: 200px; border: 3px solid rgba(0,255,255,0.3);
+        border-radius: 50%; pointer-events: none; display: none;
+        box-shadow: 0 0 60px #0ff;
+    }
+</style>
+</head>
+<body>
+<div id="ui">
+    <div id="title">ZORATH</div>
+    <div id="instructions">
+        <strong>WebXR VR Experience</strong><br><br>
+        • Left stick — Move<br>
+        • Right stick — Turn<br>
+        • Trigger — Scan / Collect artifacts<br>
+        • Grip — Pulse energy wave<br><br>
+        <span style="color:#0f0">Find 7 Echo Shards to awaken the Veil...</span>
+    </div>
+    <div style="text-align:center; font-size:0.9em; opacity:0.6;">
+        Press the button below to enter the planet
+    </div>
+</div>
+<div class="scan" id="scan"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+<script>
+// ============== ZORATH - SINGLE FILE WEBXR EXPERIENCE ==============
+let scene, camera, renderer, xrSession, xrRefSpace;
+let player, controllers = [];
+let terrain, sky, spores;
+let plants, crystals, ruins, creatures = [], artifacts = [];
+let time = 0;
+let harmony = 0;
+const discovered = new Set();
+
+const simplex = {
+    noise(x, z) {
+        const n = Math.sin(x * 0.1) * Math.cos(z * 0.13) * 4 +
+                 Math.sin(x * 0.23) * Math.cos(z * 0.17) * 2.5;
+        return n + Math.sin(x * 0.05 + z * 0.05) * 8;
+    }
+};
+
+init();
+async function init() {
+    scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x110022, 0.008);
+
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+    
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true;
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // Lighting - Alien atmosphere
+    const hemi = new THREE.HemisphereLight(0x6633aa, 0x112233, 0.6);
+    scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xff44aa, 1.2);
+    sun.position.set(50, 100, 30);
+    scene.add(sun);
+
+    // Player rig
+    player = new THREE.Group();
+    player.add(camera);
+    scene.add(player);
+
+    // Sky
+    createSky();
+    
+    // Terrain
+    createTerrain();
+    
+    // Vegetation & Crystals
+    createVegetation();
+    createCrystals();
+    
+    // Ruins
+    createRuins();
+    
+    // Wildlife
+    createWildlife();
+    
+    // Artifacts
+    createArtifacts();
+    
+    // Atmospheric spores
+    createSpores();
+
+    // Controllers
+    setupControllers();
+
+    // XR Button
+    const button = document.createElement('button');
+    button.textContent = 'ENTER ZORATH';
+    button.style.cssText = 'position:absolute; bottom:40px; left:50%; transform:translateX(-50%); padding:20px 40px; font-size:1.4em; background:#0ff; color:#000; border:none; border-radius:50px; cursor:pointer; box-shadow:0 0 40px #0ff;';
+    button.onclick = startXR;
+    document.body.appendChild(button);
+
+    window.addEventListener('resize', onResize);
+    animate();
+}
+
+function createSky() {
+    const skyGeo = new THREE.SphereGeometry(800, 32, 32);
+    const skyMat = new THREE.ShaderMaterial({
+        uniforms: { time: { value: 0 } },
+        vertexShader: `
+            varying vec3 vPos;
+            void main() {
+                vPos = position;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform float time;
+            varying vec3 vPos;
+            void main() {
+                vec3 color = mix(vec3(0.05, 0.0, 0.15), vec3(0.4, 0.1, 0.8), (vPos.y + 1.0) * 0.5);
+                color += vec3(0.0, 0.3, 0.6) * sin(time * 0.5 + vPos.x * 0.02) * 0.1;
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `,
+        side: THREE.BackSide
+    });
+    sky = new THREE.Mesh(skyGeo, skyMat);
+    scene.add(sky);
+}
+
+function createTerrain() {
+    const size = 512;
+    const segments = 128;
+    const geo = new THREE.PlaneGeometry(size, size, segments, segments);
+    geo.rotateX(-Math.PI / 2);
+
+    const verts = geo.attributes.position.array;
+    for (let i = 0; i < verts.length; i += 3) {
+        const x = verts[i];
+        const z = verts[i + 2];
+        verts[i + 1] = simplex.noise(x * 0.8, z * 0.8) * 6;
+        
+        // Biome valleys
+        if (Math.abs(x) < 40 && Math.abs(z) < 40) verts[i + 1] -= 12;
+    }
+    geo.computeVertexNormals();
+
+    const mat = new THREE.MeshStandardMaterial({
+        color: 0x113322,
+        roughness: 0.9,
+        metalness: 0.1,
+        flatShading: false
+    });
+
+    terrain = new THREE.Mesh(geo, mat);
+    terrain.castShadow = true;
+    terrain.receiveShadow = true;
+    scene.add(terrain);
+}
+
+function createVegetation() {
+    const count = 1800;
+    const geometry = new THREE.ConeGeometry(1.2, 5, 5);
+    const material = new THREE.MeshStandardMaterial({
+        color: 0x00ffaa,
+        emissive: 0x00ff88,
+        emissiveIntensity: 0.8,
+        roughness: 0.4
+    });
+    
+    plants = new THREE.InstancedMesh(geometry, material, count);
+    const dummy = new THREE.Object3D();
+    
+    for (let i = 0; i < count; i++) {
+        const x = (Math.random() - 0.5) * 480;
+        const z = (Math.random() - 0.5) * 480;
+        const y = terrain.geometry.attributes.position.array[Math.floor((x + 256) / 4) * 3 + 1] || 0;
+        
+        dummy.position.set(x, y + 2, z);
+        dummy.scale.setScalar(0.6 + Math.random() * 1.4);
+        dummy.rotation.y = Math.random() * Math.PI * 2;
+        dummy.updateMatrix();
+        plants.setMatrixAt(i, dummy.matrix);
+        
+        // Random glowing color variation
+        if (Math.random() > 0.7) plants.setColorAt(i, new THREE.Color(0x00aaff));
+    }
+    scene.add(plants);
+}
+
+function createCrystals() {
+    const crystalGeo = new THREE.ConeGeometry(0.8, 6, 4);
+    for (let i = 0; i < 45; i++) {
+        const crystal = new THREE.Mesh(
+            crystalGeo,
+            new THREE.MeshStandardMaterial({
+                color: 0x88ffff,
+                emissive: 0x00ffff,
+                emissiveIntensity: 2.5,
+                metalness: 0.9,
+                roughness: 0.1
+            })
+        );
+        const x = (Math.random() - 0.5) * 400;
+        const z = (Math.random() - 0.5) * 400;
+        const y = Math.max(0, simplex.noise(x, z) * 5);
+        crystal.position.set(x, y + 3, z);
+        crystal.rotation.set(Math.random() * 0.6, Math.random() * Math.PI * 2, 0);
+        crystal.scale.set(1, 0.6 + Math.random() * 1.8, 1);
+        scene.add(crystal);
+        crystals = crystals || [];
+        crystals.push(crystal);
+    }
+}
+
+function createRuins() {
+    const ruinMat = new THREE.MeshStandardMaterial({ color: 0x553366, emissive: 0x221133, metalness: 0.6 });
+    for (let i = 0; i < 12; i++) {
+        const group = new THREE.Group();
+        const x = (Math.random() - 0.5) * 380;
+        const z = (Math.random() - 0.5) * 380;
+        const y = Math.max(2, simplex.noise(x * 0.5, z * 0.5) * 4);
+        
+        // Pillars
+        for (let p = 0; p < 4; p++) {
+            const pillar = new THREE.Mesh(new THREE.BoxGeometry(3, 18, 3), ruinMat);
+            pillar.position.set(x + (p % 2 ? 12 : -12), y + 9, z + (p > 1 ? 12 : -12));
+            group.add(pillar);
+        }
+        // Arch
+        const arch = new THREE.Mesh(new THREE.TorusGeometry(15, 2.5, 8, 16), ruinMat);
+        arch.rotation.set(0, 0, Math.PI / 2);
+        arch.position.set(x, y + 18, z);
+        group.add(arch);
+        
+        scene.add(group);
+        ruins = ruins || [];
+        ruins.push(group);
+    }
+}
+
+function createWildlife() {
+    for (let i = 0; i < 18; i++) {
+        const creature = new THREE.Group();
+        const body = new THREE.Mesh(
+            new THREE.SphereGeometry(2, 6, 6),
+            new THREE.MeshStandardMaterial({ color: 0xff44dd, emissive: 0xff0088, emissiveIntensity: 1.5 })
+        );
+        const tentacle = new THREE.Mesh(
+            new THREE.ConeGeometry(0.4, 4, 4),
+            new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x00ffff })
+        );
+        tentacle.position.y = -3;
+        creature.add(body, tentacle);
+        creature.position.set(
+            (Math.random() - 0.5) * 300,
+            30 + Math.random() * 40,
+            (Math.random() - 0.5) * 300
+        );
+        creature.userData = { 
+            phase: Math.random() * 100,
+            speed: 0.3 + Math.random() * 0.6,
+            radius: 25 + Math.random() * 30
+        };
+        scene.add(creature);
+        creatures.push(creature);
+    }
+}
+
+function createArtifacts() {
+    const artifactMat = new THREE.MeshStandardMaterial({
+        color: 0xffff88,
+        emissive: 0xffff00,
+        emissiveIntensity: 3,
+        metalness: 1,
+        roughness: 0.2
+    });
+    
+    const positions = [
+        [60, 15, -80], [-120, 25, 90], [140, 8, 150],
+        [-80, 35, -160], [200, 12, -70], [-190, 22, 40], [45, 18, 210]
+    ];
+    
+    positions.forEach((pos, i) => {
+        const artifact = new THREE.Mesh(new THREE.OctahedronGeometry(2.2, 1), artifactMat);
+        artifact.position.set(...pos);
+        artifact.userData = { id: i, collected: false };
+        scene.add(artifact);
+        artifacts.push(artifact);
+    });
+}
+
+function createSpores() {
+    const count = 800;
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    
+    for (let i = 0; i < count * 3; i += 3) {
+        positions[i]     = (Math.random() - 0.5) * 500;
+        positions[i + 1] = Math.random() * 80 + 10;
+        positions[i + 2] = (Math.random() - 0.5) * 500;
+        
+        const brightness = 0.6 + Math.random() * 0.4;
+        colors[i]     = 0.1 * brightness;
+        colors[i + 1] = 0.8 * brightness;
+        colors[i + 2] = 0.9 * brightness;
+    }
+    
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    
+    const mat = new THREE.PointsMaterial({
+        size: 0.8,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.75,
+        blending: THREE.AdditiveBlending,
+        depthTest: false
+    });
+    
+    spores = new THREE.Points(geo, mat);
+    scene.add(spores);
+}
+
+function setupControllers() {
+    renderer.xr.addEventListener('sessionstart', () => {
+        document.getElementById('ui').style.display = 'none';
+        const scan = document.getElementById('scan');
+        scan.style.display = 'block';
+    });
+
+    const controller1 = renderer.xr.getController(0);
+    const controller2 = renderer.xr.getController(1);
+    
+    [controller1, controller2].forEach((c, i) => {
+        const ray = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.01, 0.01, 3, 8),
+            new THREE.MeshBasicMaterial({ color: i === 0 ? 0x00ffff : 0xff00ff })
+        );
+        ray.rotation.x = -Math.PI / 2;
+        c.add(ray);
+        player.add(c);
+        controllers.push(c);
+    });
+}
+
+async function startXR() {
+    if (!navigator.xr) return alert("WebXR not supported");
+    
+    try {
+        xrSession = await navigator.xr.requestSession('immersive-vr', {
+            requiredFeatures: ['local-floor'],
+            optionalFeatures: ['hand-tracking']
+        });
+        
+        renderer.xr.setReferenceSpaceType('local-floor');
+        await renderer.xr.setSession(xrSession);
+        xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function onResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function updateMovement() {
+    if (!controllers[0]) return;
+    const gamepad = controllers[0].gamepad;
+    if (!gamepad) return;
+
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const strafe = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    
+    const moveSpeed = 0.8;
+    const x = gamepad.axes[2] || 0; // left stick X
+    const y = gamepad.axes[3] || 0; // left stick Y
+    
+    player.position.x += (forward.x * -y + strafe.x * x) * moveSpeed;
+    player.position.z += (forward.z * -y + strafe.z * x) * moveSpeed;
+    
+    // Right stick turning
+    const turn = (gamepad.axes[0] || 0) * 0.03;
+    player.rotation.y -= turn;
+}
+
+function updateCreatures(delta) {
+    creatures.forEach(c => {
+        c.userData.phase += delta * 1.5;
+        const ud = c.userData;
+        c.position.x = Math.sin(c.userData.phase * 0.3) * ud.radius + 30;
+        c.position.z = Math.cos(c.userData.phase * 0.2) * ud.radius * 0.7;
+        c.position.y = 25 + Math.sin(c.userData.phase) * 12;
+        c.rotation.y = Math.sin(c.userData.phase * 0.4) * 0.6;
+    });
+}
+
+function checkInteractions() {
+    if (!controllers[1]) return;
+    const gp = controllers[1].gamepad;
+    if (!gp) return;
+
+    // Trigger press
+    if (gp.buttons[0] && gp.buttons[0].pressed) {
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromXRController(controllers[1]);
+        
+        for (let artifact of artifacts) {
+            if (artifact.userData.collected) continue;
+            const intersects = raycaster.intersectObject(artifact, true);
+            if (intersects.length > 0) {
+                artifact.userData.collected = true;
+                artifact.visible = false;
+                harmony++;
+                discovered.add(artifact.userData.id);
+                
+                // Particle burst
+                for (let i = 0; i < 30; i++) {
+                    const p = new THREE.Mesh(
+                        new THREE.SphereGeometry(0.3, 4, 4),
+                        new THREE.MeshBasicMaterial({ color: 0xffff00 })
+                    );
+                    p.position.copy(artifact.position);
+                    scene.add(p);
+                    setTimeout(() => scene.remove(p), 1200);
+                }
+                
+                if (harmony === 7) {
+                    alert("THE VEIL AWAKENS.\n\nYou have restored harmony to Zorath.");
+                }
+                break;
+            }
+        }
+    }
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    time += 0.016;
+    
+    if (sky) sky.material.uniforms.time.value = time;
+    
+    // Gentle breathing on plants
+    if (plants) {
+        plants.instanceMatrix.needsUpdate = true;
+    }
+    
+    updateMovement();
+    updateCreatures(0.016);
+    checkInteractions();
+    
+    // Float spores
+    if (spores) {
+        const pos = spores.geometry.attributes.position.array;
+        for (let i = 1; i < pos.length; i += 3) {
+            pos[i] += 0.03 + Math.sin(time * 2 + i) * 0.02;
+            if (pos[i] > 90) pos[i] = 5;
+        }
+        spores.geometry.attributes.position.needsUpdate = true;
+    }
+    
+    if (renderer.xr.isPresenting()) {
+        renderer.render(scene, camera);
+    } else {
+        renderer.render(scene, camera);
+    }
+}
+</script>
+</body>
+</html>

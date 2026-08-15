@@ -1,0 +1,1128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>XENOVERSE — WebXR Expedition</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;background:#000;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+canvas{display:block;width:100%;height:100%}
+#ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(ellipse at 30% 20%,rgba(12,8,28,.95),rgba(2,1,10,1));
+    color:#aef;z-index:10;flex-direction:column;text-align:center;padding:20px;transition:opacity .5s}
+#ui.hidden{opacity:0;pointer-events:none}
+#ui h1{font-size:clamp(28px,6vw,56px);letter-spacing:.3em;text-shadow:0 0 40px #0cf,0 0 80px #f0f;margin-bottom:8px}
+#ui p{font-size:clamp(12px,1.8vw,16px);line-height:1.6;opacity:.8;max-width:560px;margin:6px auto}
+#ui button{margin-top:24px;appearance:none;background:rgba(0,255,200,.08);border:1px solid rgba(0,255,200,.6);
+    color:#7ff;padding:14px 48px;font:inherit;font-size:clamp(14px,2vw,18px);cursor:pointer;
+    letter-spacing:.2em;text-transform:uppercase;box-shadow:0 0 25px rgba(0,255,200,.2);transition:.3s}
+#ui button:hover{background:rgba(0,255,200,.2);box-shadow:0 0 45px rgba(0,255,200,.4),0 0 80px rgba(255,0,255,.2)}
+#hud{position:fixed;left:16px;bottom:16px;padding:12px 18px;color:#cff;background:rgba(0,10,20,.4);
+    border:1px solid rgba(100,255,255,.2);font-size:13px;display:none;z-index:8;
+    text-shadow:0 1px 4px #000;line-height:1.7;min-width:220px}
+#hud .warn{color:#f88;animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.5}}
+#crosshair{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:28px;height:28px;border:2px solid rgba(100,255,255,.5);border-radius:50%;
+    pointer-events:none;display:none;z-index:6;box-shadow:0 0 15px rgba(100,255,255,.4)}
+#crosshair::before,#crosshair::after{content:"";position:absolute;background:rgba(100,255,255,.8)}
+#crosshair::before{left:-6px;top:50%;width:40px;height:2px;transform:translateY(-50%)}
+#crosshair::after{top:-6px;left:50%;width:2px;height:40px;transform:translateX(-50%)}
+#scanRing{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:0;height:0;border:2px solid rgba(0,255,180,0);border-radius:50%;
+    pointer-events:none;display:none;z-index:5}
+#msg{position:fixed;left:50%;top:30%;transform:translateX(-50%);color:#fff;font-size:18px;
+    text-shadow:0 0 30px #0ff;opacity:0;transition:opacity .4s;text-align:center;z-index:9}
+#msg.show{opacity:1}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="ui">
+  <h1>XENOVERSE</h1>
+  <p>A fractured alien world awaits. Traverse bioluminescent plains, crystal chasms, fungal forests, and ancient ruins.</p>
+  <p>12 Resonance Fragments lie dormant. Scan to locate, grip to collect, bring to your visor to restore.</p>
+  <p style="font-size:12px;opacity:.6;margin-top:8px">
+    ◆ Left stick / WASD — move&nbsp;&nbsp;◆ Right stick / Mouse — look&nbsp;&nbsp;◆ Trigger / Click — grip artifact<br>
+    ◆ Face button / Space — scan pulse&nbsp;&nbsp;◆ Grip / Shift — boost
+  </p>
+  <button id="enterBtn">INITIATE DESCENT</button>
+  <div id="msg"></div>
+</div>
+<div id="hud">
+  <div>◆ FRAGMENTS: <span id="hAc">0</span> / <span id="hAt">12</span></div>
+  <div>◆ BIOME: <span id="hBm">—</span></div>
+  <div id="hScan" style="opacity:.4">◆ Press scan to ping</div>
+</div>
+<div id="crosshair"></div>
+<div id="scanRing"></div>
+
+<script>
+"use strict";
+
+// ═══════════════════════════════════════════════
+//  MATH / CONSTANTS
+// ═══════════════════════════════════════════════
+const PI=Math.PI,TAU=PI*2;
+const {sin,cos,tan,sqrt,abs,floor,min,max,hypot,atan2,random,exp,pow}=Math;
+const clamp=(x,a,b)=>max(a,min(b,x));
+const lerp=(a,b,t)=>a+(b-a)*t;
+
+const W_RAD=180, T_SIZE=360, T_STEP=3, EYE_H=1.65,
+  GRAB_R=0.4, COLLECT_R=0.25, SPD=4.2, BOOST_SPD=9, TURN_A=PI/5,
+  N_PART=1600, ARTIFACT_N=12, CREATURE_N=18;
+
+const Mat4 = {
+  create:()=>new Float32Array(16),
+  identity:(o)=>{o.fill(0);o[0]=o[5]=o[10]=o[15]=1;return o},
+  multiply:(o,a,b)=>{
+    const a0=a[0],a1=a[1],a2=a[2],a3=a[3],a4=a[4],a5=a[5],a6=a[6],a7=a[7],
+          a8=a[8],a9=a[9],a10=a[10],a11=a[11],a12=a[12],a13=a[13],a14=a[14],a15=a[15];
+    let b0=b[0],b1=b[1],b2=b[2],b3=b[3];
+    o[0]=b0*a0+b1*a4+b2*a8+b3*a12; o[1]=b0*a1+b1*a5+b2*a9+b3*a13; o[2]=b0*a2+b1*a6+b2*a10+b3*a14; o[3]=b0*a3+b1*a7+b2*a11+b3*a15;
+    b0=b[4];b1=b[5];b2=b[6];b3=b[7];
+    o[4]=b0*a0+b1*a4+b2*a8+b3*a12; o[5]=b0*a1+b1*a5+b2*a9+b3*a13; o[6]=b0*a2+b1*a6+b2*a10+b3*a14; o[7]=b0*a3+b1*a7+b2*a11+b3*a15;
+    b0=b[8];b1=b[9];b2=b[10];b3=b[11];
+    o[8]=b0*a0+b1*a4+b2*a8+b3*a12; o[9]=b0*a1+b1*a5+b2*a9+b3*a13; o[10]=b0*a2+b1*a6+b2*a10+b3*a14; o[11]=b0*a3+b1*a7+b2*a11+b3*a15;
+    b0=b[12];b1=b[13];b2=b[14];b3=b[15];
+    o[12]=b0*a0+b1*a4+b2*a8+b3*a12; o[13]=b0*a1+b1*a5+b2*a9+b3*a13; o[14]=b0*a2+b1*a6+b2*a10+b3*a14; o[15]=b0*a3+b1*a7+b2*a11+b3*a15;
+    return o;
+  },
+  translate:(o,a,v)=>{const x=v[0],y=v[1],z=v[2];
+    if(o!==a){for(let i=0;i<12;i++)o[i]=a[i]}
+    o[12]=a[0]*x+a[4]*y+a[8]*z+a[12]; o[13]=a[1]*x+a[5]*y+a[9]*z+a[13]; o[14]=a[2]*x+a[6]*y+a[10]*z+a[14]; o[15]=a[3]*x+a[7]*y+a[11]*z+a[15]; return o},
+  rotateY:(o,a,rad)=>{const s=sin(rad),c=cos(rad),a0=a[0],a1=a[1],a2=a[2],a3=a[3],a8=a[8],a9=a[9],a10=a[10],a11=a[11];
+    if(o!==a){for(let i=4;i<8;i++)o[i]=a[i];o[12]=a[12];o[13]=a[13];o[14]=a[14];o[15]=a[15]}
+    o[0]=a0*c-a8*s; o[1]=a1*c-a9*s; o[2]=a2*c-a10*s; o[3]=a3*c-a11*s;
+    o[8]=a0*s+a8*c; o[9]=a1*s+a9*c; o[10]=a2*s+a10*c; o[11]=a3*s+a11*c; return o},
+  rotateX:(o,a,rad)=>{const s=sin(rad),c=cos(rad),a4=a[4],a5=a[5],a6=a[6],a7=a[7],a8=a[8],a9=a[9],a10=a[10],a11=a[11];
+    if(o!==a){for(let i=0;i<4;i++)o[i]=a[i];o[12]=a[12];o[13]=a[13];o[14]=a[14];o[15]=a[15]}
+    o[4]=a4*c+a8*s; o[5]=a5*c+a9*s; o[6]=a6*c+a10*s; o[7]=a7*c+a11*s;
+    o[8]=a8*c-a4*s; o[9]=a9*c-a5*s; o[10]=a10*c-a6*s; o[11]=a11*c-a7*s; return o},
+  perspective:(o,fov,asp,near,far)=>{const f=1/tan(fov/2),nf=1/(near-far);o.fill(0);o[0]=f/asp;o[5]=f;o[10]=(far+near)*nf;o[11]=-1;o[14]=2*far*near*nf;return o},
+  invert:(o,a)=>{
+    const a0=a[0],a1=a[1],a2=a[2],a3=a[3],a4=a[4],a5=a[5],a6=a[6],a7=a[7],a8=a[8],a9=a[9],a10=a[10],a11=a[11],a12=a[12],a13=a[13],a14=a[14],a15=a[15],
+    b0=a0*a5-a1*a4,b1=a0*a6-a2*a4,b2=a0*a7-a3*a4,b3=a1*a6-a2*a5,b4=a1*a7-a3*a5,b5=a2*a7-a3*a6,
+    b6=a8*a13-a9*a12,b7=a8*a14-a10*a12,b8=a8*a15-a11*a12,b9=a9*a14-a10*a13,b10=a9*a15-a11*a13,b11=a10*a15-a11*a14,
+    det=b0*b11-b1*b10+b2*b9+b3*b8-b4*b7+b5*b6;
+    if(!det)return null;det=1/det;
+    o[0]=(a5*b11-a6*b10+a7*b9)*det;o[1]=(a2*b10-a1*b11-a3*b9)*det;o[2]=(a13*b5-a14*b4+a15*b3)*det;o[3]=(a10*b4-a9*b5-a11*b3)*det;
+    o[4]=(a6*b8-a4*b11-a7*b7)*det;o[5]=(a0*b11-a2*b8+a3*b7)*det;o[6]=(a14*b2-a12*b5-a15*b1)*det;o[7]=(a8*b5-a10*b2+a11*b1)*det;
+    o[8]=(a4*b10-a5*b8+a7*b6)*det;o[9]=(a1*b8-a0*b10-a3*b6)*det;o[10]=(a12*b5-a13*b2+a15*b0)*det;o[11]=(a9*b2-a8*b5-a11*b0)*det;
+    o[12]=(a5*b7-a4*b9-a6*b6)*det;o[13]=(a0*b9-a1*b7+a2*b6)*det;o[14]=(a13*b1-a12*b3-a14*b0)*det;o[15]=(a8*b3-a9*b1+a10*b0)*det;return o
+  }
+};
+
+function transformDir(m,v){const x=v[0],y=v[1],z=v[2];const rx=m[0]*x+m[4]*y+m[8]*z,ry=m[1]*x+m[5]*y+m[9]*z,rz=m[2]*x+m[6]*y+m[10]*z;const l=hypot(rx,ry,rz)||1;return[rx/l,ry/l,rz/l]}
+function transformPoint(m,v){const x=v[0],y=v[1],z=v[2];const w=m[3]*x+m[7]*y+m[11]*z+m[15]||1;return[(m[0]*x+m[4]*y+m[8]*z+m[12])/w,(m[1]*x+m[5]*y+m[9]*z+m[13])/w,(m[2]*x+m[6]*y+m[10]*z+m[14])/w]}
+
+// ═══════════════════════════════════════════════
+//  NOISE
+// ═══════════════════════════════════════════════
+class Noise{
+  constructor(seed){
+    let s=seed||((random()*2147483647)|0);
+    const R=()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296};
+    const a=new Uint8Array(256);for(let i=0;i<256;i++)a[i]=i;
+    for(let i=255;i>0;i--){const j=(R()*(i+1))|0;[a[i],a[j]]=[a[j],a[i]]}
+    this.p=new Uint8Array(512);for(let i=0;i<512;i++)this.p[i]=a[i&255];
+  }
+  n2(x,y){
+    const ix=floor(x),iy=floor(y),fx=x-ix,fy=y-iy,
+      ux=fx*fx*(3-2*fx),uy=fy*fy*(3-2*fy),p=this.p,
+      a=p[(p[ix&255]+(iy&255))&255]/255,
+      b=p[(p[(ix+1)&255]+(iy&255))&255]/255,
+      c=p[(p[ix&255]+((iy+1)&255))&255]/255,
+      d=p[(p[(ix+1)&255]+((iy+1)&255))&255]/255;
+    return a+(b-a)*ux+(c-a)*uy+(a-b-c+d)*ux*uy;
+  }
+  fbm(x,y,o){
+    let s=0,a=.5,f=1;
+    for(let i=0;i<(o||5);i++){s+=a*this.n2(x*f,y*f);f*=2;a*=.5}
+    return s;
+  }
+}
+const noise=new Noise(0xC0FFEE);
+
+// ═══════════════════════════════════════════════
+//  WORLD DEFINITION
+// ═══════════════════════════════════════════════
+const CAVES=[], RUINS=[], CHASMS=[];
+for(let i=0;i<8;i++){const a=random()*TAU,r=40+random()*110;CAVES.push({x:cos(a)*r,z:sin(a)*r,r:14+random()*12,d:12+random()*10})}
+for(let i=0;i<5;i++){const a=random()*TAU,r=50+random()*100;RUINS.push({x:cos(a)*r,z:sin(a)*r,yaw:random()*TAU,n:5+random()*8|0,rr:6+random()*10})}
+for(let i=0;i<3;i++){const a=random()*TAU,r=60+random()*80;CHASMS.push({x:cos(a)*r,z:sin(a)*r,w:20+random()*15,d:30+random()*15})}
+
+function heightAt(x,z){
+  let h=noise.fbm(x*.0045,z*.0045,6)*24-10+noise.fbm(x*.018,z*.018,3)*4+noise.fbm(x*.0008,z*.0008,2)*40;
+  for(const c of CAVES){const d=hypot(x-c.x,z-c.z);if(d<c.r){const t=1-d/c.r,s=t*t*(3-2*t);h-=c.d*s}}
+  for(const c of CHASMS){const d=abs(x-c.x);if(d<c.w){const t=1-d/c.w;h-=c.d*t*t}}
+  const e=hypot(x,z);
+  if(e>W_RAD*.8){const t=clamp((e-W_RAD*.8)/(W_RAD*.2),0,1);h-=t*t*60}
+  return h;
+}
+function biomeAt(x,z){
+  for(const c of CAVES)if(hypot(x-c.x,z-c.z)<c.r*.55)return'cave';
+  for(const c of CHASMS)if(abs(x-c.x)<c.w*.6&&hypot(x-c.x,z-c.z)<c.w)return'chasm';
+  const h=heightAt(x,z);
+  if(h>14)return'ridge';
+  const b=noise.fbm(x*.0025+100,z*.0025+100,4)-.5;
+  if(b>.2)return'crystal';if(b<-.2)return'fungal';
+  return'mire';
+}
+function biomeCol(b){
+  switch(b){
+    case'crystal':return{c:[.06,.55,.9],e:[0,.15,.35],g:.9,m:[.05,.8,1]};
+    case'fungal':return{c:[.65,.15,.55],e:[.25,0,.2],g:.75,m:[1,.3,.7]};
+    case'cave':return{c:[.02,.03,.07],e:[0,.01,.03],g:.15,m:[.2,.4,.6]};
+    case'chasm':return{c:[.08,.02,.15],e:[.15,0,.1],g:.6,m:[.8,.1,.5]};
+    case'ridge':return{c:[.4,.35,.4],e:[0,0,0],g:0,m:[.5,.5,.55]};
+    default:return{c:[.08,.28,.15],e:[0,.02,0],g:.05,m:[.3,.6,.4]};
+  }
+}
+
+// ═══════════════════════════════════════════════
+//  WEBGL 2 SETUP
+// ═══════════════════════════════════════════════
+const canvas=document.getElementById("gl"),
+  gl=canvas.getContext("webgl2",{alpha:false,antialias:true,depth:true,xrCompatible:true,preserveDrawingBuffer:false});
+if(!gl){document.getElementById("msg").textContent="WebGL 2 unavailable.";throw 0}
+
+function mkShader(t,s){const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(sh);return sh}
+function mkProg(vs,fs){const p=gl.createProgram();gl.attachShader(p,mkShader(gl.VERTEX_SHADER,vs));gl.attachShader(p,mkShader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw gl.getProgramInfoLog(p);return p}
+function getULocs(p){const o={},n=gl.getProgramParameter(p,gl.ACTIVE_UNIFORMS);for(let i=0;i<n;i++){const u=gl.getActiveUniform(p,i);o[u.name]=gl.getUniformLocation(p,u.name)}return o}
+
+// ── SHADERS ──────────────────────────────
+const VS_S=`#version 300 es
+precision highp float;
+layout(location=0)in vec3 aP;layout(location=1)in vec3 aN;layout(location=2)in vec3 aC;
+layout(location=3)in vec3 aE;layout(location=4)in float aG;layout(location=5)in float aT;
+uniform mat4 uP,uV,uM;uniform float uT,uMB;
+out vec3 vW,vN,vC,vE;out float vG,vD;
+void main(){
+  vec4 w=uM*vec4(aP,1);
+  if(aT>2.5&&aT<3.5)w.y+=sin(uT*2.5+w.x*1.7)*.15;
+  vW=w.xyz;vN=normalize(mat3(uM)*aN);
+  vC=aC;vE=aE*(1.+uMB);vG=aG+uMB;
+  vec4 vp=uV*w;vD=length(vp.xyz);gl_Position=uP*vp;
+}`;
+
+const VS_I=`#version 300 es
+precision highp float;
+layout(location=0)in vec3 aP;layout(location=1)in vec3 aN;layout(location=2)in vec3 aC;
+layout(location=3)in vec3 aE;layout(location=4)in float aG;layout(location=5)in float aT;
+layout(location=6)in vec4 iP;layout(location=7)in vec4 iD;layout(location=8)in vec3 iT;
+uniform mat4 uP,uV;uniform float uT;
+out vec3 vW,vN,vC,vE;out float vG,vD;
+mat2 r2(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}
+void main(){
+  float yaw=iD.x,seed=iD.y,gb=iD.z,kind=iD.w;
+  vec3 pos,nrm=aN,wp;
+  if(kind>8.5){
+    vec3 cen=iP.xyz;float or=iP.w,spd=.25+fract(seed*7.3)*.35,ang=uT*spd+seed*6.283;
+    pos=aP;pos.y+=sin(uT*6+seed*8)*abs(pos.x)*.2;
+    vec2 xz=r2(yaw)*pos.xz;pos.x=xz.x;pos.z=xz.y;
+    wp=cen;wp.x+=cos(ang)*or;wp.z+=sin(ang)*or;
+    wp.y+=sin(uT*.8+seed*10)*1.5;wp+=pos;
+  }else{
+    float sc=iP.w;pos=aP*sc;
+    if(kind<1.5){float sw=sin(uT*1.5+seed*20)*.12;pos.xz=r2(sw*aP.y*.4)*pos.xz;}
+    vec2 xz=r2(yaw)*pos.xz;pos.x=xz.x;pos.z=xz.y;
+    vec2 nx=r2(yaw)*nrm.xz;nrm.x=nx.x;nrm.z=nx.y;
+    wp=iP.xyz+pos;
+  }
+  vW=wp;vN=normalize(nrm);vC=aC*iT;vE=aE*(1+gb);vG=aG+gb;
+  vec4 vp=uV*vec4(wp,1);vD=length(vp.xyz);gl_Position=uP*vp;
+}`;
+
+const VS_A=`#version 300 es
+precision highp float;
+layout(location=0)in vec3 aP;layout(location=1)in vec3 aN;layout(location=2)in vec3 aC;
+layout(location=3)in vec3 aE;layout(location=4)in float aG;layout(location=5)in float aT;
+layout(location=6)in vec4 iP;layout(location=7)in vec4 iD;
+uniform mat4 uP,uV;uniform float uT;
+out vec3 vW,vN,vC,vE;out float vG,vD;
+void main(){
+  vec3 pos=aP*iP.w;
+  vec3 wp=iP.xyz+pos;
+  vec3 nrm=aN;
+  vW=wp;vN=normalize(nrm);
+  vC=aC;vE=aE*(1+iD.z);vG=aG+iD.z;
+  vec4 vp=uV*vec4(wp,1);vD=length(vp.xyz);gl_Position=uP*vp;
+}`;
+
+const FS=`#version 300 es
+precision highp float;
+in vec3 vW,vN,vC,vE;in float vG,vD;
+uniform float uT,uFD;
+uniform vec3 uFC,uSO;uniform float uSO_t;
+out vec4 O;
+void main(){
+  vec3 n=normalize(vN);
+  float ndl=max(dot(n,normalize(vec3(.5,.8,.3))),0);
+  vec3 c=vC*(.18+ndl*.72);
+  c+=vE*(.7+.3*sin(uT*2.5+vG*8))*vG;
+  float sd=distance(vW,uSO),sr=uSO_t*30;
+  c+=vec3(.25,.95,1)*exp(-abs(sd-sr)*3.0)*max(0.,1-uSO_t*.6)*(.4+vG*.4);
+  float fog=1.-exp(-uFD*vD*vD*.0006);
+  O=vec4(mix(c,uFC,clamp(fog,0.,1.)),1);
+}`;
+
+const VP=`#version 300 es
+precision highp float;
+layout(location=0)in vec3 aO;layout(location=1)in float aS;layout(location=2)in float aV;
+uniform mat4 uP,uV;uniform vec3 uPP;uniform float uT,uF;
+out float vA;
+void main(){
+  vec3 p=uPP+aO;
+  p.y=uPP.y+mod(aO.y-uT*uF-aS*12,60);
+  p.x+=sin(aS*5+uT*.3)*3;p.z+=cos(aS*7+uT*.2)*3;
+  vec4 vp=uV*vec4(p,1);gl_Position=uP*vp;
+  float d=length(vp.xyz);
+  gl_PointSize=clamp(28/(.3+d)*aV,1.5,7.);vA=clamp(1-d*.008,0.,.8);
+}`;
+
+const FP=`#version 300 es
+precision highp float;in float vA;uniform vec3 uPC;out vec4 O;
+void main(){vec2 u=gl_PointCoord*2.-1.;O=vec4(uPC,exp(-dot(u,u)*3.5)*vA);}`;
+
+// ── Programs ──
+const pS=mkProg(VS_S,FS), pI=mkProg(VS_I,FS), pA=mkProg(VS_A,FS), pP=mkProg(VP,FP);
+const uS=getULocs(pS), uI=getULocs(pI), uA=getULocs(pA), uP=getULocs(pP);
+
+gl.enable(gl.DEPTH_TEST);gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK);
+gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+gl.clearColor(.015,.01,.035,1);
+
+// ═══════════════════════════════════════════════
+//  GEOMETRY BUILDERS
+// ═══════════════════════════════════════════════
+const ST=14;
+function pv(a,px,py,pz,nx,ny,nz,cr,cg,cb,er,eg,eb,gl_,tg){
+  a.push(px,py,pz,nx,ny,nz,cr,cg,cb,er,eg,eb,gl_,tg);
+}
+function mkMesh(verts,idx){
+  const vao=gl.createVertexArray();gl.bindVertexArray(vao);
+  const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(verts),gl.STATIC_DRAW);
+  const ib=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint32Array(idx),gl.STATIC_DRAW);
+  const s=ST*4;
+  for(let i=0;i<6;i++){
+    const sz=i<4?3:1,off=[0,12,24,36,48,52][i];
+    gl.enableVertexAttribArray(i);gl.vertexAttribPointer(i,sz,gl.FLOAT,false,s,off);
+  }
+  gl.bindVertexArray(null);
+  return{vao,count:idx.length};
+}
+function addInst(mesh,data){
+  gl.bindVertexArray(mesh.vao);
+  const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);
+  const s=44;
+  gl.enableVertexAttribArray(6);gl.vertexAttribPointer(6,4,gl.FLOAT,false,s,0);gl.vertexAttribDivisor(6,1);
+  gl.enableVertexAttribArray(7);gl.vertexAttribPointer(7,4,gl.FLOAT,false,s,16);gl.vertexAttribDivisor(7,1);
+  gl.enableVertexAttribArray(8);gl.vertexAttribPointer(8,3,gl.FLOAT,false,s,32);gl.vertexAttribDivisor(8,1);
+  gl.bindVertexArray(null);
+  return{...mesh,ic:data.length/11};
+}
+function addInstA(mesh,data){
+  gl.bindVertexArray(mesh.vao);
+  const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);
+  const s=32;
+  gl.enableVertexAttribArray(6);gl.vertexAttribPointer(6,4,gl.FLOAT,false,s,0);gl.vertexAttribDivisor(6,1);
+  gl.enableVertexAttribArray(7);gl.vertexAttribPointer(7,4,gl.FLOAT,false,s,16);gl.vertexAttribDivisor(7,1);
+  gl.bindVertexArray(null);
+  return{...mesh,ic:data.length/8};
+}
+
+function octMesh(col,emi,gl_,tg,scale){
+  const V=[],I=[];
+  const pts=[[0,1,0],[0,-1,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]];
+  const fc=[[0,2,4],[0,4,3],[0,3,5],[0,5,2],[1,4,2],[1,3,4],[1,5,3],[1,2,5]];
+  let vi=0;
+  for(const f of fc){
+    const a=pts[f[0]],b=pts[f[1]],c=pts[f[2]];
+    let ux=b[0]-a[0],uy=b[1]-a[1],uz=b[2]-a[2],
+        vx=c[0]-a[0],vy=c[1]-a[1],vz=c[2]-a[2];
+    let nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
+    const nl=sqrt(nx*nx+ny*ny+nz*nz)||1;nx/=nl;ny/=nl;nz/=nl;
+    for(const p of[a,b,c])pv(V,p[0]*scale,p[1]*scale,p[2]*scale,nx,ny,nz,...col,...emi,gl_,tg);
+    I.push(vi,vi+1,vi+2);vi+=3;
+  }
+  return mkMesh(V,I);
+}
+
+// ═══════════════════════════════════════════════
+//  TERRAIN
+// ═══════════════════════════════════════════════
+const terrain=(()=>{
+  const V=[],I=[],half=T_SIZE/2,N=floor(T_SIZE/T_STEP),row=N+1;
+  const H=[];
+  for(let iz=0;iz<=N;iz++){H[iz]=[];for(let ix=0;ix<=N;ix++)H[iz][ix]=heightAt(-half+ix*T_STEP,-half+iz*T_STEP)}
+  for(let iz=0;iz<=N;iz++)for(let ix=0;ix<=N;ix++){
+    const x=-half+ix*T_STEP,z=-half+iz*T_STEP,h=H[iz][ix];
+    const hl=ix>0?H[iz][ix-1]:h, hr=ix<N?H[iz][ix+1]:h, hd=iz>0?H[iz-1][ix]:h, hu=iz<N?H[iz+1][ix]:h;
+    let nx=hl-hr,ny=2*T_STEP,nz=hd-hu;const nl=sqrt(nx*nx+ny*ny+nz*nz);nx/=nl;ny/=nl;nz/=nl;
+    const b=biomeCol(biomeAt(x,z));
+    pv(V,x,h,z,nx,ny,nz,...b.c,...b.e,b.g,0);
+  }
+  for(let iz=0;iz<N;iz++)for(let ix=0;ix<N;ix++){
+    const a=iz*row+ix;I.push(a,a+row,a+1,a+1,a+row,a+row+1);
+  }
+  return mkMesh(V,I);
+})();
+
+// ═══════════════════════════════════════════════
+//  CRYSTAL GEO (instanced)
+// ═══════════════════════════════════════════════
+const crystalGeo=octMesh([.12,.8,1],[.03,.25,.4],1.8,2,1);
+
+// ═══════════════════════════════════════════════
+//  MUSHROOM / VEGETATION GEO
+// ═══════════════════════════════════════════════
+const mushGeo=(()=>{
+  const V=[],I=[];let vi=0;
+  const seg=8,sH=1.4,sR=.08,capR=.45;
+  const sC=[.72,.85,.95],sE=[0,.05,.1],cC=[.85,.25,.8],cE=[.2,.02,.18];
+  for(let i=0;i<seg;i++){
+    const a1=TAU*i/seg,a2=TAU*(i+1)/seg;
+    const x1=cos(a1)*sR,z1=sin(a1)*sR,x2=cos(a2)*sR,z2=sin(a2)*sR;
+    const n1x=cos(a1),n1z=sin(a1),n2x=cos(a2),n2z=sin(a2);
+    pv(V,x1,0,z1,n1x,0,n1z,...sC,...sE,.15,1);
+    pv(V,x2,0,z2,n2x,0,n2z,...sC,...sE,.15,1);
+    pv(V,x1,sH,z1,n1x,0,n1z,...sC,...sE,.15,1);
+    pv(V,x2,sH,z2,n2x,0,n2z,...sC,...sE,.15,1);
+    I.push(vi,vi+2,vi+1,vi+1,vi+2,vi+3);vi+=4;
+  }
+  const capSeg=5,lat=3;
+  for(let i=0;i<lat;i++){
+    const th1=PI/2*i/lat,th2=PI/2*(i+1)/lat;
+    const r1=capR*sin(th1),r2=capR*sin(th2);
+    const y1=sH+capR*cos(th1),y2=sH+capR*cos(th2);
+    for(let j=0;j<capSeg;j++){
+      const ph=TAU*j/capSeg;
+      const x1=r1*cos(ph),z1=r1*sin(ph);
+      const x2=r2*cos(ph),z2=r2*sin(ph);
+      const nx1=cos(ph)*sin(th1),ny1=cos(th1),nz1=sin(ph)*sin(th1);
+      const nx2=cos(ph)*sin(th2),ny2=cos(th2),nz2=sin(ph)*sin(th2);
+      pv(V,x1,y1,z1,nx1,ny1,nz1,...cC,...cE,.9,2);
+      pv(V,x2,y2,z2,nx2,ny2,nz2,...cC,...cE,.9,2);
+    }
+    for(let j=0;j<capSeg;j++){
+      const a=i*capSeg*2+j*2,b=((i+1)*capSeg*2+j*2)%(lat*capSeg*2);
+      I.push(a,b,a+1,b,a+1,b+1);
+    }
+  }
+  return mkMesh(V,I);
+})();
+
+// ═══════════════════════════════════════════════
+//  RUIN GEO (instanced)
+// ═══════════════════════════════════════════════
+const ruinGeo=(()=>{
+  const V=[],I=[];let vi=0;
+  const bC=[.12,.08,.14],bE=[0,0,0];
+  function box(x,y,z,w,h,d){
+    const x0=x-w/2,x1=x+w/2,y0=y-h/2,y1=y+h/2,z0=z-d/2,z1=z+d/2;
+    const f=[[x0,y0,z1,x1,y0,z1,x1,y1,z1,x0,y1,z1,0,0,1],[x1,y0,z0,x0,y0,z0,x0,y1,z0,x1,y1,z0,0,0,-1],
+      [x0,y1,z1,x1,y1,z1,x1,y1,z0,x0,y1,z0,0,1,0],[x0,y0,z0,x1,y0,z0,x1,y0,z1,x0,y0,z1,0,-1,0],
+      [x1,y0,z1,x1,y0,z0,x1,y1,z0,x1,y1,z1,1,0,0],[x0,y0,z0,x0,y0,z1,x0,y1,z1,x0,y1,z0,-1,0,0]];
+    for(const q of f){
+      const nx=q[12],ny=q[13],nz=q[14];
+      for(let k=0;k<4;k++)pv(V,q[k*3],q[k*3+1],q[k*3+2],nx,ny,nz,...bC,...bE,0,0);
+      I.push(vi,vi+1,vi+2,vi,vi+2,vi+3);vi+=4;
+    }
+  }
+  box(0,1.5,0,4,3,4);
+  box(0,4.5,0,1.2,3,1.2);
+  box(-1.8,4.5,0,.4,2.5,.4);box(1.8,4.5,0,.4,2.5,.4);
+  box(0,6.5,0,2.5,.5,1.5);
+  // glowing rune
+  const gC=[0,.6,.8],gE=[0,.8,1];
+  box(0,4.5,.65,1,.8,.1);
+  return mkMesh(V,I);
+})();
+
+// ═══════════════════════════════════════════════
+//  CAVE ROOF / CHASM WALLS
+// ═══════════════════════════════════════════════
+const caveGeo=(()=>{
+  const V=[],I=[];let vi=0;
+  function quad(x1,y1,z1,x2,y2,z2,x3,y3,z3,x4,y4,z4,nx,ny,nz,col,emi,gl_,tg){
+    pv(V,x1,y1,z1,nx,ny,nz,...col,...emi,gl_,tg);
+    pv(V,x2,y2,z2,nx,ny,nz,...col,...emi,gl_,tg);
+    pv(V,x3,y3,z3,nx,ny,nz,...col,...emi,gl_,tg);
+    pv(V,x4,y4,z4,nx,ny,nz,...col,...emi,gl_,tg);
+    I.push(vi,vi+1,vi+2,vi,vi+2,vi+3);vi+=4;
+  }
+  // cave roofs
+  for(const c of CAVES){
+    const seg=16;
+    for(let i=0;i<seg;i++){
+      const a1=TAU*i/seg,a2=TAU*(i+1)/seg;
+      const y1=heightAt(c.x+cos(a1)*c.r*.9,c.z+sin(a1)*c.r*.9)+c.d*.3;
+      const y2=heightAt(c.x+cos(a2)*c.r*.9,c.z+sin(a2)*c.r*.9)+c.d*.3;
+      const yC=heightAt(c.x,c.z)+c.d*.7;
+      quad(c.x+cos(a1)*c.r,c.y1,c.z+sin(a1)*c.r,
+           c.x+cos(a2)*c.r,c.y2,c.z+sin(a2)*c.r,
+           c.x,c.yC,c.z,
+           c.x,c.yC,c.z, 0,-1,0, [.03,.04,.08],[0,.02,.04],.2,0);
+    }
+    // crystals inside
+    for(let k=0;k<5;k++){
+      const aa=random()*TAU,rr=c.r*random()*.6;
+      const cx=c.x+cos(aa)*rr,cz=c.z+sin(aa)*rr,cy=heightAt(cx,cz)+c.d*random()*.5+1;
+      // will be instanced separately
+    }
+  }
+  // chasm walls
+  for(const c of CHASMS){
+    const seg=24;
+    for(let i=0;i<seg;i++){
+      const a1=TAU*i/seg,a2=TAU*(i+1)/seg;
+      const z1=c.z+sin(a1)*c.w/2,z2=c.z+sin(a2)*c.w/2;
+      const y1=heightAt(c.x,c.z)+c.d,y2=y1;
+      quad(c.x-c.w/2,0,z1,c.x+c.w/2,0,z2,c.x+c.w/2,c.d,z2,c.x-c.w/2,c.d,z1,0,-1,0,[.08,.02,.15],[.15,0,.1],.6,3);
+      quad(c.x-c.w/2,c.d,z1,c.x-c.w/2,0,z1,c.x-c.w/2,0,z2,c.x-c.w/2,c.d,z2,-1,0,0,[.08,.02,.15],[.15,0,.1],.6,3);
+      quad(c.x+c.w/2,0,z1,c.x+c.w/2,c.d,z1,c.x+c.w/2,c.d,z2,c.x+c.w/2,0,z2,1,0,0,[.08,.02,.15],[.15,0,.1],.6,3);
+    }
+  }
+  return mkMesh(V,I);
+})();
+
+// ═══════════════════════════════════════════════
+//  CREATURE GEO
+// ═══════════════════════════════════════════════
+const creatureGeo=(()=>{
+  const V=[],I=[];let vi=0;
+  // jelly body
+  const lat=6,lon=8;
+  for(let i=0;i<=lat;i++){
+    const th=i*PI/lat,st=sin(th),ct=cos(th);
+    for(let j=0;j<=lon;j++){
+      const ph=TAU*j/lon;
+      const x=cos(ph)*st,y=ct,z=sin(ph)*st;
+      pv(V,x*.5,y*.7,z*.5,x,y,z,.3,.9,.7,0,0,0,.2,4);
+    }
+  }
+  for(let i=0;i<lat;i++)for(let j=0;j<lon;j++){
+    const a=i*(lon+1)+j;
+    I.push(a,a+lon+1,a+1,a+1,a+lon+1,a+lon+2);
+  }
+  // tendrils
+  for(let t=0;t<6;t++){
+    const aa=TAU*t/6;
+    for(let s=0;s<4;s++){
+      pv(V,cos(aa)*.3,-.3+s*-.4,sin(aa)*.3,0,-1,0,.1,.7,.6,0,0,0,.1,4);
+    }
+  }
+  return mkMesh(V,I);
+})();
+
+// ═══════════════════════════════════════════════
+//  ARTIFACT GEO
+// ═══════════════════════════════════════════════
+const artifactGeo=(()=>{
+  const V=[],I=[];let vi=0;
+  // double tetrahedron
+  const pts=[[0,1.2,0],[.7,0,0],[-.35,0,.6],[-.35,0,-.6],[0,-1.2,0]];
+  const fc=[[0,1,2],[0,2,3],[0,3,1],[4,2,1],[4,3,2],[4,1,3]];
+  for(const f of fc){
+    const a=pts[f[0]],b=pts[f[1]],c=pts[f[2]];
+    let ux=b[0]-a[0],uy=b[1]-a[1],uz=b[2]-a[2],
+        vx=c[0]-a[0],vy=c[1]-a[1],vz=c[2]-a[2];
+    let nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
+    const nl=sqrt(nx*nx+ny*ny+nz*nz)||1;nx/=nl;ny/=nl;nz/=nl;
+    for(const p of[a,b,c])pv(V,p[0],p[1],p[2],nx,ny,nz,1,.9,.1,1,.8,.1,3.5,5);
+    I.push(vi,vi+1,vi+2);vi+=3;
+  }
+  return mkMesh(V,I);
+})();
+
+// ═══════════════════════════════════════════════
+//  WORLD INSTANCING DATA
+// ═══════════════════════════════════════════════
+// Crystals
+const crystalData=[];
+for(let i=0;i<280;i++){
+  const bx=(random()-0.5)*280,bz=(random()-0.5)*280;
+  if(hypot(bx,bz)<20)continue;
+  const by=heightAt(bx,bz)+2+random()*12;
+  crystalData.push(bx,bz,by,random()*TAU,random()*.5+.5,0,0,0,0,0,0);
+}
+const crystalInst=addInst(crystalGeo,crystalData);
+
+// Mushrooms
+const mushData=[];
+for(let i=0;i<420;i++){
+  const bx=(random()-0.5)*280,bz=(random()-0.5)*280;
+  if(hypot(bx,bz)<15)continue;
+  const by=heightAt(bx,bz);
+  if(by<-6)continue;
+  mushData.push(bx,bz,by,random()>.35?1:0,0,0,0,0,0,0,0);
+}
+const mushInst=addInst(mushGeo,mushData);
+
+// Ruins
+const ruinData=[];
+for(const r of RUINS){
+  for(let i=0;i<r.n;i++){
+    const aa=r.yaw+TAU*i/r.n,rr=r.rr*random()*.8;
+    const bx=r.x+cos(aa)*rr,bz=r.z+sin(aa)*rr,by=heightAt(bx,bz);
+    ruinData.push(bx,bz,by,r.yaw,1,0,0,0,0,0,0);
+  }
+}
+const ruinInst=addInst(ruinGeo,ruinData);
+
+// Cave crystals
+const caveCrystalData=[];
+for(const c of CAVES){
+  for(let k=0;k<5;k++){
+    const aa=random()*TAU,rr=c.r*random()*.6;
+    const cx=c.x+cos(aa)*rr,cz=c.z+sin(aa)*rr,cy=heightAt(cx,cz)+c.d*random()*.5+1;
+    caveCrystalData.push(cx,cz,cy,random()*TAU,random()*.5+.5,0,0,0,0,0,0);
+  }
+}
+const caveCrystalInst=addInst(crystalGeo,caveCrystalData);
+
+// Chasm crystals
+const chasmCrystalData=[];
+for(const c of CHASMS){
+  for(let k=0;k<8;k++){
+    const aa=random()*TAU,rr=c.w*random()*.4;
+    const cx=c.x+cos(aa)*rr,cz=c.z+sin(aa)*rr,cy=heightAt(cx,cz)+c.d*random()*random();
+    chasmCrystalData.push(cx,cz,cy,random()*TAU,random()*.5+.5,0,0,0,0,0,0);
+  }
+}
+const chasmCrystalInst=addInst(crystalGeo,chasmCrystalData);
+
+// Creatures
+const creatures=[];
+for(let i=0;i<CREATURE_N;i++){
+  const type=random()>.6?'drift':'flit';
+  creatures.push({
+    bx:(random()-0.5)*200,bz:(random()-0.5)*200,
+    by:0,phase:random()*TAU,speed:.25+random()*.35,
+    type,wing:random()*TAU,height:3+random()*5
+  });
+}
+
+// Artifacts
+const artifacts=[];
+for(let i=0;i<ARTIFACT_N;i++){
+  const aa=TAU*i/ARTIFACT_N,rr=40+random()*100;
+  const bx=cos(aa)*rr,bz=sin(aa)*rr,by=heightAt(bx,bz)+2;
+  artifacts.push({bx,by,bz,collected:false,scan:0,rot:random()*TAU,pulse:random()*100,revealed:false});
+}
+
+// Weather particles
+const partData=[];
+for(let i=0;i<N_PART;i++){
+  partData.push((random()-0.5)*300,random()*80,(random()-0.5)*300,random()*.02,random()*TAU);
+}
+const partMesh=(()=>{
+  const V=[];for(let i=0;i<N_PART;i++)V.push(0,0,0,0,0,0,0,0,0,0,0,0,0,0);
+  return mkMesh(V,new Uint32Array(N_PART).fill(0));
+})();
+
+// ═══════════════════════════════════════════════
+//  AUDIO
+// ═══════════════════════════════════════════════
+let audioCtx=null;
+function initAudio(){
+  if(audioCtx)return;
+  const AC=new (window.AudioContext||window.webkitAudioContext)();audioCtx=AC;
+  // ambient drone
+  const osc=AC.createOscillator();osc.type='sawtooth';osc.frequency.value=45;
+  const gain=AC.createGain();gain.gain.value=0.025;
+  const filt=AC.createBiquadFilter();filt.type='lowpass';filt.frequency.value=200;
+  osc.connect(filt);filt.connect(gain);gain.connect(AC.destination);osc.start();
+  // modulate
+  setInterval(()=>{if(AC){gain.gain.value=.02+random()*.02;filt.frequency.value=150+random()*100}},3000);
+}
+function playTone(freq,dur,type='sine',vol=.08){
+  if(!audioCtx)return;
+  const o=audioCtx.createOscillator();o.type=type;o.frequency.value=freq;
+  const g=audioCtx.createGain();g.gain.value=vol;
+  o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playCollect(){[261,329,392,523,659].forEach((f,i)=>setTimeout(()=>playTone(f,.6,'triangle',.07),i*70))}
+function playScan(){playTone(180,.15,'square',.05);playTone(360,.15,'square',.03)}
+function playHaptic(source){
+  if(source.gamepad&&source.gamepad.hapticActuators&&source.gamepad.hapticActuators[0])
+    source.gamepad.hapticActuators[0].pulse(0.6,80);
+}
+
+// ═══════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════
+let xrSession=null,xrRefSpace=null,xrFrame=null;
+let worldOffset=[0,0,0],yaw=0,pitch=0;
+let keys={},mouseLocked=false;
+let lastTime=0,gameTime=0;
+let scanProgress=0,scanCooldown=0;
+let artifactCount=0;
+let heldArtifact=null,gripSource=null;
+let scanRingAnim=0;
+
+// ═══════════════════════════════════════════════
+//  INTERACTION LOGIC
+// ═══════════════════════════════════════════════
+function updateInteractions(dt,frame){
+  // Scan pulse
+  if(scanCooldown>0)scanCooldown-=dt;
+  const scanPressed = xrSession 
+    ? (xrFrame && [...xrSession.inputSources].some(s=>s.handedness==='right'&&s.gamepad?.buttons[1]?.pressed))
+    : keys[' '];
+  
+  if(scanPressed && scanCooldown<=0){
+    scanProgress=1;scanCooldown=1.5;playScan();
+    // Reveal nearby artifacts
+    const px=-worldOffset[0],pz=-worldOffset[2];
+    artifacts.forEach(a=>{
+      if(!a.collected && !a.revealed && hypot(a.bx-px,a.bz-pz)<50)a.revealed=true;
+    });
+  }
+  scanProgress=max(0,scanProgress-dt*3);
+
+  // Grip / grab
+  const gripPressed = xrSession
+    ? [...xrSession.inputSources].find(s=>s.handedness==='right'&&s.gamepad?.buttons[2]?.pressed)
+    : keys['shift'];
+  
+  if(xrSession && frame){
+    for(const source of xrSession.inputSources){
+      if(source.handedness!=='right')continue;
+      const gp=source.gamepad;
+      const pose=frame.getPose(source.targetRaySpace,xrRefSpace);
+      if(!pose)continue;
+      const m=pose.transform.matrix;
+      const origin=[m[12],m[13],m[14]];
+      const dir=transformDir(m,[0,0,-1]);
+      
+      // Trigger pressed - try grab
+      const trigger=gp?.buttons[0]?.pressed;
+      
+      if(trigger && !heldArtifact){
+        for(const a of artifacts){
+          if(a.collected)continue;
+          const dx=a.bx-origin[0],dy=a.by-origin[1],dz=a.bz-origin[2];
+          const dist=hypot(dx,dy,dz);
+          if(dist<GRAB_R){
+            const proj=dx*dir[0]+dy*dir[1]+dz*dir[2];
+            if(proj>0){
+              const cx=origin[0]+dir[0]*proj,cy=origin[1]+dir[1]*proj,cz=origin[2]+dir[2]*proj;
+              if(hypot(a.bx-cx,a.by-cy,a.bz-cz)<0.25){
+                heldArtifact=a;gripSource=source;playHaptic(source);break;
+              }
+            }
+          }
+        }
+      }
+      
+      // Holding artifact - move with controller
+      if(heldArtifact){
+        heldArtifact.bx=origin[0]+dir[0]*0.6;
+        heldArtifact.by=origin[1]+dir[1]*0.6-0.1;
+        heldArtifact.bz=origin[2]+dir[2]*0.6;
+        heldArtifact.rot+=dt*2;
+        
+        // Check collection (bring to head)
+        const headPose=frame.getViewerPose(xrRefSpace);
+        if(headPose){
+          const head=headPose.views[0].transform.matrix;
+          const hx=head[12],hy=head[13],hz=head[14];
+          if(hypot(heldArtifact.bx-hx,heldArtifact.by-hy,heldArtifact.bz-hz)<COLLECT_R){
+            heldArtifact.collected=true;artifactCount++;
+            document.getElementById('hAc').textContent=artifactCount;
+            playCollect();
+            if(artifactCount===ARTIFACT_N)flashMessage("ALL FRAGMENTS RESTORED — CORE RECONNECTED");
+            heldArtifact=null;gripSource=null;
+          }
+        }
+      }
+      
+      // Release
+      if(!trigger && heldArtifact && gripSource===source){
+        heldArtifact=null;gripSource=null;
+      }
+    }
+  }
+  
+  // Desktop fallback
+  if(!xrSession){
+    if(keys['Click'] && !heldArtifact){
+      const dir=[-sin(yaw)*cos(pitch),sin(pitch),-cos(yaw)*cos(pitch)];
+      const ox=-worldOffset[0],oy=EYE_H,oz=-worldOffset[2];
+      for(const a of artifacts){
+        if(a.collected)continue;
+        const dx=a.bx-ox,dy=a.by-oy,dz=a.bz-oz;
+        const proj=dx*dir[0]+dy*dir[1]+dz*dir[2];
+        if(proj>0 && proj<GRAB_R){
+          const cx=ox+dir[0]*proj,cy=oy+dir[1]*proj,cz=oz+dir[2]*proj;
+          if(hypot(a.bx-cx,a.by-cy,a.bz-cz)<0.25){
+            heldArtifact=a;break;
+          }
+        }
+      }
+    }
+    if(heldArtifact){
+      const dir=[-sin(yaw)*cos(pitch),sin(pitch),-cos(yaw)*cos(pitch)];
+      const ox=-worldOffset[0],oy=EYE_H,oz=-worldOffset[2];
+      heldArtifact.bx=ox+dir[0]*0.6;
+      heldArtifact.by=oy+dir[1]*0.6-0.1;
+      heldArtifact.bz=oz+dir[2]*0.6;
+      heldArtifact.rot+=dt*2;
+      if(hypot(heldArtifact.bx-ox,heldArtifact.by-oy,heldArtifact.bz-oz)<COLLECT_R){
+        heldArtifact.collected=true;artifactCount++;
+        document.getElementById('hAc').textContent=artifactCount;
+        playCollect();
+        if(artifactCount===ARTIFACT_N)flashMessage("ALL FRAGMENTS RESTORED — CORE RECONNECTED");
+        heldArtifact=null;
+      }
+    }
+    if(!keys['Click'])heldArtifact=null;
+  }
+}
+
+// ═══════════════════════════════════════════════
+//  UPDATE LOGIC
+// ═══════════════════════════════════════════════
+function updateLogic(dt,frame){
+  gameTime+=dt;
+  
+  // Movement
+  let moveX=0,moveZ=0,turn=0,boost=false;
+  
+  if(xrSession){
+    for(const s of xrSession.inputSources){
+      if(!s.gamepad)continue;
+      if(s.handedness==='left'){
+        moveX=s.gamepad.axes[2]||s.gamepad.axes[0]||0;
+        moveZ=s.gamepad.axes[3]||s.gamepad.axes[1]||0;
+        boost=s.gamepad.buttons[2]?.pressed;
+      }else if(s.handedness==='right'){
+        turn=-(s.gamepad.axes[2]||s.gamepad.axes[0]||0)*1.2;
+      }
+    }
+  }else{
+    if(keys['w']||keys['ArrowUp'])moveZ=-1;
+    if(keys['s']||keys['ArrowDown'])moveZ=1;
+    if(keys['a']||keys['ArrowLeft'])moveX=-1;
+    if(keys['d']||keys['ArrowRight'])moveX=1;
+    boost=keys['shift'];
+  }
+  
+  yaw+=turn*dt;
+  const spd=boost?BOOST_SPD:SPD;
+  const cs=cos(yaw),sn=sin(yaw);
+  worldOffset[0]-=(moveX*cs+moveZ*sn)*spd*dt;
+  worldOffset[2]-=(moveZ*cs-moveX*sn)*spd*dt;
+  
+  // Clamp to world bounds
+  const px=-worldOffset[0],pz=-worldOffset[2];
+  const maxR=W_RAD-5;
+  const d=hypot(px,pz);
+  if(d>maxR){worldOffset[0]*=maxR/d;worldOffset[2]*=maxR/d}
+  
+  // Height follow
+  const groundY=heightAt(px,pz);
+  worldOffset[1]=lerp(worldOffset[1],-(groundY+EYE_H),dt*8);
+  
+  // Update HUD
+  document.getElementById('hBm').textContent=biomeAt(px,pz).toUpperCase();
+  document.getElementById('hScan').textContent=scanProgress>.1?`SCAN ACTIVE — ${(scanProgress*100|0)}%`:`◆ Press scan to ping`;
+  document.getElementById('hScan').style.opacity=scanProgress>.1?'1':'0.4';
+  
+  // Update creatures
+  for(const c of creatures){
+    c.phase+=c.speed*dt;
+    c.wing+=dt*8;
+    if(c.type==='drift'){
+      c.bx+=cos(c.phase)*.02;c.bz+=sin(c.phase)*.02;
+      c.by=heightAt(c.bx,c.bz)+c.height+sin(c.phase*1.5)*1.5;
+    }else{
+      c.bx+=cos(c.phase)*.05;c.bz+=sin(c.phase)*.05;
+      c.by=heightAt(c.bx,c.bz)+c.height+sin(c.wing)*2;
+    }
+  }
+  
+  // Update artifacts
+  for(const a of artifacts){
+    if(a.collected)continue;
+    a.rot+=dt*0.8;
+    a.pulse+=dt*3;
+    if(a.revealed)a.scan=min(1,a.scan+dt*0.5);
+    else a.scan=max(0,a.scan-dt*0.3);
+  }
+  
+  // Scan ring animation
+  if(scanProgress>0)scanRingAnim=1;
+  scanRingAnim*=0.95;
+  
+  updateInteractions(dt,frame);
+}
+
+// ═══════════════════════════════════════════════
+//  RENDERING
+// ═══════════════════════════════════════════════
+function drawScene(view,proj,eye){
+  const time=gameTime;
+  const fogCol=biomeCol(biomeAt(-worldOffset[0],-worldOffset[2])).c;
+  
+  // ── World Static ──
+  gl.useProgram(pS);
+  gl.uniform3fv(uS.uWorldOffset,worldOffset);
+  gl.uniform1f(uS.uTime,time);
+  gl.uniform1f(uS.uMB,0);
+  gl.uniform3fv(uS.uEye,eye);
+  gl.uniform3fv(uS.uLightDir,[.5,.8,.3]);
+  gl.uniform1f(uS.uFD,.03);
+  gl.uniform3fv(uS.uFC,fogCol);
+  gl.uniform3fv(uS.uSO,[-worldOffset[0],eye[1],-worldOffset[2]]);
+  gl.uniform1f(uS.uSO_t,scanProgress);
+  gl.uniformMatrix4fv(uS.uP,false,proj);
+  gl.uniformMatrix4fv(uS.uV,false,view);
+  gl.uniformMatrix4fv(uS.uM,false,Mat4.identity(Mat4.create()));
+  
+  gl.bindVertexArray(terrain.vao);
+  gl.drawElements(gl.TRIANGLES,terrain.count,gl.UNSIGNED_INT,0);
+  
+  gl.bindVertexArray(caveGeo.vao);
+  gl.drawElements(gl.TRIANGLES,caveGeo.count,gl.UNSIGNED_INT,0);
+  
+  // ── Instanced World Objects ──
+  gl.useProgram(pI);
+  gl.uniform3fv(uI.uEye,eye);
+  gl.uniform3fv(uI.uLightDir,[.5,.8,.3]);
+  gl.uniform1f(uI.uFD,.03);
+  gl.uniform3fv(uI.uFC,fogCol);
+  gl.uniform3fv(uI.uSO,[-worldOffset[0],eye[1],-worldOffset[2]]);
+  gl.uniform1f(uI.uSO_t,scanProgress);
+  gl.uniformMatrix4fv(uI.uP,false,proj);
+  gl.uniformMatrix4fv(uI.uV,false,view);
+  gl.uniform1f(uI.uTime,time);
+  
+  // Crystals
+  gl.bindVertexArray(crystalGeo.vao);
+  gl.drawElementsInstanced(gl.TRIANGLES,crystalGeo.count,gl.UNSIGNED_INT,0,crystalInst.ic);
+  gl.drawElementsInstanced(gl.TRIANGLES,crystalGeo.count,gl.UNSIGNED_INT,0,caveCrystalInst.ic);
+  gl.drawElementsInstanced(gl.TRIANGLES,crystalGeo.count,gl.UNSIGNED_INT,0,chasmCrystalInst.ic);
+  
+  // Mushrooms
+  gl.bindVertexArray(mushGeo.vao);
+  gl.drawElementsInstanced(gl.TRIANGLES,mushGeo.count,gl.UNSIGNED_INT,0,mushInst.ic);
+  
+  // Ruins
+  gl.bindVertexArray(ruinGeo.vao);
+  gl.drawElementsInstanced(gl.TRIANGLES,ruinGeo.count,gl.UNSIGNED_INT,0,ruinInst.ic);
+  
+  // ── Artifacts ──
+  gl.useProgram(pA);
+  gl.uniform3fv(uA.uEye,eye);
+  gl.uniform3fv(uA.uLightDir,[.5,.8,.3]);
+  gl.uniform1f(uA.uFD,.03);
+  gl.uniform3fv(uA.uFC,fogCol);
+  gl.uniform3fv(uA.uSO,[-worldOffset[0],eye[1],-worldOffset[2]]);
+  gl.uniform1f(uA.uSO_t,scanProgress);
+  gl.uniformMatrix4fv(uA.uP,false,proj);
+  gl.uniformMatrix4fv(uA.uV,false,view);
+  gl.uniform1f(uA.uTime,time);
+  
+  gl.bindVertexArray(artifactGeo.vao);
+  for(const a of artifacts){
+    if(a.collected)continue;
+    const M=Mat4.create();
+    Mat4.translate(M,M,[a.bx,a.by+sin(a.pulse)*.15,a.bz]);
+    Mat4.rotateY(M,M,a.rot);
+    Mat4.rotateX(M,M,a.rot*.5);
+    if(a.scan>0||a===heldArtifact){
+      const s=1+a.scan*.4+(a===heldArtifact?.2:0);
+      Mat4.scale(M,M,[s,s,s]);
+    }
+    // Instance data: pos(4) + data(4) + tint(3) - we use uniform model matrix instead
+    gl.uniformMatrix4fv(uA.uM,false,M);
+    // Tint via vertex color multiplier
+    const tintLoc=gl.getUniformLocation(pA,'uTint')||{current:null};
+    gl.drawElements(gl.TRIANGLES,artifactGeo.count,gl.UNSIGNED_INT,0);
+  }
+  
+  // ── Creatures ──
+  gl.useProgram(pI);
+  gl.uniform3fv(uI.uEye,eye);
+  gl.uniform3fv(uI.uLightDir,[.5,.8,.3]);
+  gl.uniform1f(uI.uFD,.03);
+  gl.uniform3fv(uI.uFC,fogCol);
+  gl.uniform3fv(uI.uSO,[-worldOffset[0],eye[1],-worldOffset[2]]);
+  gl.uniform1f(uI.uSO_t,scanProgress);
+  gl.uniformMatrix4fv(uI.uP,false,proj);
+  gl.uniformMatrix4fv(uI.uV,false,view);
+  gl.uniform1f(uI.uTime,time);
+  
+  gl.bindVertexArray(creatureGeo.vao);
+  for(const c of creatures){
+    const M=Mat4.create();
+    Mat4.translate(M,M,[c.bx,c.by,c.bz]);
+    if(c.type==='drift'){
+      Mat4.rotateY(M,M,c.phase);
+      Mat4.scale(M,M,[.8,1,.8]);
+    }else{
+      Mat4.rotateY(M,M,c.phase);
+      Mat4.rotateX(M,M,sin(c.wing)*.3);
+      Mat4.scale(M,M,[.5,.7,.5]);
+    }
+    gl.uniformMatrix4fv(uI.uM,false,M);
+    // Use tint via vertex attrib - simplified
+    gl.drawElements(gl.TRIANGLES,creatureGeo.count,gl.UNSIGNED_INT,0);
+  }
+  
+  // ── Weather ──
+  gl.useProgram(pP);
+  gl.uniformMatrix4fv(uP.uP,false,proj);
+  gl.uniformMatrix4fv(uP.uV,false,view);
+  gl.uniform3fv(uP.uPP,[-worldOffset[0],-worldOffset[1],-worldOffset[2]]);
+  gl.uniform1f(uP.uTime,time);
+  gl.uniform1f(uP.uF,.8);
+  gl.uniform3fv(uP.uPC,[.3,.95,1]);
+  gl.bindVertexArray(partMesh.vao);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE);
+  gl.depthMask(false);
+  gl.drawArrays(gl.POINTS,0,N_PART);
+  gl.depthMask(true);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  
+  // Scan ring (post)
+  if(scanRingAnim>.01){
+    gl.useProgram(pS);
+    const M=Mat4.create();
+    Mat4.translate(M,M,[-worldOffset[0],eye[1]-0.5,-worldOffset[2]]);
+    Mat4.scale(M,M,[scanRingAnim*30,1,scanRingAnim*30]);
+    gl.uniformMatrix4fv(uS.uM,false,M);
+    // Draw ring as simple geometry
+  }
+}
+
+// ═══════════════════════════════════════════════
+//  XR FRAME LOOP
+// ═══════════════════════════════════════════════
+function onXRFrame(time,frame){
+  xrFrame=frame;
+  if(!lastTime)lastTime=time;
+  const dt=min((time-lastTime)/1000,1/30);
+  lastTime=time;
+  
+  updateLogic(dt,frame);
+  
+  const session=frame.session;
+  const pose=frame.getViewerPose(xrRefSpace);
+  const baseLayer=session.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER,baseLayer.framebuffer);
+  gl.clearColor(.015,.01,.035,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  
+  if(pose){
+    for(const view of pose.views){
+      const vp=baseLayer.getViewport(view);
+      gl.viewport(vp.x,vp.y,vp.width,vp.height);
+      const viewMat=Mat4.create();Mat4.invert(viewMat,view.transform.matrix);
+      const proj=view.projectionMatrix;
+      const invView=Mat4.create();Mat4.invert(invView,viewMat);
+      const eye=[invView[12],invView[13],invView[14]];
+      drawScene(viewMat,proj,eye);
+    }
+  }
+  session.requestAnimationFrame(onXRFrame);
+}
+
+// ═══════════════════════════════════════════════
+//  DESKTOP RENDER LOOP
+// ═══════════════════════════════════════════════
+function desktopFrame(time){
+  if(!lastTime)lastTime=time;
+  const dt=min((time-lastTime)/1000,1/30);
+  lastTime=time;
+  
+  updateLogic(dt,null);
+  
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(.015,.01,.035,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  
+  const view=Mat4.create();
+  Mat4.translate(view,view,[-worldOffset[0],-worldOffset[1],-worldOffset[2]]);
+  Mat4.rotateY(view,view,-yaw);
+  Mat4.rotateX(view,view,-pitch);
+  
+  const proj=Mat4.create();
+  Mat4.perspective(proj,PI/3,canvas.width/canvas.height,0.1,1000);
+  
+  const invView=Mat4.create();Mat4.invert(invView,view);
+  const eye=[invView[12],invView[13],invView[14]];
+  
+  drawScene(view,proj,eye);
+  
+  requestAnimationFrame(desktopFrame);
+}
+
+// ═══════════════════════════════════════════════
+//  UI / MESSAGES
+// ═══════════════════════════════════════════════
+function flashMessage(text){
+  const m=document.getElementById('msg');
+  m.textContent=text;
+  m.classList.add('show');
+  setTimeout(()=>m.classList.remove('show'),4000);
+}
+
+// ═══════════════════════════════════════════════
+//  ENTRY POINT
+// ═══════════════════════════════════════════════
+document.getElementById('enterBtn').addEventListener('click',async()=>{
+  initAudio();
+  
+  document.getElementById('ui').classList.add('hidden');
+  document.getElementById('hud').style.display='block';
+  document.getElementById('crosshair').style.display='block';
+  
+  if(!navigator.xr){
+    alert('WebXR not supported — running in desktop mode');
+    requestAnimationFrame(desktopFrame);
+    return;
+  }
+  
+  try{
+    xrSession=await navigator.xr.requestSession('immersive-vr',{requiredFeatures:['local-floor'],optionalFeatures:['hand-tracking']});
+  }catch(e){
+    alert('Failed to start VR: '+e.message);
+    requestAnimationFrame(desktopFrame);
+    return;
+  }
+  
+  await gl.makeXRCompatible();
+  const layer=new XRWebGLLayer(xrSession,gl,{antialias:true});
+  xrSession.updateRenderState({baseLayer:layer});
+  xrRefSpace=await xrSession.requestReferenceSpace('local-floor');
+  
+  xrSession.requestAnimationFrame(onXRFrame);
+});
+
+// Desktop controls
+canvas.addEventListener('click',()=>{if(!xrSession)canvas.requestPointerLock()});
+document.addEventListener('pointerlockchange',()=>mouseLocked=document.pointerLockElement===canvas);
+document.addEventListener('mousemove',e=>{if(mouseLocked){yaw-=e.movementX*.002;pitch=clamp(pitch-e.movementY*.002,-1.5,1.5)}});
+document.addEventListener('mousedown',()=>keys['Click']=true);
+document.addEventListener('mouseup',()=>keys['Click']=false);
+document.addEventListener('keydown',e=>keys[e.key]=true);
+document.addEventListener('keyup',e=>keys[e.key]=false);
+window.addEventListener('resize',()=>{canvas.width=innerWidth;canvas.height=innerHeight});
+canvas.width=innerWidth;canvas.height=innerHeight;
+
+// Start desktop loop if no VR
+if(!navigator.xr)requestAnimationFrame(desktopFrame);
+</script>
+</body>
+</html>

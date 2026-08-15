@@ -1,0 +1,1395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Xyphos-7 — Alien Planet Explorer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{overflow:hidden;background:#000;font-family:'Courier New',monospace;color:#0f8}
+canvas{display:block;width:100vw;height:100vh}
+#ui{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10}
+#enterVR{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:rgba(0,255,136,.12);border:1px solid rgba(0,255,136,.4);color:#0f8;padding:14px 36px;font-size:15px;cursor:pointer;pointer-events:all;font-family:inherit;letter-spacing:3px;transition:all .3s;text-transform:uppercase}
+#enterVR:hover{background:rgba(0,255,136,.25);box-shadow:0 0 30px rgba(0,255,136,.2)}
+#log{position:fixed;top:20px;right:20px;width:300px;max-height:55vh;background:rgba(0,8,4,.9);border:1px solid rgba(0,255,136,.25);padding:16px;font-size:11px;overflow-y:auto;pointer-events:all;display:none;line-height:1.8;scrollbar-width:thin;scrollbar-color:#0f8 transparent}
+#log h3{color:#0f8;margin-bottom:10px;font-weight:400;letter-spacing:4px;font-size:12px}
+.log-entry{padding:5px 0;border-bottom:1px solid rgba(0,255,136,.08);opacity:.5;transition:opacity .5s}
+.log-entry.fresh{opacity:1;color:#0f8}
+#instructions{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);color:rgba(0,255,136,.45);font-size:10px;text-align:center;letter-spacing:1.5px;line-height:2}
+#crosshair{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:24px;height:24px;pointer-events:none;display:none}
+#crosshair::before,#crosshair::after{content:'';position:absolute;background:rgba(0,255,136,.4)}
+#crosshair::before{width:1px;height:100%;left:50%;transform:translateX(-50%)}
+#crosshair::after{height:1px;width:100%;top:50%;transform:translateY(-50%)}
+#toast{position:fixed;top:40%;left:50%;transform:translate(-50%,-50%);font-size:20px;letter-spacing:4px;opacity:0;transition:opacity .6s;text-align:center;pointer-events:none;text-shadow:0 0 30px rgba(0,255,136,.6)}
+#hud{position:fixed;top:20px;left:20px;font-size:10px;letter-spacing:1.5px;line-height:2;opacity:.5}
+@keyframes pulse{0%,100%{opacity:.3}50%{opacity:.8}}
+#loading{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);letter-spacing:6px;animation:pulse 1.5s infinite;font-size:14px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="loading">GENERATING WORLD</div>
+<div id="ui">
+  <div id="hud"></div>
+  <div id="crosshair"></div>
+  <div id="toast"></div>
+  <div id="instructions">CLICK TO ENTER &middot; WASD MOVE &middot; MOUSE LOOK &middot; E GRAB &middot; F TELEPORT &middot; TAB LOG</div>
+  <div id="log"><h3>DISCOVERY LOG</h3><div id="logEntries"></div></div>
+</div>
+<button id="enterVR" style="display:none">ENTER VR</button>
+<script>
+"use strict";
+
+// ===== 配置 =====
+const CFG = {
+  terrainSize: 200, terrainRes: 100, terrainAmp: 14,
+  numParticles: 2500, numCreatures: 10, numVeg: 55,
+  fogColor: [0.02, 0.06, 0.04], fogDensity: 0.0018,
+  eyeHeight: 1.7, moveSpeed: 6, turnSpeed: 0.002,
+  sunDir: [0.3, 0.9, 0.4]
+};
+
+// ===== 数学库 =====
+const v3 = {
+  c: (x=0,y=0,z=0) => [x,y,z],
+  add: (a,b) => [a[0]+b[0],a[1]+b[1],a[2]+b[2]],
+  sub: (a,b) => [a[0]-b[0],a[1]-b[1],a[2]-b[2]],
+  scl: (a,s) => [a[0]*s,a[1]*s,a[2]*s],
+  dot: (a,b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross: (a,b) => [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],
+  len: a => Math.sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]),
+  norm: a => { const l=v3.len(a)||1; return [a[0]/l,a[1]/l,a[2]/l]; },
+  dist: (a,b) => v3.len(v3.sub(a,b)),
+  lerp: (a,b,t) => [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t],
+  copy: a => [a[0],a[1],a[2]]
+};
+const m4 = {
+  c: () => new Float32Array(16),
+  id: o => { o=o||new Float32Array(16); o.fill(0); o[0]=o[5]=o[10]=o[15]=1; return o; },
+  persp: (o,fov,asp,n,f) => {
+    const t=1/Math.tan(fov/2), nf=1/(n-f); o.fill(0);
+    o[0]=t/asp; o[5]=t; o[10]=(f+n)*nf; o[11]=-1; o[14]=2*f*n*nf; return o;
+  },
+  look: (o,eye,ctr,up) => {
+    let z=v3.norm(v3.sub(eye,ctr)), x=v3.norm(v3.cross(up,z)), y=v3.cross(z,x);
+    o[0]=x[0];o[1]=y[0];o[2]=z[0];o[3]=0;
+    o[4]=x[1];o[5]=y[1];o[6]=z[1];o[7]=0;
+    o[8]=x[2];o[9]=y[2];o[10]=z[2];o[11]=0;
+    o[12]=-v3.dot(x,eye);o[13]=-v3.dot(y,eye);o[14]=-v3.dot(z,eye);o[15]=1; return o;
+  },
+  mul: (o,a,b) => {
+    for(let j=0;j<4;j++) for(let i=0;i<4;i++)
+      o[j*4+i]=a[i]*b[j*4]+a[4+i]*b[j*4+1]+a[8+i]*b[j*4+2]+a[12+i]*b[j*4+3];
+    return o;
+  },
+  trans: (o,x,y,z) => { m4.id(o); o[12]=x;o[13]=y;o[14]=z; return o; },
+  scl: (o,x,y,z) => { m4.id(o); o[0]=x;o[5]=y;o[10]=z; return o; },
+  rotY: (o,r) => { m4.id(o); const c=Math.cos(r),s=Math.sin(r); o[0]=c;o[2]=-s;o[8]=s;o[10]=c; return o; },
+  rotX: (o,r) => { m4.id(o); const c=Math.cos(r),s=Math.sin(r); o[5]=c;o[6]=s;o[9]=-s;o[10]=c; return o; },
+  rotZ: (o,r) => { m4.id(o); const c=Math.cos(r),s=Math.sin(r); o[0]=c;o[1]=s;o[4]=-s;o[5]=c; return o; },
+  mulPt: (m,p) => [
+    m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12],
+    m[1]*p[0]+m[5]*p[1]+m[9]*p[2]+m[13],
+    m[2]*p[0]+m[6]*p[1]+m[10]*p[2]+m[14]
+  ],
+  mulN: (m,n) => v3.norm([
+    m[0]*n[0]+m[4]*n[1]+m[8]*n[2],
+    m[1]*n[0]+m[5]*n[1]+m[9]*n[2],
+    m[2]*n[0]+m[6]*n[1]+m[10]*n[2]
+  ]),
+  chain: (...mats) => {
+    let r = m4.id(m4.c());
+    for (const m of mats) { const t = m4.c(); m4.mul(t, r, m); r = t; }
+    return r;
+  }
+};
+
+// ===== 噪声 =====
+function hash2(x, y) {
+  let n = ((x * 374761393 + y * 668265263) | 0);
+  n = ((n ^ (n >> 13)) * 1274126177) | 0;
+  return (n & 0x7fffffff) / 0x7fffffff;
+}
+function smoothNoise(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const sx = fx*fx*(3-2*fx), sy = fy*fy*(3-2*fy);
+  const a = hash2(ix,iy), b = hash2(ix+1,iy);
+  const c = hash2(ix,iy+1), d = hash2(ix+1,iy+1);
+  return a+(b-a)*sx+(c-a)*sy+(a-b-c+d)*sx*sy;
+}
+function fbm(x, y, oct=6) {
+  let v=0,a=1,f=1,mx=0;
+  for(let i=0;i<oct;i++){v+=smoothNoise(x*f,y*f)*a;mx+=a;a*=.5;f*=2.1;}
+  return v/mx;
+}
+
+// ===== 地形 =====
+const heightmap = new Float32Array((CFG.terrainRes+1)*(CFG.terrainRes+1));
+const ruinZones = [[22,-18,14],[-28,22,12],[34,32,14],[−12,−22,10]].map(r=>r);
+// 修复负号
+const RZONES = [[22,-18,14],[-28,22,12],[34,32,14],[-12,-22,10]];
+const CAVE_ENT = [16, 8];
+
+function terrainH(wx, wz) {
+  let h = fbm(wx*0.018, wz*0.018, 6) * CFG.terrainAmp;
+  h += fbm(wx*0.06, wz*0.06, 3) * 2;
+  // 废墟区平坦化
+  for (const [rx,rz,rr] of RZONES) {
+    const d = Math.sqrt((wx-rx)**2+(wz-rz)**2);
+    if (d < rr) { const t = 1 - d/rr; h = h*(1-t*t) + 1.5*t*t; }
+  }
+  // 洞穴入口凹陷
+  const cd = Math.sqrt((wx-CAVE_ENT[0])**2+(wz-CAVE_ENT[1])**2);
+  if (cd < 7) { const t = 1 - cd/7; h -= t*t*8; }
+  return h;
+}
+function initHeightmap() {
+  const S = CFG.terrainSize, R = CFG.terrainRes;
+  for (let z=0; z<=R; z++) for (let x=0; x<=R; x++) {
+    const wx = (x/R - .5)*S, wz = (z/R - .5)*S;
+    heightmap[z*(R+1)+x] = terrainH(wx, wz);
+  }
+}
+function sampleH(wx, wz) {
+  const S=CFG.terrainSize, R=CFG.terrainRes;
+  const fx=(wx/S+.5)*R, fz=(wz/S+.5)*R;
+  const ix=Math.floor(fx), iz=Math.floor(fz);
+  if(ix<0||ix>=R||iz<0||iz>=R) return 0;
+  const tx=fx-ix, tz=fz-iz;
+  const a=heightmap[iz*(R+1)+ix], b=heightmap[iz*(R+1)+ix+1];
+  const c=heightmap[(iz+1)*(R+1)+ix], d=heightmap[(iz+1)*(R+1)+ix+1];
+  return a*(1-tx)*(1-tz)+b*tx*(1-tz)+c*(1-tx)*tz+d*tx*tz;
+}
+function sampleNormal(wx, wz) {
+  const e = 0.3;
+  const dhdx = sampleH(wx+e,wz) - sampleH(wx-e,wz);
+  const dhdz = sampleH(wx,wz+e) - sampleH(wx,wz-e);
+  return v3.norm([-dhdx, 2*e, -dhdz]);
+}
+
+// ===== WebGL 初始化 =====
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { xrCompatible: true, antialias: true, alpha: false });
+if (!gl) { document.body.innerHTML = '<h1 style="color:#f00;padding:40px">WebGL2 not supported</h1>'; throw 'no gl'; }
+
+function compileShader(src, type) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); return null; }
+  return s;
+}
+function linkProgram(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compileShader(vs, gl.VERTEX_SHADER));
+  gl.attachShader(p, compileShader(fs, gl.FRAGMENT_SHADER));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { console.error(gl.getProgramInfoLog(p)); return null; }
+  return p;
+}
+function makeMesh(pos, norm, idx, col) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const pb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, pb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pos), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  if (norm && norm.length) {
+    const nb = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, nb);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(norm), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+  }
+  if (col && col.length) {
+    const cb = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, cb);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(col), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+  }
+  let idxBuf = null, idxType = gl.UNSIGNED_SHORT;
+  if (idx && idx.length) {
+    idxBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+    const maxV = Math.max(...idx);
+    if (maxV > 65535) { idxType = gl.UNSIGNED_INT; gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(idx), gl.STATIC_DRAW); }
+    else gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
+  }
+  gl.bindVertexArray(null);
+  return { vao, count: idx ? idx.length : pos.length/3, idxType, indexed: !!idx };
+}
+function drawMesh(mesh) {
+  gl.bindVertexArray(mesh.vao);
+  if (mesh.indexed) gl.drawElements(gl.TRIANGLES, mesh.count, mesh.idxType, 0);
+  else gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
+  gl.bindVertexArray(null);
+}
+
+// ===== 着色器源码 =====
+const SKY_VS = `#version 300 es
+in vec2 aPos;
+out vec2 vUV;
+void main(){ vUV=aPos*.5+.5; gl_Position=vec4(aPos,0.999,1); }`;
+
+const SKY_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+out vec4 O;
+uniform float uTime;
+float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+void main(){
+  vec3 c=vec3(0.01,0.02,0.015);
+  c=mix(c,vec3(0.04,0.09,0.07),pow(vUV.y,0.5));
+  c=mix(c,vec3(0.06,0.14,0.1),pow(vUV.y,2.0));
+  // 星星
+  vec2 st=vUV*200.0;
+  float star=step(0.997,hash(floor(st)));
+  star*=step(0.3,vUV.y);
+  c+=star*vec3(0.6,0.9,0.7)*step(0.998,hash(floor(st)+0.5));
+  // 月亮1 - 琥珀色
+  vec2 m1=vec2(0.7,0.75);
+  float d1=length(vUV-m1);
+  c+=vec3(0.9,0.5,0.1)*smoothstep(0.04,0.02,d1)*0.8;
+  c+=vec3(0.9,0.5,0.1)*smoothstep(0.08,0.04,d1)*0.15;
+  // 月亮2 - 苍绿色
+  vec2 m2=vec2(0.25,0.65);
+  float d2=length(vUV-m2);
+  c+=vec3(0.3,0.8,0.5)*smoothstep(0.025,0.012,d2)*0.6;
+  c+=vec3(0.3,0.8,0.5)*smoothstep(0.06,0.025,d2)*0.1;
+  // 星云
+  float neb=sin(vUV.x*8.0+uTime*0.02)*sin(vUV.y*6.0-uTime*0.015);
+  neb=pow(max(neb,0.0),3.0)*smoothstep(0.3,0.6,vUV.y);
+  c+=vec3(0.1,0.02,0.05)*neb*0.3;
+  O=vec4(c,1);
+}`;
+
+const WORLD_VS = `#version 300 es
+in vec3 aPos;
+in vec3 aNorm;
+uniform mat4 uVP;
+uniform mat4 uModel;
+out vec3 vWP;
+out vec3 vN;
+void main(){
+  vec4 wp=uModel*vec4(aPos,1);
+  vWP=wp.xyz;
+  vN=mat3(uModel)*aNorm;
+  gl_Position=uVP*wp;
+}`;
+
+const WORLD_FS = `#version 300 es
+precision highp float;
+in vec3 vWP;
+in vec3 vN;
+out vec4 O;
+uniform vec3 uCamPos;
+uniform vec3 uColor;
+uniform vec3 uEmissive;
+uniform float uTime;
+uniform vec3 uFogCol;
+uniform float uFogD;
+void main(){
+  vec3 n=normalize(vN);
+  vec3 ld=normalize(vec3(0.3,0.9,0.4));
+  float diff=max(dot(n,ld),0.0)*0.55+0.35;
+  vec3 amb=vec3(0.04,0.08,0.06);
+  vec3 c=(amb+diff)*uColor+uEmissive;
+  float d=length(vWP-uCamPos);
+  float fog=1.0-exp(-uFogD*d*d);
+  c=mix(c,uFogCol,clamp(fog,0,1));
+  O=vec4(c,1);
+}`;
+
+const GLOW_VS = `#version 300 es
+in vec3 aPos;
+in vec3 aNorm;
+in vec3 aCol;
+uniform mat4 uVP;
+out vec3 vWP;
+out vec3 vN;
+out vec3 vCol;
+void main(){
+  vWP=aPos; vN=aNorm; vCol=aCol;
+  gl_Position=uVP*vec4(aPos,1);
+}`;
+
+const GLOW_FS = `#version 300 es
+precision highp float;
+in vec3 vWP;
+in vec3 vN;
+in vec3 vCol;
+out vec4 O;
+uniform float uTime;
+uniform vec3 uCamPos;
+void main(){
+  float pulse=0.65+0.35*sin(uTime*2.5+vWP.x*0.4+vWP.z*0.3);
+  vec3 c=vCol*pulse;
+  vec3 vd=normalize(uCamPos-vWP);
+  float fr=1.0-abs(dot(normalize(vN),vd));
+  c+=vCol*fr*0.6;
+  float a=0.55+fr*0.45;
+  O=vec4(c*1.8,a);
+}`;
+
+const PART_VS = `#version 300 es
+in vec3 aPos;
+in float aLife;
+uniform mat4 uVP;
+out float vLife;
+void main(){
+  vLife=aLife;
+  vec4 p=uVP*vec4(aPos,1);
+  gl_Position=p;
+  gl_PointSize=clamp(3.0/p.w*300.0,1.0,6.0);
+}`;
+
+const PART_FS = `#version 300 es
+precision highp float;
+in float vLife;
+out vec4 O;
+void main(){
+  float d=length(gl_PointCoord-.5)*2.0;
+  if(d>1.0) discard;
+  float a=(1.0-d*d)*vLife*0.4;
+  O=vec4(0.85,0.65,0.25,a);
+}`;
+
+const LINE_VS = `#version 300 es
+in vec3 aPos;
+uniform mat4 uVP;
+void main(){ gl_Position=uVP*vec4(aPos,1); }`;
+const LINE_FS = `#version 300 es
+precision highp float;
+out vec4 O;
+uniform vec3 uCol;
+void main(){ O=vec4(uCol,0.6); }`;
+
+// ===== 几何体生成器 =====
+function genBox(w,h,d) {
+  const hw=w/2,hh=h/2,hd=d/2;
+  const p=[
+    -hw,-hh,-hd, hw,-hh,-hd, hw,hh,-hd, -hw,hh,-hd,
+    -hw,-hh,hd, hw,-hh,hd, hw,hh,hd, -hw,hh,hd
+  ];
+  const n=[
+    0,0,-1,0,0,-1,0,0,-1,0,0,-1,
+    0,0,1,0,0,1,0,0,1,0,0,1,
+    -1,0,0,-1,0,0,-1,0,0,-1,0,0,
+    1,0,0,1,0,0,1,0,0,1,0,0,
+    0,-1,0,0,-1,0,0,-1,0,0,-1,0,
+    0,1,0,0,1,0,0,1,0,0,1,0
+  ];
+  const idx=[0,1,2,0,2,3, 4,6,5,4,7,6, 0,3,7,0,7,4, 1,5,6,1,6,2, 0,4,5,0,5,1, 3,2,6,3,6,7];
+  return {p,n,idx};
+}
+function genCylinder(r,h,seg=12) {
+  const p=[],n=[],idx=[];
+  const hh=h/2;
+  for(let i=0;i<=seg;i++){
+    const a=i/seg*Math.PI*2, c=Math.cos(a), s=Math.sin(a);
+    p.push(r*c,-hh,r*s); n.push(c,0,s);
+    p.push(r*c,hh,r*s); n.push(c,0,s);
+  }
+  for(let i=0;i<seg;i++){
+    const a=i*2,b=a+1,c2=a+2,d2=a+3;
+    idx.push(a,c2,b, b,c2,d2);
+  }
+  // 顶底盖
+  const botC=p.length/3; p.push(0,-hh,0); n.push(0,-1,0);
+  for(let i=0;i<=seg;i++){const a=i/seg*Math.PI*2; p.push(r*Math.cos(a),-hh,r*Math.sin(a)); n.push(0,-1,0);}
+  for(let i=0;i<seg;i++) idx.push(botC,botC+1+i,botC+2+i);
+  const topC=p.length/3; p.push(0,hh,0); n.push(0,1,0);
+  for(let i=0;i<=seg;i++){const a=i/seg*Math.PI*2; p.push(r*Math.cos(a),hh,r*Math.sin(a)); n.push(0,1,0);}
+  for(let i=0;i<seg;i++) idx.push(topC,topC+2+i,topC+1+i);
+  return {p,n,idx};
+}
+function genCone(r,h,seg=10) {
+  const p=[],n=[],idx=[];
+  const tip=[0,h,0];
+  for(let i=0;i<=seg;i++){
+    const a=i/seg*Math.PI*2, c=Math.cos(a), s=Math.sin(a);
+    p.push(r*c,0,r*s);
+    const nn=v3.norm(v3.cross(v3.sub([r*c,0,r*s],tip),[0,0,1]));
+    n.push(nn[0],nn[1],nn[2]);
+  }
+  for(let i=0;i<seg;i++) idx.push(0,i+1,i+2);
+  // 底盖
+  const bc=p.length/3; p.push(0,0,0); n.push(0,-1,0);
+  for(let i=0;i<=seg;i++){const a=i/seg*Math.PI*2; p.push(r*Math.cos(a),0,r*Math.sin(a)); n.push(0,-1,0);}
+  for(let i=0;i<seg;i++) idx.push(bc,bc+2+i,bc+1+i);
+  return {p,n,idx};
+}
+function genSphere(r,seg=10) {
+  const p=[],n=[],idx=[];
+  for(let y=0;y<=seg;y++){
+    const phi=y/seg*Math.PI, sp=Math.sin(phi), cp=Math.cos(phi);
+    for(let x=0;x<=seg;x++){
+      const theta=x/seg*Math.PI*2, st=Math.sin(theta), ct=Math.cos(theta);
+      const nx=ct*sp, ny=cp, nz=st*sp;
+      p.push(r*nx,r*ny,r*nz); n.push(nx,ny,nz);
+    }
+  }
+  for(let y=0;y<seg;y++) for(let x=0;x<seg;x++){
+    const a=y*(seg+1)+x, b=a+1, c=a+seg+1, d=c+1;
+    idx.push(a,c,b, b,c,d);
+  }
+  return {p,n,idx};
+}
+function genIcosa(r) {
+  const t=(1+Math.sqrt(5))/2, s=r/Math.sqrt(1+t*t);
+  const raw=[[-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],[0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],[t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]];
+  const v=raw.map(p=>[p[0]*s,p[1]*s,p[2]*s]);
+  const f=[[0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],[3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]];
+  const p=[],n=[],idx=[];
+  v.forEach(vt=>{p.push(...vt); n.push(...v3.norm(vt));});
+  f.forEach(tri=>{idx.push(...tri);});
+  return {p,n,idx};
+}
+function genTerrainMesh() {
+  const S=CFG.terrainSize, R=CFG.terrainRes;
+  const p=[],n=[],idx=[];
+  for(let z=0;z<=R;z++) for(let x=0;x<=R;x++){
+    const wx=(x/R-.5)*S, wz=(z/R-.5)*S;
+    const h=sampleH(wx,wz);
+    p.push(wx,h,wz);
+    const nn=sampleNormal(wx,wz);
+    n.push(nn[0],nn[1],nn[2]);
+  }
+  for(let z=0;z<R;z++) for(let x=0;x<R;x++){
+    const a=z*(R+1)+x, b=a+1, c=a+R+1, d=c+1;
+    idx.push(a,c,b, b,c,d);
+  }
+  return {p,n,idx};
+}
+function genTunnel(path, radius, seg=8) {
+  const p=[],n=[],idx=[];
+  const rings=path.length;
+  for(let i=0;i<rings;i++){
+    const pos=path[i];
+    const dir = i<rings-1 ? v3.norm(v3.sub(path[i+1],pos)) :
+                v3.norm(v3.sub(pos, path[i-1]));
+    let up = Math.abs(dir[1])<0.9 ? [0,1,0] : [1,0,0];
+    const right = v3.norm(v3.cross(dir,up));
+    up = v3.cross(right,dir);
+    for(let j=0;j<=seg;j++){
+      const a=j/seg*Math.PI*2;
+      const pt = v3.add(pos, v3.add(v3.scl(right,Math.cos(a)*radius), v3.scl(up,Math.sin(a)*radius)));
+      const nn = v3.add(v3.scl(right,Math.cos(a)), v3.scl(up,Math.sin(a)));
+      p.push(...pt); n.push(...nn);
+    }
+  }
+  for(let i=0;i<rings-1;i++) for(let j=0;j<seg;j++){
+    const a=i*(seg+1)+j, b=a+seg+1;
+    idx.push(a,b,a+1, b,b+1,a+1);
+  }
+  return {p,n,idx};
+}
+
+// ===== 世界构建 =====
+let meshes = {}, progs = {};
+const artifacts = [
+  { name:'Resonance Crystal', desc:'Humming with harmonic frequencies', pos:[22,0,-18], found:false, col:[1,.85,.2] },
+  { name:'Void Sphere', desc:'Absorbs all surrounding light', pos:[28,0,13], found:false, col:[.2,1,.6] },
+  { name:'Elder Keystone', desc:'Warm to the touch, ancient glyphs glow', pos:[-28,0,22], found:false, col:[.9,.4,.15] },
+  { name:'Luminous Core', desc:'Pulses like a heartbeat', pos:[34,0,32], found:false, col:[.1,.9,.8] },
+  { name:'Genesis Shard', desc:'Frozen in time, infinitely complex', pos:[-12,0,-22], found:false, col:[1,.3,.5] },
+];
+const creatures = [];
+const vegPlants = [];
+let particleData, particleBuf;
+const discoveries = [];
+let logEl, toastEl, hudEl;
+
+function buildWorld() {
+  // 地形
+  const terr = genTerrainMesh();
+  // 地形颜色: 根据位置混合生物群系
+  const terrCol = [];
+  for(let i=0;i<terr.p.length;i+=3){
+    const wx=terr.p[i], wz=terr.p[i+2];
+    let r,g,b;
+    const biome1 = fbm(wx*0.005+50, wz*0.005+50, 3);
+    const biome2 = fbm(wx*0.008, wz*0.008, 3);
+    // 锈红荒原
+    r=0.35; g=0.12; b=0.08;
+    // 暗绿菌丝区
+    const t1 = smoothstep(0.35, 0.65, biome1);
+    r=mix(r,0.08,g,t1); g=mix(g,0.18,g,t1); b=mix(b,0.06,g,t1);
+    // 深棕结晶区
+    const t2 = smoothstep(0.4, 0.7, biome2);
+    r=mix(r,0.2,g,t2); g=mix(g,0.15,g,t2); b=mix(b,0.1,g,t2);
+    terrCol.push(r,g,b);
+  }
+  // 修复mix函数
+  function smoothstep(e0,e1,x){const t=clamp((x-e0)/(e1-e0),0,1);return t*t*(3-2*t);}
+  function clamp(x,a,b){return Math.max(a,Math.min(b,x));}
+  function mix(a,b,t){return a+(b-a)*t;}
+  // 重新计算颜色
+  const tc = [];
+  for(let i=0;i<terr.p.length;i+=3){
+    const wx=terr.p[i], wz=terr.p[i+2], h=terr.p[i+1];
+    const b1=fbm(wx*0.005+50,wz*0.005+50,3);
+    const b2=fbm(wx*0.008,wz*0.008,3);
+    let r=0.35,g=0.12,bl=0.08;
+    const t1=clamp((b1-0.35)/0.3,0,1); t1t=t1*t1*(3-2*t1);
+    r=mix(r,0.08,t1t); g=mix(g,0.18,t1t); bl=mix(bl,0.06,t1t);
+    const t2=clamp((b2-0.4)/0.3,0,1); t2t=t2*t2*(3-2*t2);
+    r=mix(r,0.2,t2t); g=mix(g,0.15,t2t); bl=mix(bl,0.1,t2t);
+    // 高处变亮
+    const hf=clamp(h/12,0,1)*0.15;
+    r+=hf; g+=hf*0.7; bl+=hf*0.5;
+    tc.push(r,g,bl);
+  }
+  meshes.terrain = makeMesh(terr.p, terr.n, terr.idx, tc);
+
+  // 废墟
+  const ruinParts = [], ruinNorms = [], ruinIdx = [], ruinCols = [];
+  let rOff = 0;
+  function addRuinPiece(geo, model, color) {
+    for(let i=0;i<geo.p.length;i+=3){
+      const wp = m4.mulPt(model, [geo.p[i],geo.p[i+1],geo.p[i+2]]);
+      const wn = m4.mulN(model, [geo.n[i],geo.n[i+1],geo.n[i+2]]);
+      ruinParts.push(...wp); ruinNorms.push(...wn);
+      ruinCols.push(...color, ...color, ...color);
+    }
+    for(const id of geo.idx) ruinIdx.push(id + rOff);
+    rOff += geo.p.length/3;
+  }
+  // 废墟1: 柱圈
+  for(let i=0;i<8;i++){
+    const a=i/8*Math.PI*2, r=6;
+    const x=22+Math.cos(a)*r, z=-18+Math.sin(a)*r;
+    const h = 2+Math.random()*4;
+    const m = m4.chain(m4.trans(m4.c(),x,sampleH(x,z),z), m4.rotY(m4.c(),a));
+    const col = m4.scl(m4.c(),0.6,h,0.6);
+    const full = m4.mul(m4.c(), m, col);
+    addRuinPiece(genCylinder(0.4,1,8), full, [0.25,0.22,0.2]);
+  }
+  // 废墟2: 墙壁
+  for(let i=0;i<5;i++){
+    const a=i/5*Math.PI*2, r=5;
+    const x=-28+Math.cos(a)*r, z=22+Math.sin(a)*r;
+    const m = m4.chain(m4.trans(m4.c(),x,sampleH(x,z),z), m4.rotY(m4.c(),a+0.3));
+    const wall = m4.mul(m4.c(), m, m4.scl(m4.c(),3,2.5+Math.random()*2,0.4));
+    addRuinPiece(genBox(1,1,1), wall, [0.22,0.2,0.18]);
+  }
+  // 废墟3: 阶梯金字塔
+  for(let layer=0;layer<4;layer++){
+    const s = 8-layer*1.5, h=1.5;
+    const m = m4.chain(m4.trans(m4.c(),34,sampleH(34,32)+layer*h,32), m4.scl(m4.c(),s,h,s));
+    addRuinPiece(genBox(1,1,1), m, [0.2+layer*0.03,0.18+layer*0.02,0.15]);
+  }
+  // 散落的石块
+  for(let i=0;i<20;i++){
+    const x=(Math.random()-.5)*80, z=(Math.random()-.5)*80;
+    const s=0.3+Math.random()*0.8;
+    const m = m4.chain(
+      m4.trans(m4.c(),x,sampleH(x,z)+s*0.3,z),
+      m4.rotY(m4.c(),Math.random()*6), m4.rotX(m4.c(),Math.random()*0.5),
+      m4.scl(m4.c(),s,s*0.7,s)
+    );
+    addRuinPiece(genBox(1,1,1), m, [0.2,0.18,0.16]);
+  }
+  if(ruinParts.length) meshes.ruins = makeMesh(ruinParts, ruinNorms, ruinIdx, ruinCols);
+
+  // 洞穴
+  const cavePath = [];
+  for(let i=0;i<=20;i++){
+    const t=i/20;
+    const x=CAVE_ENT[0]+t*22;
+    const z=CAVE_ENT[1]+t*8+Math.sin(t*Math.PI*2)*4;
+    const h=sampleH(x,z)-2-t*5;
+    cavePath.push([x, Math.max(h,-8), z]);
+  }
+  const caveGeo = genTunnel(cavePath, 2.5, 8);
+  // 洞穴颜色: 深灰带微弱绿色苔藓
+  const caveCol = [];
+  for(let i=0;i<caveGeo.p.length;i+=3){
+    const moss = fbm(caveGeo.p[i]*0.3, caveGeo.p[i+2]*0.3, 2);
+    caveCol.push(0.12+moss*0.05, 0.13+moss*0.1, 0.1+moss*0.03);
+  }
+  meshes.cave = makeMesh(caveGeo.p, caveGeo.n, caveGeo.idx, caveCol);
+
+  // 发光植被
+  const glowP=[], glowN=[], glowC=[];
+  let gOff = 0;
+  function addGlow(geo, model, color) {
+    for(let i=0;i<geo.p.length;i+=3){
+      const wp=m4.mulPt(model,[geo.p[i],geo.p[i+1],geo.p[i+2]]);
+      const wn=m4.mulN(model,[geo.n[i],geo.n[i+1],geo.n[i+2]]);
+      glowP.push(...wp); glowN.push(...wn); glowC.push(...color);
+    }
+    for(const id of geo.idx) { /* 需要偏移 */ }
+    gOff += geo.p.length/3;
+  }
+  // 锥形发光植物
+  for(let i=0;i<CFG.numVeg;i++){
+    const x=(Math.random()-.5)*160, z=(Math.random()-.5)*160;
+    const h=sampleH(x,z);
+    if(h < 0.5) continue; // 不在低洼处
+    const scale = 0.3+Math.random()*0.8;
+    const plantH = 1+Math.random()*3;
+    const m = m4.chain(m4.trans(m4.c(),x,h,z), m4.scl(m4.c(),scale,plantH*scale,scale));
+    const geo = genCone(0.5,1,8);
+    for(let j=0;j<geo.p.length;j+=3){
+      const wp=m4.mulPt(m,[geo.p[j],geo.p[j+1],geo.p[j+2]]);
+      const wn=m4.mulN(m,[geo.n[j],geo.n[j+1],geo.n[j+2]]);
+      glowP.push(...wp); glowN.push(...wn);
+      const t=geo.p[j+1]; // 高度比例用于渐变色
+      const cr = 0.1+Math.random()*0.15;
+      const cg = 0.7+Math.random()*0.3;
+      const cb = 0.2+Math.random()*0.3;
+      glowC.push(cr*t+0.05, cg*(0.5+t*0.5), cb*t+0.05);
+    }
+  }
+  // 蘑菇形发光体
+  for(let i=0;i<15;i++){
+    const x=(Math.random()-.5)*140, z=(Math.random()-.5)*140;
+    const h=sampleH(x,z);
+    if(h<1) continue;
+    const s=0.2+Math.random()*0.4;
+    // 茎
+    const stem=m4.chain(m4.trans(m4.c(),x,h,z),m4.scl(m4.c(),s*0.3,s*1.5,s*0.3));
+    const sg=genCylinder(0.5,1,6);
+    for(let j=0;j<sg.p.length;j+=3){
+      glowP.push(...m4.mulPt(stem,[sg.p[j],sg.p[j+1],sg.p[j+2]]));
+      glowN.push(...m4.mulN(stem,[sg.n[j],sg.n[j+1],sg.n[j+2]]));
+      glowC.push(0.15,0.4,0.15);
+    }
+    // 帽
+    const cap=m4.chain(m4.trans(m4.c(),x,h+s*1.5,z),m4.scl(m4.c(),s*1.2,s*0.5,s*1.2));
+    const cg=genSphere(0.5,8);
+    for(let j=0;j<cg.p.length;j+=3){
+      glowP.push(...m4.mulPt(cap,[cg.p[j],cg.p[j+1],cg.p[j+2]]));
+      glowN.push(...m4.mulN(cap,[cg.n[j],cg.n[j+1],cg.n[j+2]]));
+      glowC.push(0.9,0.7,0.15);
+    }
+  }
+  // 洞穴内生物发光点
+  for(let i=0;i<30;i++){
+    const ci = Math.floor(Math.random()*cavePath.length);
+    const cp = cavePath[ci];
+    const ox=(Math.random()-.5)*3, oy=(Math.random()-.5)*3, oz=(Math.random()-.5)*3;
+    const px=cp[0]+ox, py=cp[1]+oy, pz=cp[2]+oz;
+    const sg=genSphere(0.15,4);
+    for(let j=0;j<sg.p.length;j+=3){
+      glowP.push(sg.p[j]+px,sg.p[j+1]+py,sg.p[j+2]+pz);
+      glowN.push(sg.n[j],sg.n[j+1],sg.n[j+2]);
+      glowC.push(0.1,0.9,0.5);
+    }
+  }
+  if(glowP.length) meshes.glow = makeMesh(glowP, glowN, null, glowC);
+
+  // 神器
+  const artP=[], artN=[], artC=[];
+  artifacts.forEach(a => {
+    a.pos[1] = sampleH(a.pos[0], a.pos[2]) + 1.2;
+    const geo = genIcosa(0.35);
+    for(let j=0;j<geo.p.length;j+=3){
+      artP.push(geo.p[j]+a.pos[0], geo.p[j+1]+a.pos[1], geo.p[j+2]+a.pos[2]);
+      artN.push(geo.n[j],geo.n[j+1],geo.n[j+2]);
+      artC.push(...a.col);
+    }
+  });
+  if(artP.length) meshes.artifacts = makeMesh(artP, artN, null, artC);
+
+  // 生物
+  for(let i=0;i<CFG.numCreatures;i++){
+    creatures.push({
+      base: [(Math.random()-.5)*120, 0, (Math.random()-.5)*120],
+      phase: Math.random()*Math.PI*2,
+      speed: 0.2+Math.random()*0.4,
+      drift: 2+Math.random()*4,
+      size: 0.3+Math.random()*0.5,
+      color: Math.random()>0.5 ? [0.2,0.8,0.6] : [0.8,0.4,0.9]
+    });
+    creatures[i].base[1] = sampleH(creatures[i].base[0], creatures[i].base[2]) + 3+Math.random()*4;
+  }
+  const crP=[], crN=[], crC=[];
+  creatures.forEach(cr => {
+    const geo = genSphere(cr.size, 6);
+    for(let j=0;j<geo.p.length;j+=3){
+      crP.push(geo.p[j]+cr.base[0],geo.p[j+1]+cr.base[1],geo.p[j+2]+cr.base[2]);
+      crN.push(geo.n[j],geo.n[j+1],geo.n[j+2]);
+      crC.push(...cr.color);
+    }
+    // 触须 (简单的线条状三角形)
+    for(let t=0;t<4;t++){
+      const a=t/4*Math.PI*2;
+      const len=cr.size*3;
+      const tx=cr.base[0]+Math.cos(a)*len, tz=cr.base[2]+Math.sin(a)*len;
+      const w=0.05;
+      const perp=[Math.cos(a+Math.PI/2)*w, 0, Math.sin(a+Math.PI/2)*w];
+      const p1=[cr.base[0]+perp[0], cr.base[1]-cr.size, cr.base[2]+perp[2]];
+      const p2=[cr.base[0]-perp[0], cr.base[1]-cr.size, cr.base[2]-perp[2]];
+      const p3=[tx, cr.base[1]-cr.size-len*0.3, tz];
+      crP.push(...p1,...p2,...p3);
+      crN.push(0,1,0, 0,1,0, 0,1,0);
+      crC.push(...cr.color,...cr.color,...cr.color);
+    }
+  });
+  if(crP.length) meshes.creatures = makeMesh(crP, crN, null, crC);
+
+  // 天气粒子
+  particleData = new Float32Array(CFG.numParticles * 4); // x,y,z,life
+  for(let i=0;i<CFG.numParticles;i++){
+    const idx=i*4;
+    particleData[idx]=(Math.random()-.5)*200;
+    particleData[idx+1]=Math.random()*40;
+    particleData[idx+2]=(Math.random()-.5)*200;
+    particleData[idx+3]=Math.random();
+  }
+  particleBuf = gl.createBuffer();
+
+  // 天空
+  const skyQ = new Float32Array([-1,-1, 1,-1, -1,1, 1,1]);
+  const skyVAO = gl.createVertexArray();
+  gl.bindVertexArray(skyVAO);
+  const sqb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, sqb);
+  gl.bufferData(gl.ARRAY_BUFFER, skyQ, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  meshes.sky = { vao: skyVAO, count: 4, indexed: false };
+
+  // 传送光束线
+  const lineVAO = gl.createVertexArray();
+  gl.bindVertexArray(lineVAO);
+  const lb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, lb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(6), gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  meshes.beam = { vao: lineVAO, count: 2, indexed: false, buf: lb };
+}
+
+// ===== 音频 =====
+let audioCtx;
+function initAudio() {
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // 低频无人机音
+    const drone = audioCtx.createOscillator();
+    drone.type = 'sine'; drone.frequency.value = 55;
+    const dg = audioCtx.createGain(); dg.gain.value = 0.06;
+    const df = audioCtx.createBiquadFilter(); df.type='lowpass'; df.frequency.value=120;
+    drone.connect(df); df.connect(dg); dg.connect(audioCtx.destination); drone.start();
+    // 中频泛音
+    const mid = audioCtx.createOscillator();
+    mid.type = 'sine'; mid.frequency.value = 165;
+    const mg = audioCtx.createGain(); mg.gain.value = 0.02;
+    const lfo = audioCtx.createOscillator(); lfo.frequency.value=0.15;
+    const lfoG = audioCtx.createGain(); lfoG.gain.value=0.015;
+    lfo.connect(lfoG); lfoG.connect(mg.gain); lfo.start();
+    mid.connect(mg); mg.connect(audioCtx.destination); mid.start();
+    // 风声
+    const bufLen = audioCtx.sampleRate * 2;
+    const noiseBuf = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
+    const data = noiseBuf.getChannelData(0);
+    for(let i=0;i<bufLen;i++) data[i]=(Math.random()*2-1);
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = noiseBuf; noise.loop = true;
+    const nf = audioCtx.createBiquadFilter(); nf.type='bandpass'; nf.frequency.value=400; nf.Q.value=0.5;
+    const ng = audioCtx.createGain(); ng.gain.value = 0.025;
+    noise.connect(nf); nf.connect(ng); ng.connect(audioCtx.destination); noise.start();
+    // 偶发的异星音效
+    function alienSound(){
+      const osc = audioCtx.createOscillator();
+      osc.type='sine';
+      const startF = 400+Math.random()*800;
+      osc.frequency.setValueAtTime(startF, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(startF*0.3, audioCtx.currentTime+1.5);
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(0, audioCtx.currentTime);
+      g.gain.linearRampToValueAtTime(0.03, audioCtx.currentTime+0.1);
+      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+1.5);
+      const f = audioCtx.createBiquadFilter(); f.type='lowpass'; f.frequency.value=2000;
+      osc.connect(f); f.connect(g); g.connect(audioCtx.destination);
+      osc.start(); osc.stop(audioCtx.currentTime+1.5);
+      setTimeout(alienSound, 4000+Math.random()*12000);
+    }
+    setTimeout(alienSound, 3000);
+  } catch(e) {}
+}
+
+// ===== 着色器程序 =====
+function initShaders() {
+  progs.sky = linkProgram(SKY_VS, SKY_FS);
+  progs.world = linkProgram(WORLD_VS, WORLD_FS);
+  progs.glow = linkProgram(GLOW_VS, GLOW_FS);
+  progs.particle = linkProgram(PART_VS, PART_FS);
+  progs.line = linkProgram(LINE_VS, LINE_FS);
+  // 获取 uniform 位置
+  for (const k in progs) {
+    const p = progs[k];
+    p.u = {};
+    const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+    for(let i=0;i<n;i++){
+      const info = gl.getActiveUniform(p, i);
+      p.u[info.name] = gl.getUniformLocation(p, info.name);
+    }
+  }
+}
+
+// ===== 状态 =====
+const state = {
+  pos: [0, 5, 0], yaw: 0, pitch: 0,
+  inVR: false, locked: false,
+  grabbed: null, teleportPt: null,
+  keys: {}, mouseDown: false,
+  controllers: [null, null],
+  visitedBiomes: new Set(),
+  time: 0, lastTime: 0
+};
+
+// ===== 交互 =====
+function raycastTerrain(origin, dir, maxD=60) {
+  const d = v3.norm(dir);
+  for(let t=1;t<maxD;t+=0.5){
+    const p = v3.add(origin, v3.scl(d, t));
+    const h = sampleH(p[0], p[2]);
+    if(p[1] <= h+0.2) return { hit:true, point:[p[0],h+0.1,p[2]], dist:t };
+  }
+  return { hit:false };
+}
+function checkNearbyArtifact(pos, range=2.5) {
+  for(const a of artifacts){
+    if(a.found) continue;
+    if(v3.dist(pos, a.pos) < range) return a;
+  }
+  return null;
+}
+function discoverArtifact(a) {
+  if(a.found) return;
+  a.found = true;
+  discoveries.push({ name:a.name, desc:a.desc, time:state.time });
+  showToast(`DISCOVERED: ${a.name}`);
+  updateLog();
+}
+function showToast(msg) {
+  toastEl.textContent = msg;
+  toastEl.style.opacity = '1';
+  setTimeout(()=>{ toastEl.style.opacity='0'; }, 2500);
+}
+function updateLog() {
+  logEl.innerHTML = '';
+  discoveries.forEach((d,i) => {
+    const div = document.createElement('div');
+    div.className = 'log-entry' + (i===discoveries.length-1?' fresh':'');
+    div.textContent = `[${d.name}] ${d.desc}`;
+    logEl.appendChild(div);
+  });
+  // 渐隐旧条目
+  setTimeout(()=>{
+    logEl.querySelectorAll('.fresh').forEach(e=>e.classList.remove('fresh'));
+  }, 3000);
+}
+function checkBiomeDiscovery() {
+  const x=state.pos[0], z=state.pos[2];
+  const b1 = fbm(x*0.005+50,z*0.005+50,3);
+  const b2 = fbm(x*0.008,z*0.008,3);
+  let biome = 'The Rustlands';
+  if(b1>0.55) biome = 'Mycelian Grove';
+  if(b2>0.6) biome = 'Crystal Wastes';
+  // 洞穴检测
+  if(state.pos[1] < sampleH(state.pos[0],state.pos[2]) - 1) biome = 'The Underdark';
+  // 废墟检测
+  for(const [rx,rz,rr] of RZONES){
+    if(Math.sqrt((x-rx)**2+(z-rz)**2) < rr) { biome = 'Forgotten Sanctum'; break; }
+  }
+  if(!state.visitedBiomes.has(biome)){
+    state.visitedBiomes.add(biome);
+    discoveries.push({ name:`Region: ${biome}`, desc:'New area mapped', time:state.time });
+    showToast(`REGION DISCOVERED: ${biome}`);
+    updateLog();
+  }
+}
+
+// ===== 桌面输入 =====
+function initDesktopInput() {
+  const el = document.getElementById('crosshair');
+  canvas.addEventListener('click', () => {
+    if(!state.inVR) canvas.requestPointerLock();
+    if(!audioCtx) initAudio();
+  });
+  document.addEventListener('pointerlockchange', () => {
+    state.locked = document.pointerLockElement === canvas;
+    el.style.display = state.locked ? 'block' : 'none';
+    document.getElementById('instructions').style.opacity = state.locked ? '0' : '1';
+  });
+  document.addEventListener('mousemove', e => {
+    if(!state.locked || state.inVR) return;
+    state.yaw -= e.movementX * CFG.turnSpeed;
+    state.pitch -= e.movementY * CFG.turnSpeed;
+    state.pitch = Math.max(-1.4, Math.min(1.4, state.pitch));
+  });
+  document.addEventListener('keydown', e => {
+    state.keys[e.code] = true;
+    if(e.code === 'Tab') {
+      e.preventDefault();
+      const log = document.getElementById('log');
+      log.style.display = log.style.display === 'none' ? 'block' : 'none';
+    }
+    if(e.code === 'KeyE') {
+      if(state.grabbed) {
+        state.grabbed = null;
+        showToast('RELEASED');
+      } else {
+        const a = checkNearbyArtifact(state.pos);
+        if(a) { discoverArtifact(a); state.grabbed = a; }
+      }
+    }
+    if(e.code === 'KeyF') {
+      const fwd = getForward();
+      const rc = raycastTerrain(state.pos, fwd);
+      if(rc.hit) {
+        state.pos = [rc.point[0], rc.point[1]+CFG.eyeHeight, rc.point[2]];
+        showToast('TELEPORTED');
+      }
+    }
+  });
+  document.addEventListener('keyup', e => { state.keys[e.code] = false; });
+}
+function getForward() {
+  const cy=Math.cos(state.yaw), sy=Math.sin(state.yaw);
+  const cp=Math.cos(state.pitch), sp=Math.sin(state.pitch);
+  return v3.norm([-sy*cp, sp, -cy*cp]);
+}
+function getRight() {
+  const cy=Math.cos(state.yaw), sy=Math.sin(state.yaw);
+  return v3.norm([cy, 0, -sy]);
+}
+function updateDesktop(dt) {
+  if(!state.locked) return;
+  let move = [0,0,0];
+  const fwd = [Math.sin(state.yaw), 0, Math.cos(state.yaw)];
+  const right = [Math.cos(state.yaw), 0, -Math.sin(state.yaw)];
+  if(state.keys['KeyW']) move = v3.add(move, fwd);
+  if(state.keys['KeyS']) move = v3.sub(move, fwd);
+  if(state.keys['KeyA']) move = v3.sub(move, right);
+  if(state.keys['KeyD']) move = v3.add(move, right);
+  if(v3.len(move) > 0) move = v3.scl(v3.norm(move), CFG.moveSpeed * dt);
+  state.pos = v3.add(state.pos, move);
+  const h = sampleH(state.pos[0], state.pos[2]);
+  state.pos[1] = Math.max(h + CFG.eyeHeight, state.pos[1]);
+  // 被抓取的神器跟随
+  if(state.grabbed) {
+    const fwd2 = getForward();
+    state.grabbed.pos = v3.add(state.pos, v3.scl(fwd2, 1.5));
+    state.grabbed.pos[1] -= 0.3;
+    rebuildArtifactMesh();
+  }
+  // 传送光束预览
+  if(state.keys['KeyF']) {
+    const rc = raycastTerrain(state.pos, getForward());
+    state.teleportPt = rc.hit ? rc.point : null;
+  } else {
+    state.teleportPt = null;
+  }
+}
+
+// ===== 重建神器网格（被抓取时更新位置）=====
+function rebuildArtifactMesh() {
+  const artP=[], artN=[], artC=[];
+  artifacts.forEach(a => {
+    const geo = genIcosa(0.35);
+    for(let j=0;j<geo.p.length;j+=3){
+      artP.push(geo.p[j]+a.pos[0], geo.p[j+1]+a.pos[1], geo.p[j+2]+a.pos[2]);
+      artN.push(geo.n[j],geo.n[j+1],geo.n[j+2]);
+      artC.push(...a.col);
+    }
+  });
+  if(meshes.artifacts) {
+    gl.deleteVertexArray(meshes.artifacts.vao);
+    // 简单重建
+  }
+  meshes.artifacts = makeMesh(artP, artN, null, artC);
+}
+
+// ===== 粒子更新 =====
+function updateParticles(dt) {
+  for(let i=0;i<CFG.numParticles;i++){
+    const idx=i*4;
+    particleData[idx] += (Math.sin(state.time*0.3+i)*0.5) * dt;
+    particleData[idx+1] -= (1.5+Math.sin(i)*0.5) * dt;
+    particleData[idx+2] += Math.cos(state.time*0.2+i*0.1) * dt * 0.3;
+    particleData[idx+3] = 0.3 + 0.7 * Math.abs(Math.sin(state.time+i));
+    const h = sampleH(particleData[idx], particleData[idx+2]);
+    if(particleData[idx+1] < h) {
+      particleData[idx] = state.pos[0] + (Math.random()-.5)*100;
+      particleData[idx+1] = 25 + Math.random()*20;
+      particleData[idx+2] = state.pos[2] + (Math.random()-.5)*100;
+    }
+  }
+}
+
+// ===== 生物更新 =====
+let creatureMesh;
+function updateCreatures(time) {
+  const crP=[], crN=[], crC=[];
+  creatures.forEach(cr => {
+    const x = cr.base[0] + Math.sin(time*cr.speed+cr.phase)*cr.drift;
+    const y = cr.base[1] + Math.sin(time*cr.speed*1.5+cr.phase*2)*1.5;
+    const z = cr.base[2] + Math.cos(time*cr.speed*0.7+cr.phase)*cr.drift;
+    const geo = genSphere(cr.size, 6);
+    for(let j=0;j<geo.p.length;j+=3){
+      crP.push(geo.p[j]+x, geo.p[j+1]+y, geo.p[j+2]+z);
+      crN.push(geo.n[j],geo.n[j+1],geo.n[j+2]);
+      crC.push(...cr.color);
+    }
+    for(let t=0;t<4;t++){
+      const a=t/4*Math.PI*2+time*0.5;
+      const len=cr.size*3;
+      const tx=x+Math.cos(a)*len, tz=z+Math.sin(a)*len;
+      const w=0.04;
+      const perp=[Math.cos(a+Math.PI/2)*w, 0, Math.sin(a+Math.PI/2)*w];
+      crP.push(x+perp[0],y-cr.size,z+perp[2], x-perp[0],y-cr.size,z-perp[2], tx,y-cr.size-len*0.3,tz);
+      crN.push(0,1,0, 0,1,0, 0,1,0);
+      crC.push(...cr.color,...cr.color,...cr.color);
+    }
+  });
+  if(creatureMesh) gl.deleteVertexArray(creatureMesh.vao);
+  creatureMesh = makeMesh(crP, crN, null, crC);
+  meshes.creatures = creatureMesh;
+}
+
+// ===== 渲染 =====
+const tmpMat1 = m4.c(), tmpMat2 = m4.c(), tmpMat3 = m4.c(), tmpVP = m4.c();
+const identityMat = m4.id(m4.c());
+
+function renderScene(viewMat, projMat, time) {
+  m4.mul(tmpVP, projMat, viewMat);
+  const camPos = [viewMat[12]*-1 - (viewMat[0]*viewMat[12]+viewMat[4]*viewMat[13]+viewMat[8]*viewMat[14]),
+                   viewMat[13]*-1 - (viewMat[1]*viewMat[12]+viewMat[5]*viewMat[13]+viewMat[9]*viewMat[14]),
+                   viewMat[14]*-1 - (viewMat[2]*viewMat[12]+viewMat[6]*viewMat[13]+viewMat[10]*viewMat[14])];
+  // 简化: 从view矩阵提取相机位置
+  const cp = [-viewMat[12], -viewMat[13], -viewMat[14]];
+  // 更准确: 逆转view矩阵的平移部分
+  const invView = m4.c();
+  // viewMat是列主序, 提取相机世界位置
+  const cx = -(viewMat[0]*viewMat[12] + viewMat[1]*viewMat[13] + viewMat[2]*viewMat[14]);
+  const cy = -(viewMat[4]*viewMat[12] + viewMat[5]*viewMat[13] + viewMat[6]*viewMat[14]);
+  const cz = -(viewMat[8]*viewMat[12] + viewMat[9]*viewMat[13] + viewMat[10]*viewMat[14]);
+  const camPos2 = [cx, cy, cz];
+
+  gl.clearColor(CFG.fogColor[0], CFG.fogColor[1], CFG.fogColor[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  // 1. 天空
+  gl.depthMask(false);
+  gl.useProgram(progs.sky);
+  gl.uniform1f(progs.sky.u.uTime, time);
+  gl.bindVertexArray(meshes.sky.vao);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.bindVertexArray(null);
+  gl.depthMask(true);
+
+  // 2. 地形 (带顶点颜色)
+  gl.useProgram(progs.world);
+  gl.uniformMatrix4fv(progs.world.u.uVP, false, tmpVP);
+  gl.uniformMatrix4fv(progs.world.u.uModel, false, identityMat);
+  gl.uniform3fv(progs.world.u.uCamPos, camPos2);
+  gl.uniform3f(progs.world.u.uColor, 1,1,1);
+  gl.uniform3f(progs.world.u.uEmissive, 0,0,0);
+  gl.uniform3fv(progs.world.u.uFogCol, CFG.fogColor);
+  gl.uniform1f(progs.world.u.uFogD, CFG.fogDensity);
+  gl.uniform1f(progs.world.u.uTime, time);
+  drawMesh(meshes.terrain);
+
+  // 3. 废墟
+  if(meshes.ruins) {
+    gl.uniformMatrix4fv(progs.world.u.uModel, false, identityMat);
+    gl.uniform3f(progs.world.u.uColor, 1,1,1);
+    drawMesh(meshes.ruins);
+  }
+
+  // 4. 洞穴
+  if(meshes.cave) {
+    gl.uniformMatrix4fv(progs.world.u.uModel, false, identityMat);
+    gl.uniform3f(progs.world.u.uColor, 1,1,1);
+    drawMesh(meshes.cave);
+  }
+
+  // 5. 发光物体 (加法混合)
+  gl.depthMask(false);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+  gl.useProgram(progs.glow);
+  gl.uniformMatrix4fv(progs.glow.u.uVP, false, tmpVP);
+  gl.uniform3fv(progs.glow.u.uCamPos, camPos2);
+  gl.uniform1f(progs.glow.u.uTime, time);
+  if(meshes.glow) drawMesh(meshes.glow);
+  if(meshes.artifacts) drawMesh(meshes.artifacts);
+  if(meshes.creatures) drawMesh(meshes.creatures);
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+
+  // 6. 天气粒子
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+  gl.useProgram(progs.particle);
+  gl.uniformMatrix4fv(progs.particle.u.uVP, false, tmpVP);
+  const pVAO = gl.createVertexArray();
+  gl.bindVertexArray(pVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, particleBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, particleData, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 16, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 16, 12);
+  gl.drawArrays(gl.POINTS, 0, CFG.numParticles);
+  gl.bindVertexArray(null);
+  gl.deleteVertexArray(pVAO);
+  gl.disable(gl.BLEND);
+
+  // 7. 传送光束
+  if(state.teleportPt) {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(progs.line);
+    gl.uniformMatrix4fv(progs.line.u.uVP, false, tmpVP);
+    gl.uniform3f(progs.line.u.uCol, 0, 1, 0.5);
+    gl.bindVertexArray(meshes.beam.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, meshes.beam.buf);
+    const beamData = new Float32Array([...camPos2, ...state.teleportPt]);
+    gl.bufferData(gl.ARRAY_BUFFER, beamData, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.LINES, 0, 2);
+    gl.bindVertexArray(null);
+	gl.disable(gl.BLEND);
+  }
+}
+
+// ===== 视图矩阵构建 =====
+function buildViewMatrix(out, pos, yaw, pitch) {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  // 前向量（看向的方向取反用于lookAt）
+  const fx = -sy * cp, fy = sp, fz = -cy * cp;
+  const target = v3.add(pos, [fx, fy, fz]);
+  m4.look(out, pos, target, [0, 1, 0]);
+  return out;
+}
+
+// ===== 桌面渲染 =====
+function renderDesktop(time) {
+  const aspect = canvas.width / canvas.height;
+  const proj = m4.persp(m4.c(), Math.PI / 2.2, aspect, 0.1, 300);
+  const view = m4.c();
+  buildViewMatrix(view, state.pos, state.yaw, state.pitch);
+  renderScene(view, proj, time);
+}
+
+// ===== WebVR / WebXR 会话 =====
+let xrSession = null, xrRefSpace = null, xrInputSources = [];
+const vrButton = document.getElementById('enterVR');
+
+function onVRSessionStarted(session) {
+  xrSession = session;
+  session.addEventListener('end', onVRSessionEnded);
+  session.addEventListener('inputsourceschange', e => {
+    xrInputSources = Array.from(session.inputSources);
+  });
+  gl.makeXRCompatible().then(() => {
+    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl, { antialias: true }) });
+    session.requestReferenceSpace('local-floor').then(refSpace => {
+      xrRefSpace = refSpace;
+      state.inVR = true;
+      vrButton.style.display = 'none';
+      document.getElementById('crosshair').style.display = 'none';
+      document.getElementById('instructions').style.display = 'none';
+      if (!audioCtx) initAudio();
+    });
+  });
+}
+
+function onVRSessionEnded() {
+  xrSession = null;
+  xrRefSpace = null;
+  state.inVR = false;
+  vrButton.style.display = 'block';
+}
+
+function processXRInputs(frame, refSpace) {
+  for (const source of xrInputSources) {
+    if (!source.gamepad) continue;
+    // 手柄位置
+    if (source.gripSpace) {
+      const gripPose = frame.getPose(source.gripSpace, refSpace);
+      if (gripPose) {
+        const p = gripPose.transform.position;
+        const gp = [p.x, p.y, p.z];
+        // 触发键 - 抓取/交互
+        if (source.gamepad.buttons[0] && source.gamepad.buttons[0].pressed) {
+          const a = checkNearbyArtifact(gp, 2.0);
+          if (a) discoverArtifact(a);
+        }
+        // 摇杆移动 - 左手
+        if (source.handedness === 'left' && source.gamepad.axes.length >= 2) {
+          const ax = source.gamepad.axes[0], az = source.gamepad.axes[1];
+          if (Math.abs(ax) > 0.15 || Math.abs(az) > 0.15) {
+            const dir = v3.norm([-ax, 0, -az]);
+            state.pos = v3.add(state.pos, v3.scl(dir, CFG.moveSpeed * 0.016));
+            const h = sampleH(state.pos[0], state.pos[2]);
+            state.pos[1] = Math.max(h + CFG.eyeHeight, state.pos[1]);
+          }
+        }
+      }
+    }
+    // 射线 - 右手指向
+    if (source.targetRaySpace && source.handedness === 'right') {
+      const rayPose = frame.getPose(source.targetRaySpace, refSpace);
+      if (rayPose) {
+        const p = rayPose.transform.position;
+        const q = rayPose.transform.orientation;
+        // 四元数转前方向
+        const fx = 1 - 2*(q.y*q.y + q.z*q.z);
+        const fy = 2*(q.x*q.y + q.w*q.z);
+        const fz = 2*(q.x*q.z - q.w*q.y);
+        const origin = [p.x, p.y, p.z];
+        const dir = v3.norm([fx, fy, fz]);
+        const rc = raycastTerrain(origin, dir);
+        if (rc.hit && source.gamepad.buttons[1] && source.gamepad.buttons[1].pressed) {
+          state.pos = [rc.point[0], rc.point[1] + CFG.eyeHeight, rc.point[2]];
+        }
+      }
+    }
+  }
+}
+
+function renderXRFrame(timestamp, frame) {
+  if (!xrSession || !xrRefSpace) return;
+  const time = timestamp / 1000;
+  const dt = time - state.lastTime;
+  state.lastTime = time;
+  state.time = time;
+
+  processXRInputs(frame, xrRefSpace);
+  updateParticles(dt);
+  if (Math.floor(time * 2) !== Math.floor((time - dt) * 2)) {
+    updateCreatures(time);
+  }
+  checkBiomeDiscovery();
+  updateHUD();
+
+  const layer = xrSession.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+
+  const pose = frame.getViewerPose(xrRefSpace);
+  if (pose) {
+    for (const view of pose.views) {
+      const vp = layer.getViewport(view);
+      gl.viewport(vp.x, vp.y, vp.width, vp.height);
+      const proj = view.projectionMatrix;
+      const viewMat = new Float32Array(view.transform.inverse.matrix);
+      renderScene(viewMat, proj, time);
+    }
+  }
+
+  xrSession.requestAnimationFrame(renderXRFrame);
+}
+
+// ===== HUD =====
+function updateHUD() {
+  const h = sampleH(state.pos[0], state.pos[2]);
+  const depth = Math.max(0, h - state.pos[1] + CFG.eyeHeight).toFixed(1);
+  const found = artifacts.filter(a => a.found).length;
+  hudEl.textContent =
+    `POS ${state.pos[0].toFixed(0)} ${state.pos[1].toFixed(0)} ${state.pos[2].toFixed(0)}\n` +
+    `ALT ${(state.pos[1] - CFG.eyeHeight).toFixed(1)}m\n` +
+    `DEPTH ${depth}m\n` +
+    `ARTIFACTS ${found}/${artifacts.length}\n` +
+    `REGIONS ${state.visitedBiomes.size}/5`;
+}
+
+// ===== 窗口大小调整 =====
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(canvas.clientWidth * dpr);
+  canvas.height = Math.floor(canvas.clientHeight * dpr);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+window.addEventListener('resize', resize);
+
+// ===== 主循环（桌面模式）=====
+let creatureTimer = 0;
+function desktopLoop(now) {
+  if (state.inVR) return;
+  requestAnimationFrame(desktopLoop);
+  const time = now / 1000;
+  const dt = Math.min(time - state.lastTime, 0.05);
+  state.lastTime = time;
+  state.time = time;
+
+  updateDesktop(dt);
+  updateParticles(dt);
+  creatureTimer += dt;
+  if (creatureTimer > 0.5) { creatureTimer = 0; updateCreatures(time); }
+  checkBiomeDiscovery();
+  updateHUD();
+  resize();
+  renderDesktop(time);
+}
+
+// ===== VR 按钮初始化 =====
+function initVRButton() {
+  if (navigator.xr) {
+    navigator.xr.isSessionSupported('immersive-vr').then(supported => {
+      if (supported) {
+        vrButton.style.display = 'block';
+        vrButton.addEventListener('click', () => {
+          if (!audioCtx) initAudio();
+          navigator.xr.requestSession('immersive-vr', {
+            optionalFeatures: ['local-floor', 'bounded-floor']
+          }).then(onVRSessionStarted);
+        });
+      }
+    });
+  }
+}
+
+// ===== 启动 =====
+function init() {
+  logEl = document.getElementById('logEntries');
+  toastEl = document.getElementById('toast');
+  hudEl = document.getElementById('hud');
+
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+
+  initHeightmap();
+  initShaders();
+
+  // 初始位置
+  state.pos[1] = sampleH(0, 0) + CFG.eyeHeight;
+
+  buildWorld();
+  updateCreatures(0);
+
+  initDesktopInput();
+  initVRButton();
+  resize();
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('instructions').style.opacity = '1';
+
+  state.lastTime = performance.now() / 1000;
+  requestAnimationFrame(desktopLoop);
+
+  // 开始时发现起始区域
+  setTimeout(() => {
+    discoveries.push({ name: 'Awakening', desc: 'Consciousness emerges on an alien world', time: 0 });
+    updateLog();
+    document.getElementById('log').style.display = 'block';
+    showToast('WELCOME TO XYPHOS-7');
+  }, 500);
+}
+
+init();
+</script>
+</body>
+</html>

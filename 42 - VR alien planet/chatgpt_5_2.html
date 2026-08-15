@@ -1,0 +1,1614 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>XV-DAWN (WebXR Alien Planet)</title>
+  <style>
+    html, body { margin:0; height:100%; background:#000; overflow:hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    canvas { width:100%; height:100%; display:block; }
+    #ui {
+      position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+      background: radial-gradient(ellipse at center, rgba(0,20,40,.85), rgba(0,0,0,.92));
+      color:#7ff; text-shadow:0 0 18px rgba(0,255,255,.45);
+    }
+    #panel { width:min(760px, 92vw); padding:26px 24px; border:1px solid rgba(127,255,255,.25); background:rgba(0,10,18,.45); backdrop-filter: blur(6px); }
+    h1 { margin:0 0 8px 0; font-size: clamp(22px, 4vw, 36px); letter-spacing:.18em; }
+    p { margin:10px 0; line-height:1.35; opacity:.92; font-size: clamp(12px, 2.2vw, 15px); }
+    #row { display:flex; gap:12px; align-items:center; margin-top:14px; flex-wrap:wrap; }
+    button {
+      appearance:none; border:1px solid rgba(127,255,255,.6); color:#7ff; background:rgba(0,30,55,.35);
+      padding:12px 16px; cursor:pointer; font: inherit; letter-spacing:.12em;
+      box-shadow: 0 0 0 1px rgba(127,255,255,.08) inset, 0 0 22px rgba(0,255,255,.12);
+    }
+    button:hover { background:rgba(0,255,255,.12); }
+    #status { opacity:.85; font-size: 12px; }
+    #hud {
+      position:fixed; left:16px; bottom:14px; color:#bff; font-size:13px; pointer-events:none;
+      text-shadow: 0 0 10px rgba(0,0,0,.9);
+      padding:10px 12px; border:1px solid rgba(127,255,255,.18); background:rgba(0,0,0,.25);
+      display:none;
+    }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <div id="panel">
+    <h1>XV-DAWN</h1>
+    <p>
+      You are standing on a quiet, unfamiliar world: crystal plains, fungal groves, basalt ridges, ancient ruins,
+      drifting wildlife, and breathing cave mouths.
+    </p>
+    <p>
+      Controls (typical VR controllers):
+      <br>• Left stick: move
+      <br>• Right stick X: turn
+      <br>• Trigger near an artifact: grab/release
+      <br>• Bring a grabbed artifact close to your headset: analyze/collect
+      <br>• Press a face button (A/X or similar): <b>Scan pulse</b> (reveals points of interest)
+    </p>
+    <div id="row">
+      <button id="enter">ENTER VR</button>
+      <div id="status">WebXR required. No non‑XR fallback is provided.</div>
+    </div>
+  </div>
+</div>
+
+<div id="hud">Artifacts: <span id="ac">0</span>/<span id="at">0</span> · Biome: <span id="bm">—</span></div>
+
+<script>
+(() => {
+  "use strict";
+
+  // =========================
+  // No libraries. No fallback.
+  // WebXR immersive-vr only.
+  // =========================
+
+  const canvas = document.getElementById("c");
+  const ui = document.getElementById("ui");
+  const enterBtn = document.getElementById("enter");
+  const statusEl = document.getElementById("status");
+  const hud = document.getElementById("hud");
+  const acEl = document.getElementById("ac");
+  const atEl = document.getElementById("at");
+  const bmEl = document.getElementById("bm");
+
+  // ---------- Math ----------
+  const TAU = Math.PI * 2;
+  const clamp = (x,a,b)=>Math.max(a,Math.min(b,x));
+  const lerp = (a,b,t)=>a+(b-a)*t;
+  const smoothstep = (a,b,t)=>{ t=clamp((t-a)/(b-a),0,1); return t*t*(3-2*t); };
+
+  class Vec3 {
+    constructor(x=0,y=0,z=0){ this.x=x; this.y=y; this.z=z; }
+    set(x,y,z){ this.x=x; this.y=y; this.z=z; return this; }
+    copy(v){ this.x=v.x; this.y=v.y; this.z=v.z; return this; }
+    add(v){ this.x+=v.x; this.y+=v.y; this.z+=v.z; return this; }
+    sub(v){ this.x-=v.x; this.y-=v.y; this.z-=v.z; return this; }
+    muls(s){ this.x*=s; this.y*=s; this.z*=s; return this; }
+    len(){ return Math.hypot(this.x,this.y,this.z); }
+    norm(){ const l=this.len()||1; return this.muls(1/l); }
+    clone(){ return new Vec3(this.x,this.y,this.z); }
+    static dist(a,b){ return Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z); }
+  }
+
+  function yawFromQuat(q) {
+    // yaw (Y axis) from quaternion (x,y,z,w), right-handed
+    const x=q.x, y=q.y, z=q.z, w=q.w;
+    // yaw = atan2(2(wy + xz), 1 - 2(y^2 + z^2))
+    return Math.atan2(2*(w*y + x*z), 1 - 2*(y*y + z*z));
+  }
+
+  function rotY(v, yaw) {
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    return new Vec3(c*v.x - s*v.z, v.y, s*v.x + c*v.z);
+  }
+
+  function makeWorldToRef(out16, playerPos, playerYaw) {
+    // worldToRef = RotY(-yaw) * Translate(-pos)
+    const cy = Math.cos(playerYaw);
+    const sy = Math.sin(playerYaw);
+    // RotY(-yaw):
+    // [ cy 0  sy 0
+    //   0  1  0  0
+    //  -sy 0  cy 0
+    //   0  0  0  1 ]
+    const tx = -(cy*playerPos.x + sy*playerPos.z);
+    const ty = -playerPos.y;
+    const tz = (sy*playerPos.x - cy*playerPos.z);
+
+    // Column-major
+    out16[0]=cy;  out16[1]=0; out16[2]=-sy; out16[3]=0;
+    out16[4]=0;   out16[5]=1; out16[6]=0;   out16[7]=0;
+    out16[8]=sy;  out16[9]=0; out16[10]=cy; out16[11]=0;
+    out16[12]=tx; out16[13]=ty; out16[14]=tz; out16[15]=1;
+    return out16;
+  }
+
+  function refToWorldPoint(pRef, playerPos, playerYaw) {
+    // world = RotY(yaw)*ref + pos
+    const c = Math.cos(playerYaw), s = Math.sin(playerYaw);
+    const x = c*pRef.x - s*pRef.z + playerPos.x;
+    const y = pRef.y + playerPos.y;
+    const z = s*pRef.x + c*pRef.z + playerPos.z;
+    return new Vec3(x,y,z);
+  }
+
+  function mat4Identity() {
+    const m = new Float32Array(16);
+    m[0]=1; m[5]=1; m[10]=1; m[15]=1;
+    return m;
+  }
+  function mat4FromTRS(tx,ty,tz, yaw=0, sx=1,sy=1,sz=1) {
+    const c=Math.cos(yaw), s=Math.sin(yaw);
+    // Column-major: R*Scale, then T
+    const m = new Float32Array(16);
+    m[0]= c*sx; m[1]=0;   m[2]=-s*sx; m[3]=0;
+    m[4]= 0;    m[5]=sy;  m[6]=0;     m[7]=0;
+    m[8]= s*sz; m[9]=0;   m[10]=c*sz; m[11]=0;
+    m[12]=tx;   m[13]=ty; m[14]=tz;   m[15]=1;
+    return m;
+  }
+
+  // ---------- Noise (value noise + FBM) ----------
+  class Noise2D {
+    constructor(seed=1337) {
+      this.p = new Uint8Array(512);
+      let s = seed >>> 0;
+      const rnd = () => (s = (s*1664525 + 1013904223)>>>0, s/4294967296);
+      const a = new Uint8Array(256);
+      for(let i=0;i<256;i++) a[i]=i;
+      for(let i=255;i>0;i--){
+        const j = (rnd()*(i+1))|0;
+        const t=a[i]; a[i]=a[j]; a[j]=t;
+      }
+      for(let i=0;i<512;i++) this.p[i]=a[i&255];
+    }
+    grad(h,x,z) {
+      const u = (h&1) ? x : -x;
+      const v = (h&2) ? z : -z;
+      return u+v;
+    }
+    fade(t){ return t*t*(3-2*t); }
+    lerp(a,b,t){ return a+(b-a)*t; }
+    n(x,z){
+      const X = Math.floor(x)&255, Z = Math.floor(z)&255;
+      const xf = x - Math.floor(x), zf = z - Math.floor(z);
+      const u = this.fade(xf), v = this.fade(zf);
+      const p = this.p;
+      const aa = p[p[X] + Z];
+      const ab = p[p[X] + Z + 1];
+      const ba = p[p[X+1] + Z];
+      const bb = p[p[X+1] + Z + 1];
+      const x1 = this.lerp(this.grad(aa, xf, zf), this.grad(ba, xf-1, zf), u);
+      const x2 = this.lerp(this.grad(ab, xf, zf-1), this.grad(bb, xf-1, zf-1), u);
+      return this.lerp(x1, x2, v);
+    }
+    fbm(x,z, oct=5, lac=2.0, gain=0.5){
+      let amp=0.5, freq=1.0, sum=0;
+      for(let i=0;i<oct;i++){
+        sum += amp*this.n(x*freq, z*freq);
+        freq*=lac; amp*=gain;
+      }
+      return sum;
+    }
+  }
+  const noise = new Noise2D((Math.random()*1e9)|0);
+
+  // ---------- World design ----------
+  const WORLD_RADIUS = 190;
+  const CAVES = [];
+  const RUIN_SITES = [];
+  const ARTIFACTS = [];
+
+  function randRange(a,b){ return a + Math.random()*(b-a); }
+  function pick(arr){ return arr[(Math.random()*arr.length)|0]; }
+
+  // Place caves and ruins (handcrafted-ish but randomized)
+  for(let i=0;i<6;i++){
+    const ang = Math.random()*TAU;
+    const r = randRange(60, 165);
+    CAVES.push({
+      x: Math.cos(ang)*r,
+      z: Math.sin(ang)*r,
+      radius: randRange(18, 28),
+      depth: randRange(14, 24),
+      floor: -randRange(18, 26)
+    });
+  }
+  for(let i=0;i<3;i++){
+    const ang = Math.random()*TAU;
+    const r = randRange(50, 150);
+    RUIN_SITES.push({
+      x: Math.cos(ang)*r,
+      z: Math.sin(ang)*r,
+      yaw: Math.random()*TAU
+    });
+  }
+
+  function biomeAt(x,z,h) {
+    // Biome noise controls: crystal / fungal / swamp / basalt ridge
+    const b = noise.fbm(x*0.0025, z*0.0025, 4, 2.0, 0.52);
+    const ridge = Math.abs(noise.fbm(x*0.008, z*0.008, 3, 2.1, 0.55));
+    if (h > 18 || ridge > 0.58) return "basalt";
+    if (b > 0.22) return "crystal";
+    if (b < -0.22) return "fungal";
+    return "swamp";
+  }
+
+  function caveCarve(x,z) {
+    let carve = 0;
+    let caveMode = 0; // 0 none, 1 cave influence
+    for(const c of CAVES){
+      const dx=x-c.x, dz=z-c.z;
+      const d = Math.hypot(dx,dz);
+      if (d < c.radius) {
+        caveMode = 1;
+        const t = 1 - (d / c.radius);
+        const bowl = t*t*(3-2*t);
+        carve = Math.min(carve, -c.depth*bowl);
+      }
+    }
+    return { carve, caveMode };
+  }
+
+  function heightAt(x,z) {
+    // Base alien terrain
+    const m1 = noise.fbm(x*0.006, z*0.006, 5, 2.0, 0.5);
+    const m2 = noise.fbm(x*0.02, z*0.02, 3, 2.2, 0.52);
+    let h = m1*18 + m2*4;
+
+    // Craters / broken plates
+    const plate = Math.abs(noise.fbm(x*0.0012, z*0.0012, 2, 2.0, 0.5));
+    h -= smoothstep(0.35, 0.75, plate) * 6;
+
+    // Caves as depressions (walkable descent)
+    const { carve } = caveCarve(x,z);
+    h += carve;
+
+    // Clamp very far edges (soft boundary)
+    const d = Math.hypot(x,z);
+    if (d > WORLD_RADIUS) {
+      const t = smoothstep(WORLD_RADIUS, WORLD_RADIUS+25, d);
+      h -= t*40;
+    }
+    return h;
+  }
+
+  function groundInfo(x,z) {
+    const h = heightAt(x,z);
+    const { caveMode } = caveCarve(x,z);
+    const b = biomeAt(x,z,h);
+    return { h, caveMode, biome: b };
+  }
+
+  // ---------- WebGL2 ----------
+  const gl = canvas.getContext("webgl2", { alpha:false, antialias:true, depth:true, xrCompatible:true });
+  if (!gl) {
+    statusEl.textContent = "WebGL2 unavailable. This experience requires WebGL2 + WebXR.";
+    enterBtn.disabled = true;
+    return;
+  }
+
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(s) || "";
+      throw new Error(info);
+    }
+    return s;
+  }
+  function link(vs, fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, vs);
+    gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    if(!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      const info = gl.getProgramInfoLog(p) || "";
+      throw new Error(info);
+    }
+    return p;
+  }
+
+  // Vertex format:
+  // a_pos(3) a_nrm(3) a_col(3) a_emi(3) a_glow(1) a_tag(1) = 14 floats
+  const STRIDE = 14*4;
+
+  // ---------- Shaders ----------
+  const VS_STATIC = `#version 300 es
+  precision highp float;
+  layout(location=0) in vec3 a_pos;
+  layout(location=1) in vec3 a_nrm;
+  layout(location=2) in vec3 a_col;
+  layout(location=3) in vec3 a_emi;
+  layout(location=4) in float a_glow;
+  layout(location=5) in float a_tag;
+
+  uniform mat4 u_proj;
+  uniform mat4 u_view;
+  uniform mat4 u_worldToRef;
+  uniform mat4 u_modelWorld;
+  uniform float u_time;
+
+  out vec3 v_worldPos;
+  out vec3 v_worldNrm;
+  out vec3 v_col;
+  out vec3 v_emi;
+  out float v_glow;
+  out float v_tag;
+  out float v_dist;
+
+  void main(){
+    vec4 wpos = u_modelWorld * vec4(a_pos, 1.0);
+    vec3 wnrm = mat3(u_modelWorld) * a_nrm;
+
+    v_worldPos = wpos.xyz;
+    v_worldNrm = normalize(wnrm);
+    v_col = a_col;
+    v_emi = a_emi;
+    v_glow = a_glow;
+    v_tag = a_tag;
+
+    vec4 rpos = u_worldToRef * wpos;
+    vec4 vpos = u_view * rpos;
+    v_dist = length(vpos.xyz);
+    gl_Position = u_proj * vpos;
+  }`;
+
+  const VS_INST = `#version 300 es
+  precision highp float;
+  layout(location=0) in vec3 a_pos;
+  layout(location=1) in vec3 a_nrm;
+  layout(location=2) in vec3 a_col;
+  layout(location=3) in vec3 a_emi;
+  layout(location=4) in float a_glow;
+  layout(location=5) in float a_tag;
+
+  // Per-instance
+  layout(location=6) in vec4 i_posScale;   // xyz pos, w scale
+  layout(location=7) in vec4 i_yawSeedGlow;// x yaw, y seed, z glowBoost, w kind
+  layout(location=8) in vec3 i_tint;       // color tint
+
+  uniform mat4 u_proj;
+  uniform mat4 u_view;
+  uniform mat4 u_worldToRef;
+  uniform float u_time;
+
+  out vec3 v_worldPos;
+  out vec3 v_worldNrm;
+  out vec3 v_col;
+  out vec3 v_emi;
+  out float v_glow;
+  out float v_tag;
+  out float v_dist;
+
+  mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
+
+  void main(){
+    float yaw = i_yawSeedGlow.x;
+    float seed = i_yawSeedGlow.y;
+    float glowB = i_yawSeedGlow.z;
+    float kind = i_yawSeedGlow.w;
+
+    vec3 pos = a_pos * i_posScale.w;
+
+    // Vegetation sway (kind 1=flora, 2=crystal, 3=ruin)
+    if(kind < 1.5) {
+      float sway = sin(u_time*1.7 + seed*10.0) * 0.08;
+      pos.xz = rot(sway) * pos.xz;
+    } else if(kind < 2.5) {
+      float tw = sin(u_time*2.1 + seed*12.0) * 0.04;
+      pos.xy = rot(tw) * pos.xy;
+    }
+
+    // Wildlife (kind 9): orbit + wing ripple
+    vec3 instancePos = i_posScale.xyz;
+    if(kind > 8.5) {
+      float r = i_posScale.w;
+      float ang = u_time*(0.35 + 0.35*fract(seed*7.3)) + seed*TAU;
+      instancePos.x += cos(ang) * r;
+      instancePos.z += sin(ang) * r;
+      instancePos.y += sin(u_time*0.9 + seed*12.0) * 1.4;
+      float flap = sin(u_time*8.0 + seed*10.0);
+      pos.y += flap * (pos.x*0.15);
+    }
+
+    // Yaw rotate
+    vec2 xz = rot(yaw) * pos.xz;
+    pos.x = xz.x; pos.z = xz.y;
+
+    vec3 wpos3 = instancePos + pos;
+    vec3 wnrm = a_nrm;
+    vec2 nxz = rot(yaw) * wnrm.xz;
+    wnrm.x = nxz.x; wnrm.z = nxz.y;
+
+    v_worldPos = wpos3;
+    v_worldNrm = normalize(wnrm);
+    v_col = a_col * i_tint;
+    v_emi = a_emi * (1.0 + glowB);
+    v_glow = a_glow + glowB;
+    v_tag = a_tag;
+
+    vec4 rpos = u_worldToRef * vec4(wpos3, 1.0);
+    vec4 vpos = u_view * rpos;
+    v_dist = length(vpos.xyz);
+    gl_Position = u_proj * vpos;
+  }`;
+
+  // for VS_INST: need TAU constant; inject via #define
+  const VS_INST_SRC = `#version 300 es
+  #define TAU 6.28318530718
+  ` + VS_INST.split("\n").slice(2).join("\n");
+
+  const FS_LIT = `#version 300 es
+  precision highp float;
+
+  in vec3 v_worldPos;
+  in vec3 v_worldNrm;
+  in vec3 v_col;
+  in vec3 v_emi;
+  in float v_glow;
+  in float v_tag;
+  in float v_dist;
+
+  uniform float u_time;
+  uniform vec3 u_fogColor;
+  uniform float u_fogDensity;
+
+  uniform vec3 u_scanOrigin;     // world
+  uniform float u_scanFront;     // meters
+  uniform float u_scanStrength;  // 0..1
+
+  uniform float u_materialBoost; // used for artifacts/hand highlight
+
+  out vec4 o;
+
+  void main(){
+    vec3 n = normalize(v_worldNrm);
+    vec3 lightDir = normalize(vec3(0.48, 0.78, 0.32)); // world-fixed "sun"
+    float ndl = max(dot(n, lightDir), 0.0);
+
+    // Slight rim for mystery
+    vec3 viewDir = normalize(vec3(0.0, 0.2, 1.0)); // approximate
+    float rim = pow(1.0 - max(dot(n, -viewDir), 0.0), 2.2) * 0.25;
+
+    // Glow pulse
+    float pulse = 0.75 + 0.25*sin(u_time*2.7 + v_glow*5.0);
+
+    // Scan ring in world space (discovery mechanic)
+    float sd = distance(v_worldPos, u_scanOrigin);
+    float ring = exp(-abs(sd - u_scanFront) * 2.5) * u_scanStrength;
+    float scanBoost = ring * (0.35 + 0.65*smoothstep(0.4, 2.0, v_tag)); // emphasize POIs
+
+    vec3 base = v_col * (0.25 + 0.85*ndl) + rim*v_col;
+    vec3 emi = (v_emi * pulse) + (scanBoost * vec3(0.35, 0.9, 1.0));
+    emi *= (1.0 + u_materialBoost);
+
+    vec3 col = base + emi;
+
+    // Fog
+    float fog = 1.0 - exp(-u_fogDensity * v_dist * v_dist * 0.002);
+    col = mix(col, u_fogColor, clamp(fog, 0.0, 1.0));
+
+    o = vec4(col, 1.0);
+  }`;
+
+  const VS_PART = `#version 300 es
+  precision highp float;
+  layout(location=0) in vec3 a_off;   // offset around player in world space
+  layout(location=1) in float a_seed;
+
+  uniform mat4 u_proj;
+  uniform mat4 u_view;
+  uniform mat4 u_worldToRef;
+
+  uniform vec3 u_playerWorld;
+  uniform float u_time;
+  uniform vec3 u_wind;
+  uniform float u_fallSpeed;
+
+  out float v_alpha;
+
+  void main(){
+    vec3 p = u_playerWorld + a_off;
+
+    // falling loop + wind drift
+    float t = u_time * u_fallSpeed + a_seed*10.0;
+    p.y = u_playerWorld.y + mod(a_off.y - t, 48.0);
+    p.xz += u_wind.xz * (0.2 + 0.8*fract(a_seed*3.1)) * t * 0.02;
+
+    vec4 rpos = u_worldToRef * vec4(p, 1.0);
+    vec4 vpos = u_view * rpos;
+    gl_Position = u_proj * vpos;
+
+    float d = length(vpos.xyz);
+    gl_PointSize = clamp(22.0 / (0.8 + d), 1.0, 6.0);
+    v_alpha = clamp(1.0 - d*0.015, 0.0, 1.0);
+  }`;
+
+  const FS_PART = `#version 300 es
+  precision highp float;
+  in float v_alpha;
+  uniform vec3 u_color;
+  out vec4 o;
+  void main(){
+    vec2 uv = gl_PointCoord*2.0 - 1.0;
+    float r2 = dot(uv, uv);
+    float a = exp(-r2*2.2) * v_alpha;
+    o = vec4(u_color, a);
+  }`;
+
+  let progStatic, progInst, progPart;
+  try {
+    progStatic = link(compile(gl.VERTEX_SHADER, VS_STATIC), compile(gl.FRAGMENT_SHADER, FS_LIT));
+    progInst   = link(compile(gl.VERTEX_SHADER, VS_INST_SRC), compile(gl.FRAGMENT_SHADER, FS_LIT));
+    progPart   = link(compile(gl.VERTEX_SHADER, VS_PART), compile(gl.FRAGMENT_SHADER, FS_PART));
+  } catch (e) {
+    statusEl.textContent = "Shader compilation failed (see console).";
+    console.error(e);
+    enterBtn.disabled = true;
+    return;
+  }
+
+  function uni(p, name){ return gl.getUniformLocation(p, name); }
+
+  const Ustatic = {
+    proj: uni(progStatic, "u_proj"),
+    view: uni(progStatic, "u_view"),
+    worldToRef: uni(progStatic, "u_worldToRef"),
+    model: uni(progStatic, "u_modelWorld"),
+    time: uni(progStatic, "u_time"),
+    fogColor: uni(progStatic, "u_fogColor"),
+    fogDensity: uni(progStatic, "u_fogDensity"),
+    scanOrigin: uni(progStatic, "u_scanOrigin"),
+    scanFront: uni(progStatic, "u_scanFront"),
+    scanStrength: uni(progStatic, "u_scanStrength"),
+    materialBoost: uni(progStatic, "u_materialBoost"),
+  };
+
+  const Uinst = {
+    proj: uni(progInst, "u_proj"),
+    view: uni(progInst, "u_view"),
+    worldToRef: uni(progInst, "u_worldToRef"),
+    time: uni(progInst, "u_time"),
+    fogColor: uni(progInst, "u_fogColor"),
+    fogDensity: uni(progInst, "u_fogDensity"),
+    scanOrigin: uni(progInst, "u_scanOrigin"),
+    scanFront: uni(progInst, "u_scanFront"),
+    scanStrength: uni(progInst, "u_scanStrength"),
+    materialBoost: uni(progInst, "u_materialBoost"),
+  };
+
+  const Upart = {
+    proj: uni(progPart, "u_proj"),
+    view: uni(progPart, "u_view"),
+    worldToRef: uni(progPart, "u_worldToRef"),
+    playerWorld: uni(progPart, "u_playerWorld"),
+    time: uni(progPart, "u_time"),
+    wind: uni(progPart, "u_wind"),
+    fallSpeed: uni(progPart, "u_fallSpeed"),
+    color: uni(progPart, "u_color"),
+  };
+
+  // ---------- Mesh helpers ----------
+  function createMeshInterleaved(vertsFloat32, indicesUint32) {
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, vertsFloat32, gl.STATIC_DRAW);
+
+    const ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indicesUint32, gl.STATIC_DRAW);
+
+    // attributes 0..5
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, STRIDE, 0);
+    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, STRIDE, 3*4);
+    gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 3, gl.FLOAT, false, STRIDE, 6*4);
+    gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, STRIDE, 9*4);
+    gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, STRIDE, 12*4);
+    gl.enableVertexAttribArray(5); gl.vertexAttribPointer(5, 1, gl.FLOAT, false, STRIDE, 13*4);
+
+    gl.bindVertexArray(null);
+    return { vao, count: indicesUint32.length };
+  }
+
+  function createInstanced(geom, instanceData, instanceCount) {
+    // geom: {vao, count} created from same vertex format
+    gl.bindVertexArray(geom.vao);
+
+    const instanceVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, instanceVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, instanceData, gl.STATIC_DRAW);
+
+    // Instance layout:
+    // location 6: vec4 i_posScale
+    // location 7: vec4 i_yawSeedGlow
+    // location 8: vec3 i_tint
+    const instStride = (4+4+3)*4; // bytes
+    let off = 0;
+
+    gl.enableVertexAttribArray(6);
+    gl.vertexAttribPointer(6, 4, gl.FLOAT, false, instStride, off);
+    gl.vertexAttribDivisor(6, 1);
+    off += 4*4;
+
+    gl.enableVertexAttribArray(7);
+    gl.vertexAttribPointer(7, 4, gl.FLOAT, false, instStride, off);
+    gl.vertexAttribDivisor(7, 1);
+    off += 4*4;
+
+    gl.enableVertexAttribArray(8);
+    gl.vertexAttribPointer(8, 3, gl.FLOAT, false, instStride, off);
+    gl.vertexAttribDivisor(8, 1);
+
+    gl.bindVertexArray(null);
+    return { geom, instanceVBO, instanceCount };
+  }
+
+  // ---------- Geometry builders ----------
+  function pushV(arr, px,py,pz, nx,ny,nz, r,g,b, ex,ey,ez, glow, tag) {
+    arr.push(px,py,pz, nx,ny,nz, r,g,b, ex,ey,ez, glow, tag);
+  }
+
+  function buildTerrain(size=420, step=3.0) {
+    const half = size*0.5;
+    const nx = Math.floor(size/step);
+    const nz = Math.floor(size/step);
+
+    // Height cache
+    const H = new Float32Array((nx+1)*(nz+1));
+    const idxH = (ix,iz)=>iz*(nx+1)+ix;
+
+    for(let iz=0; iz<=nz; iz++){
+      for(let ix=0; ix<=nx; ix++){
+        const x = -half + ix*step;
+        const z = -half + iz*step;
+        H[idxH(ix,iz)] = heightAt(x,z);
+      }
+    }
+
+    const verts = [];
+    const inds = [];
+
+    function sample(ix,iz){
+      ix = clamp(ix,0,nx)|0;
+      iz = clamp(iz,0,nz)|0;
+      return H[idxH(ix,iz)];
+    }
+
+    // Vertex per grid point
+    for(let iz=0; iz<=nz; iz++){
+      for(let ix=0; ix<=nx; ix++){
+        const x = -half + ix*step;
+        const z = -half + iz*step;
+        const h = H[idxH(ix,iz)];
+
+        // Central differences normal
+        const hl = sample(ix-1,iz), hr = sample(ix+1,iz);
+        const hd = sample(ix,iz-1), hu = sample(ix,iz+1);
+        const n = new Vec3(hl-hr, 2.0*step, hd-hu).norm();
+
+        const info = groundInfo(x,z);
+        const biome = info.biome;
+
+        let col, emi, glow=0, tag=0;
+
+        if (biome === "crystal") {
+          col = [0.10, 0.55, 0.75];
+          emi = [0.00, 0.05, 0.10];
+          glow = 0.9;
+        } else if (biome === "fungal") {
+          col = [0.25, 0.12, 0.32];
+          emi = [0.06, 0.00, 0.10];
+          glow = 1.1;
+        } else if (biome === "basalt") {
+          col = [0.22, 0.22, 0.25];
+          emi = [0.00, 0.00, 0.00];
+          glow = 0.0;
+        } else { // swamp
+          col = [0.12, 0.30, 0.18];
+          emi = [0.00, 0.00, 0.00];
+          glow = 0.0;
+        }
+
+        // Cave mouth darkening
+        if (info.caveMode === 1) {
+          const shade = 0.55;
+          col = [col[0]*shade, col[1]*shade, col[2]*shade];
+          tag = 1.0; // treat caves as POI for scanning
+        }
+
+        pushV(verts, x,h,z, n.x,n.y,n.z, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      }
+    }
+
+    // Indices
+    const row = nx+1;
+    for(let iz=0; iz<nz; iz++){
+      for(let ix=0; ix<nx; ix++){
+        const a = iz*row + ix;
+        const b = a + 1;
+        const c = a + row;
+        const d = c + 1;
+        inds.push(a,c,b, b,c,d);
+      }
+    }
+
+    return createMeshInterleaved(new Float32Array(verts), new Uint32Array(inds));
+  }
+
+  function buildBox(w,h,d, col=[0.3,0.3,0.35], emi=[0,0,0], glow=0, tag=2) {
+    // Minimal box (12 triangles)
+    const hw=w*0.5, hh=h*0.5, hd=d*0.5;
+    const verts = [];
+    const inds = [];
+    const faces = [
+      // px,py,pz, nx,ny,nz
+      // +Z
+      { n:[0,0,1],  p:[[-hw,-hh, hd],[ hw,-hh, hd],[ hw, hh, hd],[-hw, hh, hd]] },
+      // -Z
+      { n:[0,0,-1], p:[[ hw,-hh,-hd],[-hw,-hh,-hd],[-hw, hh,-hd],[ hw, hh,-hd]] },
+      // +X
+      { n:[1,0,0],  p:[[ hw,-hh, hd],[ hw,-hh,-hd],[ hw, hh,-hd],[ hw, hh, hd]] },
+      // -X
+      { n:[-1,0,0], p:[[-hw,-hh,-hd],[-hw,-hh, hd],[-hw, hh, hd],[-hw, hh,-hd]] },
+      // +Y
+      { n:[0,1,0],  p:[[-hw, hh, hd],[ hw, hh, hd],[ hw, hh,-hd],[-hw, hh,-hd]] },
+      // -Y
+      { n:[0,-1,0], p:[[-hw,-hh,-hd],[ hw,-hh,-hd],[ hw,-hh, hd],[-hw,-hh, hd]] },
+    ];
+    let vi=0;
+    for(const f of faces){
+      const n=f.n;
+      const p=f.p;
+      pushV(verts, p[0][0],p[0][1],p[0][2], n[0],n[1],n[2], col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      pushV(verts, p[1][0],p[1][1],p[1][2], n[0],n[1],n[2], col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      pushV(verts, p[2][0],p[2][1],p[2][2], n[0],n[1],n[2], col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      pushV(verts, p[3][0],p[3][1],p[3][2], n[0],n[1],n[2], col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      inds.push(vi,vi+1,vi+2, vi,vi+2,vi+3);
+      vi += 4;
+    }
+    return createMeshInterleaved(new Float32Array(verts), new Uint32Array(inds));
+  }
+
+  function buildCrystal() {
+    // Tall octa-ish shard (triangles)
+    const verts = [];
+    const inds = [];
+    const col=[0.16,0.85,1.00], emi=[0.05,0.35,0.55];
+    const glow=1.8, tag=2.0; // POI-ish
+    const p = [
+      [0, 2.4, 0],
+      [0, -0.2, 0],
+      [0.45, 0.4, 0],
+      [-0.45, 0.4, 0],
+      [0, 0.4, 0.45],
+      [0, 0.4, -0.45],
+    ];
+    // Faces around top and bottom
+    const faces = [
+      [0,2,4],[0,4,3],[0,3,5],[0,5,2],
+      [1,4,2],[1,3,4],[1,5,3],[1,2,5]
+    ];
+    // per-face normals
+    const vtx = [];
+    let vi=0;
+    for(const f of faces){
+      const a=p[f[0]], b=p[f[1]], c=p[f[2]];
+      const ab = new Vec3(b[0]-a[0],b[1]-a[1],b[2]-a[2]);
+      const ac = new Vec3(c[0]-a[0],c[1]-a[1],c[2]-a[2]);
+      const n = new Vec3(
+        ab.y*ac.z - ab.z*ac.y,
+        ab.z*ac.x - ab.x*ac.z,
+        ab.x*ac.y - ab.y*ac.x
+      ).norm();
+      pushV(vtx, a[0],a[1],a[2], n.x,n.y,n.z, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      pushV(vtx, b[0],b[1],b[2], n.x,n.y,n.z, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      pushV(vtx, c[0],c[1],c[2], n.x,n.y,n.z, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      inds.push(vi,vi+1,vi+2);
+      vi += 3;
+    }
+    return createMeshInterleaved(new Float32Array(vtx), new Uint32Array(inds));
+  }
+
+  function buildMushroom() {
+    // Stem + cap as simple crossed quads and a small dome-ish top (cheap)
+    const verts = [];
+    const inds = [];
+    const stemCol=[0.55,0.55,0.62], stemEmi=[0,0,0], capCol=[0.78,0.20,0.72], capEmi=[0.25,0.02,0.35];
+    const tag=2.0;
+    let vi=0;
+
+    // Stem box
+    const stemH=1.8, stemR=0.18;
+    const stem = buildBox(stemR*2, stemH, stemR*2, stemCol, stemEmi, 0.0, tag);
+    // We can't directly merge that mesh easily here, so we instead approximate with 2 quads:
+    const quads = [
+      // x-aligned
+      [[-stemR,0,0],[ stemR,0,0],[ stemR,stemH,0],[-stemR,stemH,0]],
+      // z-aligned
+      [[0,0,-stemR],[0,0, stemR],[0,stemH, stemR],[0,stemH,-stemR]],
+    ];
+    for(const q of quads){
+      const n = new Vec3(0,0,1); // not accurate; good enough
+      for(const pt of q) pushV(verts, pt[0],pt[1],pt[2], n.x,n.y,n.z, stemCol[0],stemCol[1],stemCol[2], stemEmi[0],stemEmi[1],stemEmi[2], 0.0, tag);
+      inds.push(vi,vi+1,vi+2, vi,vi+2,vi+3); vi+=4;
+    }
+
+    // Cap: a shallow pyramid/dome
+    const capY=stemH, capR=0.75, capH=0.55;
+    const top=[0,capY+capH,0];
+    const ring=[
+      [ capR,capY,0],
+      [ 0,capY,capR],
+      [-capR,capY,0],
+      [ 0,capY,-capR],
+    ];
+    for(let i=0;i<4;i++){
+      const a=ring[i], b=ring[(i+1)&3], c=top;
+      const ab = new Vec3(b[0]-a[0],b[1]-a[1],b[2]-a[2]);
+      const ac = new Vec3(c[0]-a[0],c[1]-a[1],c[2]-a[2]);
+      const n = new Vec3(
+        ab.y*ac.z - ab.z*ac.y,
+        ab.z*ac.x - ab.x*ac.z,
+        ab.x*ac.y - ab.y*ac.x
+      ).norm();
+      pushV(verts, a[0],a[1],a[2], n.x,n.y,n.z, capCol[0],capCol[1],capCol[2], capEmi[0],capEmi[1],capEmi[2], 2.2, tag);
+      pushV(verts, b[0],b[1],b[2], n.x,n.y,n.z, capCol[0],capCol[1],capCol[2], capEmi[0],capEmi[1],capEmi[2], 2.2, tag);
+      pushV(verts, c[0],c[1],c[2], n.x,n.y,n.z, capCol[0],capCol[1],capCol[2], capEmi[0],capEmi[1],capEmi[2], 2.2, tag);
+      inds.push(vi,vi+1,vi+2); vi+=3;
+    }
+
+    return createMeshInterleaved(new Float32Array(verts), new Uint32Array(inds));
+  }
+
+  function buildArtifact() {
+    // A small hovering polyhedron
+    const verts=[];
+    const inds=[];
+    const col=[1.0,0.86,0.22], emi=[0.55,0.42,0.05];
+    const glow=3.2, tag=3.0; // strong POI
+    const p = [
+      [0, 0.55, 0], [0, -0.55, 0],
+      [0.45, 0.0, 0.0], [-0.45, 0.0, 0.0],
+      [0, 0.0, 0.45], [0, 0.0, -0.45]
+    ];
+    const faces = [
+      [0,2,4],[0,4,3],[0,3,5],[0,5,2],
+      [1,4,2],[1,3,4],[1,5,3],[1,2,5]
+    ];
+    let vi=0;
+    for(const f of faces){
+      const a=p[f[0]], b=p[f[1]], c=p[f[2]];
+      const ab=new Vec3(b[0]-a[0],b[1]-a[1],b[2]-a[2]);
+      const ac=new Vec3(c[0]-a[0],c[1]-a[1],c[2]-a[2]);
+      const n=new Vec3(
+        ab.y*ac.z - ab.z*ac.y,
+        ab.z*ac.x - ab.x*ac.z,
+        ab.x*ac.y - ab.y*ac.x
+      ).norm();
+      pushV(verts, a[0],a[1],a[2], n.x,n.y,n.z, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      pushV(verts, b[0],b[1],b[2], n.x,n.y,n.z, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      pushV(verts, c[0],c[1],c[2], n.x,n.y,n.z, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      inds.push(vi,vi+1,vi+2); vi+=3;
+    }
+    return createMeshInterleaved(new Float32Array(verts), new Uint32Array(inds));
+  }
+
+  function buildHandOrb() {
+    // Low-poly sphere-ish (octahedron subdiv 1)
+    const verts=[], inds=[];
+    const col=[0.40,0.95,1.00], emi=[0.10,0.35,0.45];
+    const glow=2.5, tag=0.0;
+    const p = [
+      [0,1,0],[0,-1,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]
+    ];
+    const faces = [
+      [0,2,4],[0,4,3],[0,3,5],[0,5,2],
+      [1,4,2],[1,3,4],[1,5,3],[1,2,5]
+    ];
+    let vi=0;
+    for(const f of faces){
+      const a=p[f[0]], b=p[f[1]], c=p[f[2]];
+      // normalize points for sphere
+      const A=new Vec3(a[0],a[1],a[2]).norm();
+      const B=new Vec3(b[0],b[1],b[2]).norm();
+      const C=new Vec3(c[0],c[1],c[2]).norm();
+      pushV(verts, A.x,A.y,A.z, A.x,A.y,A.z, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      pushV(verts, B.x,B.y,B.z, B.x,B.y,B.z, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      pushV(verts, C.x,C.y,C.z, C.x,C.y,C.z, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+      inds.push(vi,vi+1,vi+2); vi+=3;
+    }
+    return createMeshInterleaved(new Float32Array(verts), new Uint32Array(inds));
+  }
+
+  function buildManta() {
+    // Wildlife: a simple manta-shaped triangle fan
+    const verts=[], inds=[];
+    const col=[0.35,0.80,0.75], emi=[0.02,0.08,0.08];
+    const glow=0.6, tag=0.8;
+    const pts = [
+      [0,0,1.2],
+      [-1.3,0,0.0],
+      [-0.3,0,-1.0],
+      [0.3,0,-1.0],
+      [1.3,0,0.0]
+    ];
+    // normals up-ish
+    for(const p of pts) pushV(verts, p[0],p[1],p[2], 0,1,0, col[0],col[1],col[2], emi[0],emi[1],emi[2], glow, tag);
+    inds.push(0,1,2, 0,2,3, 0,3,4);
+    return createMeshInterleaved(new Float32Array(verts), new Uint32Array(inds));
+  }
+
+  // ---------- Build world meshes ----------
+  const terrain = buildTerrain(420, 3.0);
+  const ruinPillar = buildBox(1.8, 9.5, 1.8, [0.26,0.25,0.30], [0.00,0.00,0.00], 0.0, 2.0);
+  const crystalGeom = buildCrystal();
+  const mushroomGeom = buildMushroom();
+  const artifactGeom = buildArtifact();
+  const handGeom = buildHandOrb();
+  const mantaGeom = buildManta();
+
+  // ---------- Instances ----------
+  function buildInstances() {
+    const crystals = [];
+    const mush = [];
+    const ruins = [];
+    const manta = [];
+
+    const pushInst = (arr, x,y,z, scale, yaw, seed, glowB, kind, tint) => {
+      arr.push(
+        x,y,z,scale,
+        yaw,seed,glowB,kind,
+        tint[0],tint[1],tint[2]
+      );
+    };
+
+    // Crystals + glowing vegetation
+    for(let i=0;i<520;i++){
+      const ang = Math.random()*TAU;
+      const r = Math.sqrt(Math.random()) * (WORLD_RADIUS*0.95);
+      const x = Math.cos(ang)*r;
+      const z = Math.sin(ang)*r;
+      const { h, caveMode, biome } = groundInfo(x,z);
+      if (caveMode) continue;
+
+      const seed = Math.random();
+      const yaw = Math.random()*TAU;
+
+      if (biome === "crystal" && Math.random()<0.75) {
+        const s = randRange(0.8, 2.4);
+        const tint = [0.65+0.35*Math.random(), 0.95, 1.0];
+        pushInst(crystals, x, h, z, s, yaw, seed, randRange(0.2, 1.2), 2.0, tint);
+      } else if (biome === "fungal" && Math.random()<0.65) {
+        const s = randRange(0.9, 2.2);
+        const tint = [0.95, 0.45+0.25*Math.random(), 0.95];
+        pushInst(mush, x, h, z, s, yaw, seed, randRange(0.1, 1.0), 1.0, tint);
+      } else if (biome === "swamp" && Math.random()<0.18) {
+        // reeds as small mushrooms (stylized bioluminescent stalks)
+        const s = randRange(0.6, 1.4);
+        const tint = [0.55, 1.0, 0.75];
+        pushInst(mush, x, h, z, s, yaw, seed, randRange(0.0, 0.6), 1.0, tint);
+      }
+    }
+
+    // Ruins sites (pillars, arch fragments)
+    for(const site of RUIN_SITES){
+      const baseY = heightAt(site.x, site.z);
+      const rings = 2 + ((Math.random()*2)|0);
+      for(let ring=0; ring<rings; ring++){
+        const count = 10 + ((Math.random()*10)|0);
+        const radius = 8 + ring*10 + Math.random()*4;
+        for(let i=0;i<count;i++){
+          const a = (i/count)*TAU + site.yaw + Math.random()*0.08;
+          const x = site.x + Math.cos(a)*radius + randRange(-1.5,1.5);
+          const z = site.z + Math.sin(a)*radius + randRange(-1.5,1.5);
+          const y = heightAt(x,z);
+          const s = randRange(0.7, 1.4);
+          const yaw = Math.random()*TAU;
+          const seed = Math.random();
+          // ruin "runes": small emission in seams
+          const tint = [0.9, 0.85, 1.0];
+          pushInst(ruins, x, y, z, s, yaw, seed, randRange(0.0, 0.25), 3.0, tint);
+        }
+      }
+    }
+
+    // Wildlife (manta floaters): instance scale = orbit radius
+    for(let i=0;i<30;i++){
+      const ang = Math.random()*TAU;
+      const r = randRange(30, 140);
+      const cx = Math.cos(ang)*r;
+      const cz = Math.sin(ang)*r;
+      const cy = 18 + randRange(0, 20) + Math.abs(noise.fbm(cx*0.006, cz*0.006, 3, 2.0, 0.55))*12;
+      const orbitR = randRange(8, 32);
+      const yaw = 0;
+      const seed = Math.random();
+      const glowB = randRange(0.0, 0.35);
+      const tint = [0.6, 1.0, 0.95];
+      // kind 9 = wildlife (special path); i_posScale.w used as orbit radius
+      pushInst(manta, cx, cy, cz, orbitR, yaw, seed, glowB, 9.0, tint);
+    }
+
+    return {
+      crystals: new Float32Array(crystals),
+      mushrooms: new Float32Array(mush),
+      ruins: new Float32Array(ruins),
+      manta: new Float32Array(manta),
+      counts: {
+        crystals: crystals.length/11,
+        mushrooms: mush.length/11,
+        ruins: ruins.length/11,
+        manta: manta.length/11
+      }
+    };
+  }
+
+  const instData = buildInstances();
+  const instCrystals = createInstanced(crystalGeom, instData.crystals, instData.counts.crystals);
+  const instMush = createInstanced(mushroomGeom, instData.mushrooms, instData.counts.mushrooms);
+  const instRuins = createInstanced(ruinPillar, instData.ruins, instData.counts.ruins);
+  const instManta = createInstanced(mantaGeom, instData.manta, instData.counts.manta);
+
+  // ---------- Artifacts placement ----------
+  function placeArtifacts() {
+    const places = [];
+
+    // Some near ruins
+    for(const s of RUIN_SITES){
+      for(let i=0;i<3;i++){
+        const a = Math.random()*TAU;
+        const r = randRange(6, 22);
+        const x = s.x + Math.cos(a)*r;
+        const z = s.z + Math.sin(a)*r;
+        places.push({x,z});
+      }
+    }
+    // Some inside/near caves
+    for(const c of CAVES){
+      for(let i=0;i<2;i++){
+        const a = Math.random()*TAU;
+        const r = randRange(0.2, 0.7)*c.radius;
+        places.push({ x: c.x + Math.cos(a)*r, z: c.z + Math.sin(a)*r });
+      }
+    }
+    // Some random
+    while(places.length < 14){
+      const a = Math.random()*TAU;
+      const r = Math.sqrt(Math.random()) * WORLD_RADIUS*0.9;
+      places.push({ x: Math.cos(a)*r, z: Math.sin(a)*r });
+    }
+
+    const out = [];
+    for(let i=0;i<14;i++){
+      const p = places[i];
+      const y = heightAt(p.x, p.z) + 1.7;
+      out.push({
+        id: i,
+        pos: new Vec3(p.x, y, p.z),
+        vel: new Vec3(0,0,0),
+        yaw: Math.random()*TAU,
+        grabbedBy: null,
+        grabbed: false,
+        collected: false,
+        lastHandWorld: new Vec3(0,0,0),
+        boost: 0
+      });
+    }
+    return out;
+  }
+
+  ARTIFACTS.push(...placeArtifacts());
+  atEl.textContent = ARTIFACTS.length;
+
+  // ---------- Weather particles (GL_POINTS) ----------
+  const PARTICLE_COUNT = 1400;
+  const partVAO = gl.createVertexArray();
+  gl.bindVertexArray(partVAO);
+
+  const partOffsets = new Float32Array(PARTICLE_COUNT*3);
+  const partSeeds = new Float32Array(PARTICLE_COUNT);
+  for(let i=0;i<PARTICLE_COUNT;i++){
+    const x = randRange(-70, 70);
+    const y = randRange(0, 48);
+    const z = randRange(-70, 70);
+    partOffsets[i*3+0]=x;
+    partOffsets[i*3+1]=y;
+    partOffsets[i*3+2]=z;
+    partSeeds[i]=Math.random();
+  }
+
+  const partVBO0 = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, partVBO0);
+  gl.bufferData(gl.ARRAY_BUFFER, partOffsets, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+
+  const partVBO1 = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, partVBO1);
+  gl.bufferData(gl.ARRAY_BUFFER, partSeeds, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1,1,gl.FLOAT,false,0,0);
+
+  gl.bindVertexArray(null);
+
+  // ---------- GL state ----------
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.clearColor(0.02, 0.02, 0.06, 1.0);
+
+  // ---------- XR session ----------
+  let xrSession = null;
+  let xrRefSpace = null;
+
+  // Player movement (world coords); y is ground height.
+  const playerPos = new Vec3(0, heightAt(0,0), 0);
+  let playerYaw = 0;
+
+  const worldToRef = new Float32Array(16);
+  const modelId = mat4Identity();
+
+  // Scan pulse state
+  let scanT = -999;
+  let scanOrigin = new Vec3(0,0,0);
+
+  // HUD state
+  let collected = 0;
+  function updateHUD(biomeName){
+    acEl.textContent = String(collected);
+    bmEl.textContent = biomeName;
+  }
+
+  // Input tracking per source
+  const srcState = new Map(); // XRInputSource -> {triggerPrev, scanPrev, squeezePrev, grabbedId?}
+  function getSrc(s){
+    let st = srcState.get(s);
+    if(!st){ st={triggerPrev:false, scanPrev:false, squeezePrev:false, grabbedId:-1}; srcState.set(s, st); }
+    return st;
+  }
+
+  function hapticPulse(source, intensity=0.35, duration=25) {
+    try {
+      const h = source.gamepad?.hapticActuators?.[0];
+      if (h && h.pulse) h.pulse(intensity, duration);
+    } catch(_) {}
+  }
+
+  function nearestArtifact(worldPoint, maxDist=0.35) {
+    let best = null;
+    let bd = maxDist;
+    for(const a of ARTIFACTS){
+      if(a.collected) continue;
+      if(a.grabbed) continue;
+      const d = Vec3.dist(a.pos, worldPoint);
+      if(d < bd){ bd = d; best = a; }
+    }
+    return best;
+  }
+
+  function artifactBySource(source){
+    for(const a of ARTIFACTS) if(a.grabbed && a.grabbedBy === source) return a;
+    return null;
+  }
+
+  // ---------- Rendering helpers ----------
+  function setCommonLitUniforms(program, U, proj, view, time, fogColor, fogDensity) {
+    gl.useProgram(program);
+    gl.uniformMatrix4fv(U.proj, false, proj);
+    gl.uniformMatrix4fv(U.view, false, view);
+    gl.uniformMatrix4fv(U.worldToRef, false, worldToRef);
+    gl.uniform1f(U.time, time);
+    gl.uniform3f(U.fogColor, fogColor[0], fogColor[1], fogColor[2]);
+    gl.uniform1f(U.fogDensity, fogDensity);
+
+    // Scan uniforms
+    gl.uniform3f(U.scanOrigin, scanOrigin.x, scanOrigin.y, scanOrigin.z);
+    const front = (time - scanT) * 22.0; // m/s
+    const strength = clamp(1.0 - (time - scanT) * 0.85, 0.0, 1.0);
+    gl.uniform1f(U.scanFront, front);
+    gl.uniform1f(U.scanStrength, strength);
+
+    gl.uniform1f(U.materialBoost, 0.0);
+  }
+
+  function drawStatic(mesh, model) {
+    gl.bindVertexArray(mesh.vao);
+    gl.uniformMatrix4fv(Ustatic.model, false, model);
+    gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0);
+  }
+
+  function drawInst(inst) {
+    gl.bindVertexArray(inst.geom.vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, inst.geom.count, gl.UNSIGNED_INT, 0, inst.instanceCount);
+  }
+
+  // ---------- Main XR frame loop ----------
+  let lastTime = 0;
+
+  function onXRFrame(t, frame) {
+    xrSession.requestAnimationFrame(onXRFrame);
+    const time = t * 0.001;
+    const dt = lastTime ? Math.min(0.04, time - lastTime) : 0.016;
+    lastTime = time;
+
+    const pose = frame.getViewerPose(xrRefSpace);
+    if (!pose) return;
+
+    // Viewer head pose (reference space)
+    const view0 = pose.views[0];
+    const headRefPos = view0.transform.position;
+    const headYaw = yawFromQuat(view0.transform.orientation);
+
+    // Movement: choose left/right sources by handedness when available
+    let moveAxis = null;
+    let turnAxis = null;
+    let scanPressedEdge = false;
+
+    // Build locomotion signals
+    for (const source of xrSession.inputSources) {
+      const gp = source.gamepad;
+      if (!gp) continue;
+
+      const axes = gp.axes || [];
+      const st = getSrc(source);
+
+      // scan: any face button rising edge
+      const scanNow = !!(gp.buttons?.[3]?.pressed || gp.buttons?.[4]?.pressed || gp.buttons?.[5]?.pressed);
+      if (scanNow && !st.scanPrev) scanPressedEdge = true;
+      st.scanPrev = scanNow;
+
+      if (source.handedness === "left") {
+        moveAxis = axes.length >= 2 ? {x: axes[0], y: axes[1], squeeze: !!gp.buttons?.[1]?.pressed } : moveAxis;
+      } else if (source.handedness === "right") {
+        turnAxis = axes.length >= 2 ? {x: axes[2] ?? axes[0], y: axes[3] ?? axes[1]} : turnAxis;
+      } else {
+        // If unknown, pick first as mover, second as turner
+        if (!moveAxis && axes.length>=2) moveAxis = {x: axes[0], y: axes[1], squeeze: !!gp.buttons?.[1]?.pressed};
+        else if (!turnAxis && axes.length>=2) turnAxis = {x: axes[0], y: axes[1]};
+      }
+    }
+
+    // Scan pulse (discovery)
+    if (scanPressedEdge) {
+      scanT = time;
+      // scan originates at head world position
+      const headWorld = refToWorldPoint(new Vec3(headRefPos.x, headRefPos.y, headRefPos.z), playerPos, playerYaw);
+      scanOrigin.copy(headWorld);
+    }
+
+    // Turning (right stick X)
+    if (turnAxis) {
+      const tx = turnAxis.x || 0;
+      const dead = 0.18;
+      if (Math.abs(tx) > dead) {
+        playerYaw += tx * dt * 1.65;
+      }
+    }
+
+    // Movement (left stick) relative to head yaw (comfort: yaw-only)
+    if (moveAxis) {
+      const x = moveAxis.x || 0;
+      const y = moveAxis.y || 0;
+      const dead = 0.16;
+      let mx = Math.abs(x)>dead ? x : 0;
+      let my = Math.abs(y)>dead ? y : 0;
+
+      const speed = moveAxis.squeeze ? 5.5 : 3.2; // "boost" when squeeze held
+      const fwd = new Vec3(0,0,-1);
+      const right = new Vec3(1,0,0);
+      const dir = rotY(new Vec3(right.x*mx + fwd.x*my, 0, right.z*mx + fwd.z*my), headYaw + playerYaw).muls(speed*dt);
+
+      playerPos.x += dir.x;
+      playerPos.z += dir.z;
+
+      // soft boundary
+      const d = Math.hypot(playerPos.x, playerPos.z);
+      if (d > WORLD_RADIUS*0.98) {
+        const k = (WORLD_RADIUS*0.98) / d;
+        playerPos.x *= k; playerPos.z *= k;
+      }
+    }
+
+    // Ground follow (lets you walk down into cave depressions)
+    const g = groundInfo(playerPos.x, playerPos.z);
+    playerPos.y = g.h;
+
+    // Update HUD biome
+    updateHUD(g.biome);
+
+    // Update worldToRef matrix
+    makeWorldToRef(worldToRef, playerPos, playerYaw);
+
+    // Head world position for "analyze" collection
+    const headWorld = refToWorldPoint(new Vec3(headRefPos.x, headRefPos.y, headRefPos.z), playerPos, playerYaw);
+
+    // Artifact physics / interaction
+    // gravity + drag if not grabbed
+    for (const a of ARTIFACTS) {
+      if (a.collected) continue;
+
+      a.boost = Math.max(0, a.boost - dt*2.2);
+
+      if (!a.grabbed) {
+        a.vel.y -= 9.2 * dt;
+        a.vel.muls(Math.exp(-dt*0.9));
+        a.pos.add(a.vel.clone().muls(dt));
+
+        // collide with ground (bounce)
+        const gy = heightAt(a.pos.x, a.pos.z) + 0.9;
+        if (a.pos.y < gy) {
+          a.pos.y = gy;
+          a.vel.y = Math.abs(a.vel.y) * 0.28;
+          a.vel.x *= 0.65;
+          a.vel.z *= 0.65;
+        }
+
+        // mild hover stabilization
+        a.yaw += dt * 0.8;
+      }
+    }
+
+    // Controller interactions (grab/release + highlight + collect when close to head)
+    const handsToDraw = []; // {model, boost}
+    for (const source of xrSession.inputSources) {
+      const gp = source.gamepad;
+      const st = getSrc(source);
+
+      if (!gp || !source.gripSpace) continue;
+
+      const gripPose = frame.getPose(source.gripSpace, xrRefSpace);
+      if (!gripPose) continue;
+
+      const p = gripPose.transform.position;
+      const handRef = new Vec3(p.x, p.y, p.z);
+      const handWorld = refToWorldPoint(handRef, playerPos, playerYaw);
+
+      // Draw a small orb for hands (world-space model)
+      const handScale = 0.06;
+      handsToDraw.push({
+        model: mat4FromTRS(handWorld.x, handWorld.y, handWorld.z, 0, handScale, handScale, handScale),
+        boost: 0.0
+      });
+
+      const triggerNow = !!gp.buttons?.[0]?.pressed;
+      const triggerEdgeDown = triggerNow && !st.triggerPrev;
+      const triggerEdgeUp = !triggerNow && st.triggerPrev;
+      st.triggerPrev = triggerNow;
+
+      // If already holding something, keep it attached to hand
+      const held = artifactBySource(source);
+      if (held) {
+        held.grabbed = true;
+        held.grabbedBy = source;
+
+        // follow hand; estimate velocity from hand movement
+        const prev = held.lastHandWorld.clone();
+        held.lastHandWorld.copy(handWorld);
+        const hv = handWorld.clone().sub(prev).muls(1/Math.max(0.001, dt));
+
+        held.pos.copy(handWorld).add(new Vec3(0,0,-0.09)); // small "in palm" offset (approx)
+        held.vel.copy(hv);
+
+        // Collect if brought close to headset (analyze)
+        if (Vec3.dist(held.pos, headWorld) < 0.32) {
+          held.collected = true;
+          held.grabbed = false;
+          held.grabbedBy = null;
+          collected++;
+          hapticPulse(source, 0.6, 40);
+        }
+
+        if (triggerEdgeUp) {
+          // release throw
+          held.grabbed = false;
+          held.grabbedBy = null;
+          // keep last velocity
+          hapticPulse(source, 0.25, 20);
+        }
+
+        continue;
+      }
+
+      // Not holding: highlight nearby artifact
+      const near = nearestArtifact(handWorld, 0.45);
+      if (near) near.boost = 1.2;
+
+      if (triggerEdgeDown) {
+        const target = nearestArtifact(handWorld, 0.30);
+        if (target) {
+          target.grabbed = true;
+          target.grabbedBy = source;
+          target.lastHandWorld.copy(handWorld);
+          target.boost = 2.0;
+          hapticPulse(source, 0.45, 25);
+        }
+      }
+    }
+
+    // Biome-driven atmosphere
+    let fogColor = [0.02, 0.02, 0.06];
+    let fogDensity = 0.020;
+    let weatherColor = [0.55, 0.85, 0.80];
+    let wind = new Vec3(0.8, 0, 0.35);
+    let fallSpeed = 1.0;
+
+    if (g.biome === "crystal") {
+      fogColor = [0.03, 0.06, 0.10];
+      fogDensity = 0.022;
+      weatherColor = [0.45, 0.95, 1.00];
+      wind.set(1.1,0,0.55);
+      fallSpeed = 0.9;
+    } else if (g.biome === "fungal") {
+      fogColor = [0.04, 0.02, 0.06];
+      fogDensity = 0.030;
+      weatherColor = [0.85, 0.45, 0.95];
+      wind.set(0.4,0,0.35);
+      fallSpeed = 0.7;
+    } else if (g.biome === "basalt") {
+      fogColor = [0.02, 0.02, 0.03];
+      fogDensity = 0.018;
+      weatherColor = [0.70, 0.80, 0.95];
+      wind.set(1.4,0,0.9);
+      fallSpeed = 1.4;
+    } else { // swamp
+      fogColor = [0.02, 0.03, 0.03];
+      fogDensity = 0.026;
+      weatherColor = [0.55, 0.95, 0.72];
+      wind.set(0.6,0,0.25);
+      fallSpeed = 0.85;
+    }
+
+    // Deep cave interior: darker + denser
+    if (g.caveMode === 1 && playerPos.y < -6) {
+      fogColor = [0.00, 0.00, 0.02];
+      fogDensity = 0.055;
+      weatherColor = [0.20, 0.90, 0.65];
+      wind.set(0.15,0,0.08);
+      fallSpeed = 0.45;
+    }
+
+    // ---------- Render ----------
+    const layer = xrSession.renderState.baseLayer;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    // Particles: additive, no depth write
+    gl.depthMask(false);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    gl.useProgram(progPart);
+    gl.bindVertexArray(partVAO);
+    gl.uniformMatrix4fv(Upart.worldToRef, false, worldToRef);
+    gl.uniform1f(Upart.time, time);
+    gl.uniform3f(Upart.playerWorld, playerPos.x, playerPos.y, playerPos.z);
+    gl.uniform3f(Upart.wind, wind.x, wind.y, wind.z);
+    gl.uniform1f(Upart.fallSpeed, fallSpeed);
+    gl.uniform3f(Upart.color, weatherColor[0], weatherColor[1], weatherColor[2]);
+
+    // Lit geometry: normal blend
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+
+    for (const view of pose.views) {
+      const vp = layer.getViewport(view);
+      gl.viewport(vp.x, vp.y, vp.width, vp.height);
+
+      const proj = view.projectionMatrix;
+      const viewM = view.transform.inverse.matrix;
+
+      // Terrain + dynamic objects (static program)
+      setCommonLitUniforms(progStatic, Ustatic, proj, viewM, time, fogColor, fogDensity);
+      gl.bindVertexArray(terrain.vao);
+      gl.uniformMatrix4fv(Ustatic.model, false, modelId);
+      gl.drawElements(gl.TRIANGLES, terrain.count, gl.UNSIGNED_INT, 0);
+
+      // Instanced props + wildlife (inst program)
+      setCommonLitUniforms(progInst, Uinst, proj, viewM, time, fogColor, fogDensity);
+      gl.uniform1f(Uinst.materialBoost, 0.0);
+      drawInst(instCrystals);
+      drawInst(instMush);
+      drawInst(instRuins);
+      drawInst(instManta);
+
+      // Artifacts (static program, per-object)
+      gl.useProgram(progStatic);
+      gl.uniformMatrix4fv(Ustatic.proj, false, proj);
+      gl.uniformMatrix4fv(Ustatic.view, false, viewM);
+      gl.uniformMatrix4fv(Ustatic.worldToRef, false, worldToRef);
+      gl.uniform1f(Ustatic.time, time);
+      gl.uniform3f(Ustatic.fogColor, fogColor[0], fogColor[1], fogColor[2]);
+      gl.uniform1f(Ustatic.fogDensity, fogDensity);
+      gl.uniform3f(Ustatic.scanOrigin, scanOrigin.x, scanOrigin.y, scanOrigin.z);
+      gl.uniform1f(Ustatic.scanFront, (time - scanT) * 22.0);
+      gl.uniform1f(Ustatic.scanStrength, clamp(1.0 - (time - scanT) * 0.85, 0.0, 1.0));
+
+      gl.bindVertexArray(artifactGeom.vao);
+      for (const a of ARTIFACTS) {
+        if (a.collected) continue;
+        const bob = Math.sin(time*2.2 + a.id*1.7) * 0.08;
+        const model = mat4FromTRS(a.pos.x, a.pos.y + bob, a.pos.z, a.yaw + time*0.35, 0.9,0.9,0.9);
+        gl.uniformMatrix4fv(Ustatic.model, false, model);
+        gl.uniform1f(Ustatic.materialBoost, a.boost);
+        gl.drawElements(gl.TRIANGLES, artifactGeom.count, gl.UNSIGNED_INT, 0);
+      }
+
+      // Hands (static)
+      gl.bindVertexArray(handGeom.vao);
+      for (const h of handsToDraw) {
+        gl.uniformMatrix4fv(Ustatic.model, false, h.model);
+        gl.uniform1f(Ustatic.materialBoost, 0.6);
+        gl.drawElements(gl.TRIANGLES, handGeom.count, gl.UNSIGNED_INT, 0);
+      }
+
+      // Weather particles per-view
+      gl.depthMask(false);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+      gl.useProgram(progPart);
+      gl.uniformMatrix4fv(Upart.proj, false, proj);
+      gl.uniformMatrix4fv(Upart.view, false, viewM);
+      gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
+      gl.disable(gl.BLEND);
+      gl.depthMask(true);
+    }
+  }
+
+  // ---------- Start XR ----------
+  async function startXR() {
+    if (!navigator.xr) {
+      statusEl.textContent = "navigator.xr is unavailable. This experience requires WebXR.";
+      return;
+    }
+    const ok = await navigator.xr.isSessionSupported("immersive-vr").catch(()=>false);
+    if (!ok) {
+      statusEl.textContent = "Immersive VR session not supported on this device/browser.";
+      return;
+    }
+
+    xrSession = await navigator.xr.requestSession("immersive-vr", {
+      requiredFeatures: ["local-floor"]
+    });
+
+    xrSession.addEventListener("end", () => {
+      xrSession = null;
+      xrRefSpace = null;
+      ui.style.display = "flex";
+      hud.style.display = "none";
+      statusEl.textContent = "Session ended.";
+    });
+
+    // Ensure XR compatibility
+    if (gl.makeXRCompatible) await gl.makeXRCompatible();
+
+    const layer = new XRWebGLLayer(xrSession, gl);
+    xrSession.updateRenderState({ baseLayer: layer });
+    xrRefSpace = await xrSession.requestReferenceSpace("local-floor");
+
+    // UI off, HUD on
+    ui.style.display = "none";
+    hud.style.display = "block";
+
+    collected = 0;
+    updateHUD(groundInfo(playerPos.x, playerPos.z).biome);
+
+    lastTime = 0;
+    xrSession.requestAnimationFrame(onXRFrame);
+  }
+
+  enterBtn.addEventListener("click", () => startXR().catch(err => {
+    console.error(err);
+    statusEl.textContent = "Failed to start XR session (see console).";
+  }));
+
+})();
+</script>
+</body>
+</html>

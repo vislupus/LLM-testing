@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Exoplanet XR — Alien World Explorer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Courier New',monospace}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#ui{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10}
+#enterVR{position:fixed;bottom:32px;left:50%;transform:translateX(-50%);padding:14px 36px;
+  background:linear-gradient(135deg,#1a0a2e,#0d1b2a);border:1px solid #7b2ff7;color:#c4a0ff;
+  font-family:'Courier New',monospace;font-size:15px;letter-spacing:3px;cursor:pointer;
+  pointer-events:all;border-radius:4px;text-transform:uppercase;transition:all .3s;z-index:20}
+#enterVR:hover{background:linear-gradient(135deg,#2a1a4e,#1d2b4a);border-color:#a060ff;
+  box-shadow:0 0 30px rgba(123,47,247,.4);color:#e0c0ff}
+#enterVR.hidden{display:none}
+#hud{position:fixed;top:20px;left:20px;color:#7be0c0;font-size:12px;letter-spacing:1px;
+  opacity:.85;line-height:1.8;pointer-events:none}
+#hud .val{color:#c4a0ff}
+#crosshair{position:fixed;top:50%;left:50%;width:20px;height:20px;transform:translate(-50%,-50%);
+  pointer-events:none;opacity:.5}
+#crosshair::before,#crosshair::after{content:'';position:absolute;background:#7be0c0}
+#crosshair::before{width:2px;height:100%;left:50%;transform:translateX(-50%)}
+#crosshair::after{width:100%;height:2px;top:50%;transform:translateY(-50%)}
+#discovery{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);color:#ffd700;
+  font-size:14px;letter-spacing:2px;opacity:0;transition:opacity .6s;text-align:center;
+  text-shadow:0 0 20px rgba(255,215,0,.6);pointer-events:none}
+#discovery.show{opacity:1}
+#instructions{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);color:#5a7a8a;
+  font-size:11px;letter-spacing:1px;text-align:center;pointer-events:none;opacity:.7}
+#loading{position:fixed;top:0;left:0;width:100%;height:100%;background:#030810;display:flex;
+  flex-direction:column;align-items:center;justify-content:center;z-index:100;transition:opacity 1s}
+#loading.done{opacity:0;pointer-events:none}
+#loading h1{color:#7b2ff7;font-size:28px;letter-spacing:8px;margin-bottom:12px}
+#loading p{color:#4a6a7a;font-size:12px;letter-spacing:3px}
+.bar{width:200px;height:2px;background:#111;margin-top:20px;border-radius:2px;overflow:hidden}
+.bar div{width:0%;height:100%;background:linear-gradient(90deg,#7b2ff7,#00e0a0);transition:width .3s}
+</style>
+</head>
+<body>
+<div id="loading"><h1>EXOPLANET XR</h1><p>GENERATING WORLD</p><div class="bar"><div id="loadBar"></div></div></div>
+<canvas id="gl"></canvas>
+<div id="ui">
+  <div id="hud">
+    BIOME: <span class="val" id="biomeLabel">—</span><br>
+    ALT: <span class="val" id="altLabel">0</span>m<br>
+    FOUND: <span class="val" id="foundLabel">0</span>/8
+  </div>
+  <div id="crosshair"></div>
+  <div id="discovery"></div>
+  <div id="instructions">WASD move · Mouse look · E interact · Click to lock pointer</div>
+</div>
+<button id="enterVR">▶ ENTER VR</button>
+
+<script>
+"use strict";
+// ═══════════════════════════════════════════════════════
+//  MATH UTILITIES
+// ═══════════════════════════════════════════════════════
+const PI=Math.PI,TAU=PI*2,sin=Math.sin,cos=Math.cos,abs=Math.abs,sqrt=Math.sqrt,
+  floor=Math.floor,min=Math.min,max=Math.max,clamp=(v,a,b)=>max(a,min(b,v)),
+  mix=(a,b,t)=>a+(b-a)*t,fract=v=>v-floor(v),smoothstep=(e0,e1,x)=>{let t=clamp((x-e0)/(e1-e0),0,1);return t*t*(3-2*t)};
+
+function vec3(x=0,y=0,z=0){return[x,y,z]}
+function v3add(a,b){return[a[0]+b[0],a[1]+b[1],a[2]+b[2]]}
+function v3sub(a,b){return[a[0]-b[0],a[1]-b[1],a[2]-b[2]]}
+function v3scale(a,s){return[a[0]*s,a[1]*s,a[2]*s]}
+function v3dot(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]}
+function v3cross(a,b){return[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]}
+function v3len(a){return sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2])}
+function v3norm(a){let l=v3len(a)||1;return[a[0]/l,a[1]/l,a[2]/l]}
+function v3lerp(a,b,t){return[mix(a[0],b[0],t),mix(a[1],b[1],t),mix(a[2],b[2],t)]}
+
+const mat4={
+  create(){return new Float32Array(16)},
+  identity(o){o=o||new Float32Array(16);o.fill(0);o[0]=o[5]=o[10]=o[15]=1;return o},
+  perspective(o,fov,asp,near,far){
+    let f=1/Math.tan(fov/2),nf=1/(near-far);
+    o.fill(0);o[0]=f/asp;o[5]=f;o[10]=(far+near)*nf;o[11]=-1;o[14]=2*far*near*nf;return o},
+  lookAt(o,eye,center,up){
+    let z=v3norm(v3sub(eye,center)),x=v3norm(v3cross(up,z)),y=v3cross(z,x);
+    o[0]=x[0];o[1]=y[0];o[2]=z[0];o[3]=0;
+    o[4]=x[1];o[5]=y[1];o[6]=z[1];o[7]=0;
+    o[8]=x[2];o[9]=y[2];o[10]=z[2];o[11]=0;
+    o[12]=-v3dot(x,eye);o[13]=-v3dot(y,eye);o[14]=-v3dot(z,eye);o[15]=1;return o},
+  multiply(o,a,b){
+    for(let i=0;i<4;i++)for(let j=0;j<4;j++){
+      o[j*4+i]=0;for(let k=0;k<4;k++)o[j*4+i]+=a[k*4+i]*b[j*4+k];}return o},
+  translate(o,m,v){
+    for(let i=0;i<4;i++)o[12+i]=m[i]*v[0]+m[4+i]*v[1]+m[8+i]*v[2]+m[12+i];
+    if(o!==m)for(let i=0;i<12;i++)o[i]=m[i];return o},
+  rotateY(o,m,r){
+    let s=sin(r),c=cos(r);
+    for(let i=0;i<4;i++){let a=m[i],b=m[8+i];o[i]=a*c+b*s;o[8+i]=b*c-a*s;}
+    if(o!==m){o[4]=m[4];o[5]=m[5];o[6]=m[6];o[7]=m[7];o[12]=m[12];o[13]=m[13];o[14]=m[14];o[15]=m[15];}return o},
+  invert(o,a){
+    let a00=a[0],a01=a[1],a02=a[2],a03=a[3],a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+      a20=a[8],a21=a[9],a22=a[10],a23=a[11],a30=a[12],a31=a[13],a32=a[14],a33=a[15],
+      b00=a00*a11-a01*a10,b01=a00*a12-a02*a10,b02=a00*a13-a03*a10,b03=a01*a12-a02*a11,
+      b04=a01*a13-a03*a11,b05=a02*a13-a03*a12,b06=a20*a31-a21*a30,b07=a20*a32-a22*a30,
+      b08=a20*a33-a23*a30,b09=a21*a32-a22*a31,b10=a21*a33-a23*a31,b11=a22*a33-a23*a32,
+      det=b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;
+    if(!det)return null;det=1/det;
+    o[0]=(a11*b11-a12*b10+a13*b09)*det;o[1]=(a02*b10-a01*b11-a03*b09)*det;
+    o[2]=(a31*b05-a32*b04+a33*b03)*det;o[3]=(a22*b04-a21*b05-a23*b03)*det;
+    o[4]=(a12*b08-a10*b11-a13*b07)*det;o[5]=(a00*b11-a02*b08+a03*b07)*det;
+    o[6]=(a32*b02-a30*b05-a33*b01)*det;o[7]=(a20*b05-a22*b02+a23*b01)*det;
+    o[8]=(a10*b10-a11*b08+a13*b06)*det;o[9]=(a01*b08-a00*b10-a03*b06)*det;
+    o[10]=(a30*b04-a31*b02+a33*b00)*det;o[11]=(a21*b02-a20*b04-a23*b00)*det;
+    o[12]=(a11*b07-a10*b09-a12*b06)*det;o[13]=(a00*b09-a01*b07+a02*b06)*det;
+    o[14]=(a31*b01-a30*b03-a32*b00)*det;o[15]=(a20*b03-a21*b01+a22*b00)*det;return o}
+};
+
+// ═══════════════════════════════════════════════════════
+//  SIMPLEX NOISE
+// ═══════════════════════════════════════════════════════
+const perm=new Uint8Array(512),grad3=[[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
+(function(){const p=[];for(let i=0;i<256;i++)p[i]=i;for(let i=255;i>0;i--){let j=floor(Math.random()*(i+1));[p[i],p[j]]=[p[j],p[i]];}for(let i=0;i<512;i++)perm[i]=p[i&255];})();
+
+function noise2D(x,y){
+  const F2=.5*(sqrt(3)-1),G2=(3-sqrt(3))/6;
+  let s=(x+y)*F2,i=floor(x+s),j=floor(y+s),t=(i+j)*G2,
+    X0=i-t,Y0=j-t,x0=x-X0,y0=y-Y0,i1,j1;
+  if(x0>y0){i1=1;j1=0}else{i1=0;j1=1}
+  let x1=x0-i1+G2,y1=y0-j1+G2,x2=x0-1+2*G2,y2=y0-1+2*G2;
+  i&=255;j&=255;
+  let gi0=perm[i+perm[j]]%12,gi1=perm[i+i1+perm[j+j1]]%12,gi2=perm[i+1+perm[j+1]]%12,n0=0,n1=0,n2=0,
+    t0=.5-x0*x0-y0*y0;
+  if(t0>=0){t0*=t0;n0=t0*t0*(grad3[gi0][0]*x0+grad3[gi0][1]*y0)}
+  let t1=.5-x1*x1-y1*y1;
+  if(t1>=0){t1*=t1;n1=t1*t1*(grad3[gi1][0]*x1+grad3[gi1][1]*y1)}
+  let t2=.5-x2*x2-y2*y2;
+  if(t2>=0){t2*=t2;n2=t2*t2*(grad3[gi2][0]*x2+grad3[gi2][1]*y2)}
+  return 70*(n0+n1+n2);
+}
+
+function fbm(x,y,oct=6){let v=0,a=.5,f=1;for(let i=0;i<oct;i++){v+=a*noise2D(x*f,y*f);f*=2;a*=.5;}return v}
+function ridge(x,y,oct=5){let v=0,a=.5,f=1;for(let i=0;i<oct;i++){let n=abs(noise2D(x*f,y*f));v+=a*(1-2*n);f*=2.1;a*=.5;}return v}
+
+// ═══════════════════════════════════════════════════════
+//  WEBGL SETUP
+// ═══════════════════════════════════════════════════════
+const canvas=document.getElementById('gl');
+const gl=canvas.getContext('webgl2',{xrCompatible:true,antialias:true,alpha:false,stencil:false});
+if(!gl){document.body.innerHTML='<h1 style="color:#f44;padding:40px">WebGL 2 required</h1>';throw'no gl';}
+
+function compileShader(src,type){
+  const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(s));gl.deleteShader(s);return null}return s}
+
+function createProgram(vs,fs){
+  const p=gl.createProgram();gl.attachShader(p,compileShader(vs,gl.VERTEX_SHADER));
+  gl.attachShader(p,compileShader(fs,gl.FRAGMENT_SHADER));gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)){console.error(gl.getProgramInfoLog(p));return null}return p}
+
+function getUniforms(prog,...names){const u={};names.forEach(n=>u[n]=gl.getUniformLocation(prog,n));return u}
+function getAttribs(prog,...names){const a={};names.forEach(n=>a[n]=gl.getAttribLocation(prog,n));return a}
+
+function createVAO(prog,buffers){
+  const vao=gl.createVertexArray();gl.bindVertexArray(vao);
+  buffers.forEach(({name,data,size,stride,offset,divisor,type})=>{
+    const loc=gl.getAttribLocation(prog,name);if(loc<0)return;
+    const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+    gl.bufferData(gl.ARRAY_BUFFER,data instanceof Float32Array?data:new Float32Array(data),gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,size||3,type||gl.FLOAT,false,stride||0,offset||0);
+    if(divisor)gl.vertexAttribDivisor(loc,divisor);
+  });gl.bindVertexArray(null);return vao}
+
+// ═══════════════════════════════════════════════════════
+//  SHADERS
+// ═══════════════════════════════════════════════════════
+const TERRAIN_VS=`#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aNorm;
+in vec3 aColor;
+uniform mat4 uMVP,uModel;
+uniform float uTime;
+out vec3 vPos,vNorm,vColor;
+out float vFog;
+void main(){
+  vec4 wp=uModel*vec4(aPos,1.0);
+  vPos=wp.xyz;vNorm=aNorm;vColor=aColor;
+  float d=length(wp.xz);
+  vFog=smoothstep(60.0,140.0,d);
+  gl_Position=uMVP*vec4(aPos,1.0);
+}`;
+
+const TERRAIN_FS=`#version 300 es
+precision highp float;
+in vec3 vPos,vNorm,vColor;
+in float vFog;
+uniform vec3 uSunDir,uFogColor;
+uniform float uTime;
+out vec4 fragColor;
+void main(){
+  vec3 n=normalize(vNorm);
+  float diff=max(dot(n,normalize(uSunDir)),.0);
+  float amb=.18;
+  vec3 lit=vColor*(amb+diff*.7);
+  float rim=pow(1.0-max(dot(n,vec3(0,1,0)),0.0),3.0)*.15;
+  lit+=rim*vec3(.4,.2,.8);
+  fragColor=vec4(mix(lit,uFogColor,vFog),1.0);
+}`;
+
+const OBJECT_VS=`#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aNorm;
+uniform mat4 uMVP,uModel;
+uniform float uTime;
+out vec3 vPos,vNorm,vWorldPos;
+out float vFog;
+void main(){
+  vec4 wp=uModel*vec4(aPos,1.0);
+  vWorldPos=wp.xyz;vPos=aPos;vNorm=mat3(uModel)*aNorm;
+  vFog=smoothstep(60.0,140.0,length(wp.xz));
+  gl_Position=uMVP*vec4(aPos,1.0);
+}`;
+
+const OBJECT_FS=`#version 300 es
+precision highp float;
+in vec3 vPos,vNorm,vWorldPos;
+in float vFog;
+uniform vec3 uColor,uEmissive,uSunDir,uFogColor;
+uniform float uTime,uGlow;
+out vec4 fragColor;
+void main(){
+  vec3 n=normalize(vNorm);
+  float diff=max(dot(n,normalize(uSunDir)),0.0);
+  vec3 lit=uColor*(.15+diff*.6);
+  float pulse=.5+.5*sin(uTime*2.0+vWorldPos.y*3.0);
+  lit+=uEmissive*pulse*uGlow;
+  lit+=pow(max(1.0-abs(dot(n,normalize(vec3(0,1,0)))),0.0),4.0)*uEmissive*.3;
+  fragColor=vec4(mix(lit,uFogColor,vFog),1.0);
+}`;
+
+const VEGETATION_VS=`#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aNorm;
+in vec4 aInstance; // xyz=pos, w=scale
+in vec3 aInstColor;
+in float aInstType;
+uniform mat4 uVP;
+uniform float uTime;
+out vec3 vColor;
+out float vGlow,vFog,vY;
+void main(){
+  float sc=aInstance.w;
+  vec3 p=aPos*sc;
+  // Wind sway
+  float wind=sin(uTime*1.5+aInstance.x*.3)*cos(uTime+aInstance.z*.2)*.3*aPos.y;
+  p.x+=wind*sc;
+  p+=aInstance.xyz;
+  vY=aPos.y;
+  vColor=aInstColor;
+  vGlow=smoothstep(.3,1.0,aPos.y);
+  vFog=smoothstep(60.0,140.0,length(p.xz));
+  gl_Position=uVP*vec4(p,1.0);
+}`;
+
+const VEGETATION_FS=`#version 300 es
+precision highp float;
+in vec3 vColor;
+in float vGlow,vFog,vY;
+uniform vec3 uFogColor;
+uniform float uTime;
+out vec4 fragColor;
+void main(){
+  float pulse=.7+.3*sin(uTime*2.5+vY*5.0);
+  vec3 c=vColor*(.3+vGlow*pulse*.8);
+  c+=vColor*vGlow*pulse*.5;
+  fragColor=vec4(mix(c,uFogColor,vFog),1.0);
+}`;
+
+const PARTICLE_VS=`#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aVel;
+in vec4 aColorSize;
+uniform mat4 uVP;
+uniform float uTime;
+uniform vec3 uOrigin;
+out vec4 vColor;
+void main(){
+  float life=fract(uTime*aVel.y*.1+aPos.x*13.37);
+  vec3 p=uOrigin+aPos+aVel*life*8.0;
+  p.y=mod(p.y+20.0,40.0)-20.0+uOrigin.y;
+  p.x=mod(p.x-uOrigin.x+80.0,160.0)-80.0+uOrigin.x;
+  p.z=mod(p.z-uOrigin.z+80.0,160.0)-80.0+uOrigin.z;
+  vColor=vec4(aColorSize.rgb,aColorSize.a*(1.0-life)*.6);
+  gl_Position=uVP*vec4(p,1.0);
+  gl_PointSize=aColorSize.a*mix(3.0,1.0,life);
+}`;
+
+const PARTICLE_FS=`#version 300 es
+precision highp float;
+in vec4 vColor;
+out vec4 fragColor;
+void main(){
+  vec2 c=gl_PointCoord*2.0-1.0;
+  float d=1.0-smoothstep(.3,1.0,length(c));
+  fragColor=vec4(vColor.rgb,vColor.a*d);
+}`;
+
+const SKY_VS=`#version 300 es
+precision highp float;
+in vec3 aPos;
+uniform mat4 uMVP;
+out vec3 vDir;
+void main(){
+  vDir=aPos;
+  gl_Position=(uMVP*vec4(aPos,0.0)).xyww;
+}`;
+
+const SKY_FS=`#version 300 es
+precision highp float;
+in vec3 vDir;
+uniform float uTime;
+uniform vec3 uSunDir;
+out vec4 fragColor;
+void main(){
+  vec3 d=normalize(vDir);
+  float h=d.y*.5+.5;
+  vec3 sky=mix(vec3(.02,.01,.08),vec3(.05,.02,.15),h);
+  sky=mix(sky,vec3(.08,.04,.18),smoothstep(.0,.5,h));
+
+  // Twin suns
+  float sun1=pow(max(dot(d,normalize(uSunDir)),0.0),200.0);
+  float sun1g=pow(max(dot(d,normalize(uSunDir)),0.0),20.0);
+  sky+=vec3(1.,.7,.3)*sun1*2.0+vec3(.4,.2,.1)*sun1g*.3;
+  vec3 sun2Dir=normalize(vec3(-.5,.3,-.8));
+  float sun2=pow(max(dot(d,sun2Dir),0.0),300.0);
+  float sun2g=pow(max(dot(d,sun2Dir),0.0),30.0);
+  sky+=vec3(.3,.5,1.)*sun2+vec3(.1,.2,.5)*sun2g*.3;
+
+  // Nebula bands
+  float neb=sin(d.x*3.0+d.z*2.0+uTime*.02)*sin(d.y*5.0-d.x*2.0);
+  sky+=vec3(.15,.05,.25)*smoothstep(.3,.9,neb)*.4;
+
+  // Stars
+  vec3 sd=d*200.0;
+  float star=smoothstep(.97,1.0,sin(sd.x*1.3)*sin(sd.y*1.7)*sin(sd.z*2.1));
+  star*=smoothstep(-.1,.3,d.y);
+  sky+=star*vec3(.8,.85,1.)*.8;
+
+  fragColor=vec4(sky,1.0);
+}`;
+
+const POST_VS=`#version 300 es
+in vec2 aPos;out vec2 vUV;
+void main(){vUV=aPos*.5+.5;gl_Position=vec4(aPos,0,1);}`;
+
+const POST_FS=`#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uScene;
+uniform vec2 uRes;
+out vec4 fragColor;
+void main(){
+  vec4 c=texture(uScene,vUV);
+  // Extract bright
+  float br=max(c.r,max(c.g,c.b));
+  vec3 bloom=vec3(0);
+  if(br>.6){
+    for(int i=-3;i<=3;i++)for(int j=-3;j<=3;j++){
+      vec2 off=vec2(float(i),float(j))/uRes*3.0;
+      vec4 s=texture(uScene,vUV+off);
+      float sb=max(s.r,max(s.g,s.b));
+      if(sb>.6)bloom+=s.rgb*sb;
+    }
+    bloom/=49.0;
+  }
+  vec3 final=c.rgb+bloom*.4;
+  // Tone map
+  final=final/(1.0+final);
+  // Vignette
+  float vig=1.0-smoothstep(.5,.9,length(vUV-.5)*1.2);
+  final*=mix(.7,1.0,vig);
+  fragColor=vec4(pow(final,vec3(1.0/2.2)),1.0);
+}`;
+
+// ═══════════════════════════════════════════════════════
+//  COMPILE ALL PROGRAMS
+// ═══════════════════════════════════════════════════════
+const prTerrain=createProgram(TERRAIN_VS,TERRAIN_FS);
+const prObject=createProgram(OBJECT_VS,OBJECT_FS);
+const prVeg=createProgram(VEGETATION_VS,VEGETATION_FS);
+const prParticle=createProgram(PARTICLE_VS,PARTICLE_FS);
+const prSky=createProgram(SKY_VS,SKY_FS);
+const prPost=createProgram(POST_VS,POST_FS);
+
+// ═══════════════════════════════════════════════════════
+//  WORLD CONSTANTS & STATE
+// ═══════════════════════════════════════════════════════
+const WORLD_SIZE=160,TERRAIN_RES=200,TILE=WORLD_SIZE/TERRAIN_RES;
+const BIOME_CRYSTAL=0,BIOME_BIOLUME=1,BIOME_TOXIC=2,BIOME_RUINS=3,BIOME_FROZEN=4,BIOME_DESERT=5;
+const BIOME_NAMES=['Crystal Wastes','Bioluminescent Grove','Toxic Marshlands','Ancient Ruins','Frozen Highlands','Amber Desert'];
+const BIOME_COLORS=[
+  [[.35,.15,.55],[.6,.3,.9],[.5,.2,.7]],   // crystal
+  [[.05,.25,.1],[.1,.6,.2],[.0,.4,.15]],     // biolume
+  [[.15,.2,.05],[.3,.35,.1],[.2,.25,.08]],    // toxic
+  [[.25,.2,.15],[.4,.35,.25],[.3,.25,.18]],   // ruins
+  [[.4,.45,.55],[.6,.65,.7],[.5,.55,.6]],     // frozen
+  [[.5,.35,.15],[.7,.5,.2],[.6,.4,.18]]       // desert
+];
+
+let camera={pos:[0,5,0],yaw:0,pitch:-.2,fov:1.2};
+let keys={},mouseDown=false,mouseDX=0,mouseDY=0;
+let artifacts=[],creatures=[],foundCount=0,discoveryTimer=0;
+let time=0,xrSession=null,xrRefSpace=null,xrFrame=null;
+let isVR=false;
+
+// ═══════════════════════════════════════════════════════
+//  BIOME GENERATION
+// ═══════════════════════════════════════════════════════
+function getBiome(x,z){
+  let b0=noise2D(x*.008+100,z*.008+100);
+  let b1=noise2D(x*.012-50,z*.012+50);
+  let moisture=b0,temp=b1;
+  if(moisture>.25&&temp>.1)return BIOME_CRYSTAL;
+  if(moisture>.1&&temp<-.1)return BIOME_BIOLUME;
+  if(moisture<-.2&&temp<-.0)return BIOME_TOXIC;
+  if(abs(moisture)<.2&&abs(temp)<.15)return BIOME_RUINS;
+  if(temp>.2&&moisture<-.1)return BIOME_FROZEN;
+  return BIOME_DESERT;
+}
+
+function getHeight(x,z){
+  let b=getBiome(x,z);
+  let h=fbm(x*.015,z*.015,5)*8;
+  h+=ridge(x*.008,z*.008,4)*4;
+  if(b===BIOME_CRYSTAL)h+=abs(noise2D(x*.05,z*.05))*6;
+  if(b===BIOME_FROZEN)h+=fbm(x*.03,z*.03,3)*5;
+  if(b===BIOME_TOXIC)h-=2+noise2D(x*.04,z*.04)*3;
+  if(b===BIOME_RUINS)h=h*.6+2;
+  // Caves: create deep dips
+  let cave=noise2D(x*.02+200,z*.02+200);
+  if(cave>.4)h-=(cave-.4)*15;
+  return h;
+}
+
+function getTerrainColor(x,z,h,n){
+  let b=getBiome(x,z);
+  let cols=BIOME_COLORS[b];
+  let t=smoothstep(-2,8,h);
+  let c=v3lerp(cols[0],cols[1],t);
+  // Slope coloring
+  if(n[1]<.7)c=v3lerp(c,cols[2],.5);
+  // Detail noise
+  let det=noise2D(x*.2,z*.2)*.1;
+  return[c[0]+det,c[1]+det*.5,c[2]+det];
+}
+
+// ═══════════════════════════════════════════════════════
+//  TERRAIN MESH
+// ═══════════════════════════════════════════════════════
+function generateTerrain(){
+  const verts=[],norms=[],colors=[],indices=[];
+  const half=WORLD_SIZE/2;
+  for(let iz=0;iz<=TERRAIN_RES;iz++)for(let ix=0;ix<=TERRAIN_RES;ix++){
+    let x=ix*TILE-half,z=iz*TILE-half,y=getHeight(x,z);
+    verts.push(x,y,z);
+    // Normal via finite differences
+    let hL=getHeight(x-TILE,z),hR=getHeight(x+TILE,z),hD=getHeight(x,z-TILE),hU=getHeight(x,z+TILE);
+    let nx=hL-hR,ny=2*TILE,nz=hD-hU,nl=sqrt(nx*nx+ny*ny+nz*nz);
+    norms.push(nx/nl,ny/nl,nz/nl);
+    let col=getTerrainColor(x,z,y,[nx/nl,ny/nl,nz/nl]);
+    colors.push(...col);
+  }
+  for(let iz=0;iz<TERRAIN_RES;iz++)for(let ix=0;ix<TERRAIN_RES;ix++){
+    let i=iz*(TERRAIN_RES+1)+ix;
+    indices.push(i,i+TERRAIN_RES+1,i+1,i+1,i+TERRAIN_RES+1,i+TERRAIN_RES+2);
+  }
+  return{v:new Float32Array(verts),n:new Float32Array(norms),c:new Float32Array(colors),
+    idx:new Uint32Array(indices),count:indices.length};
+}
+
+// ═══════════════════════════════════════════════════════
+//  GEOMETRY PRIMITIVES
+// ═══════════════════════════════════════════════════════
+function makeBox(sx,sy,sz){
+  const p=[],n=[];
+  const faces=[
+    {d:[0,0,1],u:[0,1,0],r:[1,0,0]},{d:[0,0,-1],u:[0,1,0],r:[-1,0,0]},
+    {d:[0,1,0],u:[0,0,-1],r:[1,0,0]},{d:[0,-1,0],u:[0,0,1],r:[1,0,0]},
+    {d:[1,0,0],u:[0,1,0],r:[0,0,-1]},{d:[-1,0,0],u:[0,1,0],r:[0,0,1]}
+  ];
+  const sc=[sx,sy,sz];
+  faces.forEach(f=>{
+    let c=f.d.map((v,i)=>v*sc[i]*.5),u=f.u.map((v,i)=>v*sc[i]*.5),r=f.r.map((v,i)=>v*sc[i]*.5);
+    let v0=c.map((v,i)=>v-u[i]-r[i]),v1=c.map((v,i)=>v-u[i]+r[i]),
+      v2=c.map((v,i)=>v+u[i]+r[i]),v3=c.map((v,i)=>v+u[i]-r[i]);
+    [v0,v1,v2,v0,v2,v3].forEach(v=>p.push(...v));
+    for(let i=0;i<6;i++)n.push(...f.d);
+  });
+  return{v:new Float32Array(p),n:new Float32Array(n),count:36};
+}
+
+function makeCylinder(r,h,seg=12){
+  const p=[],n=[];
+  for(let i=0;i<seg;i++){
+    let a0=i/seg*TAU,a1=(i+1)/seg*TAU;
+    let x0=cos(a0)*r,z0=sin(a0)*r,x1=cos(a1)*r,z1=sin(a1)*r;
+    let nx0=cos(a0),nz0=sin(a0),nx1=cos(a1),nz1=sin(a1);
+    p.push(x0,0,z0,x1,0,z1,x1,h,z1,x0,0,z0,x1,h,z1,x0,h,z0);
+    n.push(nx0,0,nz0,nx1,0,nz1,nx1,0,nz1,nx0,0,nz0,nx1,0,nz1,nx0,0,nz0);
+    p.push(0,h,0,x0,h,z0,x1,h,z1);n.push(0,1,0,0,1,0,0,1,0);
+  }
+  return{v:new Float32Array(p),n:new Float32Array(n),count:p.length/3};
+}
+
+function makeSphere(r,seg=10){
+  const p=[],n=[];
+  for(let i=0;i<seg;i++)for(let j=0;j<seg;j++){
+    let a0=i/seg*PI,a1=(i+1)/seg*PI,b0=j/seg*TAU,b1=(j+1)/seg*TAU;
+    const v=(a,b)=>[sin(a)*cos(b)*r,cos(a)*r,sin(a)*sin(b)*r];
+    const nm=(a,b)=>v3norm([sin(a)*cos(b),cos(a),sin(a)*sin(b)]);
+    let q=[v(a0,b0),v(a1,b0),v(a1,b1),v(a0,b0),v(a1,b1),v(a0,b1)];
+    let qn=[nm(a0,b0),nm(a1,b0),nm(a1,b1),nm(a0,b0),nm(a1,b1),nm(a0,b1)];
+    q.forEach(vt=>p.push(...vt));qn.forEach(nt=>n.push(...nt));
+  }
+  return{v:new Float32Array(p),n:new Float32Array(n),count:p.length/3};
+}
+
+function makeMushroomShape(){
+  const p=[],n=[];
+  // Stem (thin cylinder)
+  const cyl=makeCylinder(.08,1,8);
+  p.push(...cyl.v);n.push(...cyl.n);
+  // Cap (flattened sphere on top)
+  const seg=8;
+  for(let i=0;i<seg;i++)for(let j=0;j<seg;j++){
+    let a0=i/seg*PI*.5,a1=(i+1)/seg*PI*.5,b0=j/seg*TAU,b1=(j+1)/seg*TAU;
+    const v=(a,b)=>[sin(a)*cos(b)*.3,cos(a)*.15+1,sin(a)*sin(b)*.3];
+    const nm=(a,b)=>v3norm([sin(a)*cos(b),cos(a)*.5,sin(a)*sin(b)]);
+    let q=[v(a0,b0),v(a1,b0),v(a1,b1),v(a0,b0),v(a1,b1),v(a0,b1)];
+    let qn=[nm(a0,b0),nm(a1,b0),nm(a1,b1),nm(a0,b0),nm(a1,b1),nm(a0,b1)];
+    q.forEach(vt=>p.push(...vt));qn.forEach(nt=>n.push(...nt));
+  }
+  return{v:new Float32Array(p),n:new Float32Array(n),count:p.length/3};
+}
+
+// ═══════════════════════════════════════════════════════
+//  VEGETATION INSTANCES
+// ═══════════════════════════════════════════════════════
+function generateVegetation(){
+  const instances=[],colors=[],types=[];
+  const half=WORLD_SIZE/2;
+  for(let i=0;i<3000;i++){
+    let x=(Math.random()-.5)*WORLD_SIZE*.9,z=(Math.random()-.5)*WORLD_SIZE*.9;
+    let y=getHeight(x,z);
+    let b=getBiome(x,z);
+    if(y<-3)continue;
+    let sc=.5+Math.random()*1.5;
+    instances.push(x,y,z,sc);
+    let col;
+    switch(b){
+      case BIOME_CRYSTAL:col=[.6+Math.random()*.3,.2,.9];break;
+      case BIOME_BIOLUME:col=[.1,.8+Math.random()*.2,.3+Math.random()*.3];break;
+      case BIOME_TOXIC:col=[.6+Math.random()*.3,.7,.1];break;
+      case BIOME_RUINS:col=[.4,.3,.6];sc*=.5;break;
+      case BIOME_FROZEN:col=[.5,.7,1.];sc*=.7;break;
+      default:col=[.8,.5,.2];sc*=.6;
+    }
+    colors.push(...col);types.push(b);
+    instances[instances.length-1]=sc;
+  }
+  return{inst:new Float32Array(instances),col:new Float32Array(colors),types:new Float32Array(types),count:instances.length/4};
+}
+
+// ═══════════════════════════════════════════════════════
+//  ARTIFACTS & CREATURES
+// ═══════════════════════════════════════════════════════
+function placeArtifacts(){
+  const arts=[];
+  const positions=[
+    [15,0,20],[-30,0,-40],[50,0,10],[-20,0,60],
+    [40,0,-50],[-55,0,-20],[25,0,-35],[-10,0,45]
+  ];
+  positions.forEach((p,i)=>{
+    p[1]=getHeight(p[0],p[2])+2;
+    arts.push({pos:[...p],baseY:p[1],color:[
+      [1,.8,.2],[.2,1,.8],[1,.3,.6],[.3,.8,1],
+      [1,.5,0],[.5,1,.3],[.8,.3,1],[1,1,.5]
+    ][i],found:false,rot:Math.random()*TAU,id:i});
+  });
+  return arts;
+}
+
+function placeCreatures(){
+  const crs=[];
+  for(let i=0;i<12;i++){
+    let x=(Math.random()-.5)*120,z=(Math.random()-.5)*120;
+    let y=getHeight(x,z);
+    if(y<-2)y=0;
+    let b=getBiome(x,z);
+    let col;
+    switch(b){
+      case BIOME_BIOLUME:col=[.2,.9,.5];break;
+      case BIOME_CRYSTAL:col=[.7,.4,1.];break;
+      case BIOME_TOXIC:col=[.8,.7,.2];break;
+      default:col=[.5,.6,.7];
+    }
+    crs.push({pos:[x,y+.5,z],vel:[0,0,0],col,phase:Math.random()*TAU,speed:.5+Math.random(),
+      wanderAngle:Math.random()*TAU,size:.3+Math.random()*.4});
+  }
+  return crs;
+}
+
+// ═══════════════════════════════════════════════════════
+//  RUIN STRUCTURES
+// ═══════════════════════════════════════════════════════
+function placeRuins(){
+  const ruins=[];
+  for(let i=0;i<15;i++){
+    let x=(Math.random()-.5)*100,z=(Math.random()-.5)*100;
+    let b=getBiome(x,z);
+    if(b!==BIOME_RUINS&&Math.random()>.3)continue;
+    let y=getHeight(x,z);
+    let type=floor(Math.random()*3);// 0=pillar,1=arch,2=wall
+    ruins.push({pos:[x,y,z],type,rot:Math.random()*TAU,
+      scale:1+Math.random(),
+      emissive:[.3+Math.random()*.3,.1,.5+Math.random()*.3]});
+  }
+  // Add guaranteed ruin cluster
+  for(let i=0;i<8;i++){
+    let angle=i/8*TAU,r=3+Math.random()*5;
+    let x=cos(angle)*r,z=sin(angle)*r;
+    let y=getHeight(x,z);
+    ruins.push({pos:[x,y,z],type:i%3,rot:angle,scale:1.5+Math.random(),
+      emissive:[.4,.15,.6]});
+  }
+  return ruins;
+}
+
+// ═══════════════════════════════════════════════════════
+//  PARTICLES
+// ═══════════════════════════════════════════════════════
+function generateParticles(count=2000){
+  const pos=[],vel=[],col=[];
+  for(let i=0;i<count;i++){
+    pos.push((Math.random()-.5)*160,(Math.random()-.5)*40,(Math.random()-.5)*160);
+    vel.push((Math.random()-.5)*.5,-1-Math.random()*2,(Math.random()-.5)*.5);
+    let t=Math.random();
+    if(t<.3)col.push(.3,.8,.5,.3+Math.random()*.5);// green spores
+    else if(t<.6)col.push(.5,.3,.9,.2+Math.random()*.3);// purple mist
+    else col.push(.2,.6,.8,.2+Math.random()*.3);// blue rain
+  }
+  return{pos:new Float32Array(pos),vel:new Float32Array(vel),col:new Float32Array(col),count};
+}
+
+// ═══════════════════════════════════════════════════════
+//  SKY DOME
+// ═══════════════════════════════════════════════════════
+function makeSkyDome(){
+  const p=[],seg=20;
+  for(let i=0;i<seg;i++)for(let j=0;j<seg;j++){
+    let a0=i/seg*PI,a1=(i+1)/seg*PI,b0=j/seg*TAU,b1=(j+1)/seg*TAU;
+    const v=(a,b)=>[sin(a)*cos(b)*500,cos(a)*500,sin(a)*sin(b)*500];
+    [v(a0,b0),v(a1,b1),v(a1,b0),v(a0,b0),v(a0,b1),v(a1,b1)].forEach(vt=>p.push(...vt));
+  }
+  return{v:new Float32Array(p),count:p.length/3};
+}
+
+// ═══════════════════════════════════════════════════════
+//  BUILD SCENE
+// ═══════════════════════════════════════════════════════
+document.getElementById('loadBar').style.width='10%';
+
+const terrain=generateTerrain();
+document.getElementById('loadBar').style.width='30%';
+
+const mushShape=makeMushroomShape();
+const vegData=generateVegetation();
+document.getElementById('loadBar').style.width='50%';
+
+artifacts=placeArtifacts();
+creatures=placeCreatures();
+const ruins=placeRuins();
+const particles=generateParticles();
+const skyData=makeSkyDome();
+const boxGeo=makeBox(1,1,1);
+const sphereGeo=makeSphere(.5,8);
+const cylGeo=makeCylinder(.3,3,8);
+document.getElementById('loadBar').style.width='70%';
+
+// ═══════════════════════════════════════════════════════
+//  CREATE GPU BUFFERS
+// ═══════════════════════════════════════════════════════
+
+// Terrain VAO
+const terrainVAO=gl.createVertexArray();
+gl.bindVertexArray(terrainVAO);
+[{d:terrain.v,n:'aPos'},{d:terrain.n,n:'aNorm'},{d:terrain.c,n:'aColor'}].forEach(({d,n})=>{
+  const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
+  gl.bufferData(gl.ARRAY_BUFFER,d,gl.STATIC_DRAW);
+  const loc=gl.getAttribLocation(prTerrain,n);
+  gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,3,gl.FLOAT,false,0,0);
+});
+const terrainIBO=gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,terrainIBO);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,terrain.idx,gl.STATIC_DRAW);
+gl.bindVertexArray(null);
+
+// Vegetation VAO (instanced)
+const vegVAO=gl.createVertexArray();
+gl.bindVertexArray(vegVAO);
+// Base mesh
+[{d:mushShape.v,n:'aPos',s:3},{d:mushShape.n,n:'aNorm',s:3}].forEach(({d,n,s})=>{
+  const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
+  gl.bufferData(gl.ARRAY_BUFFER,d,gl.STATIC_DRAW);
+  const loc=gl.getAttribLocation(prVeg,n);
+  if(loc>=0){gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,s,gl.FLOAT,false,0,0);}
+});
+// Instance data
+[{d:vegData.inst,n:'aInstance',s:4},{d:vegData.col,n:'aInstColor',s:3},{d:vegData.types,n:'aInstType',s:1}].forEach(({d,n,s})=>{
+  const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
+  gl.bufferData(gl.ARRAY_BUFFER,d,gl.STATIC_DRAW);
+  const loc=gl.getAttribLocation(prVeg,n);
+  if(loc>=0){gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,s,gl.FLOAT,false,0,0);gl.vertexAttribDivisor(loc,1);}
+});
+gl.bindVertexArray(null);
+
+// Object VAOs
+function makeObjVAO(geo,prog){
+  const vao=gl.createVertexArray();gl.bindVertexArray(vao);
+  [{d:geo.v,n:'aPos'},{d:geo.n,n:'aNorm'}].forEach(({d,n})=>{
+    const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.bufferData(gl.ARRAY_BUFFER,d,gl.STATIC_DRAW);
+    const loc=gl.getAttribLocation(prog,n);
+    if(loc>=0){gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,3,gl.FLOAT,false,0,0);}
+  });gl.bindVertexArray(null);return vao;
+}
+const boxVAO=makeObjVAO(boxGeo,prObject);
+const sphereVAO=makeObjVAO(sphereGeo,prObject);
+const cylVAO=makeObjVAO(cylGeo,prObject);
+
+// Particles VAO
+const partVAO=gl.createVertexArray();
+gl.bindVertexArray(partVAO);
+[{d:particles.pos,n:'aPos',s:3},{d:particles.vel,n:'aVel',s:3},{d:particles.col,n:'aColorSize',s:4}].forEach(({d,n,s})=>{
+  const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
+  gl.bufferData(gl.ARRAY_BUFFER,d,gl.STATIC_DRAW);
+  const loc=gl.getAttribLocation(prParticle,n);
+  if(loc>=0){gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,s,gl.FLOAT,false,0,0);}
+});gl.bindVertexArray(null);
+
+// Sky VAO
+const skyVAO=gl.createVertexArray();
+gl.bindVertexArray(skyVAO);
+const skyBuf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,skyBuf);
+gl.bufferData(gl.ARRAY_BUFFER,skyData.v,gl.STATIC_DRAW);
+const skyLoc=gl.getAttribLocation(prSky,'aPos');
+gl.enableVertexAttribArray(skyLoc);gl.vertexAttribPointer(skyLoc,3,gl.FLOAT,false,0,0);
+gl.bindVertexArray(null);
+
+// Post-process quad
+const quadVAO=gl.createVertexArray();
+gl.bindVertexArray(quadVAO);
+const qb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,qb);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+const ql=gl.getAttribLocation(prPost,'aPos');
+gl.enableVertexAttribArray(ql);gl.vertexAttribPointer(ql,2,gl.FLOAT,false,0,0);
+gl.bindVertexArray(null);
+
+document.getElementById('loadBar').style.width='90%';
+
+// ═══════════════════════════════════════════════════════
+//  FRAMEBUFFER
+// ═══════════════════════════════════════════════════════
+let fbWidth,fbHeight,sceneFBO,sceneTex,sceneDepth;
+function createFBO(w,h){
+  fbWidth=w;fbHeight=h;
+  if(sceneFBO)gl.deleteFramebuffer(sceneFBO);
+  if(sceneTex)gl.deleteTexture(sceneTex);
+  if(sceneDepth)gl.deleteRenderbuffer(sceneDepth);
+  sceneFBO=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,sceneFBO);
+  sceneTex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,sceneTex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,w,h,0,gl.RGBA,gl.HALF_FLOAT,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,sceneTex,0);
+  sceneDepth=gl.createRenderbuffer();gl.bindRenderbuffer(gl.RENDERBUFFER,sceneDepth);
+  gl.renderbufferStorage(gl.RENDERBUFFER,gl.DEPTH_COMPONENT24,w,h);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.RENDERBUFFER,sceneDepth);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+}
+
+function resize(){
+  const dpr=min(devicePixelRatio,2);
+  canvas.width=canvas.clientWidth*dpr;canvas.height=canvas.clientHeight*dpr;
+  createFBO(canvas.width,canvas.height);
+}
+resize();
+window.addEventListener('resize',resize);
+
+document.getElementById('loadBar').style.width='100%';
+setTimeout(()=>document.getElementById('loading').classList.add('done'),400);
+
+// ═══════════════════════════════════════════════════════
+//  INPUT
+// ═══════════════════════════════════════════════════════
+canvas.addEventListener('click',()=>{if(!isVR)canvas.requestPointerLock()});
+document.addEventListener('pointerlockchange',()=>{});
+document.addEventListener('mousemove',e=>{
+  if(document.pointerLockElement===canvas&&!isVR){
+    mouseDX+=e.movementX;mouseDY+=e.movementY;
+  }
+});
+document.addEventListener('keydown',e=>keys[e.code]=true);
+document.addEventListener('keyup',e=>keys[e.code]=false);
+
+// ═══════════════════════════════════════════════════════
+//  WEBXR
+// ═══════════════════════════════════════════════════════
+const vrBtn=document.getElementById('enterVR');
+let xrSupported=false;
+if(navigator.xr){
+  navigator.xr.isSessionSupported('immersive-vr').then(s=>{
+    xrSupported=s;if(!s)vrBtn.classList.add('hidden');
+  }).catch(()=>vrBtn.classList.add('hidden'));
+}else vrBtn.classList.add('hidden');
+
+vrBtn.addEventListener('click',async()=>{
+  if(!xrSupported||xrSession)return;
+  try{
+    xrSession=await navigator.xr.requestSession('immersive-vr',{
+      requiredFeatures:['local-floor']
+    });
+    xrSession.addEventListener('end',()=>{xrSession=null;isVR=false;resize();});
+    const glLayer=new XRWebGLLayer(xrSession,gl);
+    xrSession.updateRenderState({baseLayer:glLayer});
+    xrRefSpace=await xrSession.requestReferenceSpace('local-floor');
+    isVR=true;
+    xrSession.requestAnimationFrame(xrLoop);
+  }catch(e){console.warn('VR failed:',e);}
+});
+
+// ═══════════════════════════════════════════════════════
+//  GAME LOGIC
+// ═══════════════════════════════════════════════════════
+function updateCamera(dt){
+  if(isVR)return;
+  camera.yaw-=mouseDX*.002;
+  camera.pitch-=mouseDY*.002;
+  camera.pitch=clamp(camera.pitch,-PI*.45,PI*.45);
+  mouseDX=mouseDY=0;
+
+  let fwd=[sin(camera.yaw),0,cos(camera.yaw)];
+  let right=[cos(camera.yaw),0,-sin(camera.yaw)];
+  let speed=8*dt;
+  if(keys['ShiftLeft'])speed*=2;
+  if(keys['KeyW'])camera.pos=v3add(camera.pos,v3scale(fwd,-speed));
+  if(keys['KeyS'])camera.pos=v3add(camera.pos,v3scale(fwd,speed));
+  if(keys['KeyA'])camera.pos=v3add(camera.pos,v3scale(right,-speed));
+  if(keys['KeyD'])camera.pos=v3add(camera.pos,v3scale(right,speed));
+  if(keys['Space'])camera.pos[1]+=speed;
+  if(keys['KeyC'])camera.pos[1]-=speed;
+
+  // Ground follow
+  let groundY=getHeight(camera.pos[0],camera.pos[2])+1.7;
+  if(camera.pos[1]<groundY)camera.pos[1]=groundY;
+
+  // Interact
+  if(keys['KeyE']){
+    keys['KeyE']=false;
+    tryInteract();
+  }
+}
+
+function tryInteract(){
+  let fwd=[-sin(camera.yaw)*cos(camera.pitch),sin(camera.pitch),-cos(camera.yaw)*cos(camera.pitch)];
+  artifacts.forEach(a=>{
+    if(a.found)return;
+    let d=v3sub(a.pos,camera.pos);
+    let dist=v3len(d);
+    if(dist<5){
+      a.found=true;foundCount++;
+      document.getElementById('foundLabel').textContent=foundCount;
+      showDiscovery(`ARTIFACT ${foundCount}/8 DISCOVERED`);
+    }
+  });
+}
+
+function showDiscovery(text){
+  const el=document.getElementById('discovery');
+  el.textContent=text;el.classList.add('show');
+  discoveryTimer=3;
+}
+
+function updateCreatures(dt){
+  creatures.forEach(c=>{
+    c.phase+=dt;
+    c.wanderAngle+=sin(c.phase*.5)*.02;
+    let mx=cos(c.wanderAngle)*c.speed*dt;
+    let mz=sin(c.wanderAngle)*c.speed*dt;
+    c.pos[0]+=mx;c.pos[2]+=mz;
+    c.pos[1]=getHeight(c.pos[0],c.pos[2])+.5+sin(c.phase*3)*.3;
+    // Bound to world
+    if(abs(c.pos[0])>70)c.wanderAngle+=PI;
+    if(abs(c.pos[2])>70)c.wanderAngle+=PI;
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  RENDERING
+// ═══════════════════════════════════════════════════════
+const sunDir=v3norm([.4,.6,-.5]);
+const fogColor=[.03,.01,.08];
+
+function renderScene(proj,view,vpWidth,vpHeight){
+  const vp=mat4.create(),mvp=mat4.create(),model=mat4.create();
+  mat4.multiply(vp,proj,view);
+
+  // --- SKY ---
+  gl.depthMask(false);
+  gl.useProgram(prSky);
+  // Remove translation from view for sky
+  const skyView=new Float32Array(view);
+  skyView[12]=skyView[13]=skyView[14]=0;
+  const skyMVP=mat4.create();
+  mat4.multiply(skyMVP,proj,skyView);
+  gl.uniformMatrix4fv(gl.getUniformLocation(prSky,'uMVP'),false,skyMVP);
+  gl.uniform1f(gl.getUniformLocation(prSky,'uTime'),time);
+  gl.uniform3fv(gl.getUniformLocation(prSky,'uSunDir'),sunDir);
+  gl.bindVertexArray(skyVAO);
+  gl.drawArrays(gl.TRIANGLES,0,skyData.count);
+  gl.depthMask(true);
+
+  // --- TERRAIN ---
+  gl.useProgram(prTerrain);
+  mat4.identity(model);
+  mat4.multiply(mvp,vp,model);
+  gl.uniformMatrix4fv(gl.getUniformLocation(prTerrain,'uMVP'),false,mvp);
+  gl.uniformMatrix4fv(gl.getUniformLocation(prTerrain,'uModel'),false,model);
+  gl.uniform3fv(gl.getUniformLocation(prTerrain,'uSunDir'),sunDir);
+  gl.uniform3fv(gl.getUniformLocation(prTerrain,'uFogColor'),fogColor);
+  gl.uniform1f(gl.getUniformLocation(prTerrain,'uTime'),time);
+  gl.bindVertexArray(terrainVAO);
+  gl.drawElements(gl.TRIANGLES,terrain.count,gl.UNSIGNED_INT,0);
+
+  // --- VEGETATION (instanced) ---
+  gl.useProgram(prVeg);
+  gl.uniformMatrix4fv(gl.getUniformLocation(prVeg,'uVP'),false,vp);
+  gl.uniform1f(gl.getUniformLocation(prVeg,'uTime'),time);
+  gl.uniform3fv(gl.getUniformLocation(prVeg,'uFogColor'),fogColor);
+  gl.bindVertexArray(vegVAO);
+  gl.drawArraysInstanced(gl.TRIANGLES,0,mushShape.count,vegData.count);
+
+  // --- RUINS ---
+  gl.useProgram(prObject);
+  gl.uniform3fv(gl.getUniformLocation(prObject,'uSunDir'),sunDir);
+  gl.uniform3fv(gl.getUniformLocation(prObject,'uFogColor'),fogColor);
+  gl.uniform1f(gl.getUniformLocation(prObject,'uTime'),time);
+
+  ruins.forEach(r=>{
+    mat4.identity(model);
+    mat4.translate(model,model,r.pos);
+    mat4.rotateY(model,model,r.rot);
+    let sc=r.scale;
+    let vao,cnt;
+    if(r.type===0){// pillar
+      model[0]*=sc*.5;model[5]*=sc*3;model[10]*=sc*.5;
+      vao=cylVAO;cnt=cylGeo.count;
+    }else if(r.type===1){// arch block
+      model[0]*=sc*2;model[5]*=sc*2;model[10]*=sc*.4;
+      vao=boxVAO;cnt=boxGeo.count;
+    }else{// wall
+      model[0]*=sc*3;model[5]*=sc*1.5;model[10]*=sc*.3;
+      vao=boxVAO;cnt=boxGeo.count;
+    }
+    mat4.multiply(mvp,vp,model);
+    gl.uniformMatrix4fv(gl.getUniformLocation(prObject,'uMVP'),false,mvp);
+    gl.uniformMatrix4fv(gl.getUniformLocation(prObject,'uModel'),false,model);
+    gl.uniform3fv(gl.getUniformLocation(prObject,'uColor'),[.3,.25,.2]);
+    gl.uniform3fv(gl.getUniformLocation(prObject,'uEmissive'),r.emissive);
+    gl.uniform1f(gl.getUniformLocation(prObject,'uGlow'),1.0);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES,0,cnt);
+  });
+
+  // --- ARTIFACTS ---
+  artifacts.forEach(a=>{
+    if(a.found)return;
+    mat4.identity(model);
+    let bob=sin(time*2+a.id)*0.4;
+    mat4.translate(model,model,[a.pos[0],a.baseY+bob,a.pos[2]]);
+    mat4.rotateY(model,model,time+a.id);
+    model[0]*=.3;model[5]*=.3;model[10]*=.3;
+    mat4.multiply(mvp,vp,model);
+    gl.uniformMatrix4fv(gl.getUniformLocation(prObject,'uMVP'),false,mvp);
+    gl.uniformMatrix4fv(gl.getUniformLocation(prObject,'uModel'),false,model);
+    gl.uniform3fv(gl.getUniformLocation(prObject,'uColor'),a.color);
+    gl.uniform3fv(gl.getUniformLocation(prObject,'uEmissive'),a.color);
+    gl.uniform1f(gl.getUniformLocation(prObject,'uGlow'),2.0);
+    gl.bindVertexArray(sphereVAO);
+    gl.drawArrays(gl.TRIANGLES,0,sphereGeo.count);
+  });
+
+  // --- CREATURES ---
+  creatures.forEach(c=>{
+    mat4.identity(model);
+    mat4.translate(model,model,c.pos);
+    let s=c.size;
+    let squish=1+sin(c.phase*6)*.15;
+    model[0]*=s;model[5]*=s*squish;model[10]*=s;
+    mat4.multiply(mvp,vp,model);
+    gl.uniformMatrix4fv(gl.getUniformLocation(prObject,'uMVP'),false,mvp);
+    gl.uniformMatrix4fv(gl.getUniformLocation(prObject,'uModel'),false,model);
+    gl.uniform3fv(gl.getUniformLocation(prObject,'uColor'),c.col);
+    gl.uniform3fv(gl.getUniformLocation(prObject,'uEmissive'),v3scale(c.col,.5));
+    gl.uniform1f(gl.getUniformLocation(prObject,'uGlow'),1.5);
+    gl.bindVertexArray(sphereVAO);
+    gl.drawArrays(gl.TRIANGLES,0,sphereGeo.count);
+  });
+
+  // --- PARTICLES ---
+  gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE);
+  gl.depthMask(false);
+  gl.useProgram(prParticle);
+  gl.uniformMatrix4fv(gl.getUniformLocation(prParticle,'uVP'),false,vp);
+  gl.uniform1f(gl.getUniformLocation(prParticle,'uTime'),time);
+  gl.uniform3fv(gl.getUniformLocation(prParticle,'uOrigin'),camera.pos);
+  gl.bindVertexArray(partVAO);
+  gl.drawArrays(gl.POINTS,0,particles.count);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+// ═══════════════════════════════════════════════════════
+//  FRAME LOOP
+// ═══════════════════════════════════════════════════════
+let lastTime=performance.now();
+
+function desktopLoop(now){
+  requestAnimationFrame(desktopLoop);
+  if(isVR)return;
+  let dt=min((now-lastTime)/1000,.05);lastTime=now;time+=dt;
+
+  updateCamera(dt);
+  updateCreatures(dt);
+  if(discoveryTimer>0){discoveryTimer-=dt;if(discoveryTimer<=0)document.getElementById('discovery').classList.remove('show');}
+
+  // HUD
+  let b=getBiome(camera.pos[0],camera.pos[2]);
+  document.getElementById('biomeLabel').textContent=BIOME_NAMES[b];
+  document.getElementById('altLabel').textContent=floor(camera.pos[1]);
+
+  // Build matrices
+  const proj=mat4.create();
+  mat4.perspective(proj,camera.fov,canvas.width/canvas.height,.1,500);
+  const view=mat4.create();
+  const fwd=[-sin(camera.yaw)*cos(camera.pitch),sin(camera.pitch),-cos(camera.yaw)*cos(camera.pitch)];
+  const target=v3add(camera.pos,fwd);
+  mat4.lookAt(view,camera.pos,target,[0,1,0]);
+
+  // Render to FBO
+  gl.bindFramebuffer(gl.FRAMEBUFFER,sceneFBO);
+  gl.viewport(0,0,fbWidth,fbHeight);
+  gl.clearColor(fogColor[0],fogColor[1],fogColor[2],1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  renderScene(proj,view,fbWidth,fbHeight);
+
+  // Post-process
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.CULL_FACE);
+  gl.useProgram(prPost);
+  gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,sceneTex);
+  gl.uniform1i(gl.getUniformLocation(prPost,'uScene'),0);
+  gl.uniform2f(gl.getUniformLocation(prPost,'uRes'),fbWidth,fbHeight);
+  gl.bindVertexArray(quadVAO);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+
+function xrLoop(t,frame){
+  xrSession.requestAnimationFrame(xrLoop);
+  let dt=min((t-lastTime)/1000,.05);lastTime=t;time+=dt;
+
+  updateCreatures(dt);
+
+  const pose=frame.getViewerPose(xrRefSpace);
+  if(!pose)return;
+
+  // Update camera from XR pose
+  camera.pos=[pose.transform.position.x,pose.transform.position.y,pose.transform.position.z];
+
+  const glLayer=xrSession.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER,glLayer.framebuffer);
+  gl.clearColor(fogColor[0],fogColor[1],fogColor[2],1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);gl.enable(gl.CULL_FACE);
+
+  for(const view of pose.views){
+    const vp=glLayer.getViewport(view);
+    gl.viewport(vp.x,vp.y,vp.width,vp.height);
+    const proj=view.projectionMatrix;
+    const viewMat=new Float32Array(view.transform.inverse.matrix);
+    renderScene(proj,viewMat,vp.width,vp.height);
+  }
+
+  // Check XR inputs for interaction
+  for(const src of xrSession.inputSources){
+    if(src.gamepad){
+      const btns=src.gamepad.buttons;
+      if(btns[0]&&btns[0].pressed)tryInteract();
+    }
+  }
+}
+
+requestAnimationFrame(desktopLoop);
+
+// ═══════════════════════════════════════════════════════
+//  START POSITION
+// ═══════════════════════════════════════════════════════
+camera.pos=[0,getHeight(0,0)+2,0];
+</script>
+</body>
+</html>

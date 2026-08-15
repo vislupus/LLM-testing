@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alien Planet WebXR - Raw WebGL</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050510;
+            color: #00ffcc;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #ui-container {
+            position: absolute;
+            text-align: center;
+            z-index: 10;
+        }
+        h1 { margin-bottom: 5px; text-shadow: 0 0 10px #00ffcc; }
+        p { margin-bottom: 20px; font-size: 14px; color: #aaa; }
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            cursor: pointer;
+            background: transparent;
+            border: 2px solid #00ffcc;
+            color: #00ffcc;
+            border-radius: 5px;
+            text-transform: uppercase;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 15px rgba(0, 255, 204, 0.3);
+        }
+        button:hover { background: #00ffcc; color: #050510; box-shadow: 0 0 25px rgba(0, 255, 204, 0.8); }
+        canvas { display: none; position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-container">
+        <h1>Xeno-Artifact Explorer</h1>
+        <p>Pure WebXR / WebGL Implementation</p>
+        <button id="vr-btn">Enter Immersive VR</button>
+    </div>
+
+    <canvas id="glcanvas"></canvas>
+
+    <script>
+        // --- 1. MINIMAL 3D MATH LIBRARY ---
+        // Since no libraries are allowed, we need raw matrix math for model positioning
+        const Math3D = {
+            createMatrix: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+            multiply: (a, b) => {
+                let c = new Float32Array(16);
+                for(let i=0; i<4; i++) {
+                    for(let j=0; j<4; j++) {
+                        c[i*4+j] = a[i*4+0]*b[0*4+j] + a[i*4+1]*b[1*4+j] + a[i*4+2]*b[2*4+j] + a[i*4+3]*b[3*4+j];
+                    }
+                }
+                return c;
+            },
+            translate: (m, v) => {
+                let out = new Float32Array(m);
+                out[12] = m[0]*v[0] + m[4]*v[1] + m[8]*v[2] + m[12];
+                out[13] = m[1]*v[0] + m[5]*v[1] + m[9]*v[2] + m[13];
+                out[14] = m[2]*v[0] + m[6]*v[1] + m[10]*v[2] + m[14];
+                out[15] = m[3]*v[0] + m[7]*v[1] + m[11]*v[2] + m[15];
+                return out;
+            },
+            rotateY: (m, angle) => {
+                let s = Math.sin(angle), c = Math.cos(angle);
+                let out = new Float32Array(m);
+                out[0] = m[0]*c + m[8]*-s; out[2] = m[0]*s + m[8]*c;
+                out[4] = m[4]*c + m[12]*-s; out[6] = m[4]*s + m[12]*c;
+                out[8] = m[8]*c + m[10]*-s; out[10] = m[8]*s + m[10]*c;
+                return out;
+            }
+        };
+
+        // --- 2. WEBGL & SHADER SETUP ---
+        const canvas = document.getElementById('glcanvas');
+        const gl = canvas.getContext('webgl', { xrCompatible: true });
+
+        const vsSource = `
+            attribute vec4 aVertexPosition;
+            attribute vec4 aVertexColor;
+            uniform mat4 uModelViewMatrix;
+            uniform mat4 uProjectionMatrix;
+            varying lowp vec4 vColor;
+            void main(void) {
+                gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+                vColor = aVertexColor;
+            }
+        `;
+
+        const fsSource = `
+            varying lowp vec4 vColor;
+            void main(void) {
+                gl_FragColor = vColor;
+            }
+        `;
+
+        function loadShader(type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Shader error: ' + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        const shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, loadShader(gl.VERTEX_SHADER, vsSource));
+        gl.attachShader(shaderProgram, loadShader(gl.FRAGMENT_SHADER, fsSource));
+        gl.linkProgram(shaderProgram);
+
+        const programInfo = {
+            program: shaderProgram,
+            attribLocations: {
+                vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
+                vertexColor: gl.getAttribLocation(shaderProgram, 'aVertexColor'),
+            },
+            uniformLocations: {
+                projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
+                modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
+            },
+        };
+
+        // --- 3. ALIEN GEOMETRY (Glowing Pyramid Artifacts & Floor Grid) ---
+        const positions = [
+            // Floating Pyramid
+            0.0,  1.0,  0.0,  -1.0, -1.0,  1.0,   1.0, -1.0,  1.0,
+            0.0,  1.0,  0.0,   1.0, -1.0,  1.0,   1.0, -1.0, -1.0,
+            0.0,  1.0,  0.0,   1.0, -1.0, -1.0,  -1.0, -1.0, -1.0,
+            0.0,  1.0,  0.0,  -1.0, -1.0, -1.0,  -1.0, -1.0,  1.0
+        ];
+        
+        const colors = [];
+        for (let i = 0; i < 4; i++) {
+            // Neon pink / purple glowing aesthetics
+            colors.push(1.0, 0.0, 1.0, 1.0,  0.0, 1.0, 1.0, 1.0,  0.5, 0.0, 1.0, 1.0);
+        }
+
+        // Add a ground grid to represent the biome floor
+        for(let z = -20; z < 20; z+=2) {
+            for(let x = -20; x < 20; x+=2) {
+                positions.push(x, -2, z,  x+2, -2, z,  x, -2, z+2);
+                colors.push(0, 0.2, 0.1, 1,  0, 0.5, 0.3, 1,  0, 0.1, 0.1, 1);
+            }
+        }
+
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+        const colorBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+
+        // --- 4. WEBXR SESSION MANAGEMENT ---
+        let xrSession = null;
+        let xrRefSpace = null;
+        let rotation = 0;
+        const btn = document.getElementById('vr-btn');
+
+        if (navigator.xr) {
+            navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
+                if (supported) {
+                    btn.addEventListener('click', onButtonClicked);
+                } else {
+                    btn.innerText = "VR Not Supported";
+                    btn.disabled = true;
+                }
+            });
+        }
+
+        function onButtonClicked() {
+            if (!xrSession) {
+                navigator.xr.requestSession('immersive-vr').then(onSessionStarted);
+            }
+        }
+
+        function onSessionStarted(session) {
+            xrSession = session;
+            document.getElementById('ui-container').style.display = 'none';
+            canvas.style.display = 'block';
+
+            session.addEventListener('end', onSessionEnded);
+            
+            // Connect WebGL context to WebXR
+            gl.makeXRCompatible().then(() => {
+                session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+                session.requestReferenceSpace('local').then((refSpace) => {
+                    xrRefSpace = refSpace;
+                    session.requestAnimationFrame(onXRFrame);
+                });
+            });
+        }
+
+        function onSessionEnded() {
+            xrSession = null;
+            document.getElementById('ui-container').style.display = 'block';
+            canvas.style.display = 'none';
+        }
+
+        // --- 5. RENDER LOOP ---
+        function onXRFrame(time, frame) {
+            let session = frame.session;
+            session.requestAnimationFrame(onXRFrame);
+            let pose = frame.getViewerPose(xrRefSpace);
+
+            if (pose) {
+                let glLayer = session.renderState.baseLayer;
+                gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
+                gl.clearColor(0.02, 0.0, 0.05, 1.0); // Deep alien space sky
+                gl.clearDepth(1.0);
+                gl.enable(gl.DEPTH_TEST);
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+                rotation += 0.01;
+
+                // Loop through the VR eyes (Left and Right)
+                for (let view of pose.views) {
+                    let viewport = glLayer.getViewport(view);
+                    gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+
+                    // WebXR provides the view and projection matrices automatically!
+                    const projectionMatrix = view.projectionMatrix;
+                    const viewMatrix = view.transform.inverse.matrix;
+
+                    gl.useProgram(programInfo.program);
+                    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+                    gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0);
+                    gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+
+                    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+                    gl.vertexAttribPointer(programInfo.attribLocations.vertexColor, 4, gl.FLOAT, false, 0, 0);
+                    gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
+
+                    gl.uniformMatrix4fv(programInfo.uniformLocations.projectionMatrix, false, projectionMatrix);
+
+                    // Draw multiple artifacts in space
+                    const artifactPositions = [ [0, 0, -5], [-3, 1, -4], [3, -1, -6] ];
+                    
+                    artifactPositions.forEach(pos => {
+                        let modelMatrix = Math3D.createMatrix();
+                        modelMatrix = Math3D.translate(modelMatrix, pos);
+                        modelMatrix = Math3D.rotateY(modelMatrix, rotation);
+                        
+                        let modelViewMatrix = Math3D.multiply(viewMatrix, modelMatrix);
+                        gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, modelViewMatrix);
+                        
+                        // Draw Pyramid (12 vertices)
+                        gl.drawArrays(gl.TRIANGLES, 0, 12);
+                    });
+
+                    // Draw Floor Grid (Starts after the 12 pyramid vertices)
+                    let floorModelView = Math3D.multiply(viewMatrix, Math3D.createMatrix());
+                    gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, floorModelView);
+                    gl.drawArrays(gl.TRIANGLES, 12, (positions.length / 3) - 12);
+                }
+            }
+        }
+    </script>
+</body>
+</html>

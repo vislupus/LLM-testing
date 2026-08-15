@@ -1274,3 +1274,46 @@ Testing different LLMs to do software tasks
 
 ### 41 - Civilisation simulation
 **Build an agent-based civilisation simulation in a single HTML file using p5.js. Create a large procedural world map that fills most of the screen, with terrain, climate zones, resources, settlements, tribes, trade routes, wars, technology, diseases, and autonomous agents with evolving traits and memory. Add controls for pause, reset, map view, maximum population, and simulation speed from 1× to 20×. Include buttons to trigger epidemics, droughts, floods, extreme heat, extreme cold, insect attacks, boredom, migration, trade enthusiasm, and war desire. Allow users to add foreign agents with very different genomes, cultures, technologies, and behaviours. Show live statistics for population, economy, wars, trade, traits, and technology progress. Make cities grow naturally around valuable resources, while alliances, rivalries, plagues, and technological breakthroughs emerge from agent behaviour. Keep the interface clear, responsive, visually engaging, and optimised for large populations. Add zoom, pan, overlays, labels, and event notifications so the user can inspect important changes across the world. Ensure the simulation remains fully autonomous and continues to evolve even when no manual events are triggered.**
+
+---
+
+### 42 - VR alien planet
+**Build an immersive WebXR experience where the player can freely explore a mysterious alien planet in VR. Include strange biomes, caves, ruins, wildlife, weather, glowing vegetation, artifacts, and physical interactions focused on exploration and discovery. Use no libraries, no fallback APIs, and implement the entire experience in a single HTML file.**
+
+
+
+Build a RAM price forecasting app using raw WebNN and the provided RAM_price.csv with date and price columns. Model prices on a logarithmic scale, learn from the historical data, predict yearly RAM prices for five years beyond the final CSV date, and visualize history, forecast, trend, errors, and uncertainty. Use no libraries, no fallback APIs, and implement the entire application in a single HTML file.
+
+
+Pointer Lock API — Retro FPS Engine
+Build a Wolfenstein and Doom-inspired retro FPS using the Pointer Lock API. Create procedural dungeons with mouse-look, enemies, weapons, shooting, health, pickups, doors, secrets, multiple levels, combat AI, and a minimap. Use no libraries, no fallback APIs, and implement the entire game in a single HTML file.
+
+Web NFC — Physical Creature RPG
+Build a creature-collecting RPG where physical NFC cards represent creatures, weapons, spells, and rare artifacts using the Web NFC API. Let players scan cards to unlock creatures, build a party, explore areas, fight turn-based battles, level up, evolve creatures, and discover special card combinations. Use no libraries, no fallback APIs, and implement the entire game in a single HTML file.
+
+Web Speech API — Voice Magic RPG
+Build a fantasy action RPG where spells are cast by speaking their names through the Web Speech API. Include elemental magic, chained spells, enemies, bosses, mana, cooldowns, exploration, quests, and voice-controlled spell combinations that produce different effects. Use no libraries, no fallback APIs, and implement the entire game in a single HTML file.
+
+Speech Synthesis — Interactive Visual Novel
+Build an interactive visual novel where every character speaks dialogue using browser Speech Synthesis. Include multiple characters with distinct voices, branching conversations, relationships, choices, procedural dialogue, animated portraits, locations, music controls, and multiple endings. Use no libraries, no fallback APIs, and implement the entire experience in a single HTML file.
+
+OPFS — Browser Operating System
+Build a miniature desktop operating system using the Origin Private File System as its persistent filesystem. Include windows, folders, text files, a terminal, text editor, image viewer, settings, file operations, multiple applications, and persistent desktop state across sessions. Use no libraries, no fallback storage APIs, and implement the entire operating system in a single HTML file.
+
+Cache API — Internet Time Machine
+Build an Internet Time Machine using the Cache API that maintains multiple historical versions of a fictional website. Let users browse the current site, capture snapshots, modify pages, travel backward and forward through versions, compare changes, restore old states, and inspect a visual history timeline. Use no libraries, no fallback storage APIs, and implement the entire application in a single HTML file.
+
+CSS Scroll-Driven Animations — Journey to Earth’s Core
+Build a cinematic journey from Earth's surface to its inner core using CSS Scroll-Driven Animations. Scrolling should continuously control the descent through the crust, mantle, outer core, and inner core with parallax geology, depth indicators, temperature changes, particles, transitions, and scientific annotations. Use no libraries, no fallback animation APIs, and implement the entire experience in a single HTML file.
+
+ElementInternals — Custom UI Framework
+Build a custom UI framework using Web Components and ElementInternals. Create form-associated sliders, switches, knobs, range controls, segmented controls, meters, validation states, keyboard navigation, accessibility behavior, themes, and a live demo panel without using native form widgets for their visual interfaces. Use no libraries, no fallback APIs, and implement everything in a single HTML file.
+
+Raw WebGL2 — Alien Cave Raymarcher
+Build an explorable alien cave world using raw WebGL2 and shader-based raymarching. Generate procedural tunnels, enormous caverns, volumetric fog, glowing crystals, underground lakes, strange vegetation, moving creatures, dynamic lighting, shadows, and first-person exploration. Use no Three.js, Babylon.js, other libraries, or fallback APIs, and implement everything in a single HTML file.
+
+regl — Million-Particle Galaxy Simulator
+Build a GPU-powered galaxy simulator with regl capable of rendering and evolving up to one million particles. Simulate stars, spiral structures, gravity-like motion, black holes, collisions, star formation, multiple galaxies, realtime parameter controls, camera navigation, and extreme zoom levels. Use regl as the only library, use no fallback rendering APIs, and implement the entire simulator in a single HTML file.
+
+OGL — Procedural Exoplanet Generator
+Build an interactive procedural exoplanet generator using OGL. Generate diverse planets with terrain, oceans, deserts, ice, clouds, storms, atmospheric scattering, rings, moons, city lights, rotating stars, day-night cycles, and adjustable planetary parameters with seamless space-to-surface exploration. Use OGL as the only library, use no fallback rendering APIs, and implement the entire experience in a single HTML file.

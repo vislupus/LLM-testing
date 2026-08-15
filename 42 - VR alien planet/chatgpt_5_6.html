@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>VEYRA // Alien Planet WebXR</title>
+<style>
+  html,body{margin:0;height:100%;background:#03040a;color:#d8fff4;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden}
+  #gl{width:100%;height:100%;display:block}
+  #panel{position:fixed;left:18px;top:18px;max-width:520px;padding:16px 18px;border:1px solid #4fe0c455;background:linear-gradient(180deg,#061410dd,#04070ddd);box-shadow:0 0 40px #00ffc422;backdrop-filter:blur(8px);border-radius:12px;line-height:1.45}
+  h1{margin:0 0 6px;font-size:18px;letter-spacing:.14em;color:#8dffe2}.sub{opacity:.75;font-size:12px;margin-bottom:12px}
+  button{font:inherit;border:1px solid #70ffe2;background:#0b2a25;color:#cafff2;padding:10px 14px;border-radius:8px;cursor:pointer;letter-spacing:.06em}
+  button:hover{background:#0f3c34}.small{font-size:12px;opacity:.82;margin-top:12px} .warn{color:#ffd58a}
+  #status{margin-left:10px;opacity:.75;font-size:12px}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="panel">
+  <h1>VEYRA // FIELD EXPEDITION</h1>
+  <div class="sub">A raw WebXR / WebGL2 exploration experience. No libraries. No desktop fallback.</div>
+  <button id="enter">ENTER IMMERSIVE VR</button><span id="status">checking WebXR…</span>
+  <div class="small">
+    Left stick: move · Right stick: snap turn · Trigger: scan · Squeeze: grab / release · Throw by releasing while moving.<br>
+    Explore the luminous mire, glass desert, fungal shelf, cave network, drowned ruins, roaming fauna, storms, and hidden artifacts.
+    <span class="warn">Requires an immersive-vr capable browser/device and motion controllers.</span>
+  </div>
+</div>
+<script>
+'use strict';
+
+// ------------------------------------------------------------
+// Tiny math layer (column-major matrices)
+// ------------------------------------------------------------
+const M4={
+  create:()=>new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+  identity:(o)=>{o.set([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);return o},
+  copy:(a)=>new Float32Array(a),
+  mul:(o,a,b)=>{const r=new Float32Array(16);for(let c=0;c<4;c++)for(let r0=0;r0<4;r0++)r[c*4+r0]=a[r0]*b[c*4]+a[4+r0]*b[c*4+1]+a[8+r0]*b[c*4+2]+a[12+r0]*b[c*4+3];o.set(r);return o},
+  translate:(o,a,v)=>{const t=M4.create();t[12]=v[0];t[13]=v[1];t[14]=v[2];return M4.mul(o,a,t)},
+  scale:(o,a,v)=>{const s=M4.create();s[0]=v[0];s[5]=v[1];s[10]=v[2];return M4.mul(o,a,s)},
+  rotY:(o,a,r)=>{const c=Math.cos(r),s=Math.sin(r),m=M4.create();m[0]=c;m[2]=-s;m[8]=s;m[10]=c;return M4.mul(o,a,m)},
+  rotX:(o,a,r)=>{const c=Math.cos(r),s=Math.sin(r),m=M4.create();m[5]=c;m[6]=s;m[9]=-s;m[10]=c;return M4.mul(o,a,m)},
+  rotZ:(o,a,r)=>{const c=Math.cos(r),s=Math.sin(r),m=M4.create();m[0]=c;m[1]=s;m[4]=-s;m[5]=c;return M4.mul(o,a,m)},
+  fromTRS:(p,s=[1,1,1],ry=0,rx=0,rz=0)=>{let m=M4.create();M4.translate(m,m,p); if(ry)M4.rotY(m,m,ry); if(rx)M4.rotX(m,m,rx); if(rz)M4.rotZ(m,m,rz); M4.scale(m,m,s); return m},
+  transformPoint:(m,p)=>[m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12],m[1]*p[0]+m[5]*p[1]+m[9]*p[2]+m[13],m[2]*p[0]+m[6]*p[1]+m[10]*p[2]+m[14]],
+  transformDir:(m,p)=>[m[0]*p[0]+m[4]*p[1]+m[8]*p[2],m[1]*p[0]+m[5]*p[1]+m[9]*p[2],m[2]*p[0]+m[6]*p[1]+m[10]*p[2]],
+  invertRigid:(m)=>{const o=M4.create();o[0]=m[0];o[1]=m[4];o[2]=m[8];o[4]=m[1];o[5]=m[5];o[6]=m[9];o[8]=m[2];o[9]=m[6];o[10]=m[10];const t=[m[12],m[13],m[14]];o[12]=-(o[0]*t[0]+o[4]*t[1]+o[8]*t[2]);o[13]=-(o[1]*t[0]+o[5]*t[1]+o[9]*t[2]);o[14]=-(o[2]*t[0]+o[6]*t[1]+o[10]*t[2]);return o}
+};
+const V={add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],len:a=>Math.hypot(a[0],a[1],a[2]),norm:a=>{const l=Math.hypot(...a)||1;return[a[0]/l,a[1]/l,a[2]/l]},cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]};
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+const lerp=(a,b,t)=>a+(b-a)*t;
+const fract=x=>x-Math.floor(x);
+function hash2(x,z){return fract(Math.sin(x*127.1+z*311.7)*43758.5453123)}
+function noise2(x,z){let ix=Math.floor(x),iz=Math.floor(z),fx=fract(x),fz=fract(z);fx=fx*fx*(3-2*fx);fz=fz*fz*(3-2*fz);let a=hash2(ix,iz),b=hash2(ix+1,iz),c=hash2(ix,iz+1),d=hash2(ix+1,iz+1);return lerp(lerp(a,b,fx),lerp(c,d,fx),fz)}
+function fbm(x,z){let v=0,a=.5;for(let i=0;i<5;i++){v+=noise2(x,z)*a;x*=2.03;z*=2.01;a*=.5}return v}
+
+// ------------------------------------------------------------
+// WebGL setup
+// ------------------------------------------------------------
+const canvas=document.getElementById('gl');
+const gl=canvas.getContext('webgl2',{xrCompatible:true,antialias:true,alpha:false});
+if(!gl) throw new Error('WebGL2 is required.');
+gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
+
+const VS=`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNor;
+layout(location=2) in vec3 aCol;
+uniform mat4 uProj,uView,uScene,uModel;
+uniform float uTime;
+out vec3 vNor;out vec3 vWorld;out vec3 vCol;
+void main(){
+  vec4 w=uModel*vec4(aPos,1.0); vWorld=w.xyz; vNor=mat3(uModel)*aNor; vCol=aCol;
+  gl_Position=uProj*uView*uScene*w;
+}`;
+const FS=`#version 300 es
+precision highp float;
+in vec3 vNor;in vec3 vWorld;in vec3 vCol;
+uniform vec3 uSun,uFog,uCamWorld;uniform float uTime,uEmissive,uAlpha,uStorm;
+out vec4 outColor;
+void main(){
+  vec3 n=normalize(vNor); float nd=max(dot(n,normalize(uSun)),0.0);
+  float hemi=.30+.28*(n.y*.5+.5); vec3 lit=vCol*(hemi+nd*.78);
+  float pulse=.78+.22*sin(uTime*2.7+vWorld.x*.8+vWorld.z*.6);
+  lit+=vCol*uEmissive*pulse*1.8;
+  float dist=length(vWorld-uCamWorld); float fog=1.0-exp(-dist*(.013+.018*uStorm));
+  vec3 c=mix(lit,uFog,clamp(fog,0.0,.88));
+  outColor=vec4(c,uAlpha);
+}`;
+const PVS=`#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+uniform mat4 uProj,uView,uScene;uniform float uTime;
+void main(){vec3 p=aPos;p.y=mod(p.y-uTime*3.4+20.0,20.0)-10.0;gl_Position=uProj*uView*uScene*vec4(p,1.0);gl_PointSize=2.6;}`;
+const PFS=`#version 300 es
+precision highp float;uniform vec3 uColor;out vec4 outColor;
+void main(){float d=length(gl_PointCoord-.5);if(d>.5)discard;outColor=vec4(uColor,1.0-d*1.4);}`;
+function shader(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));return s}
+function program(vs,fs){const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,vs));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));return p}
+const prog=program(VS,FS), pprog=program(PVS,PFS);
+const U={};['uProj','uView','uScene','uModel','uTime','uSun','uFog','uCamWorld','uEmissive','uAlpha','uStorm'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+const PU={};['uProj','uView','uScene','uTime','uColor'].forEach(n=>PU[n]=gl.getUniformLocation(pprog,n));
+
+function mesh(verts,inds){
+  const vao=gl.createVertexArray();gl.bindVertexArray(vao);
+  const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(verts),gl.STATIC_DRAW);
+  const stride=9*4;for(let i=0;i<3;i++){gl.enableVertexAttribArray(i);gl.vertexAttribPointer(i,3,gl.FLOAT,false,stride,i*3*4)}
+  const ib=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint32Array(inds),gl.STATIC_DRAW);
+  gl.bindVertexArray(null);return{vao,count:inds.length};
+}
+function vpush(a,p,n,c){a.push(...p,...n,...c)}
+function makeCube(){const v=[],i=[];const faces=[[[0,0,1],[[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]],[[0,0,-1],[[1,-1,-1],[-1,-1,-1],[-1,1,-1],[1,1,-1]]],[[1,0,0],[[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]]],[[-1,0,0],[[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]]],[[0,1,0],[[-1,1,1],[1,1,1],[1,1,-1],[-1,1,-1]]],[[0,-1,0],[[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]]]];let k=0;for(const [n,ps] of faces){for(const p of ps)vpush(v,p,n,[1,1,1]);i.push(k,k+1,k+2,k,k+2,k+3);k+=4}return mesh(v,i)}
+function makeIco(){const v=[],i=[];const rings=7,segs=10;for(let y=0;y<=rings;y++){const py=y/rings*Math.PI;for(let x=0;x<=segs;x++){const px=x/segs*Math.PI*2;const p=[Math.sin(py)*Math.cos(px),Math.cos(py),Math.sin(py)*Math.sin(px)];vpush(v,p,p,[1,1,1])}}for(let y=0;y<rings;y++)for(let x=0;x<segs;x++){let a=y*(segs+1)+x,b=a+segs+1;i.push(a,b,a+1,b,b+1,a+1)}return mesh(v,i)}
+function makeCylinder(seg=12){const v=[],i=[];for(let y=0;y<2;y++)for(let x=0;x<=seg;x++){const a=x/seg*Math.PI*2,n=[Math.cos(a),0,Math.sin(a)],p=[n[0],y*2-1,n[2]];vpush(v,p,n,[1,1,1])}for(let x=0;x<seg;x++){let a=x,b=x+seg+1;i.push(a,a+1,b,a+1,b+1,b)}return mesh(v,i)}
+const cube=makeCube(),sphere=makeIco(),cyl=makeCylinder();
+
+// ------------------------------------------------------------
+// Planet terrain / biomes
+// ------------------------------------------------------------
+function terrainHeight(x,z){
+  const base=(fbm(x*.035,z*.035)-.48)*5.4 + Math.sin(x*.055)*.7 + Math.cos(z*.043)*.7;
+  const crater=Math.exp(-((x+22)*(x+22)+(z-28)*(z-28))/190)*-4.6;
+  const shelf=Math.exp(-((x-34)*(x-34)+(z+20)*(z+20))/260)*3.2;
+  // A carved ravine becomes the cave floor; an overhanging tube mesh supplies the cave roof/walls.
+  const caveAxis=-31 + Math.sin(((-z-6)/2.2)*.55)*3.0;
+  const caveAlong=clamp(((-z)-4)/42,0,1)*clamp((47+z)/7,0,1);
+  const caveCut=Math.exp(-((x-caveAxis)*(x-caveAxis))/7.0)*caveAlong*-3.6;
+  return base+crater+shelf+caveCut;
+}
+function biomeColor(x,z,h){
+  const b=fbm(x*.018+33,z*.018-17);
+  if(x<-12&&z>8) return [0.08+0.05*b,0.38+0.28*b,0.30+0.18*b]; // luminous mire
+  if(x>16&&z>4) return [0.35+0.2*b,0.20+0.09*b,0.42+0.18*b]; // glass desert
+  if(z<-12) return [0.20+0.14*b,0.30+0.12*b,0.15+0.18*b]; // fungal shelf
+  if(h>3) return [0.34,0.38,0.45];
+  return [0.18+0.15*b,0.22+0.12*b,0.25+0.18*b];
+}
+function makeTerrain(){
+  const N=65,S=96,verts=[],inds=[];for(let z=0;z<N;z++)for(let x=0;x<N;x++){const wx=(x/(N-1)-.5)*S,wz=(z/(N-1)-.5)*S,h=terrainHeight(wx,wz);const e=.22,n=V.norm([terrainHeight(wx-e,wz)-terrainHeight(wx+e,wz),2*e,terrainHeight(wx,wz-e)-terrainHeight(wx,wz+e)]);vpush(verts,[wx,h,wz],n,biomeColor(wx,wz,h))}for(let z=0;z<N-1;z++)for(let x=0;x<N-1;x++){const a=z*N+x,b=a+N;inds.push(a,b,a+1,b,b+1,a+1)}return mesh(verts,inds)}
+const terrain=makeTerrain();
+
+// Cave tunnel as a sequence of dark stone rings.
+function makeTunnel(path,r=3.2,seg=14){const v=[],ind=[];for(let j=0;j<path.length;j++){let p=path[j],prev=path[Math.max(0,j-1)],next=path[Math.min(path.length-1,j+1)],t=V.norm(V.sub(next,prev)),up=[0,1,0],right=V.norm(V.cross(up,t));if(V.len(right)<.1)right=[1,0,0];up=V.norm(V.cross(t,right));for(let k=0;k<=seg;k++){const a=k/seg*Math.PI*2,rr=r*(1+.08*Math.sin(j*1.7+k*2.2)),off=V.add(V.mul(right,Math.cos(a)*rr),V.mul(up,Math.sin(a)*rr));const pos=V.add(p,off),n=V.norm(V.mul(off,-1));vpush(v,pos,n,[.09,.11,.15])}}for(let j=0;j<path.length-1;j++)for(let k=0;k<seg;k++){let a=j*(seg+1)+k,b=a+seg+1;ind.push(a,a+1,b,b,a+1,b+1)}return mesh(v,ind)}
+const cavePath=[];for(let i=0;i<18;i++){let z=-6-i*2.2,x=-31+Math.sin(i*.55)*3,y=terrainHeight(x,z)+1.1-Math.sin(i*.3)*.35;cavePath.push([x,y,z])}
+const caveMesh=makeTunnel(cavePath);
+
+// ------------------------------------------------------------
+// World entities
+// ------------------------------------------------------------
+const objects=[]; const grabbables=[]; const artifacts=[]; const fauna=[];
+function add(meshRef,pos,scale,color,opts={}){const o={mesh:meshRef,pos:[...pos],scale:[...scale],color:[...color],ry:opts.ry||0,rx:opts.rx||0,rz:opts.rz||0,emissive:opts.emissive||0,alpha:opts.alpha??1,kind:opts.kind||'',spin:opts.spin||0,vel:[0,0,0],grabbed:null,discovered:false};objects.push(o);if(opts.grab)grabbables.push(o);if(opts.artifact)artifacts.push(o);if(opts.fauna)fauna.push(o);return o}
+
+// Ruins: broken monolith court near center-east.
+for(let i=0;i<9;i++){const a=i/9*Math.PI*2,r=10+Math.sin(i*2.1)*1.5,x=8+Math.cos(a)*r,z=-2+Math.sin(a)*r,y=terrainHeight(x,z);add(cube,[x,y+2,z],[.65,2.4+Math.random()*1.8,.65],[.18,.25,.31],{ry:a+.25});}
+add(cube,[8,terrainHeight(8,-2)+.25,-2],[5.5,.25,5.5],[.12,.17,.22],{});
+for(let i=0;i<5;i++){let x=5+i*1.6,z=-2,y=terrainHeight(x,z)+.7;add(sphere,[x,y,z],[.32,.32,.32],[.1,.9,.72],{emissive:1.7,artifact:true,grab:true,kind:'artifact',spin:.6+i*.12})}
+
+// Luminous mire vegetation.
+for(let i=0;i<75;i++){let x=-44+Math.random()*28,z=10+Math.random()*32,y=terrainHeight(x,z),h=.45+Math.random()*1.7;add(cyl,[x,y+h*.45,z],[.07,h*.45,.07],[.06,.45,.34],{emissive:.25});add(sphere,[x,y+h,z],[.18+.25*Math.random(),.08+.12*Math.random(),.18+.25*Math.random()],[.15,.95,.72],{emissive:1.05});}
+
+// Fungal shelf.
+for(let i=0;i<55;i++){let x=-6+Math.random()*48,z=-46+Math.random()*26,y=terrainHeight(x,z),s=.22+.55*Math.random();add(cyl,[x,y+s,z],[s*.22,s,s*.22],[.32,.24,.22],{});add(sphere,[x,y+s*2,z],[s*1.1,s*.34,s*1.1],[.78,.25+.3*Math.random(),.72],{emissive:.45});}
+
+// Glass desert crystal shards.
+for(let i=0;i<62;i++){let x=18+Math.random()*29,z=7+Math.random()*35,y=terrainHeight(x,z),s=.35+Math.random()*1.8;add(cube,[x,y+s,z],[.12*s,s,.12*s],[.50,.30,.92],{rx:.18*(Math.random()-.5),rz:.45*(Math.random()-.5),emissive:.38});}
+
+// Cave crystals and hidden artifact.
+for(let i=3;i<cavePath.length;i+=2){let p=cavePath[i],side=(i%4<2?-1:1);add(cube,[p[0]+side*2.0,terrainHeight(p[0],p[2])+.45+Math.random()*1.4,p[2]],[.14,.65+.4*Math.random(),.14],[.18,.72,1.0],{rz:side*.45,emissive:1.2});}
+const hidden=add(sphere,[cavePath[15][0],terrainHeight(cavePath[15][0],cavePath[15][2])+.65,cavePath[15][2]],[.5,.5,.5],[1,.34,.12],{emissive:2.2,artifact:true,grab:true,kind:'artifact',spin:1.1});
+
+// Grab/throwable survey stones.
+for(let i=0;i<20;i++){let x=-8+Math.random()*18,z=-5+Math.random()*18,y=terrainHeight(x,z)+.3;add(sphere,[x,y,z],[.18,.14,.22],[.26,.38,.42],{grab:true,kind:'stone'});}
+
+// Fauna: floaters, herd crawlers, sky rays.
+for(let i=0;i<9;i++){let x=-28+Math.random()*52,z=-30+Math.random()*58,y=terrainHeight(x,z)+1.3+Math.random()*1.8;let o=add(sphere,[x,y,z],[.42,.24,.55],[.16,.78,.62],{emissive:.25,fauna:true,kind:'floater'});o.home=[x,y,z];o.phase=Math.random()*10;o.speed=.18+.22*Math.random()}
+for(let i=0;i<7;i++){let x=15+Math.random()*25,z=-28+Math.random()*16,y=terrainHeight(x,z)+.45;let o=add(sphere,[x,y,z],[.7,.28,.45],[.55,.48,.18],{fauna:true,kind:'crawler'});o.home=[x,y,z];o.phase=Math.random()*10;o.speed=.15+.16*Math.random()}
+for(let i=0;i<4;i++){let x=-20+Math.random()*50,z=-20+Math.random()*50,y=9+Math.random()*6;let o=add(cube,[x,y,z],[1.5,.07,.65],[.20,.38,.58],{fauna:true,kind:'ray',emissive:.18});o.home=[x,y,z];o.phase=Math.random()*10;o.speed=.06+.05*Math.random()}
+
+// Weather particles.
+const rainCount=850,rainData=new Float32Array(rainCount*3);for(let i=0;i<rainCount;i++){rainData[i*3]=(Math.random()-.5)*45;rainData[i*3+1]=(Math.random()-.5)*20;rainData[i*3+2]=(Math.random()-.5)*45}
+const rainVao=gl.createVertexArray();gl.bindVertexArray(rainVao);const rainBuf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,rainBuf);gl.bufferData(gl.ARRAY_BUFFER,rainData,gl.STATIC_DRAW);gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);gl.bindVertexArray(null);
+
+// ------------------------------------------------------------
+// XR state + interactions
+// ------------------------------------------------------------
+let xrSession=null, baseRefSpace=null, xrLayer=null, t0=performance.now();
+let player=[0,terrainHeight(0,5),5], yaw=0, lastT=0, snapReady=true, discovered=0, storm=0;
+const hands=new Map();
+function sceneMatrix(){let m=M4.create();M4.rotY(m,m,-yaw);M4.translate(m,m,[-player[0],-player[1],-player[2]]);return m}
+function worldToStage(p){return M4.transformPoint(sceneMatrix(),p)}
+function stageToWorld(p){return M4.transformPoint(M4.invertRigid(sceneMatrix()),p)}
+function terrainNormal(x,z){const e=.15;return V.norm([terrainHeight(x-e,z)-terrainHeight(x+e,z),2*e,terrainHeight(x,z-e)-terrainHeight(x,z+e)])}
+
+function controllerModel(pose){const m=new Float32Array(pose.transform.matrix);let tip=M4.transformPoint(m,[0,0,-.06]);let dir=V.norm(M4.transformDir(m,[0,0,-1]));return{m,tip,dir}}
+function raySphere(ro,rd,c,r){const oc=V.sub(ro,c),b=V.dot(oc,rd),cc=V.dot(oc,oc)-r*r,h=b*b-cc;if(h<0)return Infinity;let t=-b-Math.sqrt(h);return t>0?t:Infinity}
+function scanFrom(hand){let best=null,bt=8;for(const a of artifacts){if(a.discovered)continue;const c=worldToStage(a.pos);const t=raySphere(hand.tip,hand.dir,c,.75);if(t<bt){bt=t;best=a}}if(best){best.discovered=true;best.emissive=3.4;best.scale=best.scale.map(v=>v*1.18);discovered++;navigator.vibrate?.(40);}}
+function tryGrab(hand,key){let best=null,bd=.65;for(const o of grabbables){if(o.grabbed)continue;const s=worldToStage(o.pos),d=V.len(V.sub(s,hand.tip));if(d<bd){bd=d;best=o}}if(best){best.grabbed=key;hand.held=best;hand.samples=[];}}
+function release(hand){const o=hand.held;if(!o)return;o.grabbed=null;let vel=[0,0,0];if(hand.samples.length>=2){const a=hand.samples[0],b=hand.samples[hand.samples.length-1],dt=Math.max(.01,(b.t-a.t)/1000);vel=V.mul(V.sub(b.p,a.p),1/dt)}o.vel=vel;hand.held=null;hand.samples=[];}
+
+function updateInput(frame,dt){
+  const S=sceneMatrix();const inv=M4.invertRigid(S);
+  let idx=0;
+  for(const src of xrSession.inputSources){
+    const key=src.handedness||('hand'+idx++);let h=hands.get(key)||{prevTrig:false,prevSqueeze:false,held:null,samples:[]};hands.set(key,h);
+    const space=src.gripSpace||src.targetRaySpace;const pose=frame.getPose(space,baseRefSpace);if(!pose)continue;Object.assign(h,controllerModel(pose));
+    const gp=src.gamepad;if(gp){
+      const trig=!!gp.buttons[0]?.pressed,sq=!!gp.buttons[1]?.pressed;
+      if(trig&&!h.prevTrig)scanFrom(h); if(sq&&!h.prevSqueeze)tryGrab(h,key); if(!sq&&h.prevSqueeze)release(h); h.prevTrig=trig;h.prevSqueeze=sq;
+      if(h.held){const wp=M4.transformPoint(inv,h.tip);h.held.pos=wp;h.held.vel=[0,0,0];h.samples.push({p:wp,t:performance.now()});if(h.samples.length>6)h.samples.shift()}
+      if(src.handedness==='left'&&gp.axes.length>=4){const x=gp.axes[2]||gp.axes[0]||0,z=gp.axes[3]||gp.axes[1]||0;if(Math.hypot(x,z)>.18){const sp=3.2*dt,cy=Math.cos(yaw),sy=Math.sin(yaw);player[0]+=(x*cy-z*sy)*sp;player[2]+=(x*sy+z*cy)*sp;}}
+      if(src.handedness==='right'&&gp.axes.length>=4){const x=gp.axes[2]||gp.axes[0]||0;if(Math.abs(x)>.7&&snapReady){yaw+=Math.sign(x)*Math.PI/6;snapReady=false} if(Math.abs(x)<.25)snapReady=true;}
+    }
+  }
+  player[0]=clamp(player[0],-46,46);player[2]=clamp(player[2],-46,46);player[1]=terrainHeight(player[0],player[2]);
+}
+
+function updateWorld(t,dt){
+  // Slow alien weather cycle. Storm strength breathes in and out every ~90 sec.
+  storm=clamp((Math.sin(t*.067-1.2)-.25)*1.3,0,1);
+  for(const o of fauna){
+    if(o.kind==='floater'){o.pos[0]=o.home[0]+Math.cos(t*o.speed+o.phase)*3;o.pos[2]=o.home[2]+Math.sin(t*o.speed*.8+o.phase)*2;o.pos[1]=terrainHeight(o.pos[0],o.pos[2])+1.6+Math.sin(t*1.4+o.phase)*.35;o.ry=-t*o.speed;}
+    if(o.kind==='crawler'){o.pos[0]=o.home[0]+Math.sin(t*o.speed+o.phase)*4;o.pos[2]=o.home[2]+Math.cos(t*o.speed*.7+o.phase)*2;o.pos[1]=terrainHeight(o.pos[0],o.pos[2])+.45;o.ry=t*o.speed;}
+    if(o.kind==='ray'){o.pos[0]=o.home[0]+Math.cos(t*o.speed+o.phase)*12;o.pos[2]=o.home[2]+Math.sin(t*o.speed+o.phase)*12;o.pos[1]=10+Math.sin(t*.4+o.phase)*2;o.ry=-t*o.speed+1.57;o.rz=Math.sin(t*.9+o.phase)*.08;}
+  }
+  for(const o of objects){if(o.spin&&!o.grabbed)o.ry+=o.spin*dt;if(!o.grabbed&&V.len(o.vel)>.01){o.vel[1]-=4.5*dt;o.pos=V.add(o.pos,V.mul(o.vel,dt));const floor=terrainHeight(o.pos[0],o.pos[2])+.18;if(o.pos[1]<floor){o.pos[1]=floor;o.vel[1]=Math.abs(o.vel[1])*.35;o.vel[0]*=.72;o.vel[2]*=.72}}}
+}
+
+function drawMesh(o,scene,t,cam){
+  const m=M4.fromTRS(o.pos,o.scale,o.ry,o.rx,o.rz);gl.uniformMatrix4fv(U.uModel,false,m);gl.uniform1f(U.uEmissive,o.emissive||0);gl.uniform1f(U.uAlpha,o.alpha??1);
+  // Color is encoded as a per-draw tint by setting constant vertex color multiplier through attrib? Mesh colors are white except terrain/tunnel.
+  // Use constant normal color for primitive meshes by temporarily disabling color array.
+  gl.bindVertexArray(o.mesh.vao);if(o.mesh===cube||o.mesh===sphere||o.mesh===cyl){gl.disableVertexAttribArray(2);gl.vertexAttrib3fv(2,new Float32Array(o.color));}else{gl.enableVertexAttribArray(2)}gl.drawElements(gl.TRIANGLES,o.mesh.count,gl.UNSIGNED_INT,0);gl.bindVertexArray(null);
+}
+function renderView(view,frame,t){
+  const pose=frame.getViewerPose(baseRefSpace);const scene=sceneMatrix();
+  gl.useProgram(prog);gl.uniformMatrix4fv(U.uProj,false,view.projectionMatrix);gl.uniformMatrix4fv(U.uView,false,view.transform.inverse.matrix);gl.uniformMatrix4fv(U.uScene,false,scene);gl.uniform1f(U.uTime,t);gl.uniform3f(U.uSun,-.35,.9,.2);gl.uniform3f(U.uFog,.04+.05*storm,.05+.02*storm,.11+.06*storm);gl.uniform3fv(U.uCamWorld,new Float32Array(player));gl.uniform1f(U.uStorm,storm);
+  gl.uniform1f(U.uEmissive,0);gl.uniform1f(U.uAlpha,1);gl.uniformMatrix4fv(U.uModel,false,M4.create());gl.bindVertexArray(terrain.vao);gl.enableVertexAttribArray(2);gl.drawElements(gl.TRIANGLES,terrain.count,gl.UNSIGNED_INT,0);
+  gl.disable(gl.CULL_FACE);gl.uniform1f(U.uEmissive,.03);gl.bindVertexArray(caveMesh.vao);gl.drawElements(gl.TRIANGLES,caveMesh.count,gl.UNSIGNED_INT,0);gl.enable(gl.CULL_FACE);
+  for(const o of objects)drawMesh(o,scene,t,player);
+  // Controller geometry + scan rays.
+  for(const h of hands.values()){if(!h.m)continue;const wp=stageToWorld(h.tip);const wm=M4.fromTRS(wp,[.035,.035,.13],0,0,0);gl.uniformMatrix4fv(U.uModel,false,wm);gl.uniform1f(U.uEmissive,.7);gl.bindVertexArray(cube.vao);gl.disableVertexAttribArray(2);gl.vertexAttrib3f(2,.2,.95,.85);gl.drawElements(gl.TRIANGLES,cube.count,gl.UNSIGNED_INT,0)}
+  // Weather: world-relative particle volume centered around current player.
+  if(storm>.03){gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.useProgram(pprog);gl.uniformMatrix4fv(PU.uProj,false,view.projectionMatrix);gl.uniformMatrix4fv(PU.uView,false,view.transform.inverse.matrix);let weatherScene=M4.copy(scene);let anchor=M4.create();M4.translate(anchor,anchor,[player[0],player[1]+7,player[2]]);M4.mul(weatherScene,scene,anchor);gl.uniformMatrix4fv(PU.uScene,false,weatherScene);gl.uniform1f(PU.uTime,t);gl.uniform3f(PU.uColor,.35,.75,1.0);gl.bindVertexArray(rainVao);gl.drawArrays(gl.POINTS,0,rainCount);gl.disable(gl.BLEND)}
+}
+
+function onXRFrame(time,frame){
+  const dt=Math.min(.05,(time-lastT)/1000||.016);lastT=time;const t=(time-t0)/1000;xrSession.requestAnimationFrame(onXRFrame);updateInput(frame,dt);updateWorld(t,dt);
+  const pose=frame.getViewerPose(baseRefSpace);if(!pose)return;const glLayer=xrSession.renderState.baseLayer;gl.bindFramebuffer(gl.FRAMEBUFFER,glLayer.framebuffer);gl.clearColor(.015+.02*storm,.018,.05+.03*storm,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  for(const view of pose.views){const vp=glLayer.getViewport(view);gl.viewport(vp.x,vp.y,vp.width,vp.height);renderView(view,frame,t)}
+}
+
+async function enterXR(){
+  if(!navigator.xr)throw new Error('WebXR not available.');
+  xrSession=await navigator.xr.requestSession('immersive-vr',{requiredFeatures:['local-floor']});
+  await gl.makeXRCompatible();xrLayer=new XRWebGLLayer(xrSession,gl,{antialias:true,alpha:false,depth:true,stencil:false,framebufferScaleFactor:1});xrSession.updateRenderState({baseLayer:xrLayer,depthNear:.05,depthFar:140});baseRefSpace=await xrSession.requestReferenceSpace('local-floor');
+  document.getElementById('panel').style.display='none';xrSession.addEventListener('end',()=>{xrSession=null;document.getElementById('panel').style.display='block'});lastT=performance.now();xrSession.requestAnimationFrame(onXRFrame);
+}
+
+(async()=>{const b=document.getElementById('enter'),s=document.getElementById('status');try{if(!navigator.xr){s.textContent='WebXR unavailable';b.disabled=true;return}const ok=await navigator.xr.isSessionSupported('immersive-vr');s.textContent=ok?'VR ready':'immersive-vr unsupported';b.disabled=!ok}catch(e){s.textContent='WebXR check failed';b.disabled=true}b.onclick=()=>enterXR().catch(e=>{s.textContent=e.message;console.error(e)})})();
+
+// Non-XR page intentionally does not render a playable fallback.
+</script>
+</body>
+</html>

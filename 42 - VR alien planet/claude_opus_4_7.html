@@ -1,0 +1,2025 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zephyria — A World Beyond Memory</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#08050f;color:#ecebff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overflow:hidden;-webkit-font-smoothing:antialiased}
+  #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:24px;text-align:center;z-index:10;background:radial-gradient(1200px 800px at 50% 40%,#1c0f36 0%,#08050f 72%)}
+  h1{font-weight:200;font-size:48px;letter-spacing:.32em;margin:0 0 6px;background:linear-gradient(180deg,#fff 20%,#a599e6 90%);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:#8a86b0;font-size:11px;letter-spacing:.42em;text-transform:uppercase;margin-bottom:36px}
+  p{max-width:460px;color:#b8b3d8;font-size:14px;line-height:1.75;margin:0 0 10px}
+  .quiet{color:#8a86b0;font-size:12px;letter-spacing:.05em;font-style:italic}
+  button{margin-top:32px;padding:15px 44px;background:transparent;color:#ecebff;border:1px solid #6a5aa8;letter-spacing:.24em;text-transform:uppercase;font-size:11px;cursor:pointer;transition:all .25s;font-weight:500;border-radius:1px}
+  button:hover:not(:disabled){background:#2a1f4a;border-color:#b0a0ff;box-shadow:0 0 30px rgba(160,140,240,.35);color:#fff}
+  button:disabled{opacity:.35;cursor:not-allowed}
+  #status{margin-top:16px;font-size:11px;color:#f0c674;min-height:14px;letter-spacing:.06em;max-width:400px}
+  .controls{margin-top:44px;font-size:12px;color:#6e6a94;line-height:1.9;text-align:left}
+  .controls b{color:#a599e6;font-weight:400;letter-spacing:.14em;margin-right:8px;display:inline-block;width:110px}
+  canvas{display:block;width:100%;height:100%;position:fixed;inset:0}
+  #hint{position:fixed;bottom:16px;left:0;right:0;text-align:center;color:#6a6690;font-size:10px;letter-spacing:.3em;text-transform:uppercase}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1>ZEPHYRIA</h1>
+  <div class="sub">A World Beyond Memory</div>
+  <p>You wake alone beneath a strange sun. Somewhere in these glowing wilds, the last of the Old Ones left their light behind — six vessels of their memory, scattered when the sky cracked open.</p>
+  <p class="quiet">Find them. Return them to the ring of stones.</p>
+  <button id="enter" disabled>Checking Hardware…</button>
+  <div id="status"></div>
+  <div class="controls">
+    <div><b>◇ Left stick</b> walk / strafe</div>
+    <div><b>◇ Right stick</b> turn</div>
+    <div><b>◇ Trigger</b> reach out &amp; take</div>
+    <div><b>◇ Any grip</b> release</div>
+  </div>
+</div>
+<div id="hint">WebXR · headset required</div>
+
+<script>
+'use strict';
+
+// =====================================================================
+//  MATH — vec3 / mat4 / quat, all in-place to avoid GC in the frame loop
+// =====================================================================
+const V3 = {
+  c: () => new Float32Array(3),
+  s: (o,x,y,z) => { o[0]=x; o[1]=y; o[2]=z; return o; },
+  cp:(o,a) => { o[0]=a[0]; o[1]=a[1]; o[2]=a[2]; return o; },
+  add:(o,a,b) => { o[0]=a[0]+b[0]; o[1]=a[1]+b[1]; o[2]=a[2]+b[2]; return o; },
+  sub:(o,a,b) => { o[0]=a[0]-b[0]; o[1]=a[1]-b[1]; o[2]=a[2]-b[2]; return o; },
+  scl:(o,a,s) => { o[0]=a[0]*s; o[1]=a[1]*s; o[2]=a[2]*s; return o; },
+  scladd:(o,a,b,s) => { o[0]=a[0]+b[0]*s; o[1]=a[1]+b[1]*s; o[2]=a[2]+b[2]*s; return o; },
+  dot:(a,b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  crs:(o,a,b) => { const x=a[1]*b[2]-a[2]*b[1], y=a[2]*b[0]-a[0]*b[2], z=a[0]*b[1]-a[1]*b[0]; o[0]=x; o[1]=y; o[2]=z; return o; },
+  len:a => Math.hypot(a[0],a[1],a[2]),
+  nrm:(o,a) => { const l=Math.hypot(a[0],a[1],a[2])||1; o[0]=a[0]/l; o[1]=a[1]/l; o[2]=a[2]/l; return o; },
+  dst:(a,b) => Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2]),
+  dstSq:(a,b) => { const dx=a[0]-b[0],dy=a[1]-b[1],dz=a[2]-b[2]; return dx*dx+dy*dy+dz*dz; },
+  lerp:(o,a,b,t) => { o[0]=a[0]+(b[0]-a[0])*t; o[1]=a[1]+(b[1]-a[1])*t; o[2]=a[2]+(b[2]-a[2])*t; return o; }
+};
+
+const M4 = {
+  c: () => new Float32Array(16),
+  idt:o => { o.fill(0); o[0]=o[5]=o[10]=o[15]=1; return o; },
+  cp: (o,a) => { for(let i=0;i<16;i++) o[i]=a[i]; return o; },
+  mul:(o,a,b) => {
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3],a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+          a20=a[8],a21=a[9],a22=a[10],a23=a[11],a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+    let b0,b1,b2,b3;
+    b0=b[0]; b1=b[1]; b2=b[2]; b3=b[3];
+    o[0]=b0*a00+b1*a10+b2*a20+b3*a30; o[1]=b0*a01+b1*a11+b2*a21+b3*a31;
+    o[2]=b0*a02+b1*a12+b2*a22+b3*a32; o[3]=b0*a03+b1*a13+b2*a23+b3*a33;
+    b0=b[4]; b1=b[5]; b2=b[6]; b3=b[7];
+    o[4]=b0*a00+b1*a10+b2*a20+b3*a30; o[5]=b0*a01+b1*a11+b2*a21+b3*a31;
+    o[6]=b0*a02+b1*a12+b2*a22+b3*a32; o[7]=b0*a03+b1*a13+b2*a23+b3*a33;
+    b0=b[8]; b1=b[9]; b2=b[10]; b3=b[11];
+    o[8]=b0*a00+b1*a10+b2*a20+b3*a30; o[9]=b0*a01+b1*a11+b2*a21+b3*a31;
+    o[10]=b0*a02+b1*a12+b2*a22+b3*a32; o[11]=b0*a03+b1*a13+b2*a23+b3*a33;
+    b0=b[12]; b1=b[13]; b2=b[14]; b3=b[15];
+    o[12]=b0*a00+b1*a10+b2*a20+b3*a30; o[13]=b0*a01+b1*a11+b2*a21+b3*a31;
+    o[14]=b0*a02+b1*a12+b2*a22+b3*a32; o[15]=b0*a03+b1*a13+b2*a23+b3*a33;
+    return o;
+  },
+  trs:(o,pos,rotY,sx,sy,sz) => {
+    // translation + Y rotation + non-uniform scale
+    const c=Math.cos(rotY), s=Math.sin(rotY);
+    o[0]=c*sx;  o[1]=0;    o[2]=-s*sx; o[3]=0;
+    o[4]=0;     o[5]=sy;   o[6]=0;     o[7]=0;
+    o[8]=s*sz;  o[9]=0;    o[10]=c*sz; o[11]=0;
+    o[12]=pos[0]; o[13]=pos[1]; o[14]=pos[2]; o[15]=1;
+    return o;
+  },
+  trsq:(o,pos,q,s) => {
+    // translation + quaternion rotation + uniform scale (s = number)
+    const x=q[0],y=q[1],z=q[2],w=q[3];
+    const x2=x+x,y2=y+y,z2=z+z;
+    const xx=x*x2, xy=x*y2, xz=x*z2;
+    const yy=y*y2, yz=y*z2, zz=z*z2;
+    const wx=w*x2, wy=w*y2, wz=w*z2;
+    o[0]=(1-(yy+zz))*s;  o[1]=(xy+wz)*s;      o[2]=(xz-wy)*s;      o[3]=0;
+    o[4]=(xy-wz)*s;      o[5]=(1-(xx+zz))*s;  o[6]=(yz+wx)*s;      o[7]=0;
+    o[8]=(xz+wy)*s;      o[9]=(yz-wx)*s;      o[10]=(1-(xx+yy))*s; o[11]=0;
+    o[12]=pos[0]; o[13]=pos[1]; o[14]=pos[2]; o[15]=1;
+    return o;
+  },
+  inv:(o,a) => {
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3],a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+          a20=a[8],a21=a[9],a22=a[10],a23=a[11],a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+    const b00=a00*a11-a01*a10, b01=a00*a12-a02*a10, b02=a00*a13-a03*a10;
+    const b03=a01*a12-a02*a11, b04=a01*a13-a03*a11, b05=a02*a13-a03*a12;
+    const b06=a20*a31-a21*a30, b07=a20*a32-a22*a30, b08=a20*a33-a23*a30;
+    const b09=a21*a32-a22*a31, b10=a21*a33-a23*a31, b11=a22*a33-a23*a32;
+    let d = b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;
+    if (!d) return null;
+    d = 1/d;
+    o[0]=(a11*b11-a12*b10+a13*b09)*d;  o[1]=(a02*b10-a01*b11-a03*b09)*d;
+    o[2]=(a31*b05-a32*b04+a33*b03)*d;  o[3]=(a22*b04-a21*b05-a23*b03)*d;
+    o[4]=(a12*b08-a10*b11-a13*b07)*d;  o[5]=(a00*b11-a02*b08+a03*b07)*d;
+    o[6]=(a32*b02-a30*b05-a33*b01)*d;  o[7]=(a20*b05-a22*b02+a23*b01)*d;
+    o[8]=(a10*b10-a11*b08+a13*b06)*d;  o[9]=(a01*b08-a00*b10-a03*b06)*d;
+    o[10]=(a30*b04-a31*b02+a33*b00)*d; o[11]=(a21*b02-a20*b04-a23*b00)*d;
+    o[12]=(a11*b07-a10*b09-a12*b06)*d; o[13]=(a00*b09-a01*b07+a02*b06)*d;
+    o[14]=(a31*b01-a30*b03-a32*b00)*d; o[15]=(a20*b03-a21*b01+a22*b00)*d;
+    return o;
+  },
+  nm3:(o,m) => {
+    // 3x3 inverse-transpose of upper-left, for normals under non-uniform scale
+    const a00=m[0],a01=m[1],a02=m[2],a10=m[4],a11=m[5],a12=m[6],a20=m[8],a21=m[9],a22=m[10];
+    const b01=a22*a11-a12*a21, b11=-a22*a10+a12*a20, b21=a21*a10-a11*a20;
+    let d = a00*b01+a01*b11+a02*b21;
+    if (!d) { o.fill(0); o[0]=o[4]=o[8]=1; return o; }
+    d = 1/d;
+    o[0]=b01*d;                      o[1]=(-a22*a01+a02*a21)*d;   o[2]=(a12*a01-a02*a11)*d;
+    o[3]=b11*d;                      o[4]=(a22*a00-a02*a20)*d;    o[5]=(-a12*a00+a02*a10)*d;
+    o[6]=b21*d;                      o[7]=(-a21*a00+a01*a20)*d;   o[8]=(a11*a00-a01*a10)*d;
+    return o;
+  },
+  getTrans:(o,m) => { o[0]=m[12]; o[1]=m[13]; o[2]=m[14]; return o; },
+  getForward:(o,m) => { o[0]=-m[8]; o[1]=-m[9]; o[2]=-m[10]; return o; }
+};
+
+// =====================================================================
+//  NOISE — hash-based value noise + fbm for the whole world
+// =====================================================================
+function hash2(x,y){
+  const s = Math.sin(x*127.1 + y*311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function noise2(x,y){
+  const xi=Math.floor(x), yi=Math.floor(y);
+  const xf=x-xi, yf=y-yi;
+  const a=hash2(xi,yi), b=hash2(xi+1,yi), c=hash2(xi,yi+1), d=hash2(xi+1,yi+1);
+  const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+  return a*(1-u)*(1-v) + b*u*(1-v) + c*(1-u)*v + d*u*v;
+}
+function fbm2(x,y,oct){
+  let amp=0.5, freq=1, sum=0, tot=0;
+  for (let i=0;i<oct;i++){
+    sum += noise2(x*freq, y*freq) * amp;
+    tot += amp;
+    amp *= 0.5;
+    freq *= 2;
+  }
+  return sum/tot;
+}
+function smoothstep(a,b,x){ const t=Math.min(1,Math.max(0,(x-a)/(b-a))); return t*t*(3-2*t); }
+
+// =====================================================================
+//  WORLD — the shape and mood of Zephyria are defined by these two
+//   pure functions. Every generator (terrain, plants, creatures) reads
+//   from them so everything is consistent.
+// =====================================================================
+const WORLD = {
+  // Landmarks (X, Z). Player spawns at ring of stones.
+  ring:      [0, 0],           // ancient ruins circle
+  forest:    [-40, -60],       // crystal grove NW
+  cave:      [55, -25],        // eroded arch to the east
+  plateau:   [-20, 65],        // south plateau, tall grass
+  mountains: [70, 55],         // eastern peaks
+  pond:      [-70, 10]         // still dark water
+};
+
+function heightAt(x, z) {
+  // Base rolling ground
+  let h = fbm2(x*0.008, z*0.008, 5) * 10 - 3;
+  // Mountains bloom out from the east peaks
+  const mdx = x - WORLD.mountains[0], mdz = z - WORLD.mountains[1];
+  const mdist = Math.hypot(mdx, mdz);
+  h += (1 - smoothstep(20, 70, mdist)) * fbm2(x*0.03, z*0.03, 4) * 22;
+  // South plateau — a raised flat area
+  const pdx = x - WORLD.plateau[0], pdz = z - WORLD.plateau[1];
+  const pdist = Math.hypot(pdx, pdz);
+  h += (1 - smoothstep(6, 22, pdist)) * 6;
+  // Cave arch — a hill pushed up with a hollow underneath
+  const cdx = x - WORLD.cave[0], cdz = z - WORLD.cave[1];
+  const cdist = Math.hypot(cdx, cdz);
+  h += (1 - smoothstep(4, 18, cdist)) * 14;
+  // Pond — depressed bowl
+  const pndx = x - WORLD.pond[0], pndz = z - WORLD.pond[1];
+  const pnddist = Math.hypot(pndx, pndz);
+  if (pnddist < 12) h -= (1 - pnddist/12) * 5;
+  // Ring plaza — flatten near ruins center
+  const rdist = Math.hypot(x - WORLD.ring[0], z - WORLD.ring[1]);
+  if (rdist < 8) {
+    const flat = -1;
+    h = h * (rdist/8) + flat * (1 - rdist/8);
+  }
+  return h;
+}
+
+// Biome color for terrain shading. Blends between four palettes.
+const BIOME_COLORS = {
+  plains:   [0.32, 0.22, 0.42],   // dusk purple
+  forest:   [0.18, 0.30, 0.38],   // deep teal
+  waste:    [0.44, 0.28, 0.30],   // rust
+  mountain: [0.28, 0.24, 0.34]    // slate violet
+};
+
+function biomeColorAt(x, z, out) {
+  const nf = smoothstep(30, 8, Math.hypot(x - WORLD.forest[0],  z - WORLD.forest[1]));
+  const nc = smoothstep(20, 6, Math.hypot(x - WORLD.cave[0],    z - WORLD.cave[1]));
+  const nm = smoothstep(50,15, Math.hypot(x - WORLD.mountains[0], z - WORLD.mountains[1]));
+  // Base: plains
+  let r = BIOME_COLORS.plains[0], g = BIOME_COLORS.plains[1], b = BIOME_COLORS.plains[2];
+  r = r*(1-nf) + BIOME_COLORS.forest[0]*nf;
+  g = g*(1-nf) + BIOME_COLORS.forest[1]*nf;
+  b = b*(1-nf) + BIOME_COLORS.forest[2]*nf;
+  r = r*(1-nc) + BIOME_COLORS.waste[0]*nc;
+  g = g*(1-nc) + BIOME_COLORS.waste[1]*nc;
+  b = b*(1-nc) + BIOME_COLORS.waste[2]*nc;
+  r = r*(1-nm) + BIOME_COLORS.mountain[0]*nm;
+  g = g*(1-nm) + BIOME_COLORS.mountain[1]*nm;
+  b = b*(1-nm) + BIOME_COLORS.mountain[2]*nm;
+  // Small color noise variation
+  const n = fbm2(x*0.05, z*0.05, 3);
+  const v = 0.75 + n*0.5;
+  out[0]=r*v; out[1]=g*v; out[2]=b*v;
+  return out;
+}
+
+// =====================================================================
+//  SHADERS
+// =====================================================================
+
+// Scene shader — used for terrain AND per-instance meshes.
+// If an instance-matrix attribute is present it is used, otherwise
+// the uModel uniform is used. This lets one program cover both cases.
+const VS_SCENE = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=2) in vec3 aCol;
+layout(location=3) in vec3 aEm;
+layout(location=4) in vec4 aM0;
+layout(location=5) in vec4 aM1;
+layout(location=6) in vec4 aM2;
+layout(location=7) in vec4 aM3;
+
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform mat4 uModel;
+uniform int  uInstanced;
+uniform float uTime;
+
+out vec3 vNrm;
+out vec3 vCol;
+out vec3 vEm;
+out vec3 vWorld;
+out float vFogZ;
+
+void main(){
+  mat4 M;
+  if (uInstanced == 1) {
+    M = mat4(aM0, aM1, aM2, aM3);
+  } else {
+    M = uModel;
+  }
+  vec3 pos = aPos;
+  // Very gentle idle sway for vegetation-tagged emissives
+  // (emissive.y bit encodes "sway" — hacky but keeps shader universal)
+  float sway = aEm.g > 0.01 ? aEm.g * 0.03 : 0.0;
+  pos.x += sin(uTime*0.9 + M[3].x*0.3 + M[3].z*0.2 + aPos.y*0.8) * sway * aPos.y;
+  pos.z += cos(uTime*0.7 + M[3].z*0.4) * sway * aPos.y * 0.6;
+
+  vec4 world = M * vec4(pos, 1.0);
+  vec4 view  = uView * world;
+  gl_Position = uProj * view;
+  vWorld = world.xyz;
+  // Normal — assume M is TRS with roughly uniform scale (good for our meshes)
+  vNrm = normalize(mat3(M) * aNrm);
+  vCol = aCol;
+  vEm  = aEm;
+  vFogZ = -view.z;
+}`;
+
+const FS_SCENE = `#version 300 es
+precision highp float;
+
+in vec3 vNrm;
+in vec3 vCol;
+in vec3 vEm;
+in vec3 vWorld;
+in float vFogZ;
+
+uniform vec3  uLightDir;      // direction TO the sun
+uniform vec3  uLightCol;
+uniform vec3  uAmbTop;        // ambient from sky
+uniform vec3  uAmbBot;        // ambient from ground
+uniform vec3  uFogCol;
+uniform float uFogNear;
+uniform float uFogFar;
+uniform vec3  uCamPos;
+uniform float uTime;
+
+// Up to 12 point lights (glowing plants, held artifacts)
+uniform int   uPLC;
+uniform vec3  uPLP[12];
+uniform vec3  uPLK[12];
+uniform float uPLR[12];
+
+out vec4 fragColor;
+
+void main(){
+  vec3 N = normalize(vNrm);
+  vec3 L = normalize(uLightDir);
+  // Hemisphere ambient
+  float hemi = N.y * 0.5 + 0.5;
+  vec3 amb = mix(uAmbBot, uAmbTop, hemi);
+  // Directional
+  float ndl = max(dot(N, L), 0.0);
+  // Wrap the diffuse a little for softness
+  float wrap = ndl * 0.9 + 0.1;
+  vec3 diff = vCol * (amb + uLightCol * wrap);
+  // Rim light — subtle sun-side halo
+  vec3 V = normalize(uCamPos - vWorld);
+  float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * max(dot(L, V), 0.0) * 0.4;
+  diff += vec3(rim * 0.9, rim * 0.7, rim * 0.5);
+  // Point lights
+  for (int i = 0; i < 12; i++) {
+    if (i >= uPLC) break;
+    vec3 toL = uPLP[i] - vWorld;
+    float d = length(toL);
+    float a = max(0.0, 1.0 - d / uPLR[i]);
+    a = a*a;
+    vec3 LL = toL / max(d, 0.001);
+    float nl = max(dot(N, LL), 0.0);
+    diff += vCol * uPLK[i] * nl * a * 1.4;
+    // Small emissive-like contribution for very close proximity (a shimmer)
+    diff += uPLK[i] * a * a * 0.15;
+  }
+  vec3 color = diff + vEm;
+  // Fog — smooth exponential falloff to sky color
+  float f = clamp((vFogZ - uFogNear) / (uFogFar - uFogNear), 0.0, 1.0);
+  f = 1.0 - exp(-f * 2.4);
+  color = mix(color, uFogCol, f);
+  fragColor = vec4(color, 1.0);
+}`;
+
+// Sky — a fullscreen dome with a gradient plus a "sun" disc + haze
+const VS_SKY = `#version 300 es
+layout(location=0) in vec3 aPos;
+uniform mat4 uView;
+uniform mat4 uProj;
+out vec3 vDir;
+void main(){
+  // Kill translation from view — sky is at infinity
+  mat4 V = uView;
+  V[3][0] = 0.0; V[3][1] = 0.0; V[3][2] = 0.0;
+  vec4 pos = uProj * V * vec4(aPos, 1.0);
+  gl_Position = pos.xyww; // force z=1 (far plane)
+  vDir = normalize(aPos);
+}`;
+
+const FS_SKY = `#version 300 es
+precision highp float;
+in vec3 vDir;
+uniform vec3 uZenith;
+uniform vec3 uHorizon;
+uniform vec3 uSunDir;
+uniform vec3 uSunCol;
+uniform float uTime;
+out vec4 fragColor;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+void main(){
+  vec3 d = normalize(vDir);
+  float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
+  // Base gradient — smooth pow curve to make horizon glow
+  vec3 sky = mix(uHorizon, uZenith, pow(t, 0.55));
+  // Sun disc + halo
+  float sd = max(dot(d, normalize(uSunDir)), 0.0);
+  float halo = pow(sd, 6.0) * 0.6;
+  float disc = smoothstep(0.9985, 0.9995, sd);
+  sky += uSunCol * (halo + disc * 4.0);
+  // Second, purple sister-sun for alien mood
+  vec3 sun2 = normalize(vec3(-0.3, 0.35, -0.8));
+  float sd2 = max(dot(d, sun2), 0.0);
+  sky += vec3(0.55, 0.35, 0.85) * (pow(sd2, 60.0) * 1.5 + pow(sd2, 8.0) * 0.15);
+  // Star dust in the darker upper sky
+  if (d.y > 0.15) {
+    vec2 sc = d.xz / max(d.y, 0.15) * 40.0;
+    vec2 si = floor(sc);
+    float h = hash(si);
+    if (h > 0.985) {
+      float twk = 0.5 + 0.5 * sin(uTime * (1.0 + h * 3.0) + h * 100.0);
+      sky += vec3(0.9, 0.85, 1.0) * (h - 0.985) * 60.0 * twk;
+    }
+  }
+  fragColor = vec4(sky, 1.0);
+}`;
+
+// Particles — simple additive point sprites for spores/dust
+const VS_PART = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aCol;
+layout(location=2) in float aSize;
+uniform mat4 uView;
+uniform mat4 uProj;
+out vec3 vCol;
+out float vFogZ;
+void main(){
+  vec4 view = uView * vec4(aPos, 1.0);
+  gl_Position = uProj * view;
+  gl_PointSize = max(1.0, aSize * 240.0 / max(-view.z, 0.5));
+  vCol = aCol;
+  vFogZ = -view.z;
+}`;
+
+const FS_PART = `#version 300 es
+precision highp float;
+in vec3 vCol;
+in float vFogZ;
+uniform vec3 uFogCol;
+uniform float uFogFar;
+out vec4 fragColor;
+void main(){
+  vec2 uv = gl_PointCoord * 2.0 - 1.0;
+  float d = dot(uv, uv);
+  if (d > 1.0) discard;
+  float a = smoothstep(1.0, 0.0, d);
+  a = a * a;
+  float f = clamp(vFogZ / uFogFar, 0.0, 1.0);
+  vec3 col = mix(vCol, uFogCol, f * 0.7);
+  fragColor = vec4(col, a);
+}`;
+
+
+// =====================================================================
+//  RENDERER — thin WebGL 2 wrapper. Programs, VAOs, uniforms, draw.
+// =====================================================================
+class Renderer {
+  constructor(gl) {
+    this.gl = gl;
+    this.progScene = this._prog(VS_SCENE, FS_SCENE);
+    this.progSky   = this._prog(VS_SKY,   FS_SKY);
+    this.progPart  = this._prog(VS_PART,  FS_PART);
+    // Cache scene-program uniform locations
+    this.uS = this._locs(this.progScene, [
+      'uView','uProj','uModel','uInstanced','uTime',
+      'uLightDir','uLightCol','uAmbTop','uAmbBot',
+      'uFogCol','uFogNear','uFogFar','uCamPos','uPLC'
+    ]);
+    // Point-light arrays (indexed uniforms)
+    this.uS.uPLP = []; this.uS.uPLK = []; this.uS.uPLR = [];
+    for (let i=0;i<12;i++){
+      this.uS.uPLP.push(gl.getUniformLocation(this.progScene, `uPLP[${i}]`));
+      this.uS.uPLK.push(gl.getUniformLocation(this.progScene, `uPLK[${i}]`));
+      this.uS.uPLR.push(gl.getUniformLocation(this.progScene, `uPLR[${i}]`));
+    }
+    this.uSk = this._locs(this.progSky, ['uView','uProj','uZenith','uHorizon','uSunDir','uSunCol','uTime']);
+    this.uP  = this._locs(this.progPart, ['uView','uProj','uFogCol','uFogFar']);
+    // Reusable scratch
+    this._plp = new Float32Array(3);
+  }
+  _compile(type, src){
+    const gl = this.gl;
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(sh), src);
+      throw new Error('Shader compile failed');
+    }
+    return sh;
+  }
+  _prog(vs, fs){
+    const gl = this.gl;
+    const p = gl.createProgram();
+    gl.attachShader(p, this._compile(gl.VERTEX_SHADER, vs));
+    gl.attachShader(p, this._compile(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      console.error(gl.getProgramInfoLog(p));
+      throw new Error('Program link failed');
+    }
+    return p;
+  }
+  _locs(p, names){
+    const o = {};
+    for (const n of names) o[n] = this.gl.getUniformLocation(p, n);
+    return o;
+  }
+
+  // Build a static mesh (non-instanced). data: {pos, nrm, col, em, idx}
+  createMesh(data){
+    const gl = this.gl;
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const mk = (loc, arr, comps) => {
+      const b = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, b);
+      gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, comps, gl.FLOAT, false, 0, 0);
+    };
+    mk(0, data.pos, 3);
+    mk(1, data.nrm, 3);
+    mk(2, data.col, 3);
+    mk(3, data.em,  3);
+    const ib = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data.idx, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    return { vao, count: data.idx.length, instanced: false };
+  }
+
+  // Build a mesh with an instance-matrix buffer. Locations 4..7 are mat4 cols.
+  createInstanced(data, matrices){
+    const gl = this.gl;
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const mk = (loc, arr, comps) => {
+      const b = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, b);
+      gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, comps, gl.FLOAT, false, 0, 0);
+    };
+    mk(0, data.pos, 3);
+    mk(1, data.nrm, 3);
+    mk(2, data.col, 3);
+    mk(3, data.em,  3);
+    // Instance buffer: 16 floats = 64 bytes per instance
+    const ib = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, ib);
+    gl.bufferData(gl.ARRAY_BUFFER, matrices, gl.STATIC_DRAW);
+    for (let i=0;i<4;i++){
+      const loc = 4 + i;
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 64, i*16);
+      gl.vertexAttribDivisor(loc, 1);
+    }
+    const eib = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, eib);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data.idx, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    return { vao, count: data.idx.length, instanced: true, instanceCount: matrices.length / 16 };
+  }
+
+  bindSceneUniforms(view, proj, time, env, lights, camPos) {
+    const gl = this.gl;
+    gl.useProgram(this.progScene);
+    gl.uniformMatrix4fv(this.uS.uView, false, view);
+    gl.uniformMatrix4fv(this.uS.uProj, false, proj);
+    gl.uniform1f(this.uS.uTime, time);
+    gl.uniform3fv(this.uS.uLightDir, env.lightDir);
+    gl.uniform3fv(this.uS.uLightCol, env.lightCol);
+    gl.uniform3fv(this.uS.uAmbTop,  env.ambTop);
+    gl.uniform3fv(this.uS.uAmbBot,  env.ambBot);
+    gl.uniform3fv(this.uS.uFogCol,  env.fogCol);
+    gl.uniform1f(this.uS.uFogNear,  env.fogNear);
+    gl.uniform1f(this.uS.uFogFar,   env.fogFar);
+    gl.uniform3fv(this.uS.uCamPos,  camPos);
+    const n = Math.min(12, lights.length);
+    gl.uniform1i(this.uS.uPLC, n);
+    for (let i=0;i<n;i++){
+      const L = lights[i];
+      gl.uniform3f(this.uS.uPLP[i], L.pos[0], L.pos[1], L.pos[2]);
+      gl.uniform3f(this.uS.uPLK[i], L.col[0], L.col[1], L.col[2]);
+      gl.uniform1f(this.uS.uPLR[i], L.rad);
+    }
+  }
+
+  drawMesh(mesh, model) {
+    const gl = this.gl;
+    gl.uniform1i(this.uS.uInstanced, 0);
+    gl.uniformMatrix4fv(this.uS.uModel, false, model);
+    gl.bindVertexArray(mesh.vao);
+    gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+  }
+
+  drawInstanced(mesh) {
+    const gl = this.gl;
+    gl.uniform1i(this.uS.uInstanced, 1);
+    gl.bindVertexArray(mesh.vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0, mesh.instanceCount);
+  }
+
+  drawSky(view, proj, env, time) {
+    const gl = this.gl;
+    gl.useProgram(this.progSky);
+    gl.uniformMatrix4fv(this.uSk.uView, false, view);
+    gl.uniformMatrix4fv(this.uSk.uProj, false, proj);
+    gl.uniform3fv(this.uSk.uZenith,  env.skyZenith);
+    gl.uniform3fv(this.uSk.uHorizon, env.skyHorizon);
+    gl.uniform3fv(this.uSk.uSunDir,  env.lightDir);
+    gl.uniform3fv(this.uSk.uSunCol,  env.sunCol);
+    gl.uniform1f(this.uSk.uTime, time);
+    gl.depthFunc(gl.LEQUAL);
+    gl.disable(gl.CULL_FACE);
+    gl.bindVertexArray(this.skyMesh.vao);
+    gl.drawElements(gl.TRIANGLES, this.skyMesh.count, gl.UNSIGNED_SHORT, 0);
+    gl.depthFunc(gl.LESS);
+    gl.enable(gl.CULL_FACE);
+  }
+
+  drawParticles(mesh, view, proj, env, count) {
+    const gl = this.gl;
+    gl.useProgram(this.progPart);
+    gl.uniformMatrix4fv(this.uP.uView, false, view);
+    gl.uniformMatrix4fv(this.uP.uProj, false, proj);
+    gl.uniform3fv(this.uP.uFogCol, env.fogCol);
+    gl.uniform1f(this.uP.uFogFar, env.fogFar);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    gl.depthMask(false);
+    gl.bindVertexArray(mesh.vao);
+    gl.drawArrays(gl.POINTS, 0, count);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+  }
+}
+
+// =====================================================================
+//  MESH BUILDER — accumulates triangles then flattens to typed arrays.
+//   All primitive helpers append into the same builder so we can pack
+//   complex creatures / props out of many little parts.
+// =====================================================================
+class MB {
+  constructor(){ this.p=[]; this.n=[]; this.c=[]; this.e=[]; this.i=[]; }
+  vert(x,y,z, nx,ny,nz, cr,cg,cb, er=0,eg=0,eb=0){
+    const idx = this.p.length / 3;
+    this.p.push(x,y,z);
+    this.n.push(nx,ny,nz);
+    this.c.push(cr,cg,cb);
+    this.e.push(er,eg,eb);
+    return idx;
+  }
+  tri(a,b,c){ this.i.push(a,b,c); }
+  triV(a, b, c, col, em){
+    // Flat-shade triangle from 3 positions (arrays of 3)
+    const ux=b[0]-a[0], uy=b[1]-a[1], uz=b[2]-a[2];
+    const vx=c[0]-a[0], vy=c[1]-a[1], vz=c[2]-a[2];
+    let nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    const l=Math.hypot(nx,ny,nz)||1; nx/=l; ny/=l; nz/=l;
+    const ia = this.vert(a[0],a[1],a[2], nx,ny,nz, col[0],col[1],col[2], em[0],em[1],em[2]);
+    const ib = this.vert(b[0],b[1],b[2], nx,ny,nz, col[0],col[1],col[2], em[0],em[1],em[2]);
+    const ic = this.vert(c[0],c[1],c[2], nx,ny,nz, col[0],col[1],col[2], em[0],em[1],em[2]);
+    this.tri(ia,ib,ic);
+  }
+  quadV(a,b,c,d, col, em){
+    this.triV(a,b,c, col,em);
+    this.triV(a,c,d, col,em);
+  }
+  box(cx,cy,cz, sx,sy,sz, col, em){
+    const x0=cx-sx*.5, x1=cx+sx*.5, y0=cy-sy*.5, y1=cy+sy*.5, z0=cz-sz*.5, z1=cz+sz*.5;
+    this.quadV([x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1], col, em); // +Z
+    this.quadV([x1,y0,z0],[x0,y0,z0],[x0,y1,z0],[x1,y1,z0], col, em); // -Z
+    this.quadV([x1,y0,z1],[x1,y0,z0],[x1,y1,z0],[x1,y1,z1], col, em); // +X
+    this.quadV([x0,y0,z0],[x0,y0,z1],[x0,y1,z1],[x0,y1,z0], col, em); // -X
+    this.quadV([x0,y1,z1],[x1,y1,z1],[x1,y1,z0],[x0,y1,z0], col, em); // +Y
+    this.quadV([x0,y0,z0],[x1,y0,z0],[x1,y0,z1],[x0,y0,z1], col, em); // -Y
+  }
+  cyl(cx,cy,cz, rBot,rTop, h, seg, col, em, capTop=true, capBot=true){
+    for (let i=0;i<seg;i++){
+      const a0 = (i/seg)*Math.PI*2, a1 = ((i+1)/seg)*Math.PI*2;
+      const x0=Math.cos(a0), z0=Math.sin(a0), x1=Math.cos(a1), z1=Math.sin(a1);
+      const b0=[cx+x0*rBot, cy, cz+z0*rBot], b1=[cx+x1*rBot, cy, cz+z1*rBot];
+      const t0=[cx+x0*rTop, cy+h, cz+z0*rTop], t1=[cx+x1*rTop, cy+h, cz+z1*rTop];
+      this.quadV(b0,b1,t1,t0, col, em);
+      if (capTop) this.triV(t0,t1,[cx,cy+h,cz], col, em);
+      if (capBot) this.triV([cx,cy,cz],b1,b0, col, em);
+    }
+  }
+  cone(cx,cy,cz, r, h, seg, col, em){
+    for (let i=0;i<seg;i++){
+      const a0=(i/seg)*Math.PI*2, a1=((i+1)/seg)*Math.PI*2;
+      const p0=[cx+Math.cos(a0)*r, cy, cz+Math.sin(a0)*r];
+      const p1=[cx+Math.cos(a1)*r, cy, cz+Math.sin(a1)*r];
+      const tip=[cx, cy+h, cz];
+      this.triV(p0,p1,tip, col, em);
+      this.triV([cx,cy,cz],p1,p0, col, em);
+    }
+  }
+  // Bipyramid — the crystal shape. r is width at midpoint, h1 up, h2 down.
+  bipyr(cx,cy,cz, r, h1, h2, seg, col, em){
+    for (let i=0;i<seg;i++){
+      const a0=(i/seg)*Math.PI*2, a1=((i+1)/seg)*Math.PI*2;
+      const p0=[cx+Math.cos(a0)*r, cy, cz+Math.sin(a0)*r];
+      const p1=[cx+Math.cos(a1)*r, cy, cz+Math.sin(a1)*r];
+      this.triV(p0,p1,[cx,cy+h1,cz], col, em);
+      this.triV(p1,p0,[cx,cy-h2,cz], col, em);
+    }
+  }
+  // Icosphere-ish deformed sphere for rocks and orbs. Flat shaded.
+  sphere(cx,cy,cz, r, sub, col, em, jitter=0){
+    // Start from octahedron, subdivide, project
+    const verts = [
+      [ 0, 1, 0], [ 1, 0, 0], [ 0, 0, 1],
+      [-1, 0, 0], [ 0, 0,-1], [ 0,-1, 0]
+    ];
+    let faces = [
+      [0,1,2],[0,2,3],[0,3,4],[0,4,1],
+      [5,2,1],[5,3,2],[5,4,3],[5,1,4]
+    ];
+    for (let s=0;s<sub;s++){
+      const nf = [];
+      const mid = new Map();
+      const midpoint = (i,j) => {
+        const key = i<j? i+'_'+j : j+'_'+i;
+        if (mid.has(key)) return mid.get(key);
+        const a = verts[i], b = verts[j];
+        let mx=(a[0]+b[0])*.5, my=(a[1]+b[1])*.5, mz=(a[2]+b[2])*.5;
+        const l = Math.hypot(mx,my,mz)||1; mx/=l; my/=l; mz/=l;
+        verts.push([mx,my,mz]);
+        const k = verts.length-1;
+        mid.set(key, k);
+        return k;
+      };
+      for (const [a,b,c] of faces){
+        const ab = midpoint(a,b), bc = midpoint(b,c), ca = midpoint(c,a);
+        nf.push([a,ab,ca],[b,bc,ab],[c,ca,bc],[ab,bc,ca]);
+      }
+      faces = nf;
+    }
+    // Optional jitter for rockiness
+    const jv = verts.map(v => {
+      if (!jitter) return v;
+      const nx = fbm2(v[0]*2+1.3, v[1]*2+2.7, 3) - 0.5;
+      const ny = fbm2(v[1]*2+3.1, v[2]*2+4.1, 3) - 0.5;
+      const nz = fbm2(v[2]*2+5.7, v[0]*2+6.9, 3) - 0.5;
+      const f = 1 + (nx*0.4 + ny*0.4 + nz*0.4) * jitter;
+      return [v[0]*f, v[1]*f, v[2]*f];
+    });
+    for (const [a,b,c] of faces){
+      const va=[cx+jv[a][0]*r, cy+jv[a][1]*r, cz+jv[a][2]*r];
+      const vb=[cx+jv[b][0]*r, cy+jv[b][1]*r, cz+jv[b][2]*r];
+      const vc=[cx+jv[c][0]*r, cy+jv[c][1]*r, cz+jv[c][2]*r];
+      this.triV(va,vb,vc, col, em);
+    }
+  }
+  build(){
+    // Guard: our index buffers are UNSIGNED_SHORT — cap at 65535 verts per mesh
+    if (this.p.length/3 > 65535) console.warn('Mesh exceeds 16-bit indices:', this.p.length/3);
+    return {
+      pos: new Float32Array(this.p),
+      nrm: new Float32Array(this.n),
+      col: new Float32Array(this.c),
+      em:  new Float32Array(this.e),
+      idx: new Uint16Array(this.i)
+    };
+  }
+}
+
+// =====================================================================
+//  GEOMETRY GENERATORS — produce mesh data for terrain and each prop.
+// =====================================================================
+
+// Big terrain mesh. Smooth normals from central differences.
+function buildTerrainMesh(size, res) {
+  const half = size * 0.5;
+  const step = size / res;
+  const nVerts = (res+1) * (res+1);
+  const pos = new Float32Array(nVerts * 3);
+  const nrm = new Float32Array(nVerts * 3);
+  const col = new Float32Array(nVerts * 3);
+  const em  = new Float32Array(nVerts * 3);
+  const idx = new Uint32Array(res * res * 6); // uint32 because 129*129 = 16641 * 6 > uint16
+  const tmp = [0,0,0];
+  for (let j=0; j<=res; j++){
+    for (let i=0; i<=res; i++){
+      const x = -half + i*step, z = -half + j*step;
+      const y = heightAt(x, z);
+      const vi = (j*(res+1) + i) * 3;
+      pos[vi] = x; pos[vi+1] = y; pos[vi+2] = z;
+      // Smooth normal via finite differences
+      const h = 0.4;
+      const hL = heightAt(x - h, z), hR = heightAt(x + h, z);
+      const hD = heightAt(x, z - h), hU = heightAt(x, z + h);
+      const nx = hL - hR, ny = 2 * h, nz = hD - hU;
+      const nl = Math.hypot(nx, ny, nz);
+      nrm[vi] = nx/nl; nrm[vi+1] = ny/nl; nrm[vi+2] = nz/nl;
+      biomeColorAt(x, z, tmp);
+      // Steep faces darken (mountain shadows), flat plains slightly brighter
+      const slope = 1 - Math.abs(ny/nl);
+      const shade = 1 - slope*0.35;
+      col[vi] = tmp[0]*shade; col[vi+1] = tmp[1]*shade; col[vi+2] = tmp[2]*shade;
+      // Emit no light from ground, but tag y-component=0 so no sway
+      em[vi] = 0; em[vi+1] = 0; em[vi+2] = 0;
+    }
+  }
+  let k = 0;
+  for (let j=0; j<res; j++){
+    for (let i=0; i<res; i++){
+      const a = j*(res+1) + i;
+      const b = a + 1;
+      const c = a + (res+1);
+      const d = c + 1;
+      idx[k++] = a; idx[k++] = c; idx[k++] = b;
+      idx[k++] = b; idx[k++] = c; idx[k++] = d;
+    }
+  }
+  return { pos, nrm, col, em, idx };
+}
+
+// Terrain uses uint32 indices — needs a slightly different createMesh path
+function createTerrainMesh(gl, data) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const mk = (loc, arr, comps) => {
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, comps, gl.FLOAT, false, 0, 0);
+  };
+  mk(0, data.pos, 3);
+  mk(1, data.nrm, 3);
+  mk(2, data.col, 3);
+  mk(3, data.em,  3);
+  const ib = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data.idx, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  return { vao, count: data.idx.length, instanced: false, indexType: gl.UNSIGNED_INT };
+}
+
+// Sky dome — inside-out icosphere-ish
+function buildSkyDome() {
+  const mb = new MB();
+  // A large inward-facing sphere; we don't need lighting so col/em are dummy
+  mb.sphere(0,0,0, 500, 3, [0,0,0], [0,0,0], 0);
+  // Flip faces to be inside-facing: negate normals & swap winding
+  const data = mb.build();
+  // Rebuild with reversed winding
+  const idx = new Uint16Array(data.idx.length);
+  for (let i=0;i<data.idx.length;i+=3){
+    idx[i]=data.idx[i]; idx[i+1]=data.idx[i+2]; idx[i+2]=data.idx[i+1];
+  }
+  data.idx = idx;
+  return data;
+}
+
+// --- Crystal spike (glowing) --------------------------------------
+function buildCrystal(hueShift) {
+  const mb = new MB();
+  const h1 = 1.4 + Math.random() * 0.9;
+  const h2 = 0.35 + Math.random() * 0.25;
+  const r  = 0.16 + Math.random() * 0.1;
+  // Palette shift
+  const t = (hueShift + Math.random()*0.15) % 1;
+  const col = [
+    0.15 + Math.cos(t*6.28)*0.15,
+    0.25 + Math.cos(t*6.28 + 2)*0.2,
+    0.55 + Math.cos(t*6.28 + 4)*0.15
+  ];
+  const em = [col[0]*1.4, col[1]*1.9 + 0.2, col[2]*1.5];
+  mb.bipyr(0, h2, 0, r, h1, h2, 5, col, em);
+  // Little sibling crystals
+  for (let i=0;i<2;i++){
+    const a = Math.random()*Math.PI*2;
+    const d = 0.15 + Math.random()*0.1;
+    mb.bipyr(Math.cos(a)*d, 0.1, Math.sin(a)*d, r*0.5, h1*0.5, h2*0.4, 5, col, em);
+  }
+  return mb.build();
+}
+
+// --- Glow mushroom -----------------------------------------------
+function buildMushroom() {
+  const mb = new MB();
+  const stemH = 0.7 + Math.random()*0.5;
+  const stemR = 0.06 + Math.random()*0.03;
+  const capR = 0.35 + Math.random()*0.2;
+  const stemCol = [0.9, 0.8, 0.85];
+  const stemEm  = [0.03, 0.02, 0.04];
+  mb.cyl(0, 0, 0, stemR*1.2, stemR, stemH, 8, stemCol, stemEm, false, true);
+  // Cap = hemisphere-ish dome
+  const capCol = [0.6, 0.35, 0.75];
+  const capEm  = [0.9, 0.5, 1.3];  // strong purple-magenta glow underneath
+  // Under-cap ring (glowing lip)
+  mb.cyl(0, stemH-0.02, 0, capR*0.4, capR, 0.1, 12, capCol, capEm, false, false);
+  // Dome top — dome via sphere clip; simplest: another cone
+  const domeCol = [0.35, 0.2, 0.55];
+  const domeEm  = [0.2, 0.05, 0.35];
+  mb.cone(0, stemH+0.08, 0, capR, 0.35, 12, domeCol, domeEm);
+  return mb.build();
+}
+
+// --- Alien tree ---------------------------------------------------
+function buildTree() {
+  const mb = new MB();
+  const trunkH = 2.2 + Math.random()*1.4;
+  const trunkR = 0.12 + Math.random()*0.06;
+  const trunkCol = [0.18, 0.12, 0.22];
+  mb.cyl(0, 0, 0, trunkR*1.5, trunkR*0.4, trunkH, 7, trunkCol, [0,0.02,0.02], false, true);
+  // Branch orbs — glowing pods hung near the top
+  const podC = 4 + Math.floor(Math.random()*3);
+  for (let i=0;i<podC;i++){
+    const a = (i/podC)*Math.PI*2 + Math.random()*0.4;
+    const rad = 0.55 + Math.random()*0.35;
+    const py = trunkH * (0.65 + Math.random()*0.3);
+    const px = Math.cos(a)*rad, pz = Math.sin(a)*rad;
+    // Thin branch
+    const dx = px - 0, dz = pz - 0;
+    // Draw a small branch as a cylinder segment — simplify with box
+    mb.box(px*0.5, py-0.15, pz*0.5, Math.abs(dx)+0.06, 0.05, Math.abs(dz)+0.06, trunkCol, [0,0.02,0.02]);
+    // Glow pod
+    const podCol = [1.0, 0.9, 0.4];
+    const podEm  = [2.2, 1.7, 0.6];
+    mb.sphere(px, py, pz, 0.14 + Math.random()*0.06, 1, podCol, podEm, 0);
+  }
+  return mb.build();
+}
+
+// --- Rocks --------------------------------------------------------
+function buildRock(seed) {
+  Math.seed = seed; // not really used but here for clarity
+  const mb = new MB();
+  const r = 0.6 + Math.random()*1.4;
+  mb.sphere(0, r*0.5, 0, r, 1, [0.35, 0.28, 0.34], [0,0,0], 0.5);
+  return mb.build();
+}
+
+// --- Monolith (ruin pillar) --------------------------------------
+function buildMonolith() {
+  const mb = new MB();
+  const w = 0.8, h = 4.5, d = 0.5;
+  // Base plinth
+  mb.box(0, 0.15, 0, w*1.3, 0.3, d*1.3, [0.24, 0.18, 0.28], [0,0,0]);
+  // Main stone
+  mb.box(0, 0.3+h*0.5, 0, w, h, d, [0.4, 0.32, 0.44], [0,0,0]);
+  // Glowing rune slit
+  mb.box(0, 0.3+h*0.55, d*0.51, 0.18, 1.2, 0.02, [0.9, 0.9, 1.0], [1.8, 1.4, 2.4]);
+  mb.box(0, 0.3+h*0.55, -d*0.51, 0.18, 1.2, 0.02, [0.9, 0.9, 1.0], [1.8, 1.4, 2.4]);
+  return mb.build();
+}
+
+// --- Central plaza ring --------------------------------------------
+function buildPlaza() {
+  const mb = new MB();
+  // Wide low disc, chipped stone
+  const seg = 32;
+  for (let i=0;i<seg;i++){
+    const a0=(i/seg)*Math.PI*2, a1=((i+1)/seg)*Math.PI*2;
+    const r0 = 3.5, r1 = 6.5;
+    const y0 = -0.05, y1 = 0.05;
+    const p00=[Math.cos(a0)*r1, y1, Math.sin(a0)*r1];
+    const p01=[Math.cos(a1)*r1, y1, Math.sin(a1)*r1];
+    const p10=[Math.cos(a0)*r0, y1, Math.sin(a0)*r0];
+    const p11=[Math.cos(a1)*r0, y1, Math.sin(a1)*r0];
+    mb.quadV(p10,p11,p01,p00, [0.3,0.25,0.32], [0,0,0]);
+  }
+  // Center pedestal — where completed light will rise
+  mb.cyl(0, 0, 0, 1.0, 0.7, 0.6, 16, [0.4,0.33,0.44], [0,0,0]);
+  // Inner glyph disc
+  mb.cyl(0, 0.6, 0, 0.7, 0.65, 0.05, 24, [0.9, 0.85, 1.0], [1.2, 1.0, 1.5]);
+  return mb.build();
+}
+
+// --- Pedestal (one per artifact slot) ----------------------------
+function buildPedestal() {
+  const mb = new MB();
+  mb.cyl(0,0,0, 0.45,0.35, 0.9, 12, [0.3,0.24,0.32], [0,0,0]);
+  mb.cyl(0,0.9,0, 0.42, 0.42, 0.06, 12, [0.5, 0.42, 0.55], [0.1, 0.08, 0.15]);
+  return mb.build();
+}
+
+// --- Cave arch (rocky overhang) ----------------------------------
+function buildCaveArch() {
+  const mb = new MB();
+  // Two big rocks forming a doorway, with an inner glow crystal
+  mb.sphere(-2.2, 1.6, 0, 2.4, 2, [0.28, 0.22, 0.28], [0,0,0], 0.5);
+  mb.sphere( 2.2, 1.6, 0, 2.4, 2, [0.28, 0.22, 0.28], [0,0,0], 0.5);
+  mb.sphere(0, 3.4, -0.5, 2.8, 2, [0.25, 0.20, 0.26], [0,0,0], 0.5);
+  // Large glow crystal cluster deep in the arch
+  const c = [0.4, 0.9, 1.0], e = [0.8, 1.6, 2.2];
+  mb.bipyr(-0.6, 0.6, -1.4, 0.35, 1.8, 0.6, 5, c, e);
+  mb.bipyr( 0.5, 0.5, -1.6, 0.28, 1.4, 0.5, 5, c, e);
+  mb.bipyr( 0.1, 0.3, -2.2, 0.42, 2.1, 0.7, 5, c, e);
+  return mb.build();
+}
+
+// --- Floating island (small hovering rock with a glow) -----------
+function buildFloater() {
+  const mb = new MB();
+  // Chunk of ground floating
+  mb.sphere(0, 0, 0, 1.2, 1, [0.32, 0.24, 0.36], [0,0,0], 0.6);
+  mb.sphere(0, -0.6, 0, 0.6, 1, [0.28, 0.20, 0.30], [0,0,0], 0.7);
+  // A little grass tuft — vertical shards (fake grass)
+  for (let i=0;i<5;i++){
+    const a=Math.random()*Math.PI*2, r=Math.random()*0.7;
+    const x=Math.cos(a)*r, z=Math.sin(a)*r;
+    mb.bipyr(x, 0.9, z, 0.06, 0.3, 0.1, 4, [0.5, 0.8, 0.6], [0.2, 0.5, 0.3]);
+  }
+  return mb.build();
+}
+
+// --- Grazer creature (small four-legged) --------------------------
+function buildGrazer() {
+  const mb = new MB();
+  const bodyCol = [0.22, 0.16, 0.28];
+  const bellyCol = [0.4, 0.3, 0.45];
+  const glowCol = [1.4, 0.8, 1.8];
+  // Body
+  mb.sphere(0, 0.5, 0, 0.35, 1, bodyCol, [0,0,0], 0.3);
+  // Belly stripe (emissive)
+  mb.sphere(0, 0.35, 0, 0.28, 1, bellyCol, glowCol, 0.2);
+  // Head
+  mb.sphere(0, 0.6, 0.4, 0.2, 1, bodyCol, [0,0,0], 0.2);
+  // Eyes
+  mb.sphere( 0.08, 0.65, 0.55, 0.04, 0, [2, 2, 2.5], [2, 2, 2.5], 0);
+  mb.sphere(-0.08, 0.65, 0.55, 0.04, 0, [2, 2, 2.5], [2, 2, 2.5], 0);
+  // Legs
+  for (const [x,z] of [[-0.2,-0.2],[0.2,-0.2],[-0.2,0.2],[0.2,0.2]]) {
+    mb.cyl(x, 0, z, 0.05, 0.04, 0.35, 5, bodyCol, [0,0,0]);
+  }
+  return mb.build();
+}
+
+// --- Floater creature (glowing orb with rings) -------------------
+function buildDrifter() {
+  const mb = new MB();
+  const c = [0.9, 0.4, 0.85], e = [1.6, 0.6, 2.0];
+  mb.sphere(0, 0, 0, 0.35, 1, c, e, 0.1);
+  // Trailing tendrils
+  for (let i=0;i<5;i++){
+    const a = (i/5)*Math.PI*2;
+    const x = Math.cos(a)*0.15, z = Math.sin(a)*0.15;
+    mb.bipyr(x, -0.35, z, 0.03, 0.02, 0.5, 3, c, e);
+  }
+  // Halo ring
+  const seg = 16;
+  for (let i=0;i<seg;i++){
+    const a0=(i/seg)*Math.PI*2, a1=((i+1)/seg)*Math.PI*2;
+    const r0=0.55, r1=0.65;
+    mb.quadV(
+      [Math.cos(a0)*r0, 0.05, Math.sin(a0)*r0],
+      [Math.cos(a1)*r0, 0.05, Math.sin(a1)*r0],
+      [Math.cos(a1)*r1, 0.05, Math.sin(a1)*r1],
+      [Math.cos(a0)*r1, 0.05, Math.sin(a0)*r1],
+      c, [e[0]*0.5, e[1]*0.5, e[2]*0.5]
+    );
+  }
+  return mb.build();
+}
+
+// --- Sky drift (large jellyfish that floats high) ----------------
+function buildSkyDrift() {
+  const mb = new MB();
+  const c = [0.5, 0.7, 1.0], e = [0.6, 0.8, 1.4];
+  // Bell — cone
+  mb.cone(0, 0, 0, 1.8, 1.2, 12, c, e);
+  // Inner glow
+  mb.sphere(0, 0.7, 0, 0.5, 1, [0.9, 1.0, 1.2], [1.2, 1.4, 1.8], 0);
+  // Tentacles
+  for (let i=0;i<8;i++){
+    const a = (i/8)*Math.PI*2;
+    const x = Math.cos(a)*1.4, z = Math.sin(a)*1.4;
+    mb.bipyr(x, -1.5, z, 0.06, 0.1, 3.0, 3, [0.6, 0.8, 1.1], [0.3, 0.4, 0.6]);
+  }
+  return mb.build();
+}
+
+// --- Artifacts (6 distinct visuals) ------------------------------
+function buildArtifact(kind) {
+  const mb = new MB();
+  const palettes = [
+    { col: [0.4, 0.7, 1.0], em: [1.4, 2.4, 3.4] },  // 0: blue orb
+    { col: [1.0, 0.85, 0.3], em: [3.0, 2.4, 0.7] }, // 1: sun shard
+    { col: [0.4, 1.0, 0.6], em: [1.2, 3.2, 1.6] },  // 2: growth ring
+    { col: [1.0, 0.35, 0.3], em: [3.4, 1.0, 0.6] }, // 3: fire spike
+    { col: [1.0, 1.0, 1.0], em: [2.4, 2.4, 3.0] },  // 4: order cube
+    { col: [0.75, 0.35, 1.0], em: [1.6, 0.6, 2.8] } // 5: void prism
+  ];
+  const p = palettes[kind];
+  if (kind === 0) {
+    mb.sphere(0, 0, 0, 0.14, 2, p.col, p.em, 0);
+  } else if (kind === 1) {
+    mb.bipyr(0, 0, 0, 0.1, 0.28, 0.16, 5, p.col, p.em);
+  } else if (kind === 2) {
+    const seg = 20;
+    for (let i=0;i<seg;i++){
+      const a0=(i/seg)*Math.PI*2, a1=((i+1)/seg)*Math.PI*2;
+      const r0=0.13, r1=0.19;
+      const y0=-0.03, y1=0.03;
+      // Torus-ish quad ring
+      mb.quadV(
+        [Math.cos(a0)*r0, y0, Math.sin(a0)*r0],
+        [Math.cos(a1)*r0, y0, Math.sin(a1)*r0],
+        [Math.cos(a1)*r1, y1, Math.sin(a1)*r1],
+        [Math.cos(a0)*r1, y1, Math.sin(a0)*r1],
+        p.col, p.em);
+      mb.quadV(
+        [Math.cos(a1)*r1, y0, Math.sin(a1)*r1],
+        [Math.cos(a0)*r1, y0, Math.sin(a0)*r1],
+        [Math.cos(a0)*r0, y1, Math.sin(a0)*r0],
+        [Math.cos(a1)*r0, y1, Math.sin(a1)*r0],
+        p.col, p.em);
+    }
+  } else if (kind === 3) {
+    mb.cone(0, -0.1, 0, 0.11, 0.35, 6, p.col, p.em);
+    mb.cone(0, 0.1, 0, 0.11, -0.15, 6, p.col, p.em);
+  } else if (kind === 4) {
+    mb.box(0, 0, 0, 0.2, 0.2, 0.2, p.col, p.em);
+  } else {
+    // Purple prism — square bipyramid rotated
+    mb.bipyr(0, 0, 0, 0.13, 0.2, 0.2, 4, p.col, p.em);
+  }
+  return mb.build();
+}
+
+// --- Controller model --------------------------------------------
+function buildController() {
+  const mb = new MB();
+  // Small glowing hand-shard
+  mb.box(0, 0, 0, 0.05, 0.05, 0.16, [0.15, 0.15, 0.2], [0.1, 0.1, 0.2]);
+  mb.bipyr(0, 0, -0.12, 0.05, 0.15, 0.02, 4, [0.6, 0.8, 1.2], [1.6, 2.0, 3.0]);
+  return mb.build();
+}
+
+// --- Pointer beam (thin box, additive rendered later) ------------
+function buildBeam() {
+  const mb = new MB();
+  mb.box(0, 0, -0.5, 0.008, 0.008, 1.0, [0.6, 0.8, 1.2], [1.8, 2.2, 3.0]);
+  return mb.build();
+}
+
+// =====================================================================
+//  SCENE — layout of the world, populated once at startup
+// =====================================================================
+const scene = {
+  terrain: null,
+  sky:     null,
+  props:   {},   // instanced meshes by kind: {crystal, mushroom, tree, rock}
+  fixtures: [], // {mesh, model} for one-off buildings/features
+  artifacts: [], // {mesh, worldPos, worldRot, held:false, holder:null, placed:false, slot:-1, kind}
+  creatures: [], // {mesh, kind, pos, rot, phase, speed, target}
+  pedestals: [], // {pos, occupied:false, kind:-1}
+  particles: null // {vao, posBuf, colBuf, sizeBuf, arr:{pos, col, size, vel, life}}
+};
+
+// Env, filled per-frame
+const env = {
+  lightDir:   new Float32Array([0.5, 0.55, 0.42]),
+  lightCol:   new Float32Array([1.6, 1.1, 0.7]),
+  ambTop:     new Float32Array([0.35, 0.30, 0.5]),
+  ambBot:     new Float32Array([0.14, 0.10, 0.16]),
+  fogCol:     new Float32Array([0.55, 0.35, 0.55]),
+  fogNear:    18,
+  fogFar:     140,
+  skyZenith:  new Float32Array([0.12, 0.08, 0.30]),
+  skyHorizon: new Float32Array([0.75, 0.42, 0.55]),
+  sunCol:     new Float32Array([2.5, 1.8, 1.2])
+};
+const clearCol = [0.08, 0.05, 0.15, 1];
+
+function buildScene(renderer) {
+  const gl = renderer.gl;
+
+  // Terrain
+  const tData = buildTerrainMesh(240, 128);
+  scene.terrain = createTerrainMesh(gl, tData);
+
+  // Sky dome mesh — attach to renderer for its drawSky path
+  const skyData = buildSkyDome();
+  renderer.skyMesh = renderer.createMesh(skyData);
+
+  // ---- Vegetation placement (instanced meshes) ----
+  // Crystals — dense grove around forest landmark
+  const crystalMatrices = [];
+  for (let i=0;i<220;i++){
+    // Bias 70% toward forest, 30% scattered
+    let x, z;
+    if (Math.random() < 0.75) {
+      const a = Math.random()*Math.PI*2;
+      const r = Math.random()*22 + 3;
+      x = WORLD.forest[0] + Math.cos(a)*r;
+      z = WORLD.forest[1] + Math.sin(a)*r;
+    } else {
+      x = (Math.random()-0.5) * 180;
+      z = (Math.random()-0.5) * 180;
+    }
+    // Skip if too close to ruins plaza
+    if (Math.hypot(x, z) < 10) continue;
+    const y = heightAt(x, z);
+    if (y < -3) continue; // avoid pond
+    const rot = Math.random() * Math.PI * 2;
+    const s = 0.7 + Math.random() * 0.9;
+    const m = M4.c(); M4.trs(m, [x, y, z], rot, s, s, s);
+    for (let k=0;k<16;k++) crystalMatrices.push(m[k]);
+  }
+  scene.props.crystal = renderer.createInstanced(buildCrystal(0.55), new Float32Array(crystalMatrices));
+
+  // Second crystal palette variant
+  const crystalMatrices2 = [];
+  for (let i=0;i<80;i++){
+    const a = Math.random()*Math.PI*2;
+    const r = Math.random()*30 + 5;
+    const x = WORLD.forest[0] + Math.cos(a)*r;
+    const z = WORLD.forest[1] + Math.sin(a)*r;
+    if (Math.hypot(x,z) < 10) continue;
+    const y = heightAt(x, z);
+    if (y < -3) continue;
+    const rot = Math.random()*Math.PI*2;
+    const s = 0.9 + Math.random()*0.7;
+    const m = M4.c(); M4.trs(m, [x, y, z], rot, s, s, s);
+    for (let k=0;k<16;k++) crystalMatrices2.push(m[k]);
+  }
+  scene.props.crystal2 = renderer.createInstanced(buildCrystal(0.15), new Float32Array(crystalMatrices2));
+
+  // Mushrooms — scattered widely
+  const mushMatrices = [];
+  for (let i=0;i<120;i++){
+    const x = (Math.random()-0.5) * 180;
+    const z = (Math.random()-0.5) * 180;
+    if (Math.hypot(x, z) < 12) continue;
+    const y = heightAt(x, z);
+    if (y < -3 || y > 12) continue;
+    const rot = Math.random()*Math.PI*2;
+    const s = 0.7 + Math.random()*0.8;
+    const m = M4.c(); M4.trs(m, [x, y, z], rot, s, s, s);
+    for (let k=0;k<16;k++) mushMatrices.push(m[k]);
+  }
+  scene.props.mushroom = renderer.createInstanced(buildMushroom(), new Float32Array(mushMatrices));
+
+  // Alien trees — plains + forest edges
+  const treeMatrices = [];
+  for (let i=0;i<70;i++){
+    const x = (Math.random()-0.5) * 160;
+    const z = (Math.random()-0.5) * 160;
+    if (Math.hypot(x, z) < 14) continue;
+    const y = heightAt(x, z);
+    if (y < -2 || y > 8) continue;
+    const rot = Math.random()*Math.PI*2;
+    const s = 0.8 + Math.random()*0.7;
+    const m = M4.c(); M4.trs(m, [x, y, z], rot, s, s, s);
+    for (let k=0;k<16;k++) treeMatrices.push(m[k]);
+  }
+  scene.props.tree = renderer.createInstanced(buildTree(), new Float32Array(treeMatrices));
+
+  // Rocks — everywhere
+  const rockMatrices = [];
+  for (let i=0;i<90;i++){
+    const x = (Math.random()-0.5) * 190;
+    const z = (Math.random()-0.5) * 190;
+    if (Math.hypot(x, z) < 9) continue;
+    const y = heightAt(x, z);
+    const rot = Math.random()*Math.PI*2;
+    const s = 0.5 + Math.random()*1.3;
+    const m = M4.c(); M4.trs(m, [x, y - 0.2, z], rot, s, s*0.7, s);
+    for (let k=0;k<16;k++) rockMatrices.push(m[k]);
+  }
+  scene.props.rock = renderer.createInstanced(buildRock(1), new Float32Array(rockMatrices));
+
+  // ---- Fixtures (one-off) ----
+  const plazaData = buildPlaza();
+  const plazaMesh = renderer.createMesh(plazaData);
+  const plazaM = M4.c(); M4.trs(plazaM, [0, heightAt(0,0)+0.01, 0], 0, 1,1,1);
+  scene.fixtures.push({ mesh: plazaMesh, model: plazaM });
+
+  // Monoliths — 6, in a ring
+  const monoData = buildMonolith();
+  const monoMesh = renderer.createMesh(monoData);
+  const RING_R = 5.2;
+  for (let i=0;i<6;i++){
+    const a = (i/6)*Math.PI*2;
+    const x = Math.cos(a)*RING_R, z = Math.sin(a)*RING_R;
+    const y = heightAt(x, z);
+    const m = M4.c(); M4.trs(m, [x, y, z], a + Math.PI*0.5, 1,1,1);
+    scene.fixtures.push({ mesh: monoMesh, model: m });
+  }
+
+  // Pedestals — 6, in an inner ring
+  const pedData = buildPedestal();
+  const pedMesh = renderer.createMesh(pedData);
+  const PED_R = 3.0;
+  for (let i=0;i<6;i++){
+    const a = (i/6)*Math.PI*2 + Math.PI/6;
+    const x = Math.cos(a)*PED_R, z = Math.sin(a)*PED_R;
+    const y = heightAt(x, z);
+    const m = M4.c(); M4.trs(m, [x, y, z], 0, 1,1,1);
+    scene.fixtures.push({ mesh: pedMesh, model: m });
+    scene.pedestals.push({ pos: [x, y + 0.95, z], occupied: false, kind: -1 });
+  }
+
+  // Cave arch
+  const arch = renderer.createMesh(buildCaveArch());
+  const archY = heightAt(WORLD.cave[0], WORLD.cave[1]);
+  const archM = M4.c(); M4.trs(archM, [WORLD.cave[0], archY, WORLD.cave[1]], 0.4, 1,1,1);
+  scene.fixtures.push({ mesh: arch, model: archM });
+
+  // Floating islands — three, at various heights
+  const floater = renderer.createMesh(buildFloater());
+  const flSpots = [
+    [-50, 12, -40], [30, 15, 50], [60, 10, -60]
+  ];
+  scene.floaters = [];
+  for (const [x, y, z] of flSpots) {
+    const m = M4.c(); M4.trs(m, [x, y, z], Math.random()*Math.PI*2, 1.4, 1.4, 1.4);
+    scene.floaters.push({ mesh: floater, model: m, basePos: [x, y, z], phase: Math.random()*Math.PI*2 });
+  }
+
+  // ---- Creatures ----
+  const grazerMesh = renderer.createMesh(buildGrazer());
+  for (let i=0;i<12;i++){
+    const x = (Math.random()-0.5) * 100;
+    const z = (Math.random()-0.5) * 100;
+    if (Math.hypot(x, z) < 15) continue;
+    const y = heightAt(x, z);
+    scene.creatures.push({
+      kind: 'grazer', mesh: grazerMesh,
+      pos: [x, y, z], rot: Math.random()*Math.PI*2,
+      phase: Math.random()*Math.PI*2, speed: 0.5 + Math.random()*0.6,
+      target: null, wait: Math.random()*3
+    });
+  }
+  const drifterMesh = renderer.createMesh(buildDrifter());
+  for (let i=0;i<7;i++){
+    const x = (Math.random()-0.5) * 120;
+    const z = (Math.random()-0.5) * 120;
+    if (Math.hypot(x, z) < 18) continue;
+    const y = heightAt(x, z) + 1.5 + Math.random()*2;
+    scene.creatures.push({
+      kind: 'drifter', mesh: drifterMesh,
+      pos: [x, y, z], rot: Math.random()*Math.PI*2,
+      phase: Math.random()*Math.PI*2, speed: 0.3 + Math.random()*0.4,
+      target: null
+    });
+  }
+  const skyDrift = renderer.createMesh(buildSkyDrift());
+  for (let i=0;i<4;i++){
+    const x = (Math.random()-0.5) * 140;
+    const z = (Math.random()-0.5) * 140;
+    const y = 22 + Math.random()*8;
+    scene.creatures.push({
+      kind: 'skydrift', mesh: skyDrift,
+      pos: [x, y, z], rot: Math.random()*Math.PI*2,
+      phase: Math.random()*Math.PI*2, speed: 0.2 + Math.random()*0.2,
+      target: null
+    });
+  }
+
+  // ---- Artifacts ----
+  // Scattered locations
+  const artifactSpots = [
+    [WORLD.pond[0]+2, WORLD.pond[1]-3, 0],       // orb near pond
+    [WORLD.plateau[0]+2, WORLD.plateau[1]-5, 1], // shard on plateau
+    [WORLD.forest[0]-3, WORLD.forest[1]+2, 2],   // ring in forest
+    [WORLD.mountains[0]-8, WORLD.mountains[1]-8, 3], // spike near mountains
+    [WORLD.cave[0]-0.5, WORLD.cave[1]-1.5, 4],   // cube under arch
+    [45, -55, 5]                                 // prism far south
+  ];
+  for (const [x, z, kind] of artifactSpots) {
+    const mesh = renderer.createMesh(buildArtifact(kind));
+    const y = heightAt(x, z);
+    scene.artifacts.push({
+      mesh, kind,
+      pos: [x, y + (kind === 4 ? 0.4 : 0.8), z],
+      rot: 0, phase: Math.random()*Math.PI*2,
+      held: false, holderIdx: -1, placed: false, slot: -1,
+      bob: 0.15 + Math.random()*0.1
+    });
+  }
+
+  // ---- Particles ----
+  const N = 500;
+  scene.particles = {
+    N,
+    pos:  new Float32Array(N * 3),
+    col:  new Float32Array(N * 3),
+    size: new Float32Array(N),
+    vel:  new Float32Array(N * 3),
+    life: new Float32Array(N),
+    posBuf: gl.createBuffer(),
+    colBuf: gl.createBuffer(),
+    sizeBuf: gl.createBuffer(),
+    vao: gl.createVertexArray()
+  };
+  for (let i=0;i<N;i++) resetParticle(scene.particles, i, [0,0,0], true);
+  gl.bindVertexArray(scene.particles.vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.particles.posBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, scene.particles.pos, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.particles.colBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, scene.particles.col, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.particles.sizeBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, scene.particles.size, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(2);
+  gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
+  // Controller & beam meshes
+  scene.ctrlMesh = renderer.createMesh(buildController());
+  scene.beamMesh = renderer.createMesh(buildBeam());
+
+  // Artifact display: we'll draw them one at a time (few of them, fine as non-instanced)
+}
+
+function resetParticle(p, i, near, initial) {
+  const i3 = i * 3;
+  // Spawn in a large cylinder around player, fall gently
+  const r = 40 + Math.random()*40;
+  const a = Math.random()*Math.PI*2;
+  p.pos[i3]   = near[0] + Math.cos(a)*r;
+  p.pos[i3+1] = initial ? Math.random()*30 : 25 + Math.random()*5;
+  p.pos[i3+2] = near[2] + Math.sin(a)*r;
+  // Palette — dusk pinks + magenta + occasional gold
+  const t = Math.random();
+  if (t < 0.6) { p.col[i3]=1.1; p.col[i3+1]=0.55; p.col[i3+2]=1.1; }
+  else if (t < 0.85) { p.col[i3]=0.7; p.col[i3+1]=0.5; p.col[i3+2]=1.4; }
+  else { p.col[i3]=1.6; p.col[i3+1]=1.2; p.col[i3+2]=0.5; }
+  p.size[i] = 0.02 + Math.random()*0.05;
+  p.vel[i3]   = (Math.random()-0.5)*0.1;
+  p.vel[i3+1] = -0.4 - Math.random()*0.6;
+  p.vel[i3+2] = (Math.random()-0.5)*0.1;
+  p.life[i] = 8 + Math.random()*8;
+}
+
+// =====================================================================
+//  PLAYER & INPUT
+// =====================================================================
+const player = {
+  pos: new Float32Array([0, 0, 8]),   // world position of the feet
+  rotY: 0,
+  height: 1.65
+};
+
+const inputState = {
+  left:  { pos: V3.c(), rot: [0,0,0,1], present: false, trigger: false, triggerPrev: false, grip: false, hand: 'left' },
+  right: { pos: V3.c(), rot: [0,0,0,1], present: false, trigger: false, triggerPrev: false, grip: false, hand: 'right' },
+  snapTurn: 0, // -1, 0, 1
+  snapArmed: true,
+  moveX: 0,
+  moveZ: 0
+};
+
+// Player matrix cache
+const playerMat = M4.c();
+
+function updatePlayerMatrix() {
+  M4.trs(playerMat, player.pos, player.rotY, 1, 1, 1);
+}
+
+// Poll every input source, update state
+function pollInputs(session, frame, refSpace) {
+  inputState.moveX = 0;
+  inputState.moveZ = 0;
+  inputState.snapTurn = 0;
+  inputState.left.present = false;
+  inputState.right.present = false;
+  inputState.left.triggerPrev = inputState.left.trigger;
+  inputState.right.triggerPrev = inputState.right.trigger;
+
+  for (const src of session.inputSources) {
+    if (!src.handedness) continue;
+    const s = (src.handedness === 'left') ? inputState.left : inputState.right;
+    s.present = true;
+
+    // Pose in ref space — use targetRaySpace so -Z is the pointing direction
+    // (grip space's orientation varies per headset and doesn't guarantee -Z forward).
+    if (src.targetRaySpace) {
+      const pose = frame.getPose(src.targetRaySpace, refSpace);
+      if (pose) {
+        const t = pose.transform.position;
+        const q = pose.transform.orientation;
+        s.pos[0] = t.x; s.pos[1] = t.y; s.pos[2] = t.z;
+        s.rot[0] = q.x; s.rot[1] = q.y; s.rot[2] = q.z; s.rot[3] = q.w;
+      }
+    }
+    // Gamepad
+    const gp = src.gamepad;
+    if (gp) {
+      // Trigger — button 0
+      s.trigger = gp.buttons[0] && gp.buttons[0].pressed;
+      // Grip — button 1
+      s.grip = gp.buttons[1] && gp.buttons[1].pressed;
+      // Thumbstick — axes 2, 3 (WebXR standard mapping)
+      const ax = gp.axes[2] || 0;
+      const ay = gp.axes[3] || 0;
+      if (src.handedness === 'left') {
+        // Locomotion (deadzone 0.15)
+        const dz = 0.15;
+        inputState.moveX = Math.abs(ax) > dz ? ax : 0;
+        inputState.moveZ = Math.abs(ay) > dz ? ay : 0;
+      } else {
+        // Snap turn (edge-triggered)
+        if (Math.abs(ax) > 0.7 && inputState.snapArmed) {
+          inputState.snapTurn = ax > 0 ? 1 : -1;
+          inputState.snapArmed = false;
+        } else if (Math.abs(ax) < 0.3) {
+          inputState.snapArmed = true;
+        }
+      }
+    }
+  }
+}
+
+// Apply movement + snap turn to player, keep them stuck to the ground
+function updatePlayer(dt) {
+  // Snap turn
+  if (inputState.snapTurn !== 0) {
+    player.rotY -= inputState.snapTurn * (Math.PI/6);
+  }
+  // Move
+  const speed = 3.4; // m/s
+  if (inputState.moveX !== 0 || inputState.moveZ !== 0) {
+    // forward vector for player facing
+    const c = Math.cos(player.rotY), s = Math.sin(player.rotY);
+    // Local (-Z is forward). Left stick Y is negative when pushed forward.
+    const fx = -s, fz = -c;         // forward
+    const rx =  c, rz = -s;         // right
+    const mz = -inputState.moveZ;   // push forward => +z internal, so invert
+    const mx =  inputState.moveX;
+    const vx = fx*mz + rx*mx;
+    const vz = fz*mz + rz*mx;
+    // Normalize the input magnitude but retain analog feel
+    let mag = Math.hypot(mx, mz);
+    if (mag > 1) mag = 1;
+    const invMag = Math.hypot(vx, vz) || 1;
+    player.pos[0] += (vx / invMag) * mag * speed * dt;
+    player.pos[2] += (vz / invMag) * mag * speed * dt;
+  }
+  // Stick to terrain (with gentle smoothing so hills feel like slopes not steps)
+  const groundY = heightAt(player.pos[0], player.pos[2]);
+  player.pos[1] = groundY;
+  updatePlayerMatrix();
+}
+
+// =====================================================================
+//  INTERACTION — grab, drop, snap-to-pedestal
+// =====================================================================
+const controllerWorldPos = [V3.c(), V3.c()]; // left, right
+
+function updateInteractions(dt) {
+  // Compute controller world positions using player matrix
+  const controllers = [inputState.left, inputState.right];
+  for (let h=0; h<2; h++){
+    const s = controllers[h];
+    if (!s.present) continue;
+    V3.xfm4(controllerWorldPos[h], s.pos, playerMat);
+  }
+
+  // Grab: on trigger DOWN edge, find nearest artifact within range
+  for (let h=0; h<2; h++){
+    const s = controllers[h];
+    if (!s.present) continue;
+    const cw = controllerWorldPos[h];
+    if (s.trigger && !s.triggerPrev) {
+      // Trigger just pressed
+      let best = -1, bestD = 0.9*0.9;  // ~90cm reach — forgiving VR grab range
+      for (let i=0;i<scene.artifacts.length;i++){
+        const a = scene.artifacts[i];
+        if (a.held || a.placed) continue;
+        const d = V3.dstSq(a.pos, cw);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      if (best >= 0) {
+        scene.artifacts[best].held = true;
+        scene.artifacts[best].holderIdx = h;
+      }
+    }
+    // Release: on trigger UP edge, drop any held artifact
+    if (!s.trigger && s.triggerPrev) {
+      for (const a of scene.artifacts) {
+        if (a.held && a.holderIdx === h) {
+          a.held = false;
+          a.holderIdx = -1;
+          // Try snap-to-pedestal
+          let bestSlot = -1, bd = 1.2*1.2;
+          for (let p=0;p<scene.pedestals.length;p++){
+            if (scene.pedestals[p].occupied) continue;
+            const d = V3.dstSq(a.pos, scene.pedestals[p].pos);
+            if (d < bd) { bd = d; bestSlot = p; }
+          }
+          if (bestSlot >= 0) {
+            const ped = scene.pedestals[bestSlot];
+            a.placed = true;
+            a.slot = bestSlot;
+            V3.cp(a.pos, ped.pos);
+            ped.occupied = true;
+            ped.kind = a.kind;
+            checkVictory();
+          }
+        }
+      }
+    }
+    // Also drop on grip press
+    if (s.grip) {
+      for (const a of scene.artifacts) {
+        if (a.held && a.holderIdx === h) {
+          a.held = false;
+          a.holderIdx = -1;
+        }
+      }
+    }
+  }
+
+  // Held artifacts follow their controller
+  for (const a of scene.artifacts) {
+    if (a.held) {
+      const cw = controllerWorldPos[a.holderIdx];
+      V3.cp(a.pos, cw);
+      // Small offset forward from the controller so it doesn't clip into hand
+      // Compute forward vec of controller's quat
+      // Simplify: just place at controller position (fine given our controller mesh is small)
+    }
+    a.phase += dt * 1.5;
+  }
+}
+
+let victoryTriggered = false;
+let victoryPhase = 0;
+function checkVictory() {
+  const all = scene.pedestals.every(p => p.occupied);
+  if (all && !victoryTriggered) {
+    victoryTriggered = true;
+    victoryPhase = 0;
+  }
+}
+
+// =====================================================================
+//  SCENE UPDATE — creatures wander, particles fall, floaters bob
+// =====================================================================
+function updateScene(dt, time) {
+  // Creatures
+  for (const c of scene.creatures) {
+    if (c.kind === 'grazer') {
+      // Wander with pauses
+      if (!c.target || V3.dstSq(c.pos, c.target) < 0.5 || c.wait > 0) {
+        c.wait -= dt;
+        if (c.wait <= 0) {
+          // Pick a new target within a small radius
+          const a = Math.random()*Math.PI*2;
+          const r = 3 + Math.random()*6;
+          const tx = c.pos[0] + Math.cos(a)*r;
+          const tz = c.pos[2] + Math.sin(a)*r;
+          c.target = [tx, heightAt(tx, tz), tz];
+          c.wait = 1 + Math.random()*3;
+        }
+      }
+      if (c.target && c.wait <= 0) {
+        // Move toward target
+        const dx = c.target[0] - c.pos[0];
+        const dz = c.target[2] - c.pos[2];
+        const d = Math.hypot(dx, dz);
+        if (d > 0.01) {
+          c.pos[0] += (dx/d) * c.speed * dt;
+          c.pos[2] += (dz/d) * c.speed * dt;
+          c.rot = Math.atan2(dx, dz);
+        }
+      }
+      c.pos[1] = heightAt(c.pos[0], c.pos[2]);
+      // Flee from player if too close
+      const pdx = c.pos[0] - player.pos[0], pdz = c.pos[2] - player.pos[2];
+      const pd = Math.hypot(pdx, pdz);
+      if (pd < 4 && pd > 0.01) {
+        c.pos[0] += (pdx/pd) * dt * 2.5;
+        c.pos[2] += (pdz/pd) * dt * 2.5;
+        c.rot = Math.atan2(pdx, pdz);
+        c.pos[1] = heightAt(c.pos[0], c.pos[2]);
+      }
+    } else if (c.kind === 'drifter') {
+      c.phase += dt * 0.6;
+      // Slow orbit + vertical bob
+      c.pos[0] += Math.cos(c.phase * 0.2) * dt * 0.3;
+      c.pos[2] += Math.sin(c.phase * 0.2) * dt * 0.3;
+      const ground = heightAt(c.pos[0], c.pos[2]);
+      const targetY = ground + 1.6 + Math.sin(c.phase) * 0.5;
+      c.pos[1] += (targetY - c.pos[1]) * dt * 1.5;
+      c.rot += dt * 0.3;
+    } else if (c.kind === 'skydrift') {
+      c.phase += dt * 0.15;
+      c.pos[0] += Math.cos(c.rot) * c.speed * dt;
+      c.pos[2] += Math.sin(c.rot) * c.speed * dt;
+      c.rot += Math.sin(c.phase) * dt * 0.3;
+      c.pos[1] = 22 + Math.sin(c.phase * 0.8) * 3 + (c.phase % 1)*0;
+      // Wrap around if too far
+      if (Math.hypot(c.pos[0], c.pos[2]) > 110) {
+        c.rot += Math.PI;
+      }
+    }
+  }
+
+  // Floating islands — gentle vertical bob
+  for (const f of scene.floaters) {
+    f.phase += dt;
+    const y = f.basePos[1] + Math.sin(f.phase * 0.6) * 0.4;
+    M4.trs(f.model, [f.basePos[0], y, f.basePos[2]], f.phase * 0.15, 1.4, 1.4, 1.4);
+  }
+
+  // Particles — update and cycle
+  const p = scene.particles;
+  const near = player.pos;
+  for (let i=0; i<p.N; i++) {
+    const i3 = i*3;
+    p.pos[i3]   += p.vel[i3]   * dt;
+    p.pos[i3+1] += p.vel[i3+1] * dt;
+    p.pos[i3+2] += p.vel[i3+2] * dt;
+    // Little breeze wiggle
+    p.pos[i3]   += Math.sin(time*0.5 + i*0.1) * dt * 0.15;
+    p.pos[i3+2] += Math.cos(time*0.4 + i*0.13) * dt * 0.12;
+    p.life[i] -= dt;
+    // Reset when spent or too far below ground, or too far from player
+    if (p.life[i] <= 0 || p.pos[i3+1] < heightAt(p.pos[i3], p.pos[i3+2]) - 0.5
+        || Math.hypot(p.pos[i3]-near[0], p.pos[i3+2]-near[2]) > 90) {
+      resetParticle(p, i, near, false);
+    }
+  }
+
+  // Victory animation
+  if (victoryTriggered) {
+    victoryPhase += dt;
+    // Light up the environment
+    const t = Math.min(1, victoryPhase * 0.5);
+    env.ambTop[0]  = 0.35 + t * 0.5;
+    env.ambTop[1]  = 0.30 + t * 0.4;
+    env.ambTop[2]  = 0.50 + t * 0.5;
+    env.ambBot[0]  = 0.14 + t * 0.3;
+    env.ambBot[1]  = 0.10 + t * 0.3;
+    env.ambBot[2]  = 0.16 + t * 0.4;
+    env.skyHorizon[0] = 0.75 + t*0.2;
+    env.skyHorizon[1] = 0.42 + t*0.4;
+    env.skyHorizon[2] = 0.55 + t*0.3;
+    // Rise the artifacts and swirl around the center pedestal
+    for (let i=0; i<scene.artifacts.length; i++) {
+      const a = scene.artifacts[i];
+      if (!a.placed) continue;
+      const startY = scene.pedestals[a.slot].pos[1];
+      const targetY = 2.5 + Math.sin(victoryPhase * 0.7 + i) * 0.5;
+      const cy = heightAt(0, 0);
+      const oy = cy + startY + (targetY - startY) * Math.min(1, victoryPhase * 0.3);
+      const spinR = 1.5;
+      const ang = victoryPhase * 1.2 + (i / 6) * Math.PI * 2;
+      a.pos[0] = Math.cos(ang) * spinR;
+      a.pos[2] = Math.sin(ang) * spinR;
+      a.pos[1] = oy;
+    }
+  }
+}
+
+// Build the list of "close" point lights for the shader (12 max)
+function gatherPointLights() {
+  const lights = [];
+  const near = player.pos;
+  // Sample from a fixed set (plazas center + strong glowing plants nearby +
+  // held artifacts + pedestal artifacts). To avoid iterating hundreds of plants
+  // each frame we grab a handful of representative "hotspots" chosen at build
+  // time — the crystal grove center and cave arch are the big ones.
+  const HOTSPOTS = [
+    { pos: [WORLD.forest[0], heightAt(WORLD.forest[0], WORLD.forest[1])+1.5, WORLD.forest[1]],
+      col: [0.4, 0.7, 1.4], rad: 22 },
+    { pos: [WORLD.cave[0], heightAt(WORLD.cave[0], WORLD.cave[1])+1.2, WORLD.cave[1]],
+      col: [0.4, 0.9, 1.4], rad: 14 },
+    { pos: [0, heightAt(0,0)+0.7, 0],
+      col: [1.0, 0.85, 1.4], rad: 10 } // ruins glyph
+  ];
+  for (const h of HOTSPOTS) {
+    if (V3.dst(near, h.pos) < 55) lights.push(h);
+  }
+  // Add held artifacts (bright close lights)
+  for (const a of scene.artifacts) {
+    if (a.held) {
+      const p = a.pos;
+      const pal = [
+        [0.4, 0.7, 1.6], [1.6, 1.2, 0.5], [0.4, 1.6, 0.7],
+        [1.6, 0.6, 0.4], [1.4, 1.4, 1.6], [1.2, 0.6, 1.6]
+      ][a.kind];
+      lights.push({ pos: [p[0], p[1], p[2]], col: pal, rad: 5.5 });
+    } else if (a.placed) {
+      const pal = [
+        [0.4, 0.7, 1.4], [1.4, 1.1, 0.4], [0.4, 1.4, 0.6],
+        [1.4, 0.5, 0.4], [1.2, 1.2, 1.4], [1.0, 0.5, 1.4]
+      ][a.kind];
+      lights.push({ pos: [a.pos[0], a.pos[1]+0.1, a.pos[2]], col: pal, rad: 5 });
+    }
+  }
+  // Nearest floating island glows
+  for (const f of scene.floaters) {
+    const wp = [f.model[12], f.model[13], f.model[14]];
+    if (V3.dst(near, wp) < 40) {
+      lights.push({ pos: [wp[0], wp[1]+0.6, wp[2]], col: [0.5, 1.0, 0.7], rad: 6 });
+    }
+  }
+  return lights.slice(0, 12);
+}
+
+// =====================================================================
+//  XR SESSION + RENDER LOOP
+// =====================================================================
+let gl, renderer, xrSession = null, xrRefSpace = null;
+let lastFrameTime = 0;
+
+// Scratch matrices reused every frame to avoid GC
+const _headWorld = M4.c();
+const _view = M4.c();
+const _camPos = V3.c();
+const _artModel = M4.c();
+const _ctrlModel = M4.c();
+const _beamModel = M4.c();
+
+async function checkXR() {
+  const status = document.getElementById('status');
+  const btn = document.getElementById('enter');
+  if (!('xr' in navigator)) {
+    btn.textContent = 'WebXR Unavailable';
+    status.textContent = 'This browser does not expose WebXR. Try Chrome, Edge, or the Meta Quest Browser.';
+    return;
+  }
+  try {
+    const ok = await navigator.xr.isSessionSupported('immersive-vr');
+    if (ok) {
+      btn.disabled = false;
+      btn.textContent = 'Enter Zephyria';
+      btn.addEventListener('click', startXR);
+    } else {
+      btn.textContent = 'No VR Detected';
+      status.textContent = 'Connect a headset and reload. On desktop this needs Meta Quest Link, Steam VR, or similar.';
+    }
+  } catch (e) {
+    btn.textContent = 'VR Check Failed';
+    status.textContent = e.message;
+  }
+}
+
+async function startXR() {
+  const btn = document.getElementById('enter');
+  btn.disabled = true; btn.textContent = 'Awakening…';
+  try {
+    const session = await navigator.xr.requestSession('immersive-vr', {
+      requiredFeatures: ['local-floor']
+    });
+    await onSessionStarted(session);
+    document.getElementById('ui').style.display = 'none';
+    document.getElementById('hint').style.display = 'none';
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Enter Zephyria';
+    document.getElementById('status').textContent = 'Failed to start: ' + e.message;
+  }
+}
+
+async function onSessionStarted(session) {
+  xrSession = session;
+  await gl.makeXRCompatible();
+  const layer = new XRWebGLLayer(session, gl, { antialias: true });
+  session.updateRenderState({ baseLayer: layer, depthNear: 0.05, depthFar: 600 });
+  xrRefSpace = await session.requestReferenceSpace('local-floor');
+  session.addEventListener('end', () => {
+    xrSession = null;
+    document.getElementById('ui').style.display = 'flex';
+    document.getElementById('hint').style.display = 'block';
+    document.getElementById('enter').disabled = false;
+    document.getElementById('enter').textContent = 'Enter Zephyria';
+  });
+  session.requestAnimationFrame(onXRFrame);
+}
+
+// Quaternion for rotating (0,0,1) beam to point along a given controller
+// We use the controller's own orientation directly by baking it into the
+// beam model matrix. But we need the beam in *world* space, so we compose
+// with the player matrix.
+function computeControllerWorldMatrix(out, s) {
+  // Local: TRS with quat rot, uniform scale 1
+  const local = M4.c();
+  M4.trsq(local, s.pos, s.rot, 1);
+  M4.mul(out, playerMat, local);
+  return out;
+}
+
+function onXRFrame(t, frame) {
+  const session = frame.session;
+  session.requestAnimationFrame(onXRFrame);
+  const pose = frame.getViewerPose(xrRefSpace);
+  if (!pose) return;
+
+  const dt = Math.min(0.05, (t - lastFrameTime) / 1000);
+  lastFrameTime = t;
+  const time = t / 1000;
+
+  // Input first (needs frame + refSpace)
+  pollInputs(session, frame, xrRefSpace);
+  updatePlayer(dt);
+  updateInteractions(dt);
+  updateScene(dt, time);
+
+  // Rotate sun over time (very slowly)
+  const sunAng = 0.4 + Math.sin(time * 0.02) * 0.06;
+  env.lightDir[0] = Math.cos(sunAng) * 0.6;
+  env.lightDir[1] = 0.55 + Math.sin(time * 0.02) * 0.03;
+  env.lightDir[2] = Math.sin(sunAng) * 0.5;
+  // Renormalize
+  const ld = env.lightDir; const ll = Math.hypot(ld[0], ld[1], ld[2]) || 1;
+  ld[0]/=ll; ld[1]/=ll; ld[2]/=ll;
+
+  const lights = gatherPointLights();
+
+  // Render to XR framebuffer
+  const layer = session.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+  gl.clearColor(clearCol[0], clearCol[1], clearCol[2], clearCol[3]);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+  gl.frontFace(gl.CCW);
+
+  // Upload the fresh CPU particle state to the GPU once per frame
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.particles.posBuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, scene.particles.pos);
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.particles.sizeBuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, scene.particles.size);
+
+  for (const view of pose.views) {
+    const vp = layer.getViewport(view);
+    gl.viewport(vp.x, vp.y, vp.width, vp.height);
+    // View: inverse( playerMat * headTransform )
+    M4.mul(_headWorld, playerMat, view.transform.matrix);
+    M4.inv(_view, _headWorld);
+    M4.getTrans(_camPos, _headWorld);
+    const proj = view.projectionMatrix;
+
+    // -------- Sky first (writes far plane) --------
+    renderer.drawSky(_view, proj, env, time);
+
+    // -------- Scene program: terrain + fixtures + instanced props --------
+    renderer.bindSceneUniforms(_view, proj, time, env, lights, _camPos);
+
+    // Terrain (uint32 indices) — draw manually
+    gl.uniform1i(renderer.uS.uInstanced, 0);
+    const idMat = M4.idt(_ctrlModel); // reuse scratch
+    gl.uniformMatrix4fv(renderer.uS.uModel, false, idMat);
+    gl.bindVertexArray(scene.terrain.vao);
+    gl.drawElements(gl.TRIANGLES, scene.terrain.count, gl.UNSIGNED_INT, 0);
+
+    // Fixtures
+    for (const f of scene.fixtures) {
+      renderer.drawMesh(f.mesh, f.model);
+    }
+    // Floaters
+    for (const f of scene.floaters) {
+      renderer.drawMesh(f.mesh, f.model);
+    }
+    // Creatures
+    for (const c of scene.creatures) {
+      const s = c.kind === 'skydrift' ? 1.3 : 1.0;
+      M4.trs(_artModel, c.pos, c.rot, s, s, s);
+      renderer.drawMesh(c.mesh, _artModel);
+    }
+    // Artifacts (with idle bob & spin if free)
+    for (const a of scene.artifacts) {
+      const bob = (a.held || a.placed) ? 0 : Math.sin(a.phase) * a.bob;
+      const spin = a.phase * (a.placed ? 0.4 : 1.4);
+      M4.trs(_artModel, [a.pos[0], a.pos[1] + bob, a.pos[2]], spin, 1, 1, 1);
+      renderer.drawMesh(a.mesh, _artModel);
+    }
+    // Instanced props
+    renderer.drawInstanced(scene.props.crystal);
+    renderer.drawInstanced(scene.props.crystal2);
+    renderer.drawInstanced(scene.props.mushroom);
+    renderer.drawInstanced(scene.props.tree);
+    renderer.drawInstanced(scene.props.rock);
+
+    // Controllers (rendered in world space)
+    for (const s of [inputState.left, inputState.right]) {
+      if (!s.present) continue;
+      computeControllerWorldMatrix(_ctrlModel, s);
+      renderer.drawMesh(scene.ctrlMesh, _ctrlModel);
+      // Beam if trigger held
+      if (s.trigger) {
+        computeControllerWorldMatrix(_beamModel, s);
+        renderer.drawMesh(scene.beamMesh, _beamModel);
+      }
+    }
+
+    // Particles — additive, last so they blend over the world
+    renderer.drawParticles(scene.particles, _view, proj, env, scene.particles.N);
+  }
+}
+
+// =====================================================================
+//  BOOT
+// =====================================================================
+function init() {
+  const canvas = document.getElementById('c');
+  // The canvas doesn't render anything on the 2D page — it just needs
+  // to exist for the WebGL context. Size it to the window for correctness.
+  const resize = () => {
+    canvas.width  = window.innerWidth  * (window.devicePixelRatio || 1);
+    canvas.height = window.innerHeight * (window.devicePixelRatio || 1);
+  };
+  resize();
+  window.addEventListener('resize', resize);
+
+  gl = canvas.getContext('webgl2', { xrCompatible: true, antialias: true, alpha: false });
+  if (!gl) {
+    document.getElementById('status').textContent = 'WebGL 2 is required.';
+    document.getElementById('enter').textContent = 'Unsupported';
+    return;
+  }
+  renderer = new Renderer(gl);
+  buildScene(renderer);
+  updatePlayerMatrix();
+  checkXR();
+}
+
+init();
+
+</script>
+</body>
+</html>

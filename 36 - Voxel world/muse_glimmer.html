@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>WebGPU Voxel Fantasy Diorama</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:system-ui}
+canvas{display:block;width:100%;height:100%}
+#ui{position:fixed;top:10px;left:10px;color:#fff;background:rgba(0,0,0,.45);padding:10px 12px;border-radius:10px;font-size:13px;backdrop-filter:blur(6px)}
+button{margin:2px;padding:4px 8px}
+#hint{position:fixed;bottom:10px;left:10px;color:#ccc;font-size:12px;opacity:.8}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+<b>Voxel Fantasy</b><br>
+WASD + Mouse • O Orbit • P Screenshot<br>
+<button id="dawn">Dawn</button><button id="day">Day</button><button id="dusk">Dusk</button><button id="night">Night</button>
+<button id="orbit">Orbit: Off</button>
+</div>
+<div id="hint">Pointer lock to fly. R reset view.</div>
+<script type="module">
+const canvas=document.getElementById('c');
+const ui=document.getElementById('ui');
+let adapter,device,context,format,pipeline,depthTex,bindGroup0,bindGroup1;
+let vertexBuf,instanceBuf,camBuf,lightBuf;
+let instances=[];
+let yaw=-0.6,pitch=-0.35, pos=[0,80,120], speed=0.25, orbit=false, orbitAng=0;
+let keys={}, locked=false, screenshotMode=false;
+const PALETTE=[
+ [0.28,0.70,0.30,1],[0.52,0.35,0.20,1],[0.60,0.60,0.65,1],[0.70,0.22,0.22,1],
+ [0.55,0.38,0.20,1],[0.82,0.60,0.42,1],[0.55,0.12,0.12,1],[0.75,0.75,0.85,1],
+ [0.15,0.25,0.75,1]
+];
+function fbm(x,z){let a=0,f=1,amp=1;for(let i=0;i<4;i++){a+=amp*Math.sin(x*f*1.3)*Math.cos(z*f*0.7);amp*=0.5;f*=2}return a}
+function heightAt(x,z){let h=18+fbm(x*0.06,z*0.06)*12;if(Math.abs(x)<3&&Math.abs(z)<40)h-=4;return Math.max(2,Math.floor(h))}
+const map=new Map();
+function setVoxel(x,y,z,c){if(y<0||y>64)return;map.set(x+','+y+','+z,c)}
+function buildBox(x0,y0,z0,x1,y1,z1,c){for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++)for(let z=z0;z<=z1;z++)setVoxel(x,y,z,c)}
+function buildHollow(x0,y0,z0,x1,y1,z1,c){buildBox(x0,y0,z0,x1,y1,z1,c);buildBox(x0+1,y0+1,z0+1,x1-1,y1-1,z1-1,0)}
+// terrain
+const S=40;
+for(let x=-S;x<=S;x++)for(let z=-S;z<=S;z++){const h=heightAt(x,z);for(let y=0;y<h;y++){setVoxel(x,y,z, y<h-3?1:0)} if(Math.abs(x)<2&&Math.abs(z)<38&&h<16)for(let y=0;y<=12;y++)setVoxel(x,y,z,8)}
+// castle hill
+const cx=0,cz=0;const baseY=heightAt(cx,cz)+2;
+buildBox(cx-15,baseY,cz-15,cx+15,baseY+2,cz+15,3);
+buildHollow(cx-12,baseY+3,cz-12,cx+12,baseY+14,cz+12,3);
+buildBox(cx-2,baseY+15,cz-2,cx+2,baseY+26,cz+2,6);
+[[ -10,0],[10,0],[0,-10],[0,10]].forEach(([dx,dz])=>buildBox(cx+dx-3,baseY+3,cz+dz-3,cx+dx+3,baseY+20,cz+dz+3,3));
+// bridge
+for(let z=-20;z<=20;z++)for(let x=-2;x<=2;x++)setVoxel(cx+x,baseY,cz+z-20,3);
+// village
+for(let i=0;i<30;i++){const a=i*0.42;const r=28+i*0.3;const vx=Math.round(Math.cos(a)*r+10);const vz=Math.round(Math.sin(a)*r-8);const vy=heightAt(vx,vz)+1;
+ const s=4+Math.floor(Math.random()*2);
+ buildBox(vx-s,vy,vz-s,vx+s,vy+3,vz+s,5);
+ buildBox(vx-s,vy+4,vz-s,vx+s,vy+5,vz+s,6);
+}
+// watermill
+buildBox(-30,baseY,-30,-26,baseY+6,-26,3);
+// river stones
+for(let i=-20;i<20;i+=2)setVoxel(i,baseY-1, -25,3);
+instances=[];
+for(const [k,c] of map){if(c===0)continue;const [x,y,z]=k.split(',').map(Number);const col=PALETTE[c]||PALETTE[2];instances.push(x,y,z,col[0],col[1],col[2],col[3])}
+async function init(){
+ adapter=await navigator.gpu.requestAdapter();device=await adapter.requestDevice();
+ context=canvas.getContext('webgpu');format=navigator.gpu.getPreferredCanvasFormat();
+ context.configure({device,format,alphaMode:'opaque'});
+ // cube
+ const cubePos=[],cubeNorm=[],cubeUV=[];
+ function pushFace(nx,ny,nz, v){
+  const [a,b,c,d]=v; const verts=[a,b,c,c,d,a];
+  for(const v of verts){cubePos.push(v[0],v[1],v[2]);cubeNorm.push(nx,ny,nz);cubeUV.push(0,0)}
+ }
+ pushFace(1,0,0,[[0.5,-0.5,-0.5],[0.5,0.5,-0.5],[0.5,0.5,0.5],[0.5,-0.5,0.5]]);
+ pushFace(-1,0,0,[[-0.5,-0.5,0.5],[-0.5,0.5,0.5],[-0.5,0.5,-0.5],[-0.5,-0.5,-0.5]]);
+ pushFace(0,1,0,[[-0.5,0.5,-0.5],[-0.5,0.5,0.5],[0.5,0.5,0.5],[0.5,0.5,-0.5]]);
+ pushFace(0,-1,0,[[-0.5,-0.5,0.5],[-0.5,-0.5,-0.5],[0.5,-0.5,-0.5],[0.5,-0.5,0.5]]);
+ pushFace(0,0,1,[[-0.5,-0.5,0.5],[0.5,-0.5,0.5],[0.5,0.5,0.5],[-0.5,0.5,0.5]]);
+ pushFace(0,0,-1,[[0.5,-0.5,-0.5],[-0.5,-0.5,-0.5],[-0.5,0.5,-0.5],[0.5,0.5,-0.5]]);
+ const vData=new Float32Array(cubePos.length+ cubeNorm.length+ cubeUV.length);
+ let o=0;for(let i=0;i<cubePos.length;i++)vData[o++]=cubePos[i];for(let i=0;i<cubeNorm.length;i++)vData[o++]=cubeNorm[i];for(let i=0;i<cubeUV.length;i++)vData[o++]=cubeUV[i];
+ vertexBuf=device.createBuffer({size:vData.byteLength,usage:GPUBufferUsage.VERTEX, mappedAtCreation:true});
+ new Float32Array(vertexBuf.getMappedRange()).set(vData);vertexBuf.unmap();
+ const instData=new Float32Array(instances);
+ instanceBuf=device.createBuffer({size:instData.byteLength,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+ device.queue.writeBuffer(instanceBuf,0,instData);
+ // uniforms
+ camBuf=device.createBuffer({size:80,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+ lightBuf=device.createBuffer({size:64,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+ const shader=`struct Cam{viewProj:mat4x4<f32>,viewPos:vec3<f32>,pad:f32};@group(0)@binding(0)var<uniform>c:Cam;struct Light{sunDir:vec3<f32>,pad0:f32,ambient:vec3<f32>,pad1:f32,sunCol:vec3<f32>,pad2:f32,time:f32};@group(1)@binding(0)var<uniform>l:Light;struct VIn{@location(0)pos:vec3<f32>,@location(1)n:vec3<f32>,@location(2)uv:vec2<f32>};struct IIn{@location(3)ip:vec3<f32>,@location(4)ic:vec4<f32>};struct VSOut{@builtin(position)p:vec4<f32>,@location(0)wp:vec3<f32>,@location(1)n:vec3<f32>,@location(2)col:vec4<f32>};@vertex fn vs(v:VIn,i:IIn)->VSOut{var o:VSOut;let world=v.pos+i.ip;let p=c.viewProj*vec4<f32>(world,1);o.p=p;o.wp=world;o.n=normalize((mat3x3<f32>(c.viewProj)*v.n));o.col=i.ic;return o}@fragment fn fs(o:VSOut)->@location(0)vec4<f32>{let n=normalize(o.n);let l=max(dot(n,normalize(-l.sunDir)),0.0);let col=o.col.rgb*(l*l.sunCol+ l.ambient);let d=length(o.wp-c.viewPos);let fog=mix(0.0,1.0,pow(d/200.0,1.5));let sky=vec3<f32>(0.6,0.75,1.0);col=mix(col,sky,fog);col/=col+vec3<f32>(1.0);let vign=1.0-0.4*pow(length(o.p.xy)/800.0,2.0);return vec4<f32>(col*vign, o.col.a)}`;
+ const mod=device.createShaderModule({code:shader});
+ depthTex=device.createTexture({size:[canvas.width,canvas.height],format:'depth24plus',usage:GPUTextureUsage.RENDER_ATTACHMENT});
+ const depthView=depthTex.createView();
+ pipeline=device.createRenderPipeline({
+  layout:'auto',vertex:{module:mod,entryPoint:'vs',buffers:[
+   {arrayStride:32,stepMode:'vertex',attributes:[{shaderLocation:0,offset:0,size:3},{shaderLocation:1,offset:12,size:3},{shaderLocation:2,offset:24,size:2}]},
+   {arrayStride:28,stepMode:'instance',attributes:[{shaderLocation:3,offset:0,size:3},{shaderLocation:4,offset:12,size:4}]}
+  ]},fragment:{module:mod,entryPoint:'fs',targets:[{format}]},primitive:{cullMode:'back'},depthStencil:{format:'depth24plus',depthWriteEnabled:true,depthCompare:'less'}
+ });
+ bindGroup0=device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:camBuf}}]});
+ bindGroup1=device.createBindGroup({layout:pipeline.getBindGroupLayout(1),entries:[{binding:0,resource:{buffer:lightBuf}}]});
+ resize();addEventListener('resize',resize);
+}
+function resize(){canvas.width=innerWidth*devicePixelRatio;canvas.height=innerHeight*devicePixelRatio;depthTex.destroy();depthTex=device.createTexture({size:[canvas.width,canvas.height],format:'depth24plus',usage:GPUTextureUsage.RENDER_ATTACHMENT})}
+function mat4Persp(o,f,a,n,fa){const s=1/Math.tan(f*0.5);o[0]=s/a;o[5]=s;o[10]=(fa+n)/(n-fa);o[11]=-1;o[14]=2*fa*n/(n-fa)}
+function lookAt(o,e,c,u){let fx=c[0]-e[0],fy=c[1]-e[1],fz=c[2]-e[2];let l=1/Math.hypot(fx,fy,fz);fx*=l;fy*=l;fz*=l;let sx=fy*u[2]-fz*u[1],sy=fz*u[0]-fx*u[2],sz=fx*u[1]-fy*u[0];l=1/Math.hypot(sx,sy,sz);sx*=l;sy*=l;sz*=l;let ux=sy*fz-sz*fy,uy=sz*fx-sx*fz,uz=sx*fy-sy*fx;o[0]=sx;o[1]=uy?0:ux;o[2]=-fx;o[4]=sy;o[5]=uy;o[6]=-fy;o[8]=sz;o[9]=uz;o[10]=-fz;o[12]=-(sx*e[0]+sy*e[1]+sz*e[2]);o[13]=-(ux*e[0]+uy*e[1]+uz*e[2]);o[14]=fx*e[0]+fy*e[1]+fz*e[2];o[15]=1}
+function mul(a,b){const o=new Float32Array(16);for(let i=0;i<4;i++)for(let j=0;j<4;j++){o[i*4+j]=a[i*4+0]*b[0*4+j]+a[i*4+1]*b[1*4+j]+a[i*4+2]*b[2*4+j]+a[i*4+3]*b[3*4+j]}return o}
+function updateUniforms(t){
+ const vp=new Float32Array(16),pr=new Float32Array(16),vi=new Float32Array(16);
+ mat4Persp(pr,1.0,canvas.width/canvas.height,0.1,500);
+ let target=[0,baseY+10,0];
+ if(orbit){orbitAng+=0.002;const r=90;pos[0]=target[0]+Math.cos(orbitAng)*r;pos[2]=target[2]+Math.sin(orbitAng)*r;pos[1]=target[1]+30}
+ const dir=[Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch)];
+ const center=[pos[0]+dir[0],pos[1]+dir[1],pos[2]+dir[2]];
+ lookAt(vi,pos,center,[0,1,0]);
+ const viewProj=mul(pr,vi);
+ device.queue.writeBuffer(camBuf,0,new Float32Array([...viewProj,pos[0],pos[1],pos[2],0]));
+ const sun=[Math.sin(t*0.3)*0.5,Math.cos(t*0.3)*0.8,0.3];const amb=[0.15,0.18,0.25];const sunCol=[1,0.9,0.7];
+ device.queue.writeBuffer(lightBuf,0,new Float32Array([sun[0],sun[1],sun[2],0,amb[0],amb[1],amb[2],0,sunCol[0],sunCol[1],sunCol[2],0,t,0,0,0]));
+}
+function render(){
+ const t=performance.now()*0.001;
+ updateUniforms(t);
+ const encoder=device.createCommandEncoder();
+ const pass=encoder.beginRenderPass({colorAttachments:[{view:context.getCurrentTexture().createView(),clearValue:{r:0.03,g:0.04,b:0.1,a:1},loadOp:'clear',storeOp:'store'}],depthStencilAttachment:{view:depthTex.createView(),depthClearValue:1,depthLoadOp:'clear',depthStoreOp:'store'}});
+ pass.setPipeline(pipeline);pass.setBindGroup(0,bindGroup0);pass.setBindGroup(1,bindGroup1);
+ pass.setVertexBuffer(0,vertexBuf);pass.setVertexBuffer(1,instanceBuf);
+ pass.draw(36,instances.length/7,0,0);pass.end();
+ device.queue.submit([encoder.finish()]);
+ requestAnimationFrame(render);
+}
+addEventListener('keydown',e=>{keys[e.code]=true; if(e.code==='KeyO'){orbit=!orbit;document.getElementById('orbit').textContent='Orbit: '+(orbit?'On':'Off')} if(e.code==='KeyR'){pos=[0,80,120];yaw=-0.6;pitch=-0.35}});
+addEventListener('keyup',e=>keys[e.code]=false);
+canvas.addEventListener('click',()=>canvas.requestPointerLock());
+addEventListener('pointerlockchange',()=>locked=document.pointerLockElement===canvas);
+addEventListener('mousemove',e=>{if(!locked||orbit)return; yaw-=e.movementX*0.002; pitch-=e.movementY*0.002; pitch=Math.max(-1.5,Math.min(1.5,pitch))});
+function move(){if(orbit)return;const s=speed;let fwd=Math.cos(yaw),right=Math.sin(yaw);if(keys['KeyW']){pos[0]+=fwd*s;pos[2]+=fwd*s}if(keys['KeyS']){pos[0]-=fwd*s;pos[2]-=fwd*s}if(keys['KeyA']){pos[0]-=right*s;pos[2]-=right*s}if(keys['KeyD']){pos[0]+=right*s;pos[2]+=right*s}if(keys['Space']){pos[1]+=s}if(keys['ShiftLeft']){pos[1]-=s}}
+setInterval(move,16);
+['dawn','day','dusk','night'].forEach(id=>document.getElementById(id).onclick=()=>{});
+init().then(render);
+</script>
+</body>
+</html>

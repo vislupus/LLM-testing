@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Xenovox: Alien Discovery</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; color: #0ff; font-family: 'Courier New', monospace; user-select: none; }
+        canvas { width: 100%; height: 100%; display: block; }
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.8); pointer-events: none; z-index: 10; transition: opacity 0.5s; }
+        #ui.hidden { opacity: 0; }
+        h1 { font-size: 4rem; margin-bottom: 10px; text-shadow: 0 0 20px #0ff; }
+        p { font-size: 1.2rem; margin-bottom: 30px; opacity: 0.8; }
+        #start-btn { pointer-events: auto; background: transparent; border: 2px solid #0ff; color: #0ff; padding: 15px 40px; font-size: 1.5rem; font-family: inherit; cursor: pointer; text-transform: uppercase; letter-spacing: 2px; box-shadow: 0 0 15px #0ff; transition: all 0.2s; }
+        #start-btn:hover { background: #0ff; color: #000; box-shadow: 0 0 30px #0ff; }
+        #hud { position: absolute; bottom: 20px; left: 20px; font-size: 1.2rem; pointer-events: none; text-shadow: 0 0 5px #000; }
+    </style>
+</head>
+<body>
+    <canvas id="glcanvas"></canvas>
+    <div id="ui">
+        <h1>XENOVOX</h1>
+        <p>Explore the Unknown. Collect the Artifacts.</p>
+        <button id="start-btn">Enter VR</button>
+    </div>
+    <div id="hud" class="hidden">Artifacts: 0 / 0</div>
+
+<script>
+// --- MATH HELPERS ---
+const { PI, sin, cos, sqrt, floor, random } = Math;
+const degToRad = PI / 180;
+
+class Vec3 {
+    constructor(x=0, y=0, z=0) { this.x=x; this.y=y; this.z=z; }
+    add(v) { this.x+=v.x; this.y+=v.y; this.z+=v.z; return this; }
+    sub(v) { this.x-=v.x; this.y-=v.y; this.z-=v.z; return this; }
+    len() { return sqrt(this.x*this.x + this.y*this.y + this.z*this.z); }
+    dist(v) { return sqrt((this.x-v.x)**2 + (this.y-v.y)**2 + (this.z-v.z)**2); }
+}
+
+class Mat4 extends Float32Array {
+    constructor() { super(16); this.set([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]); }
+    perspective(fov, aspect, near, far) {
+        const f = 1.0 / tan(fov / 2), nf = 1 / (near - far);
+        this.set([f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,(2*far*near)*nf,0]);
+        return this;
+    }
+    lookAt(eye, center, up) {
+        const z = new Vec3(eye.x-center.x, eye.y-center.y, eye.z-center.z).normalize();
+        const x = new Vec3(up.y*z.z - up.z*z.y, up.z*z.x - up.x*z.z, up.x*z.y - up.y*z.x).normalize();
+        const y = new Vec3(z.y*x.z - z.z*x.y, z.z*x.x - z.x*x.z, z.x*x.y - z.y*x.x).normalize();
+        this.set([x.x,y.x,z.x,0, x.y,y.y,z.y,0, x.z,y.z,z.z,0, -x.x*eye.x-x.y*eye.y-x.z*eye.z, -y.x*eye.x-y.y*eye.y-y.z*eye.z, -z.x*eye.x-z.y*eye.y-z.z*eye.z, 1]);
+        return this;
+    }
+    translate(v) { this[12]+=v.x; this[13]+=v.y; this[14]+=v.z; return this; }
+    multiply(b) {
+        const a = this, o = new Float32Array(16);
+        for(let r=0;r<4;r++) for(let c=0;c<4;c++) for(let i=0;i<4;i++) o[c*4+r] += a[i*4+r] * b[c*4+i];
+        this.set(o); return this;
+    }
+    invert() {
+        // Simplified inverse for rigid body transforms
+        const m = this, d = m[0]*(m[5]*m[10]-m[6]*m[9]) - m[1]*(m[4]*m[10]-m[6]*m[8]) + m[2]*(m[4]*m[9]-m[5]*m[8]);
+        if(d===0) return this;
+        const id = 1/d;
+        const n = new Float32Array(16);
+        n[0] = (m[5]*m[10]-m[6]*m[9])*id; n[1] = (m[2]*m[9]-m[1]*m[10])*id; n[2] = (m[1]*m[6]-m[2]*m[5])*id;
+        n[4] = (m[6]*m[8]-m[4]*m[10])*id; n[5] = (m[0]*m[10]-m[2]*m[8])*id; n[6] = (m[2]*m[4]-m[0]*m[6])*id;
+        n[8] = (m[4]*m[9]-m[5]*m[8])*id; n[9] = (m[1]*m[8]-m[0]*m[9])*id; n[10] = (m[0]*m[5]-m[1]*m[4])*id;
+        n[12]=0; n[13]=0; n[14]=0; n[15]=1;
+        // We only need rotation/translation for simple VR, this is a rough approximation for VR controller matrices
+        this.set(n); return this;
+    }
+}
+
+// --- NOISE ---
+class FastNoise {
+    constructor() {
+        this.p = new Uint8Array(512);
+        for(let i=0;i<256;i++) this.p[i]=i;
+        for(let i=255;i>0;i--) { const j=Math.floor(random()*(i+1)); [this.p[i],this.p[j]]=[this.p[j],this.p[i]]; }
+        for(let i=0;i<256;i++) this.p[256+i]=this.p[i];
+    }
+    noise2D(x,y) {
+        const X = Math.floor(x)&255, Y = Math.floor(y)&255;
+        x -= Math.floor(x); y -= Math.floor(y);
+        const u = x*x*(3-2*x), v = y*y*(3-2*y);
+        const A = this.p[X]+Y, B = this.p[X+1]+Y;
+        return this.lerp(this.lerp(this.grad(this.p[A],x,y), this.grad(this.p[B],x-1,y), u), this.lerp(this.grad(this.p[A+1],x,y-1), this.grad(this.p[B+1],x-1,y-1), u), v);
+    }
+    lerp(a,b,t) { return a+t*(b-a); }
+    grad(hash,x,y) { return (hash&1)===0?x:-x + ((hash&2)===0?y:-y); }
+}
+
+// --- SHADERS ---
+const VS = `#version 300 es
+in vec3 a_pos;
+in vec3 a_col;
+in float a_type; // 0: static, 1: wildlife, 2: artifact, 3: weather
+in float a_offs; // Offset for animation
+
+uniform mat4 u_proj;
+uniform mat4 u_view;
+uniform mat4 u_model;
+uniform float u_time;
+
+out vec3 v_col;
+out float v_fog;
+
+void main() {
+    vec3 pos = a_pos;
+    vec3 worldPos = (u_model * vec4(pos, 1.0)).xyz;
+
+    // Animate Wildlife (Type 1) - Sine wave flight
+    if (a_type > 0.5 && a_type < 1.5) {
+        worldPos.x += sin(u_time * 2.0 + a_offs * 10.0) * 2.0;
+        worldPos.y += cos(u_time * 1.5 + a_offs * 5.0) * 1.0;
+    }
+    
+    // Animate Artifact (Type 2) - Hover
+    if (a_type > 1.5 && a_type < 2.5) {
+        worldPos.y += sin(u_time * 3.0) * 0.2;
+    }
+
+    // Animate Weather (Type 3) - Fall
+    if (a_type > 2.5) {
+        worldPos.y = mod(worldPos.y - u_time * 5.0, 50.0);
+    }
+
+    vec4 viewPos = u_view * vec4(worldPos, 1.0);
+    gl_Position = u_proj * viewPos;
+    
+    v_col = a_col;
+    // Exponential fog
+    v_fog = 1.0 - exp(-length(viewPos.xyz) * 0.015);
+}`;
+
+const FS = `#version 300 es
+precision highp float;
+in vec3 v_col;
+in float v_fog;
+uniform vec3 u_fogCol;
+out vec4 outCol;
+
+void main() {
+    vec3 col = mix(v_col, u_fogCol, v_fog);
+    outCol = vec4(col, 1.0);
+}`;
+
+// --- WEBGL SETUP ---
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2', { xrCompatible: true });
+if (!gl) alert("WebGL2 not supported");
+
+function createShader(src, type) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+    return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, createShader(VS, gl.VERTEX_SHADER));
+gl.attachShader(prog, createShader(FS, gl.FRAGMENT_SHADER));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+const locs = {
+    pos: gl.getAttribLocation(prog, 'a_pos'),
+    col: gl.getAttribLocation(prog, 'a_col'),
+    type: gl.getAttribLocation(prog, 'a_type'),
+    offs: gl.getAttribLocation(prog, 'a_offs'),
+    proj: gl.getUniformLocation(prog, 'u_proj'),
+    view: gl.getUniformLocation(prog, 'u_view'),
+    model: gl.getUniformLocation(prog, 'u_model'),
+    time: gl.getUniformLocation(prog, 'u_time'),
+    fogCol: gl.getUniformLocation(prog, 'u_fogCol')
+};
+
+// --- WORLD GENERATION ---
+const verts = [], cols = [], types = [], offs = [], inds = [];
+const noise = new FastNoise();
+const artifacts = [];
+const WORLD_SIZE = 300;
+const CHUNK_S = 20;
+
+// Terrain
+for (let z = 0; z <= WORLD_SIZE; z += CHUNK_S) {
+    for (let x = 0; x <= WORLD_SIZE; x += CHUNK_S) {
+        // Height & Biome
+        let h = noise.noise2D(x*0.01, z*0.01) * 20 + noise.noise2D(x*0.05, z*0.05) * 5;
+        // Cave entrance logic
+        if (noise.noise2D(x*0.02, z*0.02) > 0.6) h -= 10;
+        
+        const base = verts.length/3;
+        const y = h;
+        // 4 corners for quad
+        verts.push(x-WORLD_SIZE/2, y, z-WORLD_SIZE/2,  x+CHUNK_S-WORLD_SIZE/2, y, z-WORLD_SIZE/2,  x+CHUNK_SIZE-WORLD_SIZE/2, y+2, z+CHUNK_S-WORLD_SIZE/2,  x-WORLD_SIZE/2, y+2, z+CHUNK_S-WORLD_SIZE/2);
+        
+        // Color based on height/biome
+        let c = [0.1, 0.4, 0.2]; // Green
+        if (h > 15) c = [0.6, 0.6, 0.7]; // Snow/Mountain
+        else if (h < -2) c = [0.1, 0.1, 0.2]; // Water/Deep
+        else if (noise.noise2D(x*0.03, z*0.03) > 0.5) c = [0.2, 0.8, 0.9]; // Crystal
+        
+        cols.push(...c, ...c, ...c, ...c);
+        types.push(0,0,0,0);
+        offs.push(0,0,0,0);
+        inds.push(base, base+1, base+2, base, base+2, base+3);
+    }
+}
+
+// Props (Flora/Ruins)
+for(let i=0; i<400; i++) {
+    const x = (random()-0.5)*WORLD_SIZE;
+    const z = (random()-0.5)*WORLD_SIZE;
+    const y = noise.noise2D(x*0.01, z*0.01) * 20;
+    
+    const base = verts.length/3;
+    const h = 2 + random()*3;
+    // Simple Cube
+    verts.push(x-h,y,z-h, x+h,y,z-h, x+h,y+h,z-h, x-h,y+h,z-h); // Front
+    verts.push(x-h,y,z+h, x+h,y,z+h, x+h,y+h,z+h, x-h,y+h,z+h); // Back
+    // Just 2 faces for simplicity
+    const col = random()>0.5 ? [0.2, 0.1, 0.4] : [0.1, 0.8, 0.6]; // Purple or Teal
+    for(let k=0;k<8;k++) { cols.push(...col); types.push(0); offs.push(0); }
+    inds.push(base,base+1,base+2, base,base+2,base+3, base+4,base+6,base+5, base+4,base+7,base+6);
+}
+
+// Artifacts
+for(let i=0; i<20; i++) {
+    const x = (random()-0.5)*WORLD_SIZE*0.9;
+    const z = (random()-0.5)*WORLD_SIZE*0.9;
+    const y = noise.noise2D(x*0.01, z*0.01) * 20 + 3;
+    const base = verts.length/3;
+    
+    // Octahedron
+    const r = 0.5;
+    const v = [0,r,0, 0,-r,0, r,0,0, -r,0,0, 0,0,r, 0,0,-r];
+    for(let k=0; k<v.length; k+=3) verts.push(x+v[k], y+v[k+1], z+v[k+2]);
+    
+    for(let k=0; k<6; k++) { cols.push(1, 0.8, 0); types.push(2); offs.push(0); } // Gold
+    
+    const f = [0,2,4, 0,4,3, 0,3,5, 0,5,2, 1,4,2, 1,3,4, 1,5,3, 1,2,5];
+    inds.push(...f.map(i=>i+base));
+    
+    artifacts.push({ pos: new Vec3(x,y,z), active: true, id: i });
+}
+
+// Wildlife
+for(let i=0; i<100; i++) {
+    const x = (random()-0.5)*WORLD_SIZE;
+    const z = (random()-0.5)*WORLD_SIZE;
+    const y = 20 + random()*30;
+    const base = verts.length/3;
+    
+    // Triangle
+    verts.push(x,y,z+1, x-0.5,y-0.2,z-0.5, x+0.5,y-0.2,z-0.5);
+    cols.push(1,0.5,0.5, 1,0.5,0.5, 1,0.5,0.5);
+    types.push(1,1,1);
+    offs.push(random(), random(), random());
+    inds.push(base, base+1, base+2);
+}
+
+// Weather
+for(let i=0; i<500; i++) {
+    const x = (random()-0.5)*WORLD_SIZE;
+    const z = (random()-0.5)*WORLD_SIZE;
+    const y = random()*50;
+    verts.push(x,y,z);
+    cols.push(0.5, 0.9, 0.8); // Spores
+    types.push(3);
+    offs.push(0);
+}
+
+// Buffers
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+
+const bufV = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufV);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(locs.pos);
+gl.vertexAttribPointer(locs.pos, 3, gl.FLOAT, false, 0, 0);
+
+const bufC = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufC);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(cols), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(locs.col);
+gl.vertexAttribPointer(locs.col, 3, gl.FLOAT, false, 0, 0);
+
+const bufT = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufT);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(types), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(locs.type);
+gl.vertexAttribPointer(locs.type, 1, gl.FLOAT, false, 0, 0);
+
+const bufO = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, bufO);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(offs), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(locs.offs);
+gl.vertexAttribPointer(locs.offs, 1, gl.FLOAT, false, 0, 0);
+
+const bufI = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bufI);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(inds), gl.STATIC_DRAW);
+
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+// --- XR APP ---
+let xrSession = null;
+let xrRefSpace = null;
+let startTime = Date.now();
+let collectedCount = 0;
+
+const hud = document.getElementById('hud');
+const ui = document.getElementById('ui');
+
+document.getElementById('start-btn').onclick = async () => {
+    if (navigator.xr) {
+        try {
+            xrSession = await navigator.xr.requestSession('immersive-vr', { requiredFeatures: ['local-floor'] });
+            xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
+            xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
+            
+            ui.classList.add('hidden');
+            hud.classList.remove('hidden');
+            hud.textContent = `Artifacts: ${collectedCount} / ${artifacts.length}`;
+            
+            xrSession.requestAnimationFrame(onFrame);
+        } catch(e) { console.error(e); alert("Failed to start VR"); }
+    } else {
+        alert("WebXR not supported");
+    }
+};
+
+function onFrame(t, f) {
+    xrSession.requestAnimationFrame(onFrame);
+    const dt = (Date.now() - startTime) * 0.001;
+    
+    const pose = f.getViewerPose(xrRefSpace);
+    if (!pose) return;
+    
+    gl.bindFramebuffer(gl.FRAMEBUFFER, xrSession.renderState.baseLayer.framebuffer);
+    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+    gl.clearColor(0.05, 0.05, 0.1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    
+    gl.useProgram(prog);
+    gl.uniform1f(locs.time, dt);
+    gl.uniform3f(locs.fogCol, 0.05, 0.05, 0.1);
+    
+    // Update Artifacts Interaction
+    for (let source of xrSession.inputSources) {
+        if (source.gripSpace && source.gamepad && source.gamepad.buttons[0].pressed) {
+            const grip = f.getPose(source.gripSpace, xrRefSpace);
+            if (grip) {
+                const p = grip.transform.position;
+                const handPos = new Vec3(p.x, p.y, p.z);
+                
+                artifacts.forEach(a => {
+                    if(a.active && handPos.dist(a.pos) < 1.5) {
+                        a.active = false;
+                        collectedCount++;
+                        hud.textContent = `Artifacts: ${collectedCount} / ${artifacts.length}`;
+                        // Visual feedback could be added here
+                    }
+                });
+            }
+        }
+    }
+
+    // Render views
+    for (let view of pose.views) {
+        const vp = xrSession.renderState.baseLayer.getViewport(view);
+        gl.viewport(vp.x, vp.y, vp.width, vp.height);
+        
+        const proj = new Mat4().perspective(view.fieldOfView, vp.width/vp.height, 0.1, 500);
+        const viewMat = new Mat4();
+        
+        // Invert the view transform to get camera matrix
+        const inv = view.transform.inverse.matrix;
+        viewMat.set(inv);
+        
+        gl.uniformMatrix4fv(locs.proj, false, proj);
+        gl.uniformMatrix4fv(locs.view, false, viewMat);
+        gl.uniformMatrix4fv(locs.model, false, new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])); // Identity
+        
+        // Draw Terrain (Type 0)
+        gl.drawElements(gl.TRIANGLES, inds.length, gl.UNSIGNED_INT, 0);
+    }
+}
+</script>
+</body>
+</html>

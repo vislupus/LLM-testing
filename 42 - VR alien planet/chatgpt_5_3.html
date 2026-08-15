@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Xenoterra: WebXR Expedition</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #02030a;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    #glCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .hud {
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="glCanvas"></canvas>
+
+  <div class="pointer-events-none fixed inset-0 flex flex-col justify-between p-5 text-white hud">
+    <div class="flex items-start justify-between">
+      <div>
+        <h1 class="text-2xl font-semibold tracking-wide">XENOTERRA</h1>
+        <p class="max-w-md text-sm text-white/85">Explore alien biomes, descend into caves, uncover ruins, and recover lost artifacts in immersive VR.</p>
+      </div>
+      <button id="enterVrBtn" class="pointer-events-auto rounded bg-white/15 px-4 py-2 text-sm font-medium backdrop-blur hover:bg-white/25">Enter VR</button>
+    </div>
+
+    <div class="flex items-end justify-between gap-3 text-sm">
+      <div>
+        <p id="statusLine" class="text-white/90">Status: Awaiting expedition launch.</p>
+        <p class="text-white/70">Left stick: move, Right trigger: grab/release, Squeeze: scan for clues.</p>
+      </div>
+      <p id="artifactLine" class="text-white/90">Artifacts restored: 0 / 3</p>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('glCanvas');
+    const gl = canvas.getContext('webgl', { antialias: true, alpha: false, xrCompatible: true });
+    const enterVrBtn = document.getElementById('enterVrBtn');
+    const statusLine = document.getElementById('statusLine');
+    const artifactLine = document.getElementById('artifactLine');
+
+    if (!gl) {
+      statusLine.textContent = 'Status: WebGL unavailable.';
+      throw new Error('WebGL unavailable');
+    }
+
+    const state = {
+      xrSession: null,
+      xrRefSpace: null,
+      xrBaseSpace: null,
+      playerPos: { x: 0, y: 2.2, z: 8 },
+      smoothGroundY: 0,
+      time: 0,
+      worldPulse: 0,
+      artifactsPlaced: 0,
+      stormStrength: 0.35,
+      scanCooldown: 0,
+      controllers: {
+        left: { source: null, triggerWasDown: false, squeezeWasDown: false, pose: null },
+        right: { source: null, triggerWasDown: false, squeezeWasDown: false, pose: null }
+      }
+    };
+    state.smoothGroundY = terrainHeight(state.playerPos.x, state.playerPos.z) + 1.65;
+    state.playerPos.y = state.smoothGroundY;
+
+    function resizeCanvas() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.floor(window.innerWidth * dpr);
+      const h = Math.floor(window.innerHeight * dpr);
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      gl.viewport(0, 0, canvas.width, canvas.height);
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    function createShader(type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(shader));
+      }
+      return shader;
+    }
+
+    function createProgram(vs, fs) {
+      const program = gl.createProgram();
+      gl.attachShader(program, createShader(gl.VERTEX_SHADER, vs));
+      gl.attachShader(program, createShader(gl.FRAGMENT_SHADER, fs));
+      gl.bindAttribLocation(program, 0, 'aPos');
+      gl.bindAttribLocation(program, 1, 'aNormal');
+      gl.bindAttribLocation(program, 2, 'aColor');
+      gl.bindAttribLocation(program, 3, 'aEmissive');
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(program));
+      }
+      return program;
+    }
+
+    const sceneProgram = createProgram(
+      `attribute vec3 aPos;
+       attribute vec3 aNormal;
+       attribute vec3 aColor;
+       attribute float aEmissive;
+       uniform mat4 uProj;
+       uniform mat4 uView;
+       uniform mat4 uModel;
+       uniform float uPulse;
+       varying vec3 vColor;
+       varying vec3 vNormal;
+       varying float vEmissive;
+       varying vec3 vWorld;
+       void main() {
+         vec4 world = uModel * vec4(aPos, 1.0);
+         vWorld = world.xyz;
+         vColor = aColor;
+         vNormal = mat3(uModel) * aNormal;
+         vEmissive = aEmissive;
+         gl_Position = uProj * uView * world;
+       }`,
+      `precision mediump float;
+       varying vec3 vColor;
+       varying vec3 vNormal;
+       varying float vEmissive;
+       varying vec3 vWorld;
+       uniform vec3 uLightDir;
+       uniform vec3 uCam;
+       uniform float uTime;
+       uniform float uPulse;
+       uniform float uFogNear;
+       uniform float uFogFar;
+       uniform vec3 uFogColor;
+       void main() {
+         vec3 n = normalize(vNormal);
+         float diffuse = max(dot(n, -uLightDir), 0.0);
+         float hemi = 0.5 + 0.5 * n.y;
+         float glowWave = 0.5 + 0.5 * sin(uTime * 1.7 + vWorld.x * 0.2 + vWorld.z * 0.23);
+         float emissive = vEmissive * (0.5 + glowWave * 0.8 + uPulse * 0.6);
+         vec3 base = vColor * (0.22 + diffuse * 0.62 + hemi * 0.26);
+         vec3 finalColor = base + vColor * emissive;
+         float dist = distance(vWorld, uCam);
+         float fog = smoothstep(uFogNear, uFogFar, dist);
+         finalColor = mix(finalColor, uFogColor, fog);
+         gl_FragColor = vec4(finalColor, 1.0);
+       }`
+    );
+
+    const particleProgram = createProgram(
+      `attribute vec3 aPos;
+       attribute vec3 aNormal;
+       attribute vec3 aColor;
+       attribute float aEmissive;
+       uniform mat4 uProj;
+       uniform mat4 uView;
+       uniform float uPointScale;
+       varying vec3 vColor;
+       varying float vAlpha;
+       void main() {
+         vec4 viewPos = uView * vec4(aPos, 1.0);
+         gl_Position = uProj * viewPos;
+         gl_PointSize = uPointScale / max(1.0, -viewPos.z);
+         vColor = aColor;
+         vAlpha = aEmissive;
+       }`,
+      `precision mediump float;
+       varying vec3 vColor;
+       varying float vAlpha;
+       void main() {
+         vec2 c = gl_PointCoord - vec2(0.5);
+         float d = dot(c, c);
+         if (d > 0.25) discard;
+         float a = (1.0 - smoothstep(0.0, 0.25, d)) * vAlpha;
+         gl_FragColor = vec4(vColor, a);
+       }`
+    );
+
+    const U = {
+      scene: {
+        proj: gl.getUniformLocation(sceneProgram, 'uProj'),
+        view: gl.getUniformLocation(sceneProgram, 'uView'),
+        model: gl.getUniformLocation(sceneProgram, 'uModel'),
+        lightDir: gl.getUniformLocation(sceneProgram, 'uLightDir'),
+        cam: gl.getUniformLocation(sceneProgram, 'uCam'),
+        time: gl.getUniformLocation(sceneProgram, 'uTime'),
+        pulse: gl.getUniformLocation(sceneProgram, 'uPulse'),
+        fogNear: gl.getUniformLocation(sceneProgram, 'uFogNear'),
+        fogFar: gl.getUniformLocation(sceneProgram, 'uFogFar'),
+        fogColor: gl.getUniformLocation(sceneProgram, 'uFogColor')
+      },
+      particles: {
+        proj: gl.getUniformLocation(particleProgram, 'uProj'),
+        view: gl.getUniformLocation(particleProgram, 'uView'),
+        pointScale: gl.getUniformLocation(particleProgram, 'uPointScale')
+      }
+    };
+
+    function mat4Identity() {
+      return new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+      ]);
+    }
+
+    function mat4Multiply(a, b) {
+      const out = new Float32Array(16);
+      for (let c = 0; c < 4; c++) {
+        for (let r = 0; r < 4; r++) {
+          out[c * 4 + r] =
+            a[0 * 4 + r] * b[c * 4 + 0] +
+            a[1 * 4 + r] * b[c * 4 + 1] +
+            a[2 * 4 + r] * b[c * 4 + 2] +
+            a[3 * 4 + r] * b[c * 4 + 3];
+        }
+      }
+      return out;
+    }
+
+    function mat4FromTRS(tx, ty, tz, ry, sx, sy, sz) {
+      const c = Math.cos(ry);
+      const s = Math.sin(ry);
+      return new Float32Array([
+        c * sx, 0, -s * sx, 0,
+        0, sy, 0, 0,
+        s * sz, 0, c * sz, 0,
+        tx, ty, tz, 1
+      ]);
+    }
+
+    function vecDist(a, b) {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const dz = a.z - b.z;
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    function hash(x, z) {
+      const v = Math.sin(x * 127.1 + z * 311.7) * 43758.5453123;
+      return v - Math.floor(v);
+    }
+
+    function noise2(x, z) {
+      const ix = Math.floor(x);
+      const iz = Math.floor(z);
+      const fx = x - ix;
+      const fz = z - iz;
+      const a = hash(ix, iz);
+      const b = hash(ix + 1, iz);
+      const c = hash(ix, iz + 1);
+      const d = hash(ix + 1, iz + 1);
+      const ux = fx * fx * (3 - 2 * fx);
+      const uz = fz * fz * (3 - 2 * fz);
+      return (a * (1 - ux) + b * ux) * (1 - uz) + (c * (1 - ux) + d * ux) * uz;
+    }
+
+    function terrainHeight(x, z) {
+      let h;
+      if (x < -35) {
+        h = 2.8 + Math.sin(z * 0.11) * 1.4 + (noise2(x * 0.09, z * 0.09) - 0.5) * 3.8;
+      } else if (x < 55) {
+        h = 1.1 + Math.sin(x * 0.13) * 0.6 + Math.cos(z * 0.08) * 0.8 + (noise2(x * 0.08, z * 0.08) - 0.5) * 2.1;
+      } else {
+        h = 3.7 + Math.sin(z * 0.2) * 1.8 + (noise2(x * 0.14, z * 0.14) - 0.5) * 5.2;
+      }
+
+      const caveDx = x - 24;
+      const caveDz = z - 18;
+      h -= 7.0 * Math.exp(-(caveDx * caveDx + caveDz * caveDz) / 180.0);
+      return h;
+    }
+
+    function biomeColor(x) {
+      if (x < -35) return [0.38, 0.2, 0.62];
+      if (x < 55) return [0.16, 0.42, 0.26];
+      return [0.19, 0.17, 0.2];
+    }
+
+    function createMesh(vertices, indices, mode = gl.TRIANGLES, dynamic = false) {
+      const vao = {
+        vbo: gl.createBuffer(),
+        ibo: indices ? gl.createBuffer() : null,
+        mode,
+        count: indices ? indices.length : vertices.length / 10,
+        indexed: !!indices,
+        vertexData: vertices
+      };
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, vao.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, vertices, dynamic ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW);
+      if (indices) {
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, vao.ibo);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, dynamic ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW);
+      }
+      return vao;
+    }
+
+    function appendVertex(arr, x, y, z, nx, ny, nz, r, g, b, e) {
+      arr.push(x, y, z, nx, ny, nz, r, g, b, e);
+    }
+
+    function createBox(w, h, d, color, emissive = 0) {
+      const x = w / 2, y = h / 2, z = d / 2;
+      const p = [
+        [-x, -y,  z], [ x, -y,  z], [ x,  y,  z], [-x,  y,  z],
+        [ x, -y, -z], [-x, -y, -z], [-x,  y, -z], [ x,  y, -z],
+        [-x, -y, -z], [-x, -y,  z], [-x,  y,  z], [-x,  y, -z],
+        [ x, -y,  z], [ x, -y, -z], [ x,  y, -z], [ x,  y,  z],
+        [-x,  y,  z], [ x,  y,  z], [ x,  y, -z], [-x,  y, -z],
+        [-x, -y, -z], [ x, -y, -z], [ x, -y,  z], [-x, -y,  z]
+      ];
+      const n = [
+        [0, 0, 1], [0, 0, -1], [-1, 0, 0], [1, 0, 0], [0, 1, 0], [0, -1, 0]
+      ];
+      const v = [];
+      const idx = [];
+      for (let f = 0; f < 6; f++) {
+        const base = f * 4;
+        for (let i = 0; i < 4; i++) {
+          appendVertex(v, ...p[base + i], ...n[f], color[0], color[1], color[2], emissive);
+        }
+        idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      }
+      return createMesh(new Float32Array(v), new Uint16Array(idx));
+    }
+
+    function createCylinder(radius, height, segments, color, emissive = 0, capTop = true, capBottom = true) {
+      const v = [];
+      const idx = [];
+      const half = height / 2;
+      for (let i = 0; i <= segments; i++) {
+        const a = (i / segments) * Math.PI * 2;
+        const c = Math.cos(a);
+        const s = Math.sin(a);
+        appendVertex(v, c * radius, -half, s * radius, c, 0, s, color[0], color[1], color[2], emissive);
+        appendVertex(v, c * radius, half, s * radius, c, 0, s, color[0], color[1], color[2], emissive);
+      }
+      for (let i = 0; i < segments; i++) {
+        const b = i * 2;
+        idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
+      }
+
+      const sideCount = (segments + 1) * 2;
+      if (capTop) {
+        const center = v.length / 10;
+        appendVertex(v, 0, half, 0, 0, 1, 0, color[0], color[1], color[2], emissive);
+        for (let i = 0; i <= segments; i++) {
+          const a = (i / segments) * Math.PI * 2;
+          appendVertex(v, Math.cos(a) * radius, half, Math.sin(a) * radius, 0, 1, 0, color[0], color[1], color[2], emissive);
+        }
+        for (let i = 0; i < segments; i++) idx.push(center, center + i + 1, center + i + 2);
+      }
+
+      if (capBottom) {
+        const center = v.length / 10;
+        appendVertex(v, 0, -half, 0, 0, -1, 0, color[0], color[1], color[2], emissive);
+        for (let i = 0; i <= segments; i++) {
+          const a = (i / segments) * Math.PI * 2;
+          appendVertex(v, Math.cos(a) * radius, -half, Math.sin(a) * radius, 0, -1, 0, color[0], color[1], color[2], emissive);
+        }
+        for (let i = 0; i < segments; i++) idx.push(center, center + i + 2, center + i + 1);
+      }
+      return createMesh(new Float32Array(v), new Uint16Array(idx));
+    }
+
+    function createSphere(radius, lat, lon, color, emissive = 0) {
+      const v = [];
+      const idx = [];
+      for (let y = 0; y <= lat; y++) {
+        const vCoord = y / lat;
+        const theta = vCoord * Math.PI;
+        const st = Math.sin(theta);
+        const ct = Math.cos(theta);
+        for (let x = 0; x <= lon; x++) {
+          const uCoord = x / lon;
+          const phi = uCoord * Math.PI * 2;
+          const sp = Math.sin(phi);
+          const cp = Math.cos(phi);
+          const nx = cp * st;
+          const ny = ct;
+          const nz = sp * st;
+          appendVertex(v, nx * radius, ny * radius, nz * radius, nx, ny, nz, color[0], color[1], color[2], emissive);
+        }
+      }
+      for (let y = 0; y < lat; y++) {
+        for (let x = 0; x < lon; x++) {
+          const a = y * (lon + 1) + x;
+          const b = a + lon + 1;
+          idx.push(a, b, a + 1, b, b + 1, a + 1);
+        }
+      }
+      return createMesh(new Float32Array(v), new Uint16Array(idx));
+    }
+
+    function createTerrainMesh() {
+      const size = 120;
+      const step = 2;
+      const v = [];
+      const idx = [];
+      for (let z = 0; z <= size; z++) {
+        for (let x = 0; x <= size; x++) {
+          const wx = (x - size / 2) * step;
+          const wz = (z - size / 2) * step;
+          const h = terrainHeight(wx, wz);
+          const hL = terrainHeight(wx - 0.5, wz);
+          const hR = terrainHeight(wx + 0.5, wz);
+          const hD = terrainHeight(wx, wz - 0.5);
+          const hU = terrainHeight(wx, wz + 0.5);
+          const nx = hL - hR;
+          const ny = 1.0;
+          const nz = hD - hU;
+          const nl = Math.hypot(nx, ny, nz) || 1;
+          const c = biomeColor(wx);
+          const noiseTint = (noise2(wx * 0.15, wz * 0.15) - 0.5) * 0.08;
+          appendVertex(v, wx, h, wz, nx / nl, ny / nl, nz / nl, c[0] + noiseTint, c[1] + noiseTint, c[2] + noiseTint, 0.02);
+        }
+      }
+      for (let z = 0; z < size; z++) {
+        for (let x = 0; x < size; x++) {
+          const a = z * (size + 1) + x;
+          const b = a + 1;
+          const c = a + size + 1;
+          const d = c + 1;
+          idx.push(a, c, b, b, c, d);
+        }
+      }
+      return createMesh(new Float32Array(v), new Uint16Array(idx));
+    }
+
+    function setupAttributes(mesh) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
+      const stride = 10 * 4;
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 3 * 4);
+      gl.enableVertexAttribArray(2);
+      gl.vertexAttribPointer(2, 3, gl.FLOAT, false, stride, 6 * 4);
+      gl.enableVertexAttribArray(3);
+      gl.vertexAttribPointer(3, 1, gl.FLOAT, false, stride, 9 * 4);
+      if (mesh.indexed) gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ibo);
+    }
+
+    const meshes = {
+      terrain: createTerrainMesh(),
+      pillar: createBox(1.4, 8, 1.4, [0.36, 0.35, 0.4], 0.02),
+      ruinBeam: createBox(6, 1, 1.3, [0.32, 0.31, 0.38], 0.02),
+      plantStem: createCylinder(0.32, 3.4, 10, [0.12, 0.45, 0.22], 0.05),
+      plantBulb: createSphere(0.85, 8, 10, [0.25, 0.95, 0.6], 0.9),
+      caveWall: createCylinder(8.8, 15, 28, [0.16, 0.14, 0.2], 0.02, false, false),
+      caveCore: createSphere(9.4, 16, 18, [0.09, 0.16, 0.24], 0.12),
+      artifact: createSphere(0.4, 10, 12, [0.55, 0.9, 1.0], 1.2),
+      pedestal: createCylinder(0.8, 1.2, 16, [0.34, 0.32, 0.36], 0.03),
+      creature: createSphere(0.55, 6, 8, [0.86, 0.5, 0.22], 0.18),
+      monolith: createBox(2.1, 7.8, 1.5, [0.28, 0.23, 0.4], 0.08),
+      controllerRay: createCylinder(0.01, 2.4, 6, [0.8, 0.95, 1.0], 0.8)
+    };
+
+    const drawables = [];
+
+    function addStatic(mesh, x, y, z, ry, sx, sy, sz) {
+      drawables.push({ mesh, model: mat4FromTRS(x, y, z, ry, sx, sy, sz), dynamic: null });
+    }
+
+    drawables.push({ mesh: meshes.terrain, model: mat4Identity(), dynamic: null });
+
+    const caveCenter = { x: 24, y: -9, z: 18 };
+    addStatic(meshes.caveWall, caveCenter.x, caveCenter.y, caveCenter.z, 0, 1, 1, 1);
+    addStatic(meshes.caveCore, caveCenter.x, caveCenter.y - 4, caveCenter.z, 0, 1, 1, 1);
+
+    const ruinOrigin = { x: -42, z: 36 };
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2;
+      const x = ruinOrigin.x + Math.cos(angle) * 7;
+      const z = ruinOrigin.z + Math.sin(angle) * 7;
+      const y = terrainHeight(x, z) + 4;
+      addStatic(meshes.pillar, x, y, z, angle, 1, 1 + (i % 2) * 0.25, 1);
+    }
+    addStatic(meshes.ruinBeam, ruinOrigin.x, terrainHeight(ruinOrigin.x, ruinOrigin.z) + 7.7, ruinOrigin.z + 7, 0.0, 1, 1, 1);
+    addStatic(meshes.ruinBeam, ruinOrigin.x + 6.1, terrainHeight(ruinOrigin.x + 6.1, ruinOrigin.z) + 7.2, ruinOrigin.z - 3, 1.25, 1, 1, 1);
+
+    const monoliths = [
+      { x: -74, z: -18 },
+      { x: -58, z: 22 },
+      { x: 72, z: -12 }
+    ];
+    monoliths.forEach((m, i) => {
+      addStatic(meshes.monolith, m.x, terrainHeight(m.x, m.z) + 3.9, m.z, i * 0.5, 1, 1, 1);
+    });
+
+    const glowingPlants = [];
+    for (let i = 0; i < 90; i++) {
+      const x = -20 + (noise2(i * 1.7, 8.3) - 0.5) * 90;
+      const z = (noise2(i * 2.9, 12.7) - 0.5) * 100;
+      if (x > 55) continue;
+      const y = terrainHeight(x, z);
+      glowingPlants.push({ x, y, z, phase: i * 0.47 });
+      addStatic(meshes.plantStem, x, y + 1.6, z, i * 0.31, 1, 1, 1);
+    }
+
+    const plantBulbs = glowingPlants.map((p) => ({
+      mesh: meshes.plantBulb,
+      model: mat4FromTRS(p.x, p.y + 3.3, p.z, 0, 1, 1, 1),
+      dynamic: (t) => {
+        const s = 0.82 + Math.sin(t * 2.1 + p.phase) * 0.08;
+        return mat4FromTRS(p.x, p.y + 3.3 + Math.sin(t * 1.5 + p.phase) * 0.06, p.z, 0, s, s, s);
+      }
+    }));
+    drawables.push(...plantBulbs);
+
+    const pedestals = [
+      { x: ruinOrigin.x + 1.5, y: terrainHeight(ruinOrigin.x + 1.5, ruinOrigin.z + 1.5) + 0.6, z: ruinOrigin.z + 1.5, occupied: false },
+      { x: caveCenter.x + 2.8, y: caveCenter.y - 12.2, z: caveCenter.z - 1.4, occupied: false },
+      { x: 77, y: terrainHeight(77, -6) + 0.6, z: -6, occupied: false }
+    ];
+    pedestals.forEach((p) => addStatic(meshes.pedestal, p.x, p.y, p.z, 0, 1, 1, 1));
+
+    const artifacts = [
+      { id: 0, x: -66, y: terrainHeight(-66, -20) + 1.1, z: -20, heldBy: null, placed: false, clue: 'A resonance responds beneath the crystal dunes.' },
+      { id: 1, x: 21, y: caveCenter.y - 11.7, z: 23, heldBy: null, placed: false, clue: 'A pulse echoes inside the subterranean chamber.' },
+      { id: 2, x: 82, y: terrainHeight(82, -16) + 1.2, z: -16, heldBy: null, placed: false, clue: 'Obsidian winds hide an artifact near a basalt ridge.' }
+    ];
+
+    const wildlife = [];
+    for (let i = 0; i < 12; i++) {
+      wildlife.push({
+        cx: -30 + (i % 4) * 28,
+        cz: -40 + Math.floor(i / 4) * 34,
+        radius: 4 + (i % 3) * 2.1,
+        speed: 0.25 + (i % 5) * 0.08,
+        phase: i * 0.7
+      });
+    }
+
+    const dynamicDrawables = [];
+    wildlife.forEach((w) => {
+      dynamicDrawables.push({
+        mesh: meshes.creature,
+        model: mat4Identity(),
+        dynamic: (t) => {
+          const x = w.cx + Math.cos(t * w.speed + w.phase) * w.radius;
+          const z = w.cz + Math.sin(t * w.speed * 1.3 + w.phase) * w.radius;
+          const y = terrainHeight(x, z) + 3 + Math.sin(t * 2.3 + w.phase) * 0.9;
+          return mat4FromTRS(x, y, z, t * 0.8 + w.phase, 1, 0.7, 1.5);
+        }
+      });
+    });
+    drawables.push(...dynamicDrawables);
+
+    const artifactDrawables = artifacts.map((a) => ({
+      mesh: meshes.artifact,
+      model: mat4FromTRS(a.x, a.y, a.z, 0, 1, 1, 1),
+      dynamic: () => mat4FromTRS(a.x, a.y, a.z, 0, 1, 1, 1),
+      ref: a
+    }));
+    drawables.push(...artifactDrawables);
+
+    const weatherParticles = [];
+    for (let i = 0; i < 700; i++) {
+      weatherParticles.push({
+        x: (Math.random() - 0.5) * 80,
+        y: Math.random() * 18 + 2,
+        z: (Math.random() - 0.5) * 80,
+        vx: (Math.random() - 0.5) * 0.02,
+        vy: -0.04 - Math.random() * 0.04,
+        vz: (Math.random() - 0.5) * 0.02,
+        type: Math.random() < 0.5 ? 0 : 1
+      });
+    }
+
+    const particleVerts = new Float32Array(weatherParticles.length * 10);
+    const particleMesh = createMesh(particleVerts, null, gl.POINTS, true);
+
+    function updateParticles(dt) {
+      const biomeStorm = state.playerPos.x > 55 ? state.stormStrength : 0.1;
+      for (let i = 0; i < weatherParticles.length; i++) {
+        const p = weatherParticles[i];
+        const follow = p.type === 0 ? 28 : 45;
+        p.x += p.vx * dt * 60 + (Math.random() - 0.5) * 0.004;
+        p.z += p.vz * dt * 60 + (Math.random() - 0.5) * 0.004;
+        p.y += p.vy * dt * 60 * (p.type === 0 ? 1.7 : 0.8);
+        if (p.x < -follow || p.x > follow || p.z < -follow || p.z > follow || p.y < -3) {
+          p.x = (Math.random() - 0.5) * follow * 2;
+          p.z = (Math.random() - 0.5) * follow * 2;
+          p.y = Math.random() * 25 + 8;
+        }
+
+        const wx = state.playerPos.x + p.x;
+        const wz = state.playerPos.z + p.z;
+        const wy = state.playerPos.y + p.y;
+
+        const base = i * 10;
+        particleVerts[base + 0] = wx;
+        particleVerts[base + 1] = wy;
+        particleVerts[base + 2] = wz;
+        particleVerts[base + 3] = 0;
+        particleVerts[base + 4] = 1;
+        particleVerts[base + 5] = 0;
+
+        if (p.type === 0) {
+          particleVerts[base + 6] = 0.8;
+          particleVerts[base + 7] = 0.95;
+          particleVerts[base + 8] = 1.0;
+          particleVerts[base + 9] = 0.12 + biomeStorm * 0.5;
+        } else {
+          particleVerts[base + 6] = 0.6;
+          particleVerts[base + 7] = 0.95;
+          particleVerts[base + 8] = 0.72;
+          particleVerts[base + 9] = 0.2;
+        }
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, particleMesh.vbo);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, particleVerts);
+    }
+
+    function drawMesh(mesh) {
+      setupAttributes(mesh);
+      if (mesh.indexed) {
+        gl.drawElements(mesh.mode, mesh.count, gl.UNSIGNED_SHORT, 0);
+      } else {
+        gl.drawArrays(mesh.mode, 0, mesh.count);
+      }
+    }
+
+    function getNearestUnplacedArtifact(pos, maxDist) {
+      let best = null;
+      let bestD = maxDist;
+      for (const a of artifacts) {
+        if (a.placed) continue;
+        const d = vecDist(pos, a);
+        if (d < bestD) {
+          bestD = d;
+          best = a;
+        }
+      }
+      return best;
+    }
+
+    function getNearestOpenPedestal(pos, maxDist) {
+      let best = null;
+      let bestD = maxDist;
+      for (const p of pedestals) {
+        if (p.occupied) continue;
+        const d = vecDist(pos, p);
+        if (d < bestD) {
+          bestD = d;
+          best = p;
+        }
+      }
+      return best;
+    }
+
+    function triggerHaptics(source, strength, duration) {
+      const actuator = source && source.gamepad && source.gamepad.hapticActuators && source.gamepad.hapticActuators[0];
+      if (actuator && actuator.pulse) actuator.pulse(strength, duration).catch(() => {});
+    }
+
+    function handleScan(controllerPos) {
+      if (state.scanCooldown > 0) return;
+      let nearest = null;
+      let nearestD = 999;
+      for (const a of artifacts) {
+        if (a.placed) continue;
+        const d = vecDist(controllerPos, a);
+        if (d < nearestD) {
+          nearestD = d;
+          nearest = a;
+        }
+      }
+      if (nearest) {
+        statusLine.textContent = `Scan: ${nearest.clue}`;
+      } else {
+        statusLine.textContent = 'Scan: All relic signatures stabilized. Follow the new aurora. '; 
+      }
+      state.scanCooldown = 1.2;
+      state.worldPulse = 0.8;
+    }
+
+    function updateControllerInteractions(frame) {
+      const sources = state.xrSession.inputSources;
+      for (const source of sources) {
+        if (!source.gripSpace || !source.gamepad) continue;
+        const hand = source.handedness === 'left' ? 'left' : 'right';
+        const data = state.controllers[hand];
+        data.source = source;
+        const pose = frame.getPose(source.gripSpace, state.xrRefSpace);
+        if (!pose) continue;
+        data.pose = pose;
+
+        const gp = source.gamepad;
+        const triggerDown = gp.buttons[0] && gp.buttons[0].pressed;
+        const squeezeDown = gp.buttons[1] && gp.buttons[1].pressed;
+
+        const p = pose.transform.position;
+        const controllerPos = { x: p.x, y: p.y, z: p.z };
+
+        if (triggerDown && !data.triggerWasDown) {
+          const nearest = getNearestUnplacedArtifact(controllerPos, 1.2);
+          if (nearest) {
+            nearest.heldBy = hand;
+            triggerHaptics(source, 0.7, 50);
+            statusLine.textContent = 'Status: Artifact resonance captured. Transport it to a dormant pedestal.';
+          }
+        }
+
+        if (!triggerDown && data.triggerWasDown) {
+          const held = artifacts.find((a) => a.heldBy === hand);
+          if (held) {
+            const pedestal = getNearestOpenPedestal(held, 1.4);
+            if (pedestal) {
+              held.x = pedestal.x;
+              held.y = pedestal.y + 1.0;
+              held.z = pedestal.z;
+              held.heldBy = null;
+              held.placed = true;
+              pedestal.occupied = true;
+              state.artifactsPlaced += 1;
+              state.worldPulse = 1.4;
+              state.stormStrength = Math.max(0.05, state.stormStrength - 0.1);
+              triggerHaptics(source, 1.0, 120);
+              artifactLine.textContent = `Artifacts restored: ${state.artifactsPlaced} / 3`;
+              statusLine.textContent = state.artifactsPlaced < 3
+                ? 'Status: Ruins are reactivating. More signatures remain.'
+                : 'Status: Planetary lattice restored. Aurora pathways are now stable.';
+            } else {
+              held.heldBy = null;
+              triggerHaptics(source, 0.3, 30);
+            }
+          }
+        }
+
+        if (squeezeDown && !data.squeezeWasDown) {
+          handleScan(controllerPos);
+          triggerHaptics(source, 0.5, 70);
+        }
+
+        data.triggerWasDown = triggerDown;
+        data.squeezeWasDown = squeezeDown;
+      }
+
+      for (const a of artifacts) {
+        if (!a.heldBy) continue;
+        const ctl = state.controllers[a.heldBy];
+        if (!ctl.pose) continue;
+        const pos = ctl.pose.transform.position;
+        a.x = pos.x;
+        a.y = pos.y - 0.05;
+        a.z = pos.z - 0.16;
+      }
+    }
+
+    function getYawFromQuaternion(q) {
+      const siny = 2 * (q.w * q.y + q.x * q.z);
+      const cosy = 1 - 2 * (q.y * q.y + q.z * q.z);
+      return Math.atan2(siny, cosy);
+    }
+
+    function updateLocomotion(frame, dt, viewerPose) {
+      let leftGp = null;
+      for (const source of state.xrSession.inputSources) {
+        if (source.handedness === 'left' && source.gamepad) {
+          leftGp = source.gamepad;
+          break;
+        }
+      }
+      if (!leftGp || !viewerPose) return;
+
+      const axX = leftGp.axes[2] !== undefined ? leftGp.axes[2] : leftGp.axes[0] || 0;
+      const axY = leftGp.axes[3] !== undefined ? leftGp.axes[3] : leftGp.axes[1] || 0;
+      const dead = 0.12;
+      const mx = Math.abs(axX) > dead ? axX : 0;
+      const mz = Math.abs(axY) > dead ? axY : 0;
+
+      const head = viewerPose.views[0].transform.orientation;
+      const yaw = getYawFromQuaternion(head);
+      const speed = 5.5;
+      const sin = Math.sin(yaw);
+      const cos = Math.cos(yaw);
+      const dx = (mx * cos - mz * sin) * speed * dt;
+      const dz = (mx * sin + mz * cos) * speed * dt;
+
+      state.playerPos.x += dx;
+      state.playerPos.z += dz;
+
+      const ground = terrainHeight(state.playerPos.x, state.playerPos.z) + 1.65;
+      state.smoothGroundY += (ground - state.smoothGroundY) * Math.min(1, dt * 9);
+      state.playerPos.y = state.smoothGroundY;
+
+      if (state.playerPos.x > 16 && state.playerPos.x < 32 && state.playerPos.z > 9 && state.playerPos.z < 28) {
+        state.playerPos.y -= 0.9;
+      }
+    }
+
+    function renderFrame(timeMs, frame) {
+      const session = frame.session;
+      const dt = Math.min(0.05, (timeMs * 0.001) - state.time || 0.016);
+      state.time = timeMs * 0.001;
+      state.worldPulse = Math.max(0, state.worldPulse - dt * 0.9);
+      state.scanCooldown = Math.max(0, state.scanCooldown - dt);
+
+      session.requestAnimationFrame(renderFrame);
+
+      const viewerPoseForMove = frame.getViewerPose(state.xrRefSpace);
+      updateLocomotion(frame, dt, viewerPoseForMove);
+
+      state.xrRefSpace = state.xrBaseSpace.getOffsetReferenceSpace(
+        new XRRigidTransform({ x: -state.playerPos.x, y: -state.playerPos.y, z: -state.playerPos.z })
+      );
+
+      const pose = frame.getViewerPose(state.xrRefSpace);
+      if (!pose) return;
+
+      updateControllerInteractions(frame);
+      updateParticles(dt);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer);
+      gl.enable(gl.DEPTH_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.enable(gl.SCISSOR_TEST);
+
+      const fogColor = state.artifactsPlaced === 3 ? [0.08, 0.12, 0.2] : [0.03, 0.04, 0.08];
+
+      for (const view of pose.views) {
+        const viewport = session.renderState.baseLayer.getViewport(view);
+        gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+        gl.scissor(viewport.x, viewport.y, viewport.width, viewport.height);
+        gl.clearColor(fogColor[0], fogColor[1], fogColor[2], 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        gl.useProgram(sceneProgram);
+        gl.uniformMatrix4fv(U.scene.proj, false, view.projectionMatrix);
+        gl.uniformMatrix4fv(U.scene.view, false, view.transform.inverse.matrix);
+        gl.uniform3f(U.scene.lightDir, 0.5, 0.9, 0.4);
+        gl.uniform3f(U.scene.cam, view.transform.position.x, view.transform.position.y, view.transform.position.z);
+        gl.uniform1f(U.scene.time, state.time);
+        gl.uniform1f(U.scene.pulse, state.worldPulse);
+        gl.uniform1f(U.scene.fogNear, 28);
+        gl.uniform1f(U.scene.fogFar, 190);
+        gl.uniform3f(U.scene.fogColor, fogColor[0], fogColor[1], fogColor[2]);
+
+        for (const d of drawables) {
+          const model = d.dynamic ? d.dynamic(state.time) : d.model;
+          gl.uniformMatrix4fv(U.scene.model, false, model);
+          drawMesh(d.mesh);
+        }
+
+        for (const c of ['left', 'right']) {
+          const ctl = state.controllers[c];
+          if (!ctl.pose) continue;
+          const p = ctl.pose.transform.position;
+          const o = ctl.pose.transform.orientation;
+          const yaw = getYawFromQuaternion(o);
+          const rayModel = mat4FromTRS(p.x, p.y, p.z, yaw, 1, 1, 1);
+          gl.uniformMatrix4fv(U.scene.model, false, rayModel);
+          drawMesh(meshes.controllerRay);
+        }
+
+        gl.useProgram(particleProgram);
+        gl.uniformMatrix4fv(U.particles.proj, false, view.projectionMatrix);
+        gl.uniformMatrix4fv(U.particles.view, false, view.transform.inverse.matrix);
+        gl.uniform1f(U.particles.pointScale, state.playerPos.x > 55 ? 520 : 380);
+        drawMesh(particleMesh);
+      }
+      gl.disable(gl.SCISSOR_TEST);
+    }
+
+    async function startVr() {
+      if (!navigator.xr) {
+        statusLine.textContent = 'Status: WebXR is unavailable in this browser.';
+        return;
+      }
+      try {
+        const supported = await navigator.xr.isSessionSupported('immersive-vr');
+        if (!supported) {
+          statusLine.textContent = 'Status: immersive-vr session is not supported on this device.';
+          return;
+        }
+
+        const session = await navigator.xr.requestSession('immersive-vr', {
+          requiredFeatures: ['local-floor']
+        });
+        state.xrSession = session;
+
+        await gl.makeXRCompatible();
+        session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+        state.xrBaseSpace = await session.requestReferenceSpace('local-floor');
+        state.xrRefSpace = state.xrBaseSpace.getOffsetReferenceSpace(
+          new XRRigidTransform({ x: -state.playerPos.x, y: -state.playerPos.y, z: -state.playerPos.z })
+        );
+
+        statusLine.textContent = 'Status: Expedition live. Trace anomalies and restore the relic lattice.';
+        enterVrBtn.classList.add('hidden');
+
+        session.addEventListener('end', () => {
+          state.xrSession = null;
+          enterVrBtn.classList.remove('hidden');
+          statusLine.textContent = 'Status: Session ended. Re-enter VR to continue exploration.';
+        });
+
+        session.requestAnimationFrame(renderFrame);
+      } catch (err) {
+        statusLine.textContent = `Status: Failed to start VR (${err.message}).`;
+      }
+    }
+
+    enterVrBtn.addEventListener('click', startVr);
+
+    // Non-VR idle render to keep atmosphere visible before entering session.
+    function idleRender(t) {
+      if (state.xrSession) return;
+      resizeCanvas();
+      gl.clearColor(0.02, 0.03, 0.08, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      requestAnimationFrame(idleRender);
+    }
+    requestAnimationFrame(idleRender);
+  </script>
+</body>
+</html>

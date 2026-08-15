@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Alien Planet – WebXR Experience</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#000;}
+  #enter-vr{
+    position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    padding:1em 2em;font-size:1.3em;cursor:pointer;border:none;border-radius:.5em;
+  }
+</style>
+</head>
+<body>
+<button id="enter-vr">Enter VR</button>
+<canvas id="glcanvas"></canvas>
+
+<script>
+/* ---------- GLOBAL CONSTANTS ---------- */
+const TERRAIN_RES   = 128,     // grid resolution
+      TERRAIN_SCALE = 2.0,     // metres per grid unit
+      FLORA_COUNT   = 150,
+      WILDLIFE_COUNT= 40,
+      ARTIFACT_COUNT= 10,
+      PLAYER_HEIGHT = 1.6;
+
+/* ---------- WEBGL INITIALISATION ---------- */
+const canvas = document.getElementById('glcanvas');
+const gl     = canvas.getContext('webgl2', { xrCompatible:true });
+
+/* ---------- PERLIN-LIKE NOISE (tiny impl) ---------- */
+function fade(t){return t*t*t*(t*(t*6-15)+10);}
+function lerp(a,b,t){return a+(b-a)*t;}
+function grad(h,x,y){return ((h&1)?x:-x)+((h&2)?y:-y);}
+const P=new Uint8Array(512);
+for(let i=0;i<256;i++)P[i]=i;
+for(let i=255;i>0;i--){const r=Math.random()*(i+1)|0;[P[i],P[r]]=[P[r],P[i]];}
+for(let i=0;i<256;i++)P[i+256]=P[i];
+function noise(x,y){
+  const X=Math.floor(x)&255,Y=Math.floor(y)&255;
+  x-=Math.floor(x);y-=Math.floor(y);
+  const u=fade(x),v=fade(y);
+  const A=P[X]+Y, B=P[X+1]+Y;
+  return lerp(
+    lerp(grad(P[A],x,y   ),grad(P[B],x-1,y   ),u),
+    lerp(grad(P[A+1],x,y-1),grad(P[B+1],x-1,y-1),u),v);
+}
+
+/* ---------- MINIMAL mat4 (only what we need) ---------- */
+const M={
+  create:()=>new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+  copy:(o,a)=>(o.set(a),o),
+  scale:(o,a,v)=>{const[x,y,z]=v;
+    o.set([a[0]*x,a[1]*x,a[2]*x,a[3]*x,
+           a[4]*y,a[5]*y,a[6]*y,a[7]*y,
+           a[8]*z,a[9]*z,a[10]*z,a[11]*z,
+           a[12],a[13],a[14],a[15]]);return o;},
+  translate:(o,a,v)=>{const[x,y,z]=v;
+    o[12]=a[0]*x+a[4]*y+a[8]*z+a[12];
+    o[13]=a[1]*x+a[5]*y+a[9]*z+a[13];
+    o[14]=a[2]*x+a[6]*y+a[10]*z+a[14];
+    o[15]=a[3]*x+a[7]*y+a[11]*z+a[15];return o;},
+  rotY:(o,a,r)=>{const s=Math.sin(r),c=Math.cos(r);
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3],
+          a20=a[8],a21=a[9],a22=a[10],a23=a[11];
+    o[0]=a00*c-a20*s; o[1]=a01*c-a21*s; o[2]=a02*c-a22*s; o[3]=a03*c-a23*s;
+    o[8]=a00*s+a20*c; o[9]=a01*s+a21*c; o[10]=a02*s+a22*c; o[11]=a03*s+a23*c;
+    o.set(a.subarray(4,8),4); o.set(a.subarray(12,16),12); return o;}
+};
+
+/* ---------- SIMPLE GEOMETRY BUILDERS ---------- */
+function mesh(buffers,count){return{vao:buffers.vao,count};}
+function makeMesh(vertices,normals,indices){
+  const vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+  const v=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,v);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(vertices),gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+  const n=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,n);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(normals),gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,3,gl.FLOAT,false,0,0);
+  const e=gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,e);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint32Array(indices),gl.STATIC_DRAW);
+  return mesh({vao},indices.length);
+}
+/* — Terrain plane with height from noise — */
+function buildTerrain(res){
+  const v=[],n=[],idx=[];
+  for(let z=0;z<=res;z++)
+    for(let x=0;x<=res;x++){
+      const px=(x/res-.5)*res, pz=(z/res-.5)*res,
+            h=noise(px*0.05,pz*0.05)*12+Math.sin(px*0.1)*2+Math.cos(pz*0.13)*2;
+      v.push(px*TERRAIN_SCALE,h,pz*TERRAIN_SCALE); n.push(0,1,0);
+    }
+  for(let z=0;z<res;z++)for(let x=0;x<res;x++){
+    const i=z*(res+1)+x;
+    idx.push(i,i+1,i+res+1, i+1,i+res+2,i+res+1);
+  }
+  return buildTerrain.mesh=makeMesh(v,n,idx);
+}
+/* — Quick sphere (icosphere-ish) — */
+function buildSphere(detail=3){
+  const lat=detail*4, lon=detail*4, v=[],n=[],idx=[];
+  for(let j=0;j<=lat;j++){
+    const t=j*Math.PI/lat,sinT=Math.sin(t),cosT=Math.cos(t);
+    for(let i=0;i<=lon;i++){
+      const p=i*2*Math.PI/lon,sinP=Math.sin(p),cosP=Math.cos(p);
+      const x=cosP*sinT,y=cosT,z=sinP*sinT;
+      v.push(x,y,z); n.push(x,y,z);
+    }
+  }
+  for(let j=0;j<lat;j++)for(let i=0;i<lon;i++){
+    const a=j*(lon+1)+i,b=a+lon+1;
+    idx.push(a,b,a+1, b,b+1,a+1);
+  }
+  return buildSphere.mesh=makeMesh(v,n,idx);
+}
+
+/* ---------- SHADERS ---------- */
+const VERT=`#version 300 es
+layout(location=0)in vec3 p;layout(location=1)in vec3 n;
+uniform mat4 uP,uV,uM;out vec3 vN;out vec3 vP;
+void main(){vN=mat3(uM)*n;vP=(uM*vec4(p,1)).xyz;
+gl_Position=uP*uV*vec4(vP,1);}`;
+const FRAG=`#version 300 es
+precision highp float;in vec3 vN;in vec3 vP;
+uniform vec3 uL,uCol;uniform float uT;out vec4 C;
+void main(){float d=max(dot(normalize(vN),normalize(-uL)),.0);
+float glow=abs(sin(uT+vP.y*.1))*.35;
+C=vec4(uCol*(.25+.75*d)+glow,1);}`;
+function compile(src,t){const s=gl.createShader(t);gl.shaderSource(s,src);gl.compileShader(s);
+if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(s);return s;}
+const prog=gl.createProgram();
+gl.attachShader(prog,compile(VERT,gl.VERTEX_SHADER));
+gl.attachShader(prog,compile(FRAG,gl.FRAGMENT_SHADER));
+gl.linkProgram(prog); if(!gl.getProgramParameter(prog,gl.LINK_STATUS))throw gl.getProgramInfoLog(prog);
+gl.useProgram(prog);
+const loc={P:gl.getUniformLocation(prog,'uP'),
+           V:gl.getUniformLocation(prog,'uV'),
+           M:gl.getUniformLocation(prog,'uM'),
+           L:gl.getUniformLocation(prog,'uL'),
+           C:gl.getUniformLocation(prog,'uCol'),
+           T:gl.getUniformLocation(prog,'uT')};
+
+/* ---------- SCENE OBJECTS ---------- */
+const terrain = buildTerrain(TERRAIN_RES),
+      sphere   = buildSphere(2);
+function hAt(x,z){
+  const n=noise(x*0.05/TERRAIN_SCALE,z*0.05/TERRAIN_SCALE);
+  return n*12+Math.sin(x*0.1/TERRAIN_SCALE)*2+Math.cos(z*0.13/TERRAIN_SCALE)*2;
+}
+function randPos(){return [(Math.random()-.5)*TERRAIN_RES*TERRAIN_SCALE,0,
+                            (Math.random()-.5)*TERRAIN_RES*TERRAIN_SCALE];}
+const flora    = Array.from({length:FLORA_COUNT},()=>({pos:randPos(),s:Math.random()*3+1}));
+const wildlife = Array.from({length:WILDLIFE_COUNT},()=>({pos:randPos(),d:Math.random()*6.28,
+                      s:Math.random()+.5,off:Math.random()*10}));
+const artifacts= Array.from({length:ARTIFACT_COUNT},()=>({pos:randPos(),s:2+Math.random()*2,a:0}));
+[...flora,...wildlife,...artifacts].forEach(o=>{o.pos[1]=hAt(o.pos[0],o.pos[2])+(o.s>3?3:1);});
+
+/* ---------- RENDER HELPERS ---------- */
+function draw(mesh,model,col,time){
+  gl.uniformMatrix4fv(loc.M,false,model);
+  gl.uniform3fv(loc.C,col);
+  gl.uniform1f(loc.T,time);
+  gl.bindVertexArray(mesh.vao);
+  gl.drawElements(gl.TRIANGLES,mesh.count,gl.UNSIGNED_INT,0);
+}
+
+/* ---------- XR SETUP ---------- */
+let xrSession=null,xrRef=null,xrLayer=null,
+    vel=[0,0,0],start=0;
+function frame(t,frame){
+  const pose=frame.getViewerPose(xrRef); if(!pose)return;
+  const dt=(t-start)/1000;start=t;
+  // basic thumb-stick locomotion
+  for(const src of frame.session.inputSources)
+    if(src.gamepad){const ax=src.gamepad.axes;
+      vel[0]+= (ax[2]||ax[0])*0.05; vel[2]+= (ax[3]||ax[1])*0.05;}
+  vel[0]*=.8; vel[2]*=.8;
+  xrRef=xrRef.getOffsetReferenceSpace(new XRRigidTransform({x:-vel[0],y:0,z:-vel[2]}));
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER,xrLayer.framebuffer);
+  gl.clearColor(.015,.015,.03,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST); gl.uniform3fv(loc.L,[1,4,2]);
+
+  for(const v of pose.views){
+    const vp=xrLayer.getViewport(v);
+    gl.viewport(vp.x,vp.y,vp.width,vp.height);
+    gl.uniformMatrix4fv(loc.P,false,v.projectionMatrix);
+    gl.uniformMatrix4fv(loc.V,false,v.transform.inverse.matrix);
+
+    draw(terrain,M.create(),[.2,.6,.3],dt);
+
+    flora.forEach(f=>{
+      const m=M.copy(M.create(),M.create());
+      M.scale(m,m,[f.s,f.s*4,f.s]); M.translate(m,m,f.pos);
+      draw(sphere,m,[.1,.9,.2],dt);
+    });
+    wildlife.forEach(w=>{
+      w.a=(t*.0002)+w.off;
+      w.pos[0]+=Math.cos(w.a)*.01; w.pos[2]+=Math.sin(w.a)*.01;
+      w.pos[1]=hAt(w.pos[0],w.pos[2])+1;
+      const m=M.scale(M.create(),M.create(),[w.s,w.s,w.s]);
+      M.translate(m,m,w.pos);
+      draw(sphere,m,[.8,.2,.2],dt);
+    });
+    artifacts.forEach(a=>{
+      a.a+=.01;
+      const m=M.scale(M.create(),M.create(),[a.s,a.s,a.s]);
+      M.translate(m,m,a.pos); M.rotY(m,m,a.a);
+      draw(sphere,m,[.2,.8,.9],dt);
+    });
+  }
+  frame.session.requestAnimationFrame(frame);
+}
+
+/* ---------- START/RESIZE ---------- */
+function resize(){canvas.width=innerWidth;canvas.height=innerHeight;}
+addEventListener('resize',resize); resize();
+
+document.getElementById('enter-vr').onclick=async()=>{
+  if(!navigator.xr){alert('WebXR not supported');return;}
+  xrSession=await navigator.xr.requestSession('immersive-vr',{requiredFeatures:['local-floor']});
+  await gl.makeXRCompatible();
+  xrLayer=new XRWebGLLayer(xrSession,gl);
+  xrSession.updateRenderState({baseLayer:xrLayer});
+  xrRef=await xrSession.requestReferenceSpace('local-floor');
+  xrSession.requestAnimationFrame((t,f)=>{start=t;frame(t,f);});
+  document.getElementById('enter-vr').style.display='none';
+};
+</script>
+</body>
+</html>
