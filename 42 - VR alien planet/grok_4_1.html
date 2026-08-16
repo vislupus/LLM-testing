@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Alien Planet VR Explorer - Pure WebGL2 + WebXR</title>
+  <style>
+    * { margin: 0; padding: 0; overflow: hidden; }
+    body { background: black; font-family: monospace; color: white; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #ui {
+      position: fixed; top: 10px; left: 10px; z-index: 100;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    button {
+      padding: 15px 25px; background: rgba(0,100,200,0.8); color: white; border: none;
+      font-size: 18px; cursor: pointer; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+    }
+    button:hover { background: rgba(0,150,255,0.9); }
+    button:disabled { background: rgba(50,50,50,0.5); cursor: not-allowed; }
+    #info {
+      position: fixed; bottom: 10px; left: 10px; background: rgba(0,0,0,0.8); padding: 15px;
+      border-radius: 8px; font-size: 14px; max-width: 400px;
+    }
+    #hud { position: fixed; top: 10px; right: 10px; font-size: 24px; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="ui">
+    <button id="enterVR">Enter VR (Immersive)</button>
+    <button id="exitVR" disabled>Exit VR</button>
+  </div>
+  <div id="info">
+    Explore the mysterious alien planet!<br>
+    <strong>Desktop:</strong> WASD move, Mouse look, Space/Shift fly.<br>
+    <strong>VR:</strong> Thumbstick to teleport, Trigger to grab glowing artifacts.<br>
+    Collect all 20 artifacts to discover secrets!
+  </div>
+  <div id="hud">Artifacts: <span id="count">0</span>/20</div>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const enterBtn = document.getElementById('enterVR');
+    const exitBtn = document.getElementById('exitVR');
+    const countSpan = document.getElementById('count');
+
+    // Math utils
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function fract(v) { return v - Math.floor(v); }
+    function smoothstep(e0, e1, x) {
+      let t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t);
+    }
+    function rand(n) { return fract(Math.sin(n) * 43758.5453); }
+    function noise2(x, y) { return rand(x + y * 57); }
+    function fbm2(x, y, oct=6) {
+      let v = 0, a = 1, f = 1;
+      for (let i = 0; i < oct; i++) { v += a * (noise2(x*f, y*f)*2-1); a*=0.5; f*=2; }
+      return v*0.5 + 0.5;
+    }
+    function fbm3(x, y, z, oct=4) {
+      let v = 0, a = 1, f = 1;
+      for (let i = 0; i < oct; i++) { v += a * (noise2(x*f + z*0.1, y*f + z*0.05)*2-1); a*=0.5; f*=2; }
+      return v*0.5 + 0.5;
+    }
+
+    // Voxel world - larger for exploration
+    const CHUNK_SIZE = 32;
+    const WORLD_SIZE = 8; // chunks radius
+    const TOTAL_CHUNKS = (2*WORLD_SIZE+1)**2;
+    const voxels = new Map(); // chunkKey -> Uint8Array
+    const meshes = new Map(); // chunkKey -> {vb,ib,count}
+    const palette = Float32Array.from([
+      0,0,0,1,     // 0 air
+      0.3,0.2,0.5,1, // 1 stone (purple-gray)
+      0.6,0.2,0.7,1, // 2 dirt (magenta)
+      0.1,0.8,0.3,1, // 3 grass (neon green)
+      0.2,0.3,0.9,1, // 4 water (blue-violet)
+      0.4,0.9,1.0,1, // 5 crystal (cyan)
+      0.7,0.3,0.8,1, // 6 stem (purple wood)
+      0.2,0.2,0.3,1, // 7 rock (dark)
+      0.8,0.7,0.9,1, // 8 ruin stone
+      0.9,0.1,0.4,1, // 9 mushroom cap (red)
+      0.5,0.9,1.0,2.5, // 10 glow (blue emissive)
+      1.0,0.4,0.2,3.0, // 11 lava/orange glow
+      0.9,0.9,1.0,1, // 12 ice/crystal
+      0.4,0.8,0.2,1  // 13 toxic moss
+    ]);
+    palette.BYTES_PER_ELEMENT = 16;
+
+    function chunkKey(cx, cz) { return `${cx},${cz}`; }
+    function worldToChunk(wx, wz) { return [Math.floor(wx / CHUNK_SIZE), Math.floor(wz / CHUNK_SIZE)]; }
+    function getVoxel(wx, wy, wz) {
+      const [cx, cz] = worldToChunk(wx, wz);
+      const key = chunkKey(cx, cz);
+      const chunk = voxels.get(key);
+      if (!chunk) return 0;
+      const lx = Math.floor(wx) % CHUNK_SIZE; if (lx < 0) lx += CHUNK_SIZE;
+      const lz = Math.floor(wz) % CHUNK_SIZE; if (lz < 0) lz += CHUNK_SIZE;
+      const ly = Math.floor(wy);
+      if (ly < 0 || ly >= 64) return 0;
+      return chunk[(lz * 64 + ly) * CHUNK_SIZE + lx];
+    }
+    function setVoxel(wx, wy, wz, id) {
+      const [cx, cz] = worldToChunk(wx, wz);
+      const key = chunkKey(cx, cz);
+      let chunk = voxels.get(key);
+      if (!chunk) {
+        chunk = new Uint8Array(CHUNK_SIZE * 64 * CHUNK_SIZE);
+        voxels.set(key, chunk);
+      }
+      const lx = Math.floor(wx) % CHUNK_SIZE; if (lx < 0) lx += CHUNK_SIZE;
+      const lz = Math.floor(wz) % CHUNK_SIZE; if (lz < 0) lz += CHUNK_SIZE;
+      const ly = Math.floor(wy);
+      if (ly >= 0 && ly < 64) chunk[(lz * 64 + ly) * CHUNK_SIZE + lx] = id;
+    }
+
+    function generateChunk(cx, cz) {
+      const key = chunkKey(cx, cz);
+      if (voxels.has(key)) return;
+      const chunk = new Uint8Array(CHUNK_SIZE * 64 * CHUNK_SIZE);
+      voxels.set(key, chunk);
+      const wx0 = cx * CHUNK_SIZE, wz0 = cz * CHUNK_SIZE;
+      for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+        for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+          const wx = wx0 + lx, wz = wz0 + lz;
+          const nx = wx * 0.01, nz = wz * 0.01;
+          let h = 20 + fbm2(nx, nz, 7) * 25;
+          // Strange biomes
+          const biome = fbm2(nx*0.2, nz*0.2);
+          if (biome < 0.3) h += fbm2(nx*0.05, nz*0.05, 3) * 15; // spires
+          else if (biome > 0.7) h -= fbm2(nx*0.1, nz*0.1, 4) * 10; // canyons/caves
+          h = Math.floor(h);
+          for (let ly = 0; ly <= h; ly++) {
+            let id = 1; // stone
+            if (ly === h) {
+              if (biome < 0.25) id = 5; // crystal tops
+              else if (biome > 0.75) id = 13; // toxic
+              else id = 3;
+            } else if (ly > h - 4) id = 2; // dirt
+            const idx = (lz * 64 + ly) * CHUNK_SIZE + lx;
+            chunk[idx] = id;
+            // Caves
+            const cave = fbm3(nx*4, nz*4, ly*0.5, 3);
+            if (chunk[idx] && cave > 0.65) chunk[idx] = 0;
+          }
+          // Water level
+          for (let ly = 12; ly < 15; ly++) {
+            const idx = (lz * 64 + ly) * CHUNK_SIZE + lx;
+            if (chunk[idx] === 0) chunk[idx] = 4;
+          }
+        }
+      }
+      // Alien features post-process
+      for (let i = 0; i < 20; i++) { // mushrooms
+        const lx = Math.random() * CHUNK_SIZE, lz = Math.random() * CHUNK_SIZE;
+        const wx = wx0 + lx, wz = wz0 + lz;
+        const h = getVoxel(wx, 0, wz) || 0;
+        const stemH = 8 + Math.random()*4;
+        for (let sy = 0; sy < stemH; sy++) setVoxel(wx, h + sy, wz, 6);
+        // Cap
+        const capR = 4;
+        for (let ry = 0; ry < 3; ry++) {
+          const cr = capR - ry * 0.7;
+          for (let dx = -cr; dx <= cr; dx++) for (let dz = -cr; dz <= cr; dz++) {
+            if (Math.hypot(dx, dz) < cr && Math.random() < 0.8) {
+              setVoxel(wx + dx, h + stemH + ry, wz + dz, 9);
+            }
+          }
+        }
+        setVoxel(wx, h + stemH + 3, wz, 10); // glow top
+      }
+      // Ruins
+      if (Math.random() < 0.4) {
+        const lx = CHUNK_SIZE * 0.2 + Math.random()*0.6*CHUNK_SIZE;
+        const lz = CHUNK_SIZE * 0.2 + Math.random()*0.6*CHUNK_SIZE;
+        const wx = wx0 + lx, wz = wz0 + lz;
+        const h = getVoxel(wx,0,wz);
+        // Column
+        for (let y = 0; y < 12; y++) setVoxel(wx, h+y, wz, 8);
+        // Arch
+        setVoxel(wx-2, h+6, wz, 8); setVoxel(wx+2, h+6, wz, 8);
+        for (let x = wx-1; x <= wx+1; x++) {
+          setVoxel(x, h+8, wz-1, 8); setVoxel(x, h+8, wz+1, 8);
+          setVoxel(x, h+10, wz, 8);
+        }
+      }
+      meshChunk(key);
+    }
+
+    function meshChunk(key) {
+      const [cx, cz] = key.split(',').map(Number);
+      const chunk = voxels.get(key);
+      if (!chunk) return;
+      let verts = [], idxs = [];
+      const cs = CHUNK_SIZE, cy = 64;
+      let vidx = 0;
+      for (let lx = 0; lx < cs; lx++) for (let ly = 0; ly < cy; ly++) for (let lz = 0; lz < cs; lz++) {
+        const id = chunk[(lz * cy + ly) * cs + lx];
+        if (!id) continue;
+        const col = palette.slice(id*4, id*4+4);
+        const x = cx*cs + lx, y = ly, z = cz*cs + lz;
+        const faces = [
+          {dir: [1,0,0], vs: [[1,0,0],[1,1,0],[1,1,1],[1,0,1]]}, // +x
+          {dir: [-1,0,0], vs: [[0,0,0],[0,0,1],[0,1,1],[0,1,0]]}, // -x
+          {dir: [0,1,0], vs: [[0,1,0],[0,1,1],[1,1,1],[1,1,0]]}, // +y
+          {dir: [0,-1,0], vs: [[0,0,0],[1,0,0],[1,0,1],[0,0,1]]}, // -y
+          {dir: [0,0,1], vs: [[0,0,1],[1,0,1],[1,1,1],[0,1,1]]}, // +z
+          {dir: [0,0,-1], vs: [[0,0,0],[0,1,0],[1,1,0],[1,0,0]]}  // -z
+        ];
+        for (let f = 0; f < 6; f++) {
+          const nx = x + faces[f].dir[0], ny = y + faces[f].dir[1], nz = z + faces[f].dir[2];
+          if (!getVoxel(nx, ny, nz)) {
+            const base = verts.length / 8;
+            faces[f].vs.forEach(([fx,fy,fz]) => {
+              verts.push(x+fx, y+fy, z+fz, ...faces[f].dir, ...col);
+            });
+            idxs.push(base, base+1, base+2, base, base+2, base+3);
+          }
+        }
+      }
+      const gl = getGL();
+      if (!gl) return;
+      const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
+      const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(idxs), gl.STATIC_DRAW);
+      meshes.set(key, {vb, ib, count: idxs.length});
+    }
+
+    // Load chunks around pos
+    function updateChunks(px, pz, radius = WORLD_SIZE) {
+      const [cx, cz] = worldToChunk(px, pz);
+      for (let dx = -radius; dx <= radius; dx++) for (let dz = -radius; dz <= radius; dz++) {
+        generateChunk(cx + dx, cz + dz);
+      }
+      // Cleanup far chunks
+      for (let key of voxels.keys()) {
+        const [ckx, ckz] = key.split(',').map(Number);
+        if (Math.hypot(ckx - cx, ckz - cz) > radius + 1) {
+          const mesh = meshes.get(key); if (mesh) { /* cleanup buffers later */ }
+          voxels.delete(key); meshes.delete(key);
+        }
+      }
+    }
+
+    // Artifacts
+    const artifacts = [];
+    for (let i = 0; i < 20; i++) {
+      artifacts.push({
+        pos: [Math.random()*400-200, 25, Math.random()*400-200],
+        grabbed: false, hand: null,
+        rot: Math.random()*Math.PI*2
+      });
+    }
+    let artifactCount = 0;
+
+    // Wildlife - simple orbs/squids
+    const creatures = [];
+    for (let i = 0; i < 60; i++) {
+      creatures.push({
+        pos: [Math.random()*400-200, 5 + Math.random()*20, Math.random()*400-200],
+        vel: [(Math.random()-0.5)*2, 0, (Math.random()-0.5)*2],
+        size: 0.5 + Math.random()*0.5,
+        phase: Math.random()*Math.PI*2,
+        type: Math.floor(Math.random()*3) // 0 fly, 1 crawl, 2 float
+      });
+    }
+
+    // Weather particles - rain
+    const rain = [];
+    for (let i = 0; i < 2000; i++) {
+      rain.push({
+        pos: [Math.random()*400-200, Math.random()*50+10, Math.random()*400-200],
+        vel: [0, -10 - Math.random()*5, (Math.random()-0.5)*2]
+      });
+    }
+
+    // GL
+    let gl;
+    function getGL() { return gl; }
+    let sceneProg, postProg;
+    let cameraLoc, modelLoc, timeLoc, lightLoc, fogLoc;
+    let projLocL, projLocR, viewLocL, viewLocR; // for stereo
+
+    const vsSrc = `#version 300 es
+    in vec3 aPos; in vec3 aNorm; in vec4 aCol;
+    uniform mat4 uModel; uniform mat4 uViewProj;
+    uniform float uTime;
+    out vec3 vPos; out vec3 vNorm; out vec4 vCol;
+    void main() {
+      vec3 pos = aPos;
+      float glowPulse = sin(uTime * 3.0 + aPos.y * 0.5) * 0.1;
+      if (distance(aCol.rgb, vec3(0.5,0.9,1.0)) < 0.1) pos += aNorm * glowPulse; // crystals
+      if (aCol.a > 2.0) pos += (fract(sin(uTime*5.0 + dot(aPos, vec3(1.2,3.4,5.6)))*2.0)-0.5) * 0.05 * aNorm; // emissive flicker
+      gl_Position = uViewProj * uModel * vec4(pos, 1.0);
+      vPos = pos;
+      vNorm = aNorm;
+      vCol = aCol;
+    }`;
+
+    const fsSrc = `#version 300 es
+    precision highp float;
+    in vec3 vPos; in vec3 vNorm; in vec4 vCol;
+    uniform vec3 uLightDir; uniform float uTime; uniform float uFogDens;
+    out vec4 fragColor;
+    void main() {
+      vec3 N = normalize(vNorm);
+      vec3 L = normalize(uLightDir);
+      float diff = max(dot(N, L), 0.0);
+      float amb = 0.1;
+      vec3 base = vCol.rgb;
+      vec3 lit = (diff + amb) * base;
+      vec3 emiss = vec3(0);
+      if (vCol.a > 2.0) {
+        float flick = 0.7 + 0.3 * sin(uTime * 20.0 + dot(vPos, vec3(1.7,2.3,4.1)));
+        emiss = base * flick * (vCol.a - 1.0);
+      }
+      vec3 color = lit + emiss;
+      float dist = length(vPos - vec3(0,5,0)); // approx cam
+      float fog = 1.0 - exp(-dist * uFogDens * 0.005);
+      vec3 fogCol = mix(vec3(0.1,0.05,0.2), vec3(0.3,0.1,0.5), fog);
+      color = mix(color, fogCol, fog);
+      fragColor = vec4(color, 1.0);
+    }`;
+
+    function initGL() {
+      gl = canvas.getContext('webgl2', { xrCompatible: true });
+      if (!gl) { alert('No WebGL2'); return false; }
+      gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
+      gl.clearColor(0.05, 0.02, 0.15, 1.0);
+
+      // Scene shader
+      const sceneV = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(sceneV, vsSrc); gl.compileShader(sceneV);
+      const sceneF = gl.createShader(gl.FRAGMENT_SHADER); gl.shaderSource(sceneF, fsSrc); gl.compileShader(sceneF);
+      sceneProg = gl.createProgram();
+      gl.attachShader(sceneProg, sceneV); gl.attachShader(sceneProg, sceneF); gl.linkProgram(sceneProg);
+      cameraLoc = gl.getUniformLocation(sceneProg, 'uViewProj');
+      modelLoc = gl.getUniformLocation(sceneProg, 'uModel');
+      timeLoc = gl.getUniformLocation(sceneProg, 'uTime');
+      lightLoc = gl.getUniformLocation(sceneProg, 'uLightDir');
+      fogLoc = gl.getUniformLocation(sceneProg, 'uFogDens');
+
+      // VAO setup later per mesh
+      return true;
+    }
+
+    // Matrix math
+    function mat4create() { return new Float32Array(16).fill(0).map((_,i) => i%5===0 ? 1 : 0); }
+    function mat4perspective(out, fovy, aspect, near, far) {
+      const f = 1/Math.tan(fovy/2), nf = 1/(near-far);
+      out[0] = f/aspect; out[5] = f; out[10] = (far+near)*nf; out[14] = 2*far*near*nf; out[11] = -1;
+    }
+    function mat4lookAt(out, eye, target, up) {
+      const z0 = eye[0]-target[0], z1 = eye[1]-target[1], z2 = eye[2]-target[2];
+      const len = 1/Math.hypot(z0,z1,z2); const z = [z0*len, z1*len, z2*len];
+      const x0 = up[1]*z[2] - up[2]*z[1], x1 = up[2]*z[0] - up[0]*z[2], x2 = up[0]*z[1] - up[1]*z[0];
+      const xlen = 1/Math.hypot(x0,x1,x2); const x = [x0*xlen,x1*xlen,x2*xlen];
+      const y0 = z[1]*x[2] - z[2]*x[1], y1 = z[2]*x[0] - z[0]*x[2], y2 = z[0]*x[1] - z[1]*x[0];
+      out[0]=x[0]; out[1]=y[0]; out[2]=z[0]; out[3]=0;
+      out[4]=x[1]; out[5]=y[1]; out[6]=z[1]; out[7]=0;
+      out[8]=x[2]; out[9]=y[2]; out[10]=z[2]; out[11]=0;
+      out[12]=-(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]);
+      out[13]=-(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]);
+      out[14]=-(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]); out[15]=1;
+    }
+    function mat4mul(a, b, out) {
+      for(let i=0;i<16;i++) out[i] = a[i%4*4 + Math.floor(i/4)] * b[Math.floor(i%4)] + // simplified row-col
+        (i<12 ? a[(i%4+1)*4 + Math.floor(i/4)] * b[(Math.floor(i%4)+1)*4 + 4] wait no proper
+      wait, full mul
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+        out[i*4+j] = 0;
+        for (let k = 0; k < 4; k++) out[i*4+j] += a[i*4+k] * b[k*4+j];
+      }
+    }
+    function quatMul(a, b) { // simple for head
+      return [a[0]*b[3] + a[1]*b[2] - a[2]*b[1] + a[3]*b[0],
+              -a[0]*b[2] + a[1]*b[3] + a[2]*b[0] + a[3]*b[1],
+              a[0]*b[1] - a[1]*b[0] + a[2]*b[3] + a[3]*b[2],
+              -a[0]*b[0] - a[1]*b[1] - a[2]*b[2] + a[3]*b[3]];
+    }
+    function quatFromEuler(yaw, pitch, roll) {
+      const cy = Math.cos(yaw*0.5), sy = Math.sin(yaw*0.5);
+      const cp = Math.cos(pitch*0.5), sp = Math.sin(pitch*0.5);
+      const cr = Math.cos(roll*0.5), sr = Math.sin(roll*0.5);
+      return [sy*cp*cr + cy*sp*sr, cy*cp*sr - sy*sp*cr, sy*cp*sr - cy*sp*cr, cy*cp*cr - sy*sp*sr];
+    }
+    function quatToMat(q, m) {
+      const x = q[0], y = q[1], z = q[2], w = q[3];
+      const xx = x*x, xy = x*y, xz = x*z, xw = x*w;
+      const yy = y*y, yz = y*z, yw = y*w, zz = z*z, zw = z*w;
+      m[0] = 1 - 2*(yy + zz); m[1] = 2*(xy + zw); m[2] = 2*(xz - yw); m[4] = 2*(xy - zw);
+      m[5] = 1 - 2*(xx + zz); m[6] = 2*(yz + xw); m[8] = 2*(xz + yw); m[9] = 2*(yz - xw);
+      m[10] = 1 - 2*(xx + yy); m[15] = 1;
+    }
+
+    // Camera
+    let cam = { pos: [0, 1.6, 0], yaw: 0, pitch: 0, inVR: false };
+    let xrRefSpace, xrSession, xrFrame;
+
+    // Controllers
+    let controllers = [];
+    let teleportDir = [0,0,0];
+    let grabRay = null;
+
+    // Update
+    let time = 0, lastTime = 0;
+    function update(dt) {
+      time += dt;
+      const speed = 20 * dt;
+      if (!cam.inVR) {
+        // Desktop
+        if (keys['KeyW']) { cam.pos[0] += Math.sin(cam.yaw) * speed; cam.pos[2] += Math.cos(cam.yaw) * speed; }
+        if (keys['KeyS']) { cam.pos[0] -= Math.sin(cam.yaw) * speed; cam.pos[2] -= Math.cos(cam.yaw) * speed; }
+        if (keys['KeyA']) { cam.pos[0] += Math.cos(cam.yaw) * speed; cam.pos[2] -= Math.sin(cam.yaw) * speed; }
+        if (keys['KeyD']) { cam.pos[0] -= Math.cos(cam.yaw) * speed; cam.pos[2] += Math.sin(cam.yaw) * speed; }
+        if (keys['Space']) cam.pos[1] += speed;
+        if (keys['ShiftLeft']) cam.pos[1] -= speed;
+      }
+      // Collision approx ground
+      cam.pos[1] = Math.max(cam.pos[1], getHeightAt(cam.pos[0], cam.pos[2]) + 1.6);
+      updateChunks(cam.pos[0], cam.pos[2]);
+
+      // Creatures
+      creatures.forEach(c => {
+        c.pos[0] += c.vel[0] * dt; c.pos[2] += c.vel[2] * dt;
+        c.phase += dt * 2;
+        c.pos[1] += Math.sin(c.phase) * 0.5;
+        if (c.pos[1] < 1 || c.pos[1] > 30) c.vel[1] *= -1;
+        c.vel[0] *= 0.98; c.vel[2] *= 0.98;
+        if (Math.random() < dt * 0.1) {
+          c.vel[0] += (Math.random()-0.5)*4;
+          c.vel[2] += (Math.random()-0.5)*4;
+        }
+      });
+
+      // Rain
+      rain.forEach(p => {
+        p.pos[0] += p.vel[0] * dt; p.pos[1] += p.vel[1] * dt; p.pos[2] += p.vel[2] * dt;
+        if (p.pos[1] < 0) { p.pos[1] = 50; p.pos[0] = Math.random()*400-200; p.pos[2] = Math.random()*400-200; }
+      });
+
+      // Artifacts grab
+      controllers.forEach((ctrl, handIdx) => {
+        if (ctrl.gamepad && ctrl.gamepad.buttons[1].pressed) { // trigger
+          let closest = null, minDist = Infinity;
+          artifacts.forEach((art, idx) => {
+            if (art.grabbed) return;
+            const dx = ctrl.pose.transform.position.x - art.pos[0];
+            const dy = ctrl.pose.transform.position.y - art.pos[1];
+            const dz = ctrl.pose.transform.position.z - art.pos[2];
+            const dist = Math.hypot(dx,dy,dz);
+            if (dist < 0.5 && dist < minDist) {
+              minDist = dist; closest = idx;
+            }
+          });
+          if (closest !== null) {
+            artifacts[closest].grabbed = true;
+            artifacts[closest].hand = handIdx;
+          }
+        }
+      });
+      artifacts.forEach(art => {
+        if (art.grabbed && art.hand !== null) {
+          const ctrl = controllers[art.hand];
+          if (ctrl.pose) {
+            art.pos[0] += (ctrl.pose.transform.position.x - art.pos[0]) * 5 * dt;
+            art.pos[1] += (ctrl.pose.transform.position.y - art.pos[1]) * 5 * dt;
+            art.pos[2] += (ctrl.pose.transform.position.z - art.pos[2]) * 5 * dt;
+            const dist = Math.hypot(
+              ctrl.pose.transform.position.x - art.pos[0],
+              ctrl.pose.transform.position.y - art.pos[1],
+              ctrl.pose.transform.position.z - art.pos[2]
+            );
+            if (dist > 0.3) {
+              art.grabbed = false; art.hand = null;
+              // Collect if close to body
+              if (Math.hypot(art.pos[0] - cam.pos[0], art.pos[2] - cam.pos[2]) < 2) {
+                artifactCount++;
+                countSpan.textContent = artifactCount;
+                if (artifactCount === 20) alert('All artifacts collected! Mysteries revealed...');
+              }
+            }
+          }
+        }
+        art.rot += dt * 0.5;
+      });
+
+      if (cam.inVR && xrSession && xrFrame) {
+        const pose = xrFrame.getViewerPose(xrRefSpace);
+        if (pose) {
+          cam.pos[0] = pose.transform.position.x;
+          cam.pos[1] = pose.transform.position.y;
+          cam.pos[2] = pose.transform.position.z;
+        }
+        // Controllers
+        controllers = xrSession.inputSources.map(source => ({
+          gamepad: source.gamepad,
+          pose: xrFrame.getPose(source.targetRaySpace, xrRefSpace)
+        }));
+        // Teleport: average thumbsticks for dir
+        let tx=0, tz=0;
+        controllers.forEach(ctrl => {
+          if (ctrl.gamepad) {
+            const thumb = ctrl.gamepad.axes[0]; // simplistic
+            tx += ctrl.gamepad.axes[0] || 0;
+            tz += ctrl.gamepad.axes[1] || 0;
+          }
+        });
+        const tlen = Math.hypot(tx, tz);
+        if (tlen > 0.3) {
+          const angle = Math.atan2(tx, -tz); // VR thumb often inverted
+          const teleDist = 5;
+          const txpos = cam.pos[0] + Math.sin(angle) * teleDist;
+          const tzpos = cam.pos[2] + Math.cos(angle) * teleDist;
+          const groundH = getHeightAt(txpos, tzpos) + 1.6;
+          cam.pos[0] = lerp(cam.pos[0], txpos, dt * 3);
+          cam.pos[2] = lerp(cam.pos[2], tzpos, dt * 3);
+          cam.pos[1] = lerp(cam.pos[1], groundH, dt * 3);
+        }
+        // Ray for grab viz
+        if (controllers[0] && controllers[0].pose) {
+          grabRay = {
+            start: [controllers[0].pose.transform.position.x, controllers[0].pose.transform.position.y, controllers[0].pose.transform.position.z],
+            dir: getRayDir(controllers[0].pose.transform.orientation)
+          };
+        }
+      }
+    }
+    function getHeightAt(wx, wz) {
+      let h = 0;
+      for (let dy = 0; dy < 64; dy++) if (getVoxel(wx, dy, wz)) { h = dy; break; }
+      return h;
+    }
+    function getRayDir(q) {
+      const rx = 2 * (q[0]*q[3] - q[1]*q[2]);
+      const ry = 2 * (q[0]*q[2] + q[1]*q[3]);
+      const rz = 2 * (q[0]*q[1] - q[2]*q[3]);
+      const rw = 1 - 2*(q[1]*q[1] + q[2]*q[2]);
+      return [rx, ry, rz];
+    }
+
+    // Render
+    function render(viewProj) {
+      gl.useProgram(sceneProg);
+      gl.uniformMatrix4fv(cameraLoc, false, viewProj);
+      gl.uniform1f(timeLoc, time);
+      const sunDir = [0.5 + 0.5*Math.sin(time*0.2), 0.7, 0.5 + 0.5*Math.cos(time*0.2)];
+      gl.uniform3fv(lightLoc, sunDir);
+      gl.uniform1f(fogLoc, 1.2);
+
+      // Voxels
+      gl.enableVertexAttribArray(0); gl.enableVertexAttribArray(1); gl.enableVertexAttribArray(2);
+      for (let [key, m] of meshes) {
+        const model = mat4create();
+        const [cx, cz] = key.split(',').map(Number);
+        model[12] = cx * CHUNK_SIZE; model[14] = cz * CHUNK_SIZE;
+        gl.uniformMatrix4fv(modelLoc, false, model);
+        gl.bindBuffer(gl.ARRAY_BUFFER, m.vb);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+        gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+        gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 32, 20);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, m.ib);
+        gl.drawElements(gl.TRIANGLES, m.count, gl.UNSIGNED_INT, 0);
+      }
+
+      // Artifacts glowing orbs
+      const orbVerts = new Float32Array([
+        // quad for orb
+        -0.2,0,-0.2, 0,0,1, 1,1,0,4,
+        0.2,0,-0.2, 0,0,1, 1,1,0,4,
+        0.2,0,0.2, 0,0,1, 1,1,0,4,
+        -0.2,0,0.2, 0,0,1, 1,1,0,4
+      ]);
+      const orbIdx = new Uint16Array([0,1,2, 0,2,3]);
+      const orbVB = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, orbVB); gl.bufferData(gl.ARRAY_BUFFER, orbVerts, gl.STATIC_DRAW);
+      const orbIB = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, orbIB); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, orbIdx, gl.STATIC_DRAW);
+      artifacts.forEach(art => {
+        const model = mat4create();
+        model[12] = art.pos[0]; model[13] = art.pos[1]; model[14] = art.pos[2];
+        model[0] = model[5] = model[10] = 0.5; // scale
+        const rotY = mat4create(); rotY[0] = Math.cos(art.rot); rotY[2] = Math.sin(art.rot);
+        rotY[8] = -Math.sin(art.rot); rotY[10] = Math.cos(art.rot);
+        mat4mul(rotY, model, model);
+        gl.uniformMatrix4fv(modelLoc, false, model);
+        gl.bindBuffer(gl.ARRAY_BUFFER, orbVB);
+        gl.vertexAttribPointer(0,3,gl.FLOAT,false,32,0);
+        gl.vertexAttribPointer(1,3,gl.FLOAT,false,32,12);
+        gl.vertexAttribPointer(2,4,gl.FLOAT,false,32,20);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, orbIB);
+        gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+      });
+
+      // Creatures simple crosses
+      const creaVerts = new Float32Array([
+        // + cross
+        0,0,0.5, 0,1,0, 0.8,0.2,0.8,1,
+        0,0,-0.5, 0,-1,0, 0.8,0.2,0.8,1,
+        0.5,0,0, 1,0,0, 0.8,0.2,0.8,1,
+        -0.5,0,0, -1,0,0, 0.8,0.2,0.8,1
+      ]);
+      const creaIdx = new Uint16Array([0,1,2,1,3,2]);
+      const creaVB = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, creaVB); gl.bufferData(gl.ARRAY_BUFFER, creaVerts, gl.STATIC_DRAW);
+      const creaIB = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, creaIB); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, creaIdx, gl.STATIC_DRAW);
+      creatures.forEach((c, i) => {
+        const model = mat4create();
+        model[0] = model[5] = model[10] = c.size;
+        model[12] = c.pos[0]; model[13] = c.pos[1]; model[14] = c.pos[2];
+        const bob = Math.sin(time*5 + i)*0.2;
+        model[13] += bob;
+        gl.uniformMatrix4fv(modelLoc, false, model);
+        gl.bindBuffer(gl.ARRAY_BUFFER, creaVB);
+        gl.vertexAttribPointer(0,3,gl.FLOAT,false,32,0);
+        gl.vertexAttribPointer(1,3,gl.FLOAT,false,32,12);
+        gl.vertexAttribPointer(2,4,gl.FLOAT,false,32,20);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, creaIB);
+        gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+      });
+
+      // Rain lines
+      gl.depthMask(false); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      const rainVB = gl.createBuffer();
+      const rainIB = gl.createBuffer();
+      const rainData = [];
+      rain.forEach(p => {
+        rainData.push(p.pos[0]-0.01, p.pos[1], p.pos[2], 0,1,0, 0.5,0.8,1,0.3,
+                      p.pos[0]+0.01, p.pos[1]-0.5, p.pos[2], 0,1,0, 0.5,0.8,1,0.3);
+      });
+      gl.bindBuffer(gl.ARRAY_BUFFER, rainVB); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(rainData), gl.DYNAMIC_DRAW);
+      gl.vertexAttribPointer(0,3,gl.FLOAT,false,32,0);
+      gl.vertexAttribPointer(1,3,gl.FLOAT,false,32,12);
+      gl.vertexAttribPointer(2,4,gl.FLOAT,false,32,20);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, rain.length * 2);
+      gl.disable(gl.BLEND); gl.depthMask(true);
+
+      // Controller rays
+      if (grabRay) {
+        const rayVB = gl.createBuffer();
+        const rayData = new Float32Array([
+          grabRay.start[0], grabRay.start[1], grabRay.start[2], 0,0,-1, 1,1,1,1,
+          grabRay.start[0]+grabRay.dir[0]*5, grabRay.start[1]+grabRay.dir[1]*5, grabRay.start[2]+grabRay.dir[2]*5, 0,0,-1, 1,0,0,1
+        ]);
+        gl.bindBuffer(gl.ARRAY_BUFFER, rayVB); gl.bufferData(gl.ARRAY_BUFFER, rayData, gl.DYNAMIC_DRAW);
+        gl.vertexAttribPointer(0,3,gl.FLOAT,false,32,0);
+        gl.vertexAttribPointer(1,3,gl.FLOAT,false,32,12);
+        gl.vertexAttribPointer(2,4,gl.FLOAT,false,32,20);
+        gl.drawArrays(gl.LINE_STRIP, 0, 2);
+      }
+    }
+
+    // XR loop
+    function xrFrameHandler(t, frame) {
+      xrFrame = frame;
+      const layer = xrSession.renderState.baseLayer;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+      const pose = frame.getViewerPose(xrRefSpace);
+      if (pose) {
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        for (let view of pose.views) {
+          const viewport = layer.getViewport(view);
+          gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+          const proj = new Float32Array(16);
+          mat4perspective(proj, 60 * Math.PI/180, viewport.width/viewport.height, 0.1, 1000);
+          const viewMat = new Float32Array(16);
+          const poseM = view.transform.matrix;
+          mat4lookAt(viewMat, [cam.pos[0], cam.pos[1], cam.pos[2]], [0,0,0], [0,1,0]); // approx head
+          const viewProj = new Float32Array(16);
+          mat4mul(proj, viewMat, viewProj);
+          render(viewProj);
+        }
+      }
+      xrSession.requestAnimationFrame(xrFrameHandler);
+    }
+
+    // Desktop loop
+    function desktopFrame(t) {
+      const aspect = canvas.clientWidth / canvas.clientHeight;
+      const proj = new Float32Array(16); mat4perspective(proj, Math.PI/3, aspect, 0.1, 1000);
+      const view = new Float32Array(16);
+      const target = [cam.pos[0] + Math.sin(cam.yaw)*Math.cos(cam.pitch), cam.pos[1] + Math.sin(cam.pitch), cam.pos[2] + Math.cos(cam.yaw)*Math.cos(cam.pitch)];
+      mat4lookAt(view, cam.pos, target, [0,1,0]);
+      const viewProj = new Float32Array(16); mat4mul(proj, view, viewProj);
+
+      gl.viewport(0,0,canvas.width,canvas.height);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      render(viewProj);
+      requestAnimationFrame(desktopFrame);
+    }
+
+    // Controls
+    const keys = {};
+    document.addEventListener('keydown', e => keys[e.code] = true);
+    document.addEventListener('keyup', e => keys[e.code] = false);
+    canvas.addEventListener('click', () => canvas.requestPointerLock());
+    document.addEventListener('pointerlockchange', () => {
+      if (document.pointerLockElement !== canvas) document.exitPointerLock();
+    });
+    document.addEventListener('mousemove', e => {
+      if (document.pointerLockElement === canvas && !cam.inVR) {
+        cam.yaw -= e.movementX * 0.002;
+        cam.pitch -= e.movementY * 0.002;
+        cam.pitch = clamp(cam.pitch, -Math.PI/2 + 0.1, Math.PI/2 - 0.1);
+      }
+    });
+
+    // XR events
+    async function enterXR() {
+      if (!navigator.xr) { alert('WebXR not supported'); return; }
+      try {
+        xrSession = await navigator.xr.requestSession('immersive-vr', {
+          requiredFeatures: ['local-floor'],
+          optionalFeatures: ['hand-tracking']
+        });
+        xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
+        cam.inVR = true;
+        enterBtn.disabled = true;
+        exitBtn.disabled = false;
+        xrSession.addEventListener('end', () => {
+          cam.inVR = false;
+          enterBtn.disabled = false;
+          exitBtn.disabled = true;
+        });
+        xrSession.requestAnimationFrame(xrFrameHandler);
+      } catch (e) { alert('Failed to enter VR: ' + e); }
+    }
+    async function exitXR() {
+      if (xrSession) xrSession.end();
+    }
+    enterBtn.onclick = enterXR;
+    exitBtn.onclick = exitXR;
+
+    // Resize
+    function resize() {
+      canvas.width = canvas.clientWidth * devicePixelRatio;
+      canvas.height = canvas.clientHeight * devicePixelRatio;
+    }
+    window.addEventListener('resize', resize);
+
+    // Init
+    if (initGL()) {
+      updateChunks(0, 0); // initial
+      if (navigator.xr) {
+        requestAnimationFrame((t) => {
+          lastTime = t / 1000;
+          if (cam.inVR) xrFrameHandler(t);
+          else desktopFrame(t);
+        });
+      }
+    }
+  </script>
+</body>
+</html>

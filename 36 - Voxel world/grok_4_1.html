@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Cinematic Voxel Fantasy Diorama - Pure WebGPU</title>
+  <style>
+    * { margin: 0; padding: 0; overflow: hidden; }
+    body { background: black; font-family: monospace; }
+    canvas { display: block; width: 100vw; height: 100vh; cursor: none; }
+    #ui {
+      position: fixed; top: 10px; right: 10px; z-index: 100;
+      display: flex; flex-direction: column; gap: 5px;
+    }
+    button {
+      padding: 10px 15px; background: rgba(0,0,0,0.7); color: white; border: 1px solid #444;
+      font-size: 14px; cursor: pointer; border-radius: 4px;
+    }
+    button:hover { background: rgba(255,255,255,0.1); }
+    #info {
+      position: fixed; bottom: 10px; left: 10px; color: white; font-size: 12px;
+      background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="ui"></div>
+  <div id="info">
+    Click to lock mouse. WASD move, Space/Shift up/down, Mouse look.<br>
+    Orbit mode circles the castle. Screenshot downloads PNG.
+  </div>
+  <script type="module">
+    const canvas = document.getElementById('canvas');
+    const ui = document.getElementById('ui');
+
+    // Math helpers
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function fract(v) { return v - Math.floor(v); }
+    function smoothstep(edge0, edge1, x) {
+      let t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+      return t * t * (3.0 - 2.0 * t);
+    }
+
+    // Noise
+    function noise2(x, y) {
+      const n = x + y * 57.0;
+      return fract(Math.sin(n) * 43758.5453);
+    }
+    function fbm2(x, y, oct = 6) {
+      let v = 0.0, amp = 1.0, freq = 1.0;
+      for (let i = 0; i < oct; ++i) {
+        v += amp * (noise2(x * freq, y * freq) * 2.0 - 1.0);
+        amp *= 0.5;
+        freq *= 2.0;
+      }
+      return v * 0.5 + 0.5;
+    }
+    function noise3(x, y, z) {
+      return noise2(x + z * 0.1, y + z * 0.05);
+    }
+    function getHeightAt(x, z) {
+      let h = 12.0 + fbm2(x * 0.015, z * 0.015, 5) * 15.0;
+      return Math.floor(h);
+    }
+
+    // Voxel world
+    const SIZE_X = 96;
+    const SIZE_Y = 48;
+    const SIZE_Z = 96;
+    const data = new Uint8Array(SIZE_X * SIZE_Y * SIZE_Z);
+    function getIndex(x, y, z) {
+      return (z * SIZE_Y + y) * SIZE_X + x;
+    }
+    function getVoxel(x, y, z) {
+      x = Math.floor(x); y = Math.floor(y); z = Math.floor(z);
+      if (x < 0 || x >= SIZE_X || y < 0 || y >= SIZE_Y || z < 0 || z >= SIZE_Z) return 0;
+      return data[getIndex(x, y, z)];
+    }
+    function setVoxel(x, y, z, id) {
+      x = Math.floor(x); y = Math.floor(y); z = Math.floor(z);
+      if (x < 0 || x >= SIZE_X || y < 0 || y >= SIZE_Y || z < 0 || z >= SIZE_Z) return;
+      data[getIndex(x, y, z)] = id;
+    }
+
+    // Block palette [r,g,b,a]
+    const palette = [
+      [0,0,0,1], // 0 air
+      [0.5,0.5,0.55,1], // 1 stone
+      [0.4,0.3,0.2,1], // 2 dirt
+      [0.25,0.55,0.2,1], // 3 grass
+      [0.15,0.35,0.85,1], // 4 water
+      [0.9,0.85,0.6,1], // 5 sand
+      [0.45,0.28,0.15,1], // 6 wood
+      [0.4,0.4,0.45,1], // 7 cobble
+      [0.75,0.45,0.35,1], // 8 brick
+      [0.3,0.22,0.22,1], // 9 roof
+      [0.6,0.75,0.85,1], // 10 glass
+      [1.0,0.75,0.15,1], // 11 torch/glow
+      [0.95,0.25,0.15,1], // 12 lava
+      [0.95,0.95,0.98,1], // 13 snow
+      [0.15,0.5,0.15,1], // 14 leaves
+      [0.55,0.45,0.35,1], // 15 path
+      [0.15,0.3,0.1,1] // 16 farmland
+    ];
+
+    function generateWorld() {
+      // Terrain base
+      for (let x = 0; x < SIZE_X; ++x) {
+        for (let z = 0; z < SIZE_Z; ++z) {
+          let nx = x * 0.018, nz = z * 0.018;
+          let hill = fbm2(nx, nz, 6) * 22;
+          // Castle hill
+          let cdist = Math.sqrt((x - 48)**2 + (z - 48)**2);
+          if (cdist < 28) hill += (28 - cdist) * 0.8;
+          // Volcano
+          let vdist = Math.sqrt((x - 78)**2 + (z - 18)**2);
+          if (vdist < 18) hill += 32 - vdist * 0.75;
+          // Mountains snow
+          let mdist = Math.min(Math.sqrt((x-10)**2+(z-80)**2), Math.sqrt((x-85)**2+(z-8)**2));
+          if (mdist > 40) hill += fbm2(nx*1.5, nz*1.5, 4) * 25;
+          let h = Math.floor(hill);
+          for (let y = 0; y <= h; ++y) {
+            if (y === h) {
+              let id = (hill > 35 ? 13 : 3);
+              setVoxel(x, y, z, id);
+            } else if (y > h - 8) {
+              setVoxel(x, y, z, 2); // dirt
+            } else {
+              setVoxel(x, y, z, 1); // stone
+            }
+            // Caves
+            let ny = y * 0.04;
+            if (getVoxel(x,y,z) === 1 && fbm2(nx*4, nz*4 + ny*2, 3) > 0.73) {
+              setVoxel(x, y, z, 0);
+            }
+          }
+        }
+      }
+
+      // River curved wide
+      for (let x = 15; x < 60; ++x) {
+        for (let z = 22; z < 42; ++z) {
+          let riverX = 15 + (x-15)*0.8;
+          let bendZ = 25 + Math.sin((x-15)/25 * Math.PI) * 8;
+          let rdist = Math.sqrt( (x - riverX)**2 + (z - bendZ)**2 );
+          if (rdist < 7) {
+            let bedh = 9 + (7 - rdist) * 0.5;
+            for (let y = 0; y <= 13; ++y) {
+              if (y < bedh - 1) setVoxel(x, y, z, 1);
+              else if (y < bedh) setVoxel(x, y, z, 5); // sand bed
+              else if (y === 13) setVoxel(x, y, z, 4); // water surface
+            }
+          }
+        }
+      }
+
+      // Castle on terraced hill
+      let castleX = 48, castleZ = 48, baseY = 20;
+      // Terrace walls
+      for (let level = 0; level < 4; ++level) {
+        let rad = 22 - level * 4;
+        let ty = baseY + level * 4;
+        for (let dx = -rad; dx <= rad; ++dx) {
+          for (let dz = -rad; dz <= rad; ++dz) {
+            if (Math.abs(dx) + Math.abs(dz) <= rad + 1 && Math.abs(dx) + Math.abs(dz) > rad - 2) {
+              setVoxel(castleX + dx, ty, castleZ + dz, 7); // cobble
+              setVoxel(castleX + dx, ty + 8, castleZ + dz, 7); // walls height
+            }
+          }
+        }
+      }
+      // Towers
+      const towerPos = [[castleX-16, castleZ-16], [castleX+16, castleZ-16], [castleX-16, castleZ+16], [castleX+16, castleZ+16]];
+      towerPos.forEach(([tx, tz]) => {
+        for (let r = 0; r < 5; ++r) { // octagon approx
+          for (let dy = 0; dy < 20; ++dy) {
+            let cr = 3 - dy / 20 * 0.5;
+            for (let a = 0; a < 360; a += 45) {
+              let px = tx + Math.cos(a * Math.PI / 180) * cr;
+              let pz = tz + Math.sin(a * Math.PI / 180) * cr;
+              let id = dy > 16 ? 8 : (dy < 4 ? 7 : 1);
+              setVoxel(px, baseY + dy, pz, id);
+            }
+          }
+          // Flag pole + flag voxels
+          setVoxel(tx, baseY + 22, tz, 6); // pole
+          for (let fy = 0; fy < 5; ++fy) {
+            setVoxel(tx + 1, baseY + 23 + fy, tz, 17); // red flag vec3(0.8,0.1,0.1) wait palette add flag?
+            palette[17] = [0.8,0.15,0.15,1]; // add flag red
+          }
+        }
+      });
+      // Keep central
+      for (let dx = -6; dx <= 6; ++dx) for (let dz = -6; dz <= 6; ++dz) {
+        for (let dy = 0; dy < 25; ++dy) {
+          setVoxel(castleX + dx, baseY + dy, castleZ + dz, 1);
+        }
+      }
+      // Royal keep top
+      for (let dy = 25; dy < 35; ++dy) {
+        let cr = 4 - (dy-25)*0.2;
+        for (let a = 0; a < 360; a += 30) {
+          let px = castleX + Math.cos(a * Math.PI / 180) * cr;
+          let pz = castleZ + Math.sin(a * Math.PI / 180) * cr;
+          setVoxel(px, baseY + dy, pz, 8);
+        }
+      }
+      // Courtyard grass gardens
+      for (let dx = -12; dx < 12; ++dx) for (let dz = -12; dz < 12; ++dz) {
+        if (Math.sqrt(dx*dx + dz*dz) < 10) setVoxel(castleX+dx, baseY+1, castleZ+dz, 3);
+      }
+      // Moat
+      for (let dx = -25; dx <= 25; ++dx) for (let dz = -25; dz <= 25; ++dz) {
+        let d = Math.sqrt(dx*dx + dz*dz);
+        if (d > 18 && d < 22) setVoxel(castleX+dx, baseY-1, castleZ+dz, 4);
+      }
+      // Gates bridge stub
+      for (let dx = -2; dx <= 2; ++dx) for (let dz = -30; dz <= -25; ++dz) {
+        setVoxel(castleX + dx, baseY, castleZ + dz, 7);
+      }
+
+      // Village 30 houses
+      for (let i = 0; i < 32; ++i) {
+        let vx = 22 + Math.random() * 28;
+        let vz = 22 + Math.random() * 16;
+        let sx = 4 + Math.random() * 3;
+        let sz = 4 + Math.random() * 3;
+        let vh = 4 + Math.random() * 3;
+        let bh = getHeightAt(vx + sx/2, vz + sz/2) + 1;
+        // House base walls
+        for (let dx = 0; dx < sx; ++dx) for (let dz = 0; dz < sz; ++dz) {
+          setVoxel(vx + dx, bh, vz + dz, 7); // cobble base
+          setVoxel(vx + dx, bh + vh, vz + dz, 9); // roof bottom
+        }
+        for (let dy = 1; dy < vh; ++dy) {
+          for (let dx = 0; dx < sx; ++dx) {
+            setVoxel(vx + dx, bh + dy, vz, 6);
+            setVoxel(vx + dx, bh + dy, vz + sz - 1, 6);
+          }
+          for (let dz = 1; dz < sz - 1; ++dz) {
+            setVoxel(vx, bh + dy, vz + dz, 6);
+            setVoxel(vx + sx - 1, bh + dy, vz + dz, 6);
+          }
+        }
+        // Roof
+        for (let ry = 0; ry < 3; ++ry) {
+          let wr = sx / 2 - ry * 0.4;
+          for (let dx = -wr; dx < wr; ++dx) for (let dz = -wr; dz < wr; ++dz) {
+            if (Math.abs(dx) + Math.abs(dz) < wr * 1.4) {
+              setVoxel(vx + sx/2 + dx, bh + vh + ry, vz + sz/2 + dz, 9);
+            }
+          }
+        }
+        // Door window lantern
+        let doorx = Math.floor(sx / 2);
+        setVoxel(vx + doorx, bh + 1, vz, 0);
+        setVoxel(vx + doorx, bh + 2, vz, 0);
+        if (Math.random() < 0.6) setVoxel(vx + 1, bh + 2, vz + Math.floor(sz/2), 10);
+        setVoxel(vx + sx/2, bh + vh + 3, vz - 1, 11); // lantern
+        // Chimney blacksmith glow
+        if (Math.random() < 0.4 || i === 5) { // blacksmith
+          let cx = vx + 1 + Math.random() * (sx - 2);
+          for (let dy = vh - 1; dy < vh + 5; ++dy) setVoxel(cx, bh + dy, vz + sz/2, 1);
+          setVoxel(cx, bh + vh + 4, vz + sz/2, i===5 ? 12 : 11);
+        }
+      }
+      // Marketplace stalls barrels
+      for (let sx = 32; sx < 42; ++sx) for (let sz = 28; sz < 34; ++sz) {
+        setVoxel(sx, getHeightAt(sx,sz) + 1, sz, 15); // path
+        if (Math.random() < 0.3) setVoxel(sx, getHeightAt(sx,sz) + 2, sz, 6); // stall
+      }
+      // Farms
+      const farms = [[18,42,12,8], [55,30,8,6]];
+      farms.forEach(([fx,fz, fw,fh]) => {
+        for (let dx=0; dx<fw; ++dx) for (let dz=0; dz<fh; ++dz) {
+          setVoxel(fx+dx, getHeightAt(fx+dx,fz+dz), fz+dz, 16); // farm
+        }
+        // Fences
+        for (let s=0; s<2; ++s) {
+          let ox = s ? fw : -1, oz=0;
+          for (let dz=0; dz<=fh; ++dz) setVoxel(fx+ox, getHeightAt(fx,fz)+1, fz+dz, 6);
+          oz = s ? fh : -1; for (let dx=0; dx<=fw; ++dx) setVoxel(fx+dx, getHeightAt(fx,fz)+1, fz+oz, 6);
+        }
+      });
+      // Docks boats
+      for (let b=0; b<4; ++b) {
+        let bx = 25 + b*8, bz=26;
+        for (let dx=-1; dx<3; ++dx) for (let dz=-0.5; dz<1.5; ++dz) for (let dy=0; dy<2; ++dy) {
+          setVoxel(bx+dx, 13+dy, bz+dz, 6); // boat hull
+        }
+      }
+      // Watermill approx
+      let mx=45, mz=32;
+      for (let dy=0; dy<6; ++dy) for (let dx=-1; dx<=1; ++dx) for (let dz=-1; dz<=1; ++dz) {
+        setVoxel(mx+dx, 13+dy, mz+dz, 6);
+      }
+      // Piers
+      for (let px=42; px<48; ++px) for (let dy=0; dy<1.5; ++dy) setVoxel(px,13+dy,30,6);
+      // Stone bridge over river
+      for (let bx=35; bx<42; ++bx) for (let by=11; by<14; ++by) for (let w=-1; w<=1; ++w) {
+        setVoxel(bx, by, 35 + w, 7);
+      }
+      // Roads paths
+      // Village to bridge to castle
+      for (let rx=25; rx<55; rx+=2) for (let rz=-1; rz<1; ++rz) {
+        let ry = getHeightAt(rx, 35);
+        setVoxel(rx, ry, 35 + rz, 15);
+      }
+      for (let rx=20; rx<55; rx+=1) {
+        let pathz = 25 + (rx-20)/35 * 10;
+        let ry = getHeightAt(rx, pathz);
+        setVoxel(rx, ry, pathz, 15);
+      }
+      // Forest trees
+      for (let t=0; t<150; ++t) {
+        let tx = 5 + Math.random()*85, tz=5 + Math.random()*85;
+        if (Math.random()<0.6 && getHeightAt(tx,tz) < 25 && fbm2(tx*0.1,tz*0.1)<0.45) { // forests
+          let th = getHeightAt(tx,tz) + 1;
+          for (let ty=0; ty<5; ++ty) setVoxel(tx, th+ty, tz, 6); // trunk
+          for (let lx=-1; lx<=1; ++lx) for (let ly=3; ly<7; ++ly) for (let lz=-1; lz<=1; ++lz) {
+            if (Math.random()<0.7) setVoxel(tx+lx, th+ly, tz+lz, 14); // leaves
+          }
+        }
+      }
+      // Reeds
+      for (let r=0; r<80; ++r) {
+        let rx = 15 + Math.random()*45, rz = 22 + Math.random()*20;
+        if (getVoxel(rx,14,rz) === 4) {
+          for (let ry=14; ry<20; ++ry) if (Math.random()<0.8) setVoxel(rx,ry,rz, 3); // tall grass/reeds
+        }
+      }
+      // Volcano details
+      for (let vdx=-15; vdx<15; ++vdx) for (let vdz=-15; vdz<15; ++vdz) {
+        let vd = Math.sqrt(vdx**2 + vdz**2);
+        if (vd < 12) {
+          let inside = Math.sqrt(vdx**2 + vdz**2 + (20)**2) < 200; wait cone
+          for (let vy=0; vy<35; ++vy) {
+            let basalt = vy > 25 ? 1 : (Math.random()<0.1 ? 12 : 1); // dark stone lava spills
+            let px=78+vdx, pz=18+vdz;
+            if (Math.sqrt(vdx**2 + (vy-20)**2 + vdz**2) < 100) setVoxel(px,vy,pz,12); // lava chamber
+            else setVoxel(px,vy,pz, basalt);
+          }
+          // Dead trees
+          if (Math.random()<0.2) {
+            let th = 15;
+            for (let ty=0; ty<6; ++ty) setVoxel(78+vdx, th+ty, 18+vdz, 2); // charred
+            for (let ly=4; ly<8; ++ly) if (Math.random()<0.3) setVoxel(78+vdx, th+ly, 18+vdz, 14);
+          }
+        }
+      }
+      // Ruins
+      const ruins = [[8,82,8,6], [88,10,6,6]];
+      ruins.forEach(([rx,rz,rw,rh]) => {
+        for (let dx=0; dx<rw; ++dx) for (let dz=0; dz<rh; ++dz) {
+          if (Math.random()<0.6) setVoxel(rx+dx, getHeightAt(rx+dx,rz+dz)+Math.floor(Math.random()*3), rz+dz, 1);
+        }
+      });
+      // Lookout posts
+      const lookouts = [[15,65], [70,5]];
+      lookouts.forEach(([lx,lz]) => {
+        let lh = getHeightAt(lx,lz)+1;
+        for (let ty=0; ty<8; ++ty) for (let dx=-0.5; dx<=0.5; ++dx) for (let dz=-0.5; dz<=0.5; ++dz) {
+          setVoxel(lx+dx, lh+ty, lz+dz, 7);
+        }
+        setVoxel(lx, lh+9, lz, 11); // torch
+      });
+      // Wells carts barrels lanterns scattered
+      for (let w=0; w<8; ++w) {
+        let wx = 25 + Math.random()*30, wz=25 + Math.random()*15;
+        let wy = getHeightAt(wx,wz);
+        for (let a=0; a<360; a+=60) {
+          let px = wx + Math.cos(a*Math.PI/180)*0.8, pz = wz + Math.sin(a*Math.PI/180)*0.8;
+          setVoxel(px, wy+1, pz, 7);
+        }
+        setVoxel(wx, wy+4, wz, 11); // lantern
+      }
+      // Glowing windows night, but glow blocks
+      // Already lanterns torches
+    }
+
+    // Meshing
+    let vertexBuffer, indexBuffer, indexCount, vertData, indicesData;
+    function meshWorld() {
+      const cs = 16; // chunk size
+      vertData = new Float32Array(4000000 * 10); // generous
+      indicesData = new Uint32Array(6000000);
+      let vidx = 0, iidx = 0;
+      for (let cx = 0; cx < Math.ceil(SIZE_X / cs); ++cx) {
+        for (let cy = 0; cy < Math.ceil(SIZE_Y / cs); ++cy) {
+          for (let cz = 0; cz < Math.ceil(SIZE_Z / cs); ++cz) {
+            for (let lx = 0; lx < cs; ++lx) {
+              let x = cx * cs + lx;
+              if (x >= SIZE_X) continue;
+              for (let ly = 0; ly < cs; ++ly) {
+                let y = cy * cs + ly;
+                if (y >= SIZE_Y) continue;
+                for (let lz = 0; lz < cs; ++lz) {
+                  let z = cz * cs + lz;
+                  if (z >= SIZE_Z) continue;
+                  let id = getVoxel(x, y, z);
+                  if (id === 0) continue;
+                  let col = palette[id];
+                  // Faces
+                  const faces = [
+                    // Right +x
+                    () => [[1,y,z],[1,y+1,z],[1,y+1,z+1],[1,y,z+1]], [1,0,0],
+                    // Left -x
+                    () => [[0,y,z],[0,y,z+1],[0,y+1,z+1],[0,y+1,z]], [-1,0,0],
+                    // Top +y
+                    () => [[x,y+1,z],[x,y+1,z+1],[x+1,y+1,z+1],[x+1,y+1,z]], [0,1,0],
+                    // Bottom -y
+                    () => [[x,y,z],[x+1,y,z],[x+1,y,z+1],[x,y,z+1]], [0,-1,0],
+                    // Front +z
+                    () => [[x,y,z+1],[x+1,y,z+1],[x+1,y+1,z+1],[x,y+1,z+1]], [0,0,1],
+                    // Back -z
+                    () => [[x,y,z],[x,y+1,z],[x+1,y+1,z],[x+1,y,z]], [0,0,-1]
+                  ];
+                  for (let f = 0; f < 6; ++f) {
+                    let nx = x + (f === 0 ? 1 : f === 1 ? -1 : 0);
+                    let ny = y + (f === 2 ? 1 : f === 3 ? -1 : 0);
+                    let nz = z + (f === 4 ? 1 : f === 5 ? -1 : 0);
+                    if (getVoxel(nx, ny, nz) === 0) {
+                      let face_verts = faces[f][0]();
+                      let normal = faces[f][1];
+                      let base_v = vidx;
+                      face_verts.forEach(([fx,fy,fz]) => {
+                        vertData[vidx*10 + 0] = fx;
+                        vertData[vidx*10 + 1] = fy;
+                        vertData[vidx*10 + 2] = fz;
+                        vertData[vidx*10 + 3] = normal[0];
+                        vertData[vidx*10 + 4] = normal[1];
+                        vertData[vidx*10 + 5] = normal[2];
+                        vertData[vidx*10 + 6] = col[0];
+                        vertData[vidx*10 + 7] = col[1];
+                        vertData[vidx*10 + 8] = col[2];
+                        vertData[vidx*10 + 9] = col[3];
+                        ++vidx;
+                      });
+                      indicesData[iidx++] = base_v + 0;
+                      indicesData[iidx++] = base_v + 1;
+                      indicesData[iidx++] = base_v + 2;
+                      indicesData[iidx++] = base_v + 0;
+                      indicesData[iidx++] = base_v + 2;
+                      indicesData[iidx++] = base_v + 3;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      indexCount = iidx;
+    }
+
+    // WebGPU
+    let adapter, device, context, format;
+    let scenePipeline, postPipeline, hBlurPipeline, vBlurPipeline;
+    let cameraUBO, sceneUBO, cameraBG, sceneBG;
+    let colorRT, bloomHRT, bloomVRT, depthTexture;
+    let linearSampler;
+    let canvasWidth = 0, canvasHeight = 0;
+    let vertBuffer, idxBuffer;
+
+    const sceneWGSL = `
+${noise functions vs fs}
+
+struct Camera {
+  viewProj: mat4x4<f32>,
+  camPos: vec3<f32>,
+  pad: f32,
+};
+@group(0) @binding(0) var<uniform> camera: Camera;
+
+struct SceneData {
+  lightDir: vec3<f32>,
+  time: f32,
+  lightCol: vec3<f32>,
+  timeOfDay: f32,
+  fogDens: f32,
+  pad1: f32,
+  skyZen: vec3<f32>,
+  skyHor: vec3<f32>,
+};
+@group(1) @binding(0) var<uniform> sceneData: SceneData;
+
+struct VertIn {
+  @location(0) pos: vec3<f32>,
+  @location(1) norm: vec3<f32>,
+  @location(2) col: vec4<f32>,
+};
+
+struct VertOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) wpos: vec3<f32>,
+  @location(1) wnorm: vec3<f32>,
+  @location(2) vcol: vec4<f32>,
+};
+
+@vertex fn vs_main(in: VertIn) -> VertOut {
+  var out: VertOut;
+  var pos = in.pos;
+  let wc = vec3<f32>(0.15, 0.35, 0.85);
+  if (distance(in.col.rgb, wc) < 0.12) {
+    let phase = sceneData.time * 2.5 + in.pos.x * 0.12 + in.pos.z * 0.17;
+    pos.y += sin(phase) * 0.07;
+  }
+  let lc = vec3<f32>(0.95, 0.25, 0.15);
+  if (distance(in.col.rgb, lc) < 0.12) {
+    let n = fractal_noise(in.pos * 0.3 + vec3<f32>(sceneData.time * 0.08, 0.0, 0.0));
+    pos.x += n * 0.025 - 0.012;
+    pos.y += sin(sceneData.time * 1.8 + in.pos.y * 0.3) * 0.015;
+  }
+  let fc = vec3<f32>(0.8, 0.15, 0.15);
+  if (distance(in.col.rgb, fc) < 0.08) {
+    pos.x += sin(sceneData.time * 6.0 + in.pos.y * 0.8) * 0.015;
+  }
+  out.pos = camera.viewProj * vec4<f32>(pos, 1.0);
+  out.wpos = pos;
+  out.wnorm = in.norm;
+  out.vcol = in.col;
+  return out;
+}
+
+@fragment fn fs_main(in: VertOut) -> @location(0) vec4<f32> {
+  let N = normalize(in.wnorm);
+  let L = normalize(sceneData.lightDir);
+  let lambert = max(0.0, dot(N, L));
+  let ambient = 0.15;
+  let wc = vec3<f32>(0.15, 0.35, 0.85);
+  let lc = vec3<f32>(0.95, 0.25, 0.15);
+  let gc = vec3<f32>(1.0, 0.75, 0.15);
+  var emiss = vec3<f32>(0.0);
+  let isg = distance(in.vcol.rgb, gc) < 0.12;
+  if (isg) {
+    let flick = 0.6 + 0.4 * sin(sceneData.time * 28.0 + dot(in.wpos * vec3<f32>(9.1, 3.7, 7.3), 1.0));
+    emiss = in.vcol.rgb * flick * 2.8;
+  }
+  let isl = distance(in.vcol.rgb, lc) < 0.12;
+  if (isl) {
+    let lglow = 0.8 + 0.4 * fractal_noise(in.wpos * 0.6 + vec3<f32>(0.0, sceneData.time * 2.5, 0.0));
+    emiss += in.vcol.rgb * lglow * 1.8;
+  }
+  let baseCol = in.vcol.rgb;
+  let litCol = sceneData.lightCol * lambert + ambient;
+  let color = litCol * baseCol + emiss;
+  let dist = length(in.wpos - camera.camPos);
+  let fogAmt = 1.0 - exp(-dist * sceneData.fogDens * 0.0008);
+  let V = normalize(camera.camPos - in.wpos);
+  let up = vec3<f32>(0.0, 1.0, 0.0);
+  let h = clamp(dot(V, up), 0.0, 1.0);
+  let skyMix = pow(1.0 - h, 1.2);
+  let skyCol = mix(sceneData.skyZen, sceneData.skyHor, skyMix);
+  let sunDot = max(0.0, dot(V, L));
+  skyCol += pow(sunDot, 25.0) * vec3<f32>(1.2, 1.0, 0.8) * 4.0;
+  color = mix(color, skyCol, fogAmt);
+  return vec4<f32>(color, 1.0);
+}
+    `;
+
+    const postWGSL = `
+struct PostOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+@vertex fn post_vs(@builtin(vertex_index) vidx: u32) -> PostOut {
+  var out: PostOut;
+  let is_tri = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  out.pos = vec4<f32>(is_tri[vidx], 0.0, 1.0);
+  out.uv = (is_tri[vidx] + 1.0) * 0.5;
+  return out;
+}
+
+@group(0) @binding(0) var texIn: texture_2d<f32>;
+@group(0) @binding(1) var samp: sampler;
+
+@fragment fn blur_h(in: PostOut) -> @location(0) vec4<f32> {
+  let texDim = vec2<f32>(textureDimensions(texIn));
+  let pixelSize = 1.0 / texDim;
+  let blurSize = 1.2;
+  let offs = vec2<f32>(blurSize * pixelSize.x, 0.0);
+  let weights = array<f32, 5>(0.227, 0.194, 0.121, 0.054, 0.016);
+  var accum = vec3<f32>(0.0);
+  accum += textureSample(texIn, samp, in.uv).rgb * weights[0];
+  for (var i = 1u; i < 5u; i++) {
+    let w = weights[i];
+    accum += textureSample(texIn, samp, in.uv + offs * f32(i)).rgb * w;
+    accum += textureSample(texIn, samp, in.uv - offs * f32(i)).rgb * w;
+  }
+  let lum = dot(accum, vec3<f32>(0.3, 0.59, 0.11));
+  if (lum < 1.0) {
+    discard;
+  }
+  accum = max(vec3<f32>(0.0), accum - 1.0);
+  return vec4<f32>(accum, 1.0);
+}
+
+@fragment fn blur_v(in: PostOut) -> @location(0) vec4<f32> {
+  let texDim = vec2<f32>(textureDimensions(texIn));
+  let pixelSize = 1.0 / texDim;
+  let blurSize = 1.2;
+  let offs = vec2<f32>(0.0, blurSize * pixelSize.y);
+  let weights = array<f32, 5>(0.227, 0.194, 0.121, 0.054, 0.016);
+  var accum = vec3<f32>(0.0);
+  accum += textureSample(texIn, samp, in.uv).rgb * weights[0];
+  for (var i = 1u; i < 5u; i++) {
+    let w = weights[i];
+    accum += textureSample(texIn, samp, in.uv + offs * f32(i)).rgb * w;
+    accum += textureSample(texIn, samp, in.uv - offs * f32(i)).rgb * w;
+  }
+  let lum = dot(accum, vec3<f32>(0.3, 0.59, 0.11));
+  accum = max(vec3<f32>(0.0), accum - 1.0);
+  return vec4<f32>(accum, 1.0);
+}
+
+@group(0) @binding(0) var colTex: texture_2d<f32>;
+@group(0) @binding(1) var bloomTex: texture_2d<f32>;
+@group(0) @binding(2) var sampLin: sampler;
+
+@fragment fn post_combine(in: PostOut) -> @location(0) vec4<f32> {
+  let c = textureSample(colTex, sampLin, in.uv).rgb;
+  let b = textureSample(bloomTex, sampLin, in.uv).rgb * 0.6;
+  let hdr = c + b;
+  // ACES tonemap approx
+  hdr = clamp((hdr * (2.51 * hdr + 0.03)) / (hdr * (2.43 * hdr + 0.46) + 0.06), vec3(0), vec3(1));
+  // Vignette
+  let uv2 = in.uv * 2.0 - 1.0;
+  let vig = dot(uv2, uv2) * 0.7;
+  hdr *= 1.0 - vig;
+  return vec4<f32>(hdr, 1.0);
+}
+    `;
+
+    // Mat4 helpers
+    function mat4identity() {
+      return new Float32Array([
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+      ]);
+    }
+    function mat4perspective(fovy, aspect, near, far) {
+      const f = 1.0 / Math.tan(fovy * 0.5);
+      const nf = 1.0 / (near - far);
+      return new Float32Array([
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, (far + near) * nf, 2 * far * near * nf,
+        0, 0, -1, 0
+      ]);
+    }
+    function vec3norm(v) {
+      const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+      return len > 0 ? [v[0]/len, v[1]/len, v[2]/len] : [0,0,0];
+    }
+    function vec3sub(a, b) {
+      return [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+    }
+    function vec3add(a, b) {
+      return [a[0]+b[0], a[1]+b[1], a[2]+b[2]];
+    }
+    function vec3dot(a, b) {
+      return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+    }
+    function vec3cross(a, b) {
+      return [
+        a[1]*b[2] - a[2]*b[1],
+        a[2]*b[0] - a[0]*b[2],
+        a[0]*b[1] - a[1]*b[0]
+      ];
+    }
+    function mat4lookAt(eye, target, up) {
+      let z = vec3norm(vec3sub(target, eye));
+      let x = vec3norm(vec3cross(up, z));
+      let y = vec3cross(z, x);
+      return new Float32Array([
+        x[0], x[1], x[2], 0,
+        y[0], y[1], y[2], 0,
+        z[0], z[1], z[2], 0,
+        -vec3dot(x, eye), -vec3dot(y, eye), -vec3dot(z, eye), 1
+      ]);
+    }
+    function mat4mul(a, b) { // a * b
+      const out = new Float32Array(16);
+      for (let i = 0; i < 4; ++i) {
+        for (let j = 0; j < 4; ++j) {
+          out[i*4 + j] = 0;
+          for (let k = 0; k < 4; ++k) {
+            out[i*4 + j] += a[i*4 + k] * b[k*4 + j];
+          }
+        }
+      }
+      return out;
+    }
+
+    // Camera
+    class Camera {
+      constructor() {
+        this.pos = new Float32Array([48, 55, 110]);
+        this.yaw = -0.45;
+        this.pitch = -0.35;
+        this.orbitMode = false;
+        this.orbitTarget = new Float32Array([48, 28, 48]);
+        this.orbitRadius = 70;
+        this.orbitAngle = 0;
+      }
+      update(dt) {
+        if (this.orbitMode) {
+          this.orbitAngle += dt * 0.25;
+          this.pos[0] = this.orbitTarget[0] + Math.sin(this.orbitAngle) * this.orbitRadius * 0.7;
+          this.pos[2] = this.orbitTarget[2] + Math.cos(this.orbitAngle) * this.orbitRadius * 0.7;
+          this.pos[1] = this.orbitTarget[1] + 45 + Math.sin(this.orbitAngle * 0.3) * 5;
+          let toTarget = vec3sub(this.orbitTarget, this.pos);
+          let lookD = vec3norm(toTarget);
+          this.yaw = Math.atan2(lookD[0], lookD[2]);
+          this.pitch = Math.asin(lookD[1]);
+          return;
+        }
+        const fw = [
+          Math.sin(this.yaw) * Math.cos(this.pitch),
+          Math.sin(this.pitch),
+          Math.cos(this.yaw) * Math.cos(this.pitch)
+        ];
+        const rt = [Math.cos(this.yaw), 0, -Math.sin(this.yaw)];
+        const move = new Float32Array([0,0,0]);
+        const speed = 45 * dt;
+        if (keys['KeyW']) {
+          move[0] += fw[0] * speed;
+          move[1] += fw[1] * speed;
+          move[2] += fw[2] * speed;
+        }
+        if (keys['KeyS']) {
+          move[0] -= fw[0] * speed;
+          move[1] -= fw[1] * speed;
+          move[2] -= fw[2] * speed;
+        }
+        if (keys['KeyA']) {
+          move[0] -= rt[0] * speed;
+          move[2] -= rt[2] * speed;
+        }
+        if (keys['KeyD']) {
+          move[0] += rt[0] * speed;
+          move[2] += rt[2] * speed;
+        }
+        if (keys['Space']) this.pos[1] += speed;
+        if (keys['ShiftLeft']) this.pos[1] -= speed;
+        this.pos[0] += move[0];
+        this.pos[1] += move[1];
+        this.pos[2] += move[2];
+      }
+      getViewProj(aspect) {
+        const view = mat4lookAt(this.pos, vec3add(this.pos, [Math.sin(this.yaw)*Math.cos(this.pitch), Math.sin(this.pitch), Math.cos(this.yaw)*Math.cos(this.pitch)]), [0,1,0]);
+        const proj = mat4perspective(Math.PI / 3, aspect, 0.1, 1024.0);
+        return mat4mul(proj, view);
+      }
+    }
+    const cam = new Camera();
+
+    // Controls
+    const keys = {};
+    document.addEventListener('keydown', (e) => { keys[e.code] = true; });
+    document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+    document.addEventListener('click', () => canvas.requestPointerLock());
+    document.addEventListener('pointerlockchange', () => {
+      if (document.pointerLockElement !== canvas) {
+        document.exitPointerLock();
+      }
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (document.pointerLockElement === canvas) {
+        cam.yaw -= e.movementX * 0.003;
+        cam.pitch -= e.movementY * 0.003;
+        cam.pitch = clamp(cam.pitch, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
+      }
+    });
+
+    // UI
+    let timeOfDay = 0.3; // day start
+    function addButton(text, cb) {
+      const btn = document.createElement('button');
+      btn.textContent = text;
+      btn.onclick = cb;
+      ui.appendChild(btn);
+    }
+    addButton('Dawn', () => timeOfDay = 0.05);
+    addButton('Day', () => timeOfDay = 0.3);
+    addButton('Dusk', () => timeOfDay = 0.65);
+    addButton('Night', () => timeOfDay = 0.85);
+    addButton('Orbit', () => cam.orbitMode = !cam.orbitMode);
+    addButton('Screenshot', () => {
+      canvas.toBlob((blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'voxel-fantasy.png';
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+    });
+
+    // Init
+    let rafId;
+    async function initGPU() {
+      if (!navigator.gpu) {
+        alert('WebGPU not supported');
+        return;
+      }
+      adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) return;
+      device = await adapter.requestDevice();
+      context = canvas.getContext('webgpu');
+      format = navigator.gpu.getPreferredCanvasFormat();
+
+      generateWorld();
+      meshWorld();
+
+      // Buffers
+      vertBuffer = device.createBuffer({
+        label: 'vertices',
+        size: vidx * 40,
+        usage: GPUBufferUsage.VERTEX,
+        mappedAtCreation: true
+      });
+      new Float32Array(vertBuffer.getMappedRange()).set(vertData.slice(0, vidx * 10));
+      vertBuffer.unmap();
+      idxBuffer = device.createBuffer({
+        label: 'indices',
+        size: indexCount * 4,
+        usage: GPUBufferUsage.INDEX,
+        mappedAtCreation: true
+      });
+      new Uint32Array(idxBuffer.getMappedRange()).set(indicesData.slice(0, indexCount));
+      idxBuffer.unmap();
+
+      // UBOs
+      cameraUBO = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      sceneUBO = device.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      cameraBG = device.createBindGroup({
+        layout: 'auto', // later
+        entries: [{ binding: 0, resource: { buffer: cameraUBO } }]
+      });
+      sceneBG = device.createBindGroup({
+        layout: 'auto',
+        entries: [{ binding: 0, resource: { buffer: sceneUBO } }]
+      });
+
+      // Shaders Pipelines
+      const sceneModule = device.createShaderModule({ code: sceneWGSL });
+      scenePipeline = device.createRenderPipeline({
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [
+            { entries: [{ binding: 0, type: 'uniform' }] },
+            { entries: [{ binding: 0, type: 'uniform' }] }
+          ]
+        }),
+        vertex: {
+          module: sceneModule,
+          entryPoint: 'vs_main',
+          buffers: [{
+            arrayStride: 40,
+            attributes: [
+              { format: 'float32x3', location: 0, offset: 0 },
+              { format: 'float32x3', location: 1, offset: 12 },
+              { format: 'float32x4', location: 2, offset: 24 }
+            ]
+          }]
+        },
+        fragment: {
+          module: sceneModule,
+          entryPoint: 'fs_main',
+          targets: [{ format: 'rgba16float' }]
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'back' },
+        depthStencil: {
+          format: 'depth32float',
+          depthWriteEnabled: true,
+          depthCompare: 'less'
+        }
+      });
+
+      const postModule = device.createShaderModule({ code: postWGSL });
+      linearSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+
+      // Blur pipelines
+      const blurLayout = device.createPipelineLayout({
+        bindGroupLayouts: [{
+          entries: [
+            { binding: 0, type: 'texture' },
+            { binding: 1, type: 'sampler' }
+          ]
+        }]
+      });
+      hBlurPipeline = device.createRenderPipeline({
+        layout: blurLayout,
+        vertex: { module: postModule, entryPoint: 'post_vs', buffers: [] },
+        fragment: {
+          module: postModule,
+          entryPoint: 'blur_h',
+          targets: [{ format: 'rgba16float' }]
+        },
+        primitive: { topology: 'triangle-list' }
+      });
+      vBlurPipeline = device.createRenderPipeline({
+        layout: blurLayout,
+        vertex: { module: postModule, entryPoint: 'post_vs', buffers: [] },
+        fragment: {
+          module: postModule,
+          entryPoint: 'blur_v',
+          targets: [{ format: 'rgba16float' }]
+        },
+        primitive: { topology: 'triangle-list' }
+      });
+
+      // Post combine
+      const postCombineLayout = device.createPipelineLayout({
+        bindGroupLayouts: [{
+          entries: [
+            { binding: 0, type: 'texture' },
+            { binding: 1, type: 'texture' },
+            { binding: 2, type: 'sampler' }
+          ]
+        }]
+      });
+      postPipeline = device.createRenderPipeline({
+        layout: postCombineLayout,
+        vertex: { module: postModule, entryPoint: 'post_vs', buffers: [] },
+        fragment: {
+          module: postModule,
+          entryPoint: 'post_combine',
+          targets: [{ format }]
+        },
+        primitive: { topology: 'triangle-list' }
+      });
+
+      // Bindgroups for post
+      resize(); // init sizes
+      context.configure({ device, format, alphaMode: 'premultiplied' });
+
+      cameraBG = device.createBindGroup({
+        layout: scenePipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: cameraUBO } }]
+      });
+      sceneBG = device.createBindGroup({
+        layout: scenePipeline.getBindGroupLayout(1),
+        entries: [{ binding: 0, resource: { buffer: sceneUBO } }]
+      });
+
+      let lastTime = 0;
+      function animate(time) {
+        const dt = Math.min(0.05, (time - lastTime) / 1000);
+        lastTime = time;
+
+        cam.update(dt);
+        updateCamera();
+        updateScene(time / 1000);
+
+        const encoder = device.createCommandEncoder();
+        const canvasTexture = context.getCurrentTexture();
+        const canvasView = canvasTexture.createView();
+
+        // Scene to colorRT
+        const colorView = colorRT.createView();
+        const depthView = depthTexture.createView();
+        const scenePassDesc = {
+          colorAttachments: [{
+            view: colorView,
+            clearValue: { r: 0.1, g: 0.15, b: 0.3, a: 1.0 },
+            loadOp: 'clear',
+            storeOp: 'store'
+          }],
+          depthStencilAttachment: {
+            view: depthView,
+            depthClearValue: 1.0,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store'
+          }
+        };
+        const scenePass = encoder.beginRenderPass(scenePassDesc);
+        scenePass.setPipeline(scenePipeline);
+        scenePass.setVertexBuffer(0, vertBuffer);
+        scenePass.setIndexBuffer(idxBuffer, 'uint32');
+        scenePass.setBindGroup(0, cameraBG);
+        scenePass.setBindGroup(1, sceneBG);
+        scenePass.drawIndexed(indexCount);
+        scenePass.end();
+
+        // Bloom H
+        const bloomHView = bloomHRT.createView();
+        const hPassDesc = {
+          colorAttachments: [{
+            view: bloomHView,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store'
+          }]
+        };
+        const hBlurPass = encoder.beginRenderPass(hPassDesc);
+        hBlurPass.setPipeline(hBlurPipeline);
+        hBlurPass.setBindGroup(0, device.createBindGroup({
+          layout: hBlurPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: colorView },
+            { binding: 1, resource: linearSampler }
+          ]
+        }));
+        hBlurPass.draw(3);
+        hBlurPass.end();
+
+        // Bloom V
+        const bloomVView = bloomVRT.createView();
+        const vPassDesc = {
+          colorAttachments: [{
+            view: bloomVView,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store'
+          }]
+        };
+        const vBlurPass = encoder.beginRenderPass(vPassDesc);
+        vBlurPass.setPipeline(vBlurPipeline);
+        vBlurPass.setBindGroup(0, device.createBindGroup({
+          layout: vBlurPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: bloomHView },
+            { binding: 1, resource: linearSampler }
+          ]
+        }));
+        vBlurPass.draw(3);
+        vBlurPass.end();
+
+        // Post to canvas
+        const postDesc = {
+          colorAttachments: [{
+            view: canvasView,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store'
+          }]
+        };
+        const postPass = encoder.beginRenderPass(postDesc);
+        postPass.setPipeline(postPipeline);
+        postPass.setBindGroup(0, device.createBindGroup({
+          layout: postPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: colorView },
+            { binding: 1, resource: bloomVView },
+            { binding: 2, resource: linearSampler }
+          ]
+        }));
+        postPass.draw(3);
+        postPass.end();
+
+        device.queue.submit([encoder.finish()]);
+        rafId = requestAnimationFrame(animate);
+      }
+      requestAnimationFrame(animate);
+    }
+
+    let cameraData = new Float32Array(20);
+    let sceneData = new Float32Array(32);
+    function updateCamera() {
+      const aspect = canvasWidth / canvasHeight;
+      const vp = cam.getViewProj(aspect);
+      cameraData.set(vp, 0);
+      cameraData[16] = cam.pos[0];
+      cameraData[17] = cam.pos[1];
+      cameraData[18] = cam.pos[2];
+      cameraData[19] = 0;
+      device.queue.writeBuffer(cameraUBO, 0, cameraData.buffer);
+    }
+    function updateScene(t) {
+      const sunAz = t * 0.1 + timeOfDay * Math.PI * 2 * 0.7;
+      const sunEl = Math.sin(timeOfDay * Math.PI * 2) * 0.4 + 0.3;
+      const lx = Math.sin(sunAz) * Math.cos(sunEl);
+      const ly = Math.sin(sunEl);
+      const lz = Math.cos(sunAz) * Math.cos(sunEl);
+      sceneData[0] = lx;
+      sceneData[1] = ly;
+      sceneData[2] = lz;
+      sceneData[3] = t;
+      let sunInt = ly * 1.2 + 0.4;
+      sceneData[4] = 1.0 * sunInt;
+      sceneData[5] = lerp(0.95, 0.85, 1-ly) * sunInt;
+      sceneData[6] = lerp(0.8, 0.65, 1-ly) * sunInt;
+      sceneData[7] = timeOfDay;
+      sceneData[8] = 1.2 + (1-ly) * 2.5;
+      sceneData[9] = 0;
+      // Sky
+      let zenR, zenG, zenB, horR, horG, horB;
+      if (timeOfDay < 0.2) { // dawn
+        let p = timeOfDay / 0.2;
+        zenR = lerp(0.4, 1.0, p); zenG = lerp(0.2, 0.4, p); zenB = lerp(0.3, 0.5, p);
+        horR = 1.0; horG = lerp(0.5, 0.7, p); horB = 0.6;
+      } else if (timeOfDay < 0.4) { // day
+        zenR = 0.45; zenG = 0.75 + (timeOfDay-0.2)*0.1; zenB = 1.0;
+        horR = 0.25; horG = 0.55; horB = 0.95;
+      } else if (timeOfDay < 0.7) { // dusk
+        let p = (timeOfDay - 0.4) / 0.3;
+        zenR = 1.0; zenG = lerp(0.6, 0.3, p); zenB = lerp(0.5, 0.2, p);
+        horR = 1.0; horG = 0.75; horB = 0.55;
+      } else { // night
+        let p = (timeOfDay - 0.7) / 0.3;
+        zenR = lerp(0.15, 0.05, p); zenG = lerp(0.15, 0.05, p); zenB = lerp(0.4, 0.25, p);
+        horR = 0.05; horG = 0.05; horB = 0.2;
+      }
+      sceneData[10] = zenR;
+      sceneData[11] = zenG;
+      sceneData[12] = zenB;
+      sceneData[13] = horR;
+      sceneData[14] = horG;
+      sceneData[15] = horB;
+      device.queue.writeBuffer(sceneUBO, 0, sceneData.buffer);
+    }
+
+    function resize() {
+      canvasWidth = canvas.clientWidth;
+      canvasHeight = canvas.clientHeight;
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
+      if (!device) return;
+      if (colorRT) colorRT.destroy();
+      if (bloomHRT) bloomHRT.destroy();
+      if (bloomVRT) bloomVRT.destroy();
+      if (depthTexture) depthTexture.destroy();
+      colorRT = device.createTexture({
+        size: [canvasWidth, canvasHeight],
+        format: 'rgba16float',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+      });
+      bloomHRT = device.createTexture({
+        size: [canvasWidth, canvasHeight],
+        format: 'rgba16float',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+      });
+      bloomVRT = device.createTexture({
+        size: [canvasWidth, canvasHeight],
+        format: 'rgba16float',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
+      });
+      depthTexture = device.createTexture({
+        size: [canvasWidth, canvasHeight],
+        format: 'depth32float',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT
+      });
+    }
+    window.addEventListener('resize', resize);
+
+    // Start
+    initGPU().catch(console.error);
+  </script>
+</body>
+</html>

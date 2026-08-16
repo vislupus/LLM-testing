@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Aetheria — Alien Planet VR</title>
+<style>
+  html,body{margin:0;height:100%;background:#05060b;overflow:hidden;font-family:system-ui,"Segoe UI",Roboto,sans-serif;color:#cfe6f2}
+  #gl{display:block;width:100vw;height:100vh}
+  #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:10;
+      background:radial-gradient(circle at 50% 35%,#0c1424,#03040a);flex-direction:column;gap:18px;text-align:center;padding:24px}
+  #ui.hide{display:none}
+  #ui h1{font-size:30px;letter-spacing:3px;font-weight:600;margin:0;background:linear-gradient(90deg,#7fe7ff,#b78bff,#ff9bd0);-webkit-background-clip:text;background-clip:text;color:transparent}
+  #ui p{max-width:620px;line-height:1.6;color:#9fb6c9;font-size:14px;margin:0}
+  #ui .keys{font-size:12px;color:#7e93a6;line-height:1.8}
+  #enter{background:linear-gradient(90deg,#2e6df0,#7f5bff);color:#fff;border:0;border-radius:12px;padding:14px 30px;font-size:16px;cursor:pointer;letter-spacing:1px;box-shadow:0 10px 40px rgba(80,110,255,.4)}
+  #enter:disabled{opacity:.45;cursor:not-allowed}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#0a0e16;z-index:30;padding:30px;text-align:center}
+  #err div{max-width:560px;line-height:1.6}
+  #toast{position:fixed;top:22px;left:50%;transform:translateX(-50%);background:rgba(10,18,30,.8);border:1px solid rgba(140,200,255,.3);
+    padding:12px 22px;border-radius:30px;font-size:14px;color:#dff1ff;z-index:20;opacity:0;transition:opacity .5s;pointer-events:none;backdrop-filter:blur(6px)}
+  #toast.show{opacity:1}
+  #win{position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;z-index:25;
+    background:rgba(4,6,12,.55);backdrop-filter:blur(4px);text-align:center}
+  #win h2{font-size:26px;background:linear-gradient(90deg,#7fe7ff,#ff9bd0);-webkit-background-clip:text;background-clip:text;color:transparent;margin:0}
+  #win p{color:#bcd3e4;max-width:520px;line-height:1.6}
+  #win button{background:rgba(120,170,255,.15);border:1px solid rgba(140,200,255,.4);color:#dff1ff;padding:10px 24px;border-radius:10px;cursor:pointer}
+  #stat{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);font-size:12px;color:#6f86a0;z-index:20}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div id="ui">
+  <h1>AETHERIA</h1>
+  <p>You awaken on a forgotten world beneath a violet sky. Wander strange biomes, descend into glowing caves,
+     read the ruins of those who came before, and recover six lost <b>artifacts</b> to uncover the planet's secret.</p>
+  <div class="keys">
+    <b>In VR:</b> point a controller &amp; pull <kbd>trigger</kbd> to teleport · squeeze <kbd>grip</kbd> to grab artifacts · look around freely<br>
+    <b>Desktop preview:</b> click to look · <kbd>WASD</kbd> move · <kbd>Space</kbd>/<kbd>Ctrl</kbd> up/down · <kbd>Shift</kbd> faster
+  </div>
+  <button id="enter">Enter VR</button>
+  <p id="compat" style="font-size:12px;color:#6f86a0"></p>
+</div>
+
+<div id="toast"></div>
+<div id="win">
+  <h2>The Planet Remembers</h2>
+  <p>You have recovered all six artifacts. Aether's memory flows back through the hollows and the sky.
+     The Wanderers' secret is yours — and the world, for a moment, is whole again.</p>
+  <button id="winClose">Continue exploring</button>
+</div>
+<div id="err"><div><h2>WebXR / WebGL2 unavailable</h2><p id="errmsg"></p></div></div>
+<div id="stat"></div>
+
+<script>
+"use strict";
+/* ============================================================
+   AETHERIA — pure WebXR + WebGL2, no libraries, single file.
+   ============================================================ */
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', {antialias:true, depth:true, alpha:false, powerPreference:'high-performance'});
+if(!gl){ showErr('WebGL2 is required but not available in this browser.'); }
+function showErr(m){ const e=document.getElementById('err'); document.getElementById('errmsg').textContent=m; e.style.display='flex'; throw new Error(m); }
+
+/* ---------- tiny matrix / vector helpers (column-major) ---------- */
+function M(a){ return new Float32Array(a||16); }
+function ident(o){ o[0]=1;o[5]=1;o[10]=1;o[15]=1; for(let i=0;i<16;i++) if(i!==0&&i!==5&&i!==10&&i!==15) o[i]=0; return o; }
+function mul(o,a,b){
+  for(let c=0;c<4;c++){ const b0=b[c*4],b1=b[c*4+1],b2=b[c*4+2],b3=b[c*4+3];
+    o[c*4]  =a[0]*b0+a[4]*b1+a[8]*b2+a[12]*b3;
+    o[c*4+1]=a[1]*b0+a[5]*b1+a[9]*b2+a[13]*b3;
+    o[c*4+2]=a[2]*b0+a[6]*b1+a[10]*b2+a[14]*b3;
+    o[c*4+3]=a[3]*b0+a[7]*b1+a[11]*b2+a[15]*b3; }
+  return o;
+}
+function perspective(out,fovy,aspect,near,far){
+  const f=1/Math.tan(fovy/2), nf=1/(near-far);
+  out[0]=f/aspect;out[1]=0;out[2]=0;out[3]=0;
+  out[4]=0;out[5]=f;out[6]=0;out[7]=0;
+  out[8]=0;out[9]=0;out[10]=far*nf;out[11]=-1;
+  out[12]=0;out[13]=0;out[14]=far*near*nf;out[15]=0; return out;
+}
+function lookAt(out,eye,center,up){
+  let z0=eye[0]-center[0],z1=eye[1]-center[1],z2=eye[2]-center[2];
+  let len=Math.hypot(z0,z1,z2)||1; z0/=len;z1/=len;z2/=len;
+  let x0=up[1]*z2-up[2]*z1,x1=up[2]*z0-up[0]*z2,x2=up[0]*z1-up[1]*z0;
+  len=Math.hypot(x0,x1,x2)||1; x0/=len;x1/=len;x2/=len;
+  let y0=z1*x2-z2*x1,y1=z2*x0-z0*x2,y2=z0*x1-z1*x0;
+  out[0]=x0;out[1]=y0;out[2]=z0;out[3]=0;
+  out[4]=x1;out[5]=y1;out[6]=z1;out[7]=0;
+  out[8]=x2;out[9]=y2;out[10]=z2;out[11]=0;
+  out[12]=-(x0*eye[0]+x1*eye[1]+x2*eye[2]);
+  out[13]=-(y0*eye[0]+y1*eye[1]+y2*eye[2]);
+  out[14]=-(z0*eye[0]+z1*eye[1]+z2*eye[2]);
+  out[15]=1; return out;
+}
+function trs(out,x,y,z,ry,sx,sy,sz){
+  const c=Math.cos(ry),s=Math.sin(ry);
+  out[0]=c*sx;  out[1]=0;       out[2]=-s*sx; out[3]=0;
+  out[4]=0;     out[5]=sy;      out[6]=0;     out[7]=0;
+  out[8]=s*sz;  out[9]=0;       out[10]=c*sz; out[11]=0;
+  out[12]=x;    out[13]=y;      out[14]=z;    out[15]=1; return out;
+}
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ---------- procedural world (single source of truth) ---------- */
+function hash2(ix,iz){ let n=(ix*374761393 ^ iz*668265263)>>>0; n=((n^(n>>>13))*1274126177)>>>0; return ((n^(n>>>16))>>>0)/4294967295; }
+function vnoise(x,z){ const ix=Math.floor(x),iz=Math.floor(z),fx=x-ix,fz=z-iz;
+  const ux=fx*fx*(3-2*fx),uz=fz*fz*(3-2*fz);
+  const a=hash2(ix,iz),b=hash2(ix+1,iz),c=hash2(ix,iz+1),d=hash2(ix+1,iz+1);
+  return a*(1-ux)*(1-uz)+b*ux*(1-uz)+c*(1-ux)*uz+d*ux*uz; }
+function fbm(x,z){ let v=0,amp=0.5,f=1; for(let i=0;i<5;i++){ v+=amp*vnoise(x*f,z*f); f*=2; amp*=0.5; } return v; }
+function heightAt(x,z){
+  let h = fbm(x*0.012+10, z*0.012+10)*36 + fbm(x*0.06, z*0.06)*3.5;
+  let d=Math.hypot(x,z);
+  if(d<55) h = Math.max(h, 7 + (1-d/55)*12);            // central plateau
+  let cd=Math.hypot(x-120, z+40);
+  if(cd<42) h -= (1-cd/42)*16;                          // cave hollow
+  let rd=Math.hypot(x+70, z+50);
+  if(rd<22) h = Math.max(h, 4 + (1-rd/22)*6);           // ruins mound
+  return h;
+}
+function biomeColor(x,z,y){
+  let n=fbm(x*0.03+5, z*0.03+5); let c;
+  if(y<1.5)      c=[0.10,0.32,0.38];      // alien pools (teal)
+  else if(y<14)  c=[0.32,0.42,0.20];      // glowing plains (olive)
+  else if(y<26)  c=[0.40,0.34,0.30];      // rocky
+  else           c=[0.44,0.40,0.52];      // highlands (violet)
+  let cd=Math.hypot(x-120,z+40); if(cd<42) c=[0.11,0.11,0.17]; // cave dark
+  let v=(n-0.5)*0.16; return [c[0]+v,c[1]+v,c[2]+v];
+}
+
+/* ---------- terrain mesh ---------- */
+function buildTerrain(){
+  const N=180, EXT=210, step=EXT*2/N, verts=[], idx=[];
+  for(let j=0;j<=N;j++)for(let i=0;i<=N;i++){
+    const x=-EXT+i*step, z=-EXT+j*step; const y=heightAt(x,z);
+    const hx=0.5*step;
+    const ny=(heightAt(x-hx,z)-heightAt(x+hx,z))/(2*hx);
+    const nz=(heightAt(x,z-hx)-heightAt(x,z+hx))/(2*hx);
+    const nlen=Math.hypot(nx,1,nz)||1;
+    const col=biomeColor(x,z,y);
+    verts.push(x,y,z, -nx/nlen,1/nlen,-nz/nlen, col[0],col[1],col[2]);
+  }
+  for(let j=0;j<N;j++)for(let i=0;i<N;i++){
+    const a=j*(N+1)+i, b=a+1, c=a+(N+1), d=c+1;
+    idx.push(a,c,b, b,c,d);
+  }
+  return {data:new Float32Array(verts), idx:new Uint32Array(idx), vbo:null, ibo:null, count:idx.length};
+}
+
+/* ---------- primitive geometry builders (pos3 + normal3 interleaved) ---------- */
+function pushQuad(L,p0,p1,p2,p3,n){
+  L.push(p0[0],p0[1],p0[2],n[0],n[1],n[2], p1[0],p1[1],p1[2],n[0],n[1],n[2], p2[0],p2[1],p2[2],n[0],n[1],n[2]);
+  L.push(p0[0],p0[1],p0[2],n[0],n[1],n[2], p2[0],p2[1],p2[2],n[0],n[1],n[2], p3[0],p3[1],p3[2],n[0],n[1],n[2]);
+}
+function genBox(w,h,d){
+  const L=[], x=w/2,y=h/2,z=d/2;
+  pushQuad(L,[-x,-y,-z],[x,-y,-z],[x,y,-z],[-x,y,-z],[0,0,-1]);
+  pushQuad(L,[-x,-y,z],[-x,y,z],[x,y,z],[x,-y,z],[0,0,1]);
+  pushQuad(L,[-x,-y,-z],[-x,-y,z],[-x,y,z],[-x,y,-z],[-1,0,0]);
+  pushQuad(L,[x,-y,-z],[x,y,-z],[x,y,z],[x,-y,z],[1,0,0]);
+  pushQuad(L,[-x,y,-z],[x,y,-z],[x,y,z],[-x,y,z],[0,1,0]);
+  pushQuad(L,[-x,-y,-z],[-x,-y,z],[x,-y,z],[x,-y,-z],[0,-1,0]);
+  return {data:new Float32Array(L), count:L.length/6};
+}
+function genCyl(r,h,seg){
+  const L=[], y=h/2;
+  for(let i=0;i<seg;i++){ const a0=i/seg*6.283,a1=(i+1)/seg*6.283;
+    const c0=Math.cos(a0),s0=Math.sin(a0),c1=Math.cos(a1),s1=Math.sin(a1);
+    pushQuad(L,[c0*r,-y,s0*r],[c1*r,-y,s1*r],[c1*r,y,s1*r],[c0*r,y,s0*r],[c0,0,s0]);
+    L.push(c0*r,-y,s0*r,0,-1,0, c1*r,-y,s1*r,0,-1,0, 0,-y,0,0,-1,0);
+    L.push(c1*r,y,s1*r,0,1,0, c0*r,y,s0*r,0,1,0, 0,y,0,0,1,0);
+  }
+  return {data:new Float32Array(L), count:L.length/6};
+}
+function genCone(r,h,seg){
+  const L=[], y=h;
+  for(let i=0;i<seg;i++){ const a0=i/seg*6.283,a1=(i+1)/seg*6.283;
+    const c0=Math.cos(a0),s0=Math.sin(a0),c1=Math.cos(a1),s1=Math.sin(a1);
+    const n0=[c0,0.6,s0],n1=[c1,0.6,s1]; const nl0=Math.hypot(n0[0],n0[1],n0[2]),nl1=Math.hypot(n1[0],n1[1],n1[2]);
+    n0=n0.map(v=>v/nl0); n1=n1.map(v=>v/nl1);
+    L.push(c0*r,0,s0*r,n0[0],n0[1],n0[2], c1*r,0,s1*r,n1[0],n1[1],n1[2], 0,y,0,(c0+c1)/2,0.8,(s0+s1)/2);
+  }
+  return {data:new Float32Array(L), count:L.length/6};
+}
+function genIco(r){
+  const t=(1+Math.sqrt(5))/2; let v=[[-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],[0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],[t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]];
+  const f=[[0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],[3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]];
+  const L=[]; for(const tri of f){ const A=v[tri[0]],B=v[tri[1]],C=v[tri[2]];
+    const n=[(A[1]-B[1])*(A[2]-C[2])-(A[2]-B[2])*(A[1]-C[1]),(A[2]-B[2])*(A[0]-C[0])-(A[0]-B[0])*(A[2]-C[2]),(A[0]-B[0])*(A[1]-C[1])-(A[1]-B[1])*(A[0]-C[0])];
+    const nl=Math.hypot(n[0],n[1],n[2])||1; n[0]/=nl;n[1]/=nl;n[2]/=nl;
+    for(const P of [A,B,C]) L.push(P[0]*r,P[1]*r,P[2]*r,n[0],n[1],n[2]); }
+  return {data:new Float32Array(L), count:L.length/6};
+}
+function genOcta(r){
+  const v=[[r,0,0],[-r,0,0],[0,r,0],[0,-r,0],[0,0,r],[0,0,-r]];
+  const f=[[0,2,4],[2,1,4],[1,3,4],[3,0,4],[2,0,5],[1,2,5],[3,1,5],[0,3,5]];
+  const L=[]; for(const t of f){ const A=v[t[0]],B=v[t[1]],C=v[t[2]];
+    const n=[(B[1]-A[1])*(C[2]-A[2])-(B[2]-A[2])*(C[1]-A[1]),(B[2]-A[2])*(C[0]-A[0])-(B[0]-A[0])*(C[2]-A[2]),(B[0]-A[0])*(C[1]-A[1])-(B[1]-A[1])*(C[0]-A[0])];
+    const nl=Math.hypot(n[0],n[1],n[2])||1; for(const P of [A,B,C]) L.push(P[0],P[1],P[2],n[0]/nl,n[1]/nl,n[2]/nl); }
+  return {data:new Float32Array(L), count:L.length/6};
+}
+function genAnnulus(r1,r2,seg){
+  const L=[], up=[0,1,0];
+  for(let i=0;i<seg;i++){ const a0=i/seg*6.283,a1=(i+1)/seg*6.283;
+    const c0=Math.cos(a0),s0=Math.sin(a0),c1=Math.cos(a1),s1=Math.sin(a1);
+    L.push(c0*r1,0,s0*r1,up[0],up[1],up[2], c1*r1,0,s1*r1,up[0],up[1],up[2], c1*r2,0,s1*r2,up[0],up[1],up[2]);
+    L.push(c0*r1,0,s0*r1,up[0],up[1],up[2], c1*r2,0,s1*r2,up[0],up[1],up[2], c0*r2,0,s0*r2,up[0],up[1],up[2]);
+  }
+  return {data:new Float32Array(L), count:L.length/6};
+}
+function genSphere(r,seg){
+  const L=[];
+  for(let j=0;j<seg;j++)for(let i=0;i<seg;i++){
+    const a0=i/seg*6.283,a1=(i+1)/seg*6.283,b0=j/seg*Math.PI-b0p(),b1=(j+1)/seg*Math.PI-Math.PI/2;
+    function b0p(){return Math.PI/2;}
+    const p=(a,b)=>[Math.cos(b)*Math.cos(a)*r, Math.sin(b)*r, Math.cos(b)*Math.sin(a)*r];
+    const A=p(a0,b0),B=p(a1,b0),C=p(a1,b1),D=p(a0,b1);
+    const n=A.slice(); const nl=Math.hypot(n[0],n[1],n[2])||1; n=n.map(v=>v/nl);
+    L.push(A[0],A[1],A[2],n[0],n[1],n[2], B[0],B[1],B[2],n[0],n[1],n[2], C[0],C[1],C[2],n[0],n[1],n[2]);
+    L.push(A[0],A[1],A[2],n[0],n[1],n[2], C[0],C[1],C[2],n[0],n[1],n[2], D[0],D[1],D[2],n[0],n[1],n[2]);
+  }
+  return {data:new Float32Array(L), count:L.length/6};
+}
+function genQuad(){
+  const L=[]; const n=[0,0,1];
+  L.push(-0.5,-0.5,0,n[0],n[1],n[2], 0.5,-0.5,0,n[0],n[1],n[2], 0.5,0.5,0,n[0],n[1],n[2]);
+  L.push(-0.5,-0.5,0,n[0],n[1],n[2], 0.5,0.5,0,n[0],n[1],n[2], -0.5,0.5,0,n[0],n[1],n[2]);
+  return {data:new Float32Array(L), count:L.length/6};
+}
+function genCorners(){ // for glow billboards: 4 corners in 2D
+  const v=new Float32Array([-0.5,-0.5, 0.5,-0.5, 0.5,0.5, -0.5,0.5]);
+  const idx=new Uint16Array([0,1,2, 0,2,3]);
+  return {data:v, idx, count:6};
+}
+
+/* ---------- GPU buffers ---------- */
+function makeBuf(data,usage){ const b=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,b); gl.bufferData(gl.ARRAY_BUFFER,data,usage||gl.STATIC_DRAW); return b; }
+function makeIdx(data){ const b=gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,b); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,data,gl.STATIC_DRAW); return b; }
+
+const terrain = buildTerrain();
+terrain.vbo = makeBuf(terrain.data); terrain.ibo = makeIdx(terrain.idx);
+
+const GEOS = {
+  box: genBox(1,1,1), cyl: genCyl(0.5,1,10), cone: genCone(0.7,1.6,8),
+  ico: genIco(1), octa: genOcta(1), annulus: genAnnulus(0.7,1.0,40), sphere: genSphere(1,32), quad: genQuad(), corners: genCorners()
+};
+for(const k in GEOS){ if(!GEOS[k].vbo){ GEOS[k].vbo = makeBuf(GEOS[k].data); if(GEOS[k].idx) GEOS[k].ibo = makeIdx(GEOS[k].idx); } }
+
+/* ---------- instance data model ----------
+   Each type: {geo, inst:Float32Array(stride 21), count, vao, buffer, dynamic, rebuild}
+   stride: model mat4 (16) + color vec3 (3) + emissive (1) + phase (1) = 21
+*/
+const STRIDE=21*4;
+function newType(geo, count, dynamic){
+  const inst=new Float32Array(count*21);
+  const buffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buffer); gl.bufferData(gl.ARRAY_BUFFER,inst,dynamic?gl.DYNAMIC_DRAW:gl.STATIC_DRAW);
+  const vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER,geo.vbo);
+  gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4,3,gl.FLOAT,false,24,0);
+  gl.enableVertexAttribArray(5); gl.vertexAttribPointer(5,3,gl.FLOAT,false,24,12);
+  gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+  for(let i=0;i<4;i++){ gl.enableVertexAttribArray(i); gl.vertexAttribPointer(i,4,gl.FLOAT,false,STRIDE,i*16); gl.vertexAttribDivisor(i,1); }
+  gl.enableVertexAttribArray(6); gl.vertexAttribPointer(6,3,gl.FLOAT,false,STRIDE,64); gl.vertexAttribDivisor(6,1);
+  gl.enableVertexAttribArray(7); gl.vertexAttribPointer(7,1,gl.FLOAT,false,STRIDE,76); gl.vertexAttribDivisor(7,1);
+  gl.enableVertexAttribArray(8); gl.vertexAttribPointer(8,1,gl.FLOAT,false,STRIDE,80); gl.vertexAttribDivisor(8,1);
+  gl.bindVertexArray(null);
+  return {geo, inst, count, vao, buffer, dynamic, rebuild:null};
+}
+function setInstance(t, i, m, r,g,b, em, ph){
+  const o=i*21; t.inst[o+0]=m[0];t.inst[o+1]=m[1];t.inst[o+2]=m[2];t.inst[o+3]=m[3];
+  t.inst[o+4]=m[4];t.inst[o+5]=m[5];t.inst[o+6]=m[6];t.inst[o+7]=m[7];
+  t.inst[o+8]=m[8];t.inst[o+9]=m[9];t.inst[o+10]=m[10];t.inst[o+11]=m[11];
+  t.inst[o+12]=m[12];t.inst[o+13]=m[13];t.inst[o+14]=m[14];t.inst[o+15]=m[15];
+  t.inst[o+16]=r;t.inst[o+17]=g;t.inst[o+18]=b;t.inst[o+19]=em;t.inst[o+20]=ph;
+}
+
+/* ---------- populate world ---------- */
+const T={}; // type registry
+const rng=mulberry32(1337); function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return ((t^t>>>14)>>>0)/4294967296;};}
+
+// rocks, pillars, crystals, tree trunks/leaves, mushrooms — static
+const rockObjs=[],pillarObjs=[],crystalObjs=[],trunkObjs=[],leafObjs=[],mushObjs=[];
+for(let i=0;i<260;i++){ const x=(rng()*2-1)*195, z=(rng()*2-1)*195; const y=heightAt(x,z);
+  if(y< -8) continue; const s=0.6+rng()*2.4; rockObjs.push({x,y,z,ry:rng()*6.28,sx:s,sy:s*(0.6+rng()*0.5),sz:s}); }
+// ruins: ring of broken pillars + arch
+for(let i=0;i<11;i++){ const a=i/11*6.283; const x=-70+Math.cos(a)*20, z=-50+Math.sin(a)*20; const y=heightAt(x,z);
+  const h=4+rng()*8; pillarObjs.push({x,y:y-2,z,ry:rng()*6.28,sx:1.6,sy:h,sz:1.6}); }
+{ const ax=-70+20,az=-50; const y=heightAt(ax,az); pillarObjs.push({x:ax-3,y:y-1,z:az,ry:0,sx:1.8,sy:9,sz:1.8}); pillarObjs.push({x:ax+3,y:y-1,z:az,ry:0,sx:1.8,sy:9,sz:1.8}); pillarObjs.push({x:ax,y:y+8,z:az,ry:0,sx:9,sy:1.6,sz:1.8}); }
+// crystals near cave + scattered
+for(let i=0;i<70;i++){ const cd=Math.hypot(120,-40); const a=rng()*6.28, rr=rng()*36; const x=120+Math.cos(a)*rr, z=-40+Math.sin(a)*rr; const y=heightAt(x,z);
+  crystalObjs.push({x,y:y-0.5,z,ry:rng()*6.28,sx:0.6+rng()*0.8,sy:1.4+rng()*2.4,sz:0.6+rng()*0.8}); }
+// forest
+for(let i=0;i<150;i++){ const x=-30+rng()*120, z=-10+rng()*110; const y=heightAt(x,z);
+  if(y<1.5||y>24) continue; const cd=Math.hypot(x-120,z+40), rd=Math.hypot(x+70,z+50); if(cd<36||rd<20) continue;
+  const th=3+rng()*4; trunkObjs.push({x,y,z,ry:0,sx:0.4,sy:th,sz:0.4});
+  leafObjs.push({x,y:y+th,z,ry:rng()*6.28,sx:2.4+rng()*1.8,sy:3+rng()*2,sz:2.4+rng()*1.8}); }
+// mushrooms
+for(let i=0;i<120;i++){ const x=-30+rng()*120, z=-10+rng()*110; const y=heightAt(x,z); if(y<1.5||y>22) continue;
+  const cd=Math.hypot(x-120,z+40); if(cd<34) continue; const s=0.5+rng()*1.2; mushObjs.push({x,y:y+0.3,z,ry:0,sx:s,sy:s*0.6,sz:s}); }
+
+T.rock=newType(GEOS.box, rockObjs.length,false);
+T.pillar=newType(GEOS.box, pillarObjs.length,false);
+T.crystal=newType(GEOS.octa, crystalObjs.length,false);
+T.trunk=newType(GEOS.cyl, trunkObjs.length,false);
+T.leaf=newType(GEOS.ico, leafObjs.length,false);
+T.mush=newType(GEOS.ico, mushObjs.length,false);
+function fillStatic(t,objs,col,em){ for(let i=0;i<objs.length;i++){ const o=objs[i]; const m=M(); trs(m,o.x,o.y,o.z,o.ry,o.sx,o.sy,o.sz);
+  const v=(rng()-0.5)*0.12; setInstance(t,i,m,col[0]+v,col[1]+v,col[2]+v,em,rng()*6.28); } gl.bindBuffer(gl.ARRAY_BUFFER,t.buffer); gl.bufferSubData(gl.ARRAY_BUFFER,0,t.inst); }
+fillStatic(T.rock,[...rockObjs],[0.32,0.30,0.36],0.0);
+fillStatic(T.pillar,[...pillarObjs],[0.36,0.34,0.42],0.0);
+fillStatic(T.crystal,[...crystalObjs],[0.45,0.85,1.0],1.7);
+fillStatic(T.trunk,[...trunkObjs],[0.30,0.22,0.16],0.0);
+fillStatic(T.leaf,[...leafObjs],[0.30,0.85,0.55],0.5);
+fillStatic(T.mush,[...mushObjs],[0.95,0.45,0.65],1.4);
+
+/* wildlife (drifting orbs) + artifacts — dynamic */
+const wildlife=[]; for(let i=0;i<14;i++){ const a=i/14*6.28; wildlife.push({bx:50+Math.cos(a)*16, bz:40+Math.sin(a)*16, by:heightAt(50,40)+6+rng()*8, r:6+rng()*8, sp:0.3+rng()*0.5, ph:rng()*6.28, col:[1.0,0.7,0.35]}); }
+T.wild=newType(GEOS.ico, wildlife.length,true);
+
+const artifacts=[
+  {x:10,z:14, title:"Awakening", lore:"You open your eyes to a violet dawn. The ground remembers you, though you do not remember the ground. Begin where you began.", col:[0.5,1.0,0.9], got:false},
+  {x:-70,z:-50, title:"The Silent Obelisk", lore:"These pillars once held a ceiling of singing stone. The Wanderers built cities that breathed with the tide of the twin moons.", col:[0.7,0.8,1.0], got:false},
+  {x:120,z:-40, title:"Heart of the Hollow", lore:"Deep in the hollow the crystals keep a pulse like a sleeping heart. Something waited here. Something still does.", col:[1.0,0.5,0.8], got:false},
+  {x:40,z:60, title:"Memory of Water", lore:"The pools are older than rain. Look into them and the sky looks back with eyes you almost recognize.", col:[0.4,0.9,0.8], got:false},
+  {x:50,z:40, title:"The Drifters", lore:"The light-orbs are not animals, not machines. They are memories given permission to wander. Do not disturb them.", col:[1.0,0.7,0.4], got:false},
+  {x:-20,z:120, title:"Skyward", lore:"From the high ridge the whole world is small. The Wanderers climbed here to listen for a signal that never stopped echoing.", col:[0.9,0.7,1.0], got:false},
+];
+for(const a of artifacts){ a.y=heightAt(a.x,a.z)+2.6; a.ph=rng()*6.28; a.heldBy=null; a.pos=[a.x,a.y,a.z]; }
+T.artifact=newType(GEOS.octa, artifacts.length,true);
+
+/* controllers + teleport ring — dynamic small */
+T.ctrl=newType(GEOS.box, 2, true);
+T.ring=newType(GEOS.annulus, 1, true);
+
+/* ---------- glow billboards (additive) ---------- */
+const GLOWMAX=64; const glowData=new Float32Array(GLOWMAX*8); // center3,scale1,color3,phase1
+const glowBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,glowBuf); gl.bufferData(gl.ARRAY_BUFFER, glowData.byteLength, gl.DYNAMIC_DRAW);
+const glowVAO=gl.createVertexArray(); gl.bindVertexArray(glowVAO);
+gl.bindBuffer(gl.ARRAY_BUFFER,GEOS.corners.vbo); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+gl.bindBuffer(gl.ARRAY_BUFFER,glowBuf);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,3,gl.FLOAT,false,32,0); gl.vertexAttribDivisor(1,1);
+gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,1,gl.FLOAT,false,32,12); gl.vertexAttribDivisor(2,1);
+gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3,3,gl.FLOAT,false,32,16); gl.vertexAttribDivisor(3,1);
+gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4,1,gl.FLOAT,false,32,28); gl.vertexAttribDivisor(4,1);
+gl.bindVertexArray(null);
+
+/* ---------- shaders ---------- */
+function sh(type,src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error('shader: '+gl.getShaderInfoLog(s)+'\n'+src); return s; }
+function prog(vs,fs){ const p=gl.createProgram(); gl.attachShader(p,sh(gl.VERTEX_SHADER,vs)); gl.attachShader(p,sh(gl.FRAGMENT_SHADER,fs)); gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)) throw new Error('link: '+gl.getProgramInfoLog(p)); return p; }
+function locs(p,names){ const o={}; for(const n of names) o[n]=gl.getUniformLocation(p,n); return o; }
+
+const pTerrain=prog(`#version 300 es
+in vec3 aPos; in vec3 aNormal; in vec3 aColor;
+uniform mat4 uViewProj;
+out vec3 vWorld; out vec3 vNormal; out vec3 vColor;
+void main(){ vWorld=aPos; vNormal=aNormal; vColor=aColor; gl_Position=uViewProj*vec4(aPos,1.0); }`,
+`#version 300 es
+precision highp float;
+in vec3 vWorld,vNormal,vColor;
+uniform vec3 uCamPos,uSunDir,uSunColor,uAmbient,uFog; uniform float uFogDensity;
+out vec4 o;
+void main(){ vec3 N=normalize(vNormal); float ndl=max(dot(N,normalize(uSunDir)),0.0);
+  vec3 col=vColor*(uAmbient+uSunColor*ndl*0.9);
+  float d=length(uCamPos-vWorld); float f=1.0-exp(-uFogDensity*uFogDensity*d*d);
+  col=mix(col,uFog,clamp(f,0.0,1.0)); o=vec4(col,1.0); }`);
+const uTerrain=locs(pTerrain,['uViewProj','uCamPos','uSunDir','uSunColor','uAmbient','uFog','uFogDensity']);
+
+const pSolid=prog(`#version 300 es
+layout(location=0) in mat4 aModel;
+layout(location=4) in vec3 aPos; layout(location=5) in vec3 aNormal;
+layout(location=6) in vec3 aColor; layout(location=7) in float aEmissive; layout(location=8) in float aPhase;
+uniform mat4 uViewProj; uniform float uTime;
+out vec3 vWorld,vNormal,vColor; out float vEm,vPh;
+void main(){ vec4 w=aModel*vec4(aPos,1.0); vWorld=w.xyz; vNormal=mat3(aModel)*aNormal; vColor=aColor; vEm=aEmissive; vPh=aPhase; gl_Position=uViewProj*vec4(w.xyz,1.0); }`,
+`#version 300 es
+precision highp float;
+in vec3 vWorld,vNormal,vColor; in float vEm,vPh;
+uniform vec3 uCamPos,uSunDir,uSunColor,uAmbient,uFog; uniform float uFogDensity,uTime;
+out vec4 o;
+void main(){ vec3 N=normalize(vNormal); float ndl=max(dot(N,normalize(uSunDir)),0.0);
+  vec3 lit=vColor*(uAmbient+uSunColor*ndl*0.8);
+  float pulse=0.72+0.28*sin(uTime*1.5+vPh*6.28);
+  vec3 emis=vColor*vEm*pulse;
+  vec3 col=lit+emis;
+  float d=length(uCamPos-vWorld); float f=1.0-exp(-uFogDensity*uFogDensity*d*d);
+  col=mix(col,uFog,clamp(f,0.0,1.0)); o=vec4(col,1.0); }`);
+const uSolid=locs(pSolid,['uViewProj','uCamPos','uSunDir','uSunColor','uAmbient','uFog','uFogDensity','uTime']);
+
+const pSky=prog(`#version 300 es
+in vec3 aPos; uniform mat4 uViewProj; out vec3 vDir;
+void main(){ vDir=aPos; gl_Position=uViewProj*vec4(aPos,1.0); }`,
+`#version 300 es
+precision highp float;
+in vec3 vDir; uniform vec3 uHorizon,uZenith,uSunColor,uSunDir,uMoonDir; uniform float uTime;
+out vec4 o;
+float hash(vec2 p){ return fract(sin(dot(p,vec2(41.3,289.1)))*43758.5453); }
+void main(){ vec3 d=normalize(vDir);
+  vec3 col=mix(uHorizon,uZenith,smoothstep(-0.05,0.55,d.y));
+  float sd=dot(d,normalize(uSunDir)); col+=uSunColor*pow(max(sd,0.0),7.0)*0.4 + uSunColor*pow(max(sd,0.0),600.0)*3.0;
+  float md=dot(d,normalize(uMoonDir)); col+=vec3(0.8,0.9,1.0)*pow(max(md,0.0),900.0)*2.5 + vec3(0.4,0.5,0.7)*pow(max(md,0.0),6.0)*0.3;
+  if(d.y>0.02){ vec2 uv=vec2(atan(d.z,d.x)*2.0,asin(d.y)*3.0); vec2 g=floor(uv*26.0); float s=hash(g);
+    float st=smoothstep(0.986,0.995,s); col+=vec3(0.7,0.85,1.0)*st*smoothstep(0.0,0.25,d.y); }
+  o=vec4(col,1.0); }`);
+const uSky=locs(pSky,['uViewProj','uHorizon','uZenith','uSunColor','uSunDir','uMoonDir']);
+
+const pGlow=prog(`#version 300 es
+layout(location=0) in vec2 aCorner;
+layout(location=1) in vec3 aCenter; layout(location=2) in float aScale; layout(location=3) in vec3 aColor; layout(location=4) in float aPhase;
+uniform mat4 uViewProj,uView; uniform float uTime;
+out vec2 vUv; out vec3 vColor; out float vPulse;
+void main(){ vec3 right=vec3(uView[0],uView[4],uView[8]); vec3 up=vec3(uView[1],uView[5],uView[9]);
+  vec3 world=aCenter+(right*aCorner.x+up*aCorner.y)*aScale;
+  vUv=aCorner+0.5; vColor=aColor; vPulse=0.7+0.3*sin(uTime+aPhase*6.28);
+  gl_Position=uViewProj*vec4(world,1.0); }`,
+`#version 300 es
+precision highp float;
+in vec2 vUv; in vec3 vColor; in float vPulse; out vec4 o;
+void main(){ float d=length(vUv-0.5); float a=smoothstep(0.5,0.0,d); a*=a;
+  o=vec4(vColor*vPulse*1.4, a); }`);
+const uGlow=locs(pGlow,['uViewProj','uView','uTime']);
+
+const pLine=prog(`#version 300 es
+in vec3 aPos; uniform mat4 uViewProj; uniform vec3 uColor; out vec3 vC;
+void main(){ vC=uColor; gl_Position=uViewProj*vec4(aPos,1.0); }`,
+`#version 300 es
+precision highp float; in vec3 vC; out vec4 o; void main(){ o=vec4(vC,1.0); }`);
+const uLine=locs(pLine,['uViewProj','uColor']);
+
+const pPanel=prog(`#version 300 es
+layout(location=0) in vec2 aCorner; uniform mat4 uViewProj,uView; uniform vec3 uCenter; uniform vec2 uSize;
+out vec2 vUv;
+void main(){ vec3 right=vec3(uView[0],uView[4],uView[8]); vec3 up=vec3(uView[1],uView[5],uView[9]);
+  vec3 world=uCenter+(right*aCorner.x+up*aCorner.y)*uSize.x + up*aCorner.y*uSize.y;
+  world=uCenter+(right*aCorner.x*uSize.x)+(right*aCorner.y*0.0)+up*aCorner.y*uSize.y;
+  gl_Position=uViewProj*vec4(uCenter+right*aCorner.x*uSize.x+up*aCorner.y*uSize.y,1.0);
+  vUv=aCorner+0.5; }`,
+`#version 300 es
+precision highp float; in vec2 vUv; uniform sampler2D uTex; out vec4 o;
+void main(){ vec4 t=texture(uTex,vUv); if(t.a<0.02) discard; o=t; }`);
+const uPanel=locs(pPanel,['uViewProj','uView','uCenter','uSize','uTex']);
+
+/* panel texture from canvas */
+const panelCanvas=document.createElement('canvas'); panelCanvas.width=512; panelCanvas.height=256;
+const pctx=panelCanvas.getContext('2d');
+const panelTex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,panelTex);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,panelCanvas);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+function drawLore(title,text){ pctx.clearRect(0,0,512,256);
+  pctx.fillStyle='rgba(8,14,24,0.92)'; roundRect(pctx,8,8,496,240,18); pctx.fill();
+  pctx.strokeStyle='rgba(140,200,255,0.5)'; pctx.lineWidth=2; roundRect(pctx,8,8,496,240,18); pctx.stroke();
+  pctx.fillStyle='#bfe9ff'; pctx.font='bold 30px system-ui'; pctx.fillText(title,32,52);
+  pctx.fillStyle='#cfe0ef'; pctx.font='19px system-ui'; wrapText(pctx,text,32,88,448,26);
+  gl.bindTexture(gl.TEXTURE_2D,panelTex); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,panelCanvas);
+}
+function roundRect(c,x,y,w,h,r){ c.beginPath(); c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r); c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath(); }
+function wrapText(c,text,x,y,maxw,lh){ const words=text.split(' '); let line=''; for(const w of words){ const test=line+w+' '; if(c.measureText(test).width>maxw && line){ c.fillText(line,x,y); line=w+' '; y+=lh; } else line=test; } c.fillText(line,x,y); }
+
+/* ---------- VAOs for terrain / sky / line / panel ---------- */
+const terrainVAO=gl.createVertexArray(); gl.bindVertexArray(terrainVAO);
+gl.bindBuffer(gl.ARRAY_BUFFER,terrain.vbo); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,terrain.ibo);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,36,0);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,3,gl.FLOAT,false,36,12);
+gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,3,gl.FLOAT,false,36,24);
+gl.bindVertexArray(null);
+
+const skyVAO=gl.createVertexArray(); gl.bindVertexArray(skyVAO);
+gl.bindBuffer(gl.ARRAY_BUFFER,GEOS.sphere.vbo); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,24,0);
+gl.bindVertexArray(null);
+
+const lineVAO=gl.createVertexArray(); gl.bindVertexArray(lineVAO);
+const lineBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,lineBuf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(6),gl.DYNAMIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,12,0);
+gl.bindVertexArray(null);
+
+const panelVAO=gl.createVertexArray(); gl.bindVertexArray(panelVAO);
+gl.bindBuffer(gl.ARRAY_BUFFER,GEOS.quad.vbo); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,24,0);
+gl.bindVertexArray(null);
+
+/* ---------- environment state ---------- */
+const env={ sunDir:[-0.4,0.55,-0.5], sunColor:[1.0,0.85,0.7], ambient:[0.16,0.18,0.26],
+  horizon:[0.20,0.16,0.26], zenith:[0.04,0.05,0.12], moonDir:[0.6,0.35,0.5], fog:[0.16,0.14,0.22], fogDensity:0.006 };
+const linePts=new Float32Array(6);
+
+/* ---------- per-frame dynamic rebuild ---------- */
+let activeArtifact=null; // currently grabbed, for panel
+function rebuildDynamic(time){
+  // wildlife
+  for(let i=0;i<wildlife.length;i++){ const w=wildlife[i]; const px=w.bx+Math.cos(time*w.sp+w.ph)*w.r;
+    const pz=w.bz+Math.sin(time*w.sp*1.3+w.ph)*w.r; const py=w.by+Math.sin(time*0.8+w.ph)*2.5;
+    const m=M(); trs(m,px,py,pz,time*0.4+w.ph,1.4,1.4,1.4); setInstance(T.wild,i,m,w.col[0],w.col[1],w.col[2],1.3,w.ph); }
+  gl.bindBuffer(gl.ARRAY_BUFFER,T.wild.buffer); gl.bufferSubData(gl.ARRAY_BUFFER,0,T.wild.inst);
+  // artifacts (float + spin; if held, follow controller)
+  for(let i=0;i<artifacts.length;i++){ const a=artifacts[i];
+    if(a.heldBy){ a.pos[0]=a.heldBy.grip[0]; a.pos[1]=a.heldBy.grip[1]+0.18; a.pos[2]=a.heldBy.grip[2]; }
+    else { a.pos[1]=a.y+Math.sin(time*1.2+a.ph)*0.4; }
+    const m=M(); trs(m,a.pos[0],a.pos[1],a.pos[2],time*0.8+a.ph,0.5,0.7,0.5);
+    setInstance(T.artifact,i,m,a.col[0],a.col[1],a.col[2],2.2,a.ph); }
+  gl.bindBuffer(gl.ARRAY_BUFFER,T.artifact.buffer); gl.bufferSubData(gl.ARRAY_BUFFER,0,T.artifact.inst);
+
+  // controllers
+  let ci=0;
+  for(const rec of controllerRecs){ if(!rec.grip) continue; const m=M(); m.set(rec.grip); // grip matrix is model matrix
+    setInstance(T.ctrl,ci,m,0.4,0.9,1.0,1.4,0); ci++; }
+  // zero-out remaining
+  for(let k=ci;k<2;k++){ const m=M(); setInstance(T.ctrl,k,m,0,0,0,0,0); }
+  gl.bindBuffer(gl.ARRAY_BUFFER,T.ctrl.buffer); gl.bufferSubData(gl.ARRAY_BUFFER,0,T.ctrl.inst);
+
+  // teleport ring
+  if(teleMarker){ const m=M(); trs(m,teleMarker.x,teleMarker.y+0.05,teleMarker.z,time,1,1,1); setInstance(T.ring,0,m,0.3,1.0,0.9,2.0,0); }
+  else { const m=M(); m[15]=0; setInstance(T.ring,0,m,0,0,0,0,0); }
+  gl.bindBuffer(gl.ARRAY_BUFFER,T.ring.buffer); gl.bufferSubData(gl.ARRAY_BUFFER,0,T.ring.inst);
+
+  // glow sprites: artifacts + wildlife (+ victory)
+  let gi=0;
+  for(const a of artifacts){ const cc=a.col; glowData[gi*8+0]=a.pos[0]; glowData[gi*8+1]=a.pos[1]; glowData[gi*8+2]=a.pos[2]; glowData[gi*8+3]=a.heldBy?2.6:1.8;
+    glowData[gi*8+4]=cc[0]; glowData[gi*8+5]=cc[1]; glowData[gi*8+6]=cc[2]; glowData[gi*8+7]=a.ph; gi++; }
+  for(const w of wildlife){ glowData[gi*8+0]=w._px||w.bx; glowData[gi*8+1]=(w._py||w.by); glowData[gi*8+2]=w._pz||w.bz; glowData[gi*8+3]=2.2;
+    glowData[gi*8+4]=w.col[0]; glowData[gi*8+5]=w.col[1]; glowData[gi*8+6]=w.col[2]; glowData[gi*8+7]=w.ph; gi++; }
+  if(allCollected){ glowData[gi*8+0]=0; glowData[gi*8+1]=heightAt(0,0)+30; glowData[gi*8+2]=0; glowData[gi*8+3]=40; glowData[gi*8+4]=0.6; glowData[gi*8+5]=0.9; glowData[gi*8+6]=1.0; glowData[gi*8+7]=0; gi++; }
+  gl.bindBuffer(gl.ARRAY_BUFFER,glowBuf); gl.bufferSubData(gl.ARRAY_BUFFER,0,glowData.subarray(0,gi*8));
+  glowCount=gi;
+}
+let glowCount=0;
+
+/* ---------- draw scene (given proj, view, camPos) ---------- */
+function drawScene(proj, view, camPos){
+  const vp=M(); mul(vp,proj,view);
+  // sky
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+  gl.useProgram(pSky); gl.bindVertexArray(skyVAO);
+  const sd=env.sunDir, md=env.moonDir;
+  gl.uniformMatrix4fv(uSky.uViewProj,false,vp);
+  gl.uniform3fv(uSky.uHorizon,env.horizon); gl.uniform3fv(uSky.uZenith,env.zenith);
+  gl.uniform3fv(uSky.uSunColor,env.sunColor); gl.uniform3fv(uSky.uSunDir,sd); gl.uniform3fv(uSky.uMoonDir,md);
+  gl.drawArrays(gl.TRIANGLES,0,GEOS.sphere.count);
+  gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+
+  // terrain
+  gl.useProgram(pTerrain); gl.bindVertexArray(terrainVAO);
+  gl.uniformMatrix4fv(uTerrain.uViewProj,false,vp); gl.uniform3fv(uTerrain.uCamPos,camPos);
+  gl.uniform3fv(uTerrain.uSunDir,sd); gl.uniform3fv(uTerrain.uSunColor,env.sunColor);
+  gl.uniform3fv(uTerrain.uAmbient,env.ambient); gl.uniform3fv(uTerrain.uFog,env.fog); gl.uniform1f(uTerrain.uFogDensity,env.fogDensity);
+  gl.drawElements(gl.TRIANGLES,terrain.count,gl.UNSIGNED_INT,0);
+
+  // solid instanced
+  gl.useProgram(pSolid);
+  gl.uniformMatrix4fv(uSolid.uViewProj,false,vp); gl.uniform3fv(uSolid.uCamPos,camPos);
+  gl.uniform3fv(uSolid.uSunDir,sd); gl.uniform3fv(uSolid.uSunColor,env.sunColor);
+  gl.uniform3fv(uSolid.uAmbient,env.ambient); gl.uniform3fv(uSolid.uFog,env.fog);
+  gl.uniform1f(uSolid.uFogDensity,env.fogDensity); gl.uniform1f(uSolid.uTime,curTime);
+  const drawT=(t)=>{ if(t.count<=0) return; gl.bindVertexArray(t.vao); gl.drawArraysInstanced(gl.TRIANGLES,0,t.geo.count,t.count); };
+  drawT(T.rock); drawT(T.pillar); drawT(T.crystal); drawT(T.trunk); drawT(T.leaf); drawT(T.mush); drawT(T.wild); drawT(T.artifact); drawT(T.ctrl); drawT(T.ring);
+
+  // glow (additive)
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA,gl.ONE); gl.depthMask(false);
+  gl.useProgram(pGlow); gl.bindVertexArray(glowVAO);
+  gl.uniformMatrix4fv(uGlow.uViewProj,false,vp); gl.uniformMatrix4fv(uGlow.uView,false,view); gl.uniform1f(uGlow.uTime,curTime);
+  gl.drawArraysInstanced(gl.TRIANGLES,0,6,glowCount);
+  gl.depthMask(true);
+
+  // beams (controllers)
+  gl.useProgram(pLine); gl.bindVertexArray(lineVAO); gl.uniformMatrix4fv(uLine.uViewProj,false,vp);
+  for(const rec of controllerRecs){ if(!rec.ray) continue; linePts[0]=rec.ray[0];linePts[1]=rec.ray[1];linePts[2]=rec.ray[2];
+    linePts[3]=rec.hit?rec.hit[0]:rec.ray[0]+rec.rayDir[0]*8; linePts[4]=rec.hit?rec.hit[1]:rec.ray[1]+rec.rayDir[1]*8; linePts[5]=rec.hit?rec.hit[2]:rec.ray[2]+rec.rayDir[2]*8;
+    gl.bindBuffer(gl.ARRAY_BUFFER,lineBuf); gl.bufferSubData(gl.ARRAY_BUFFER,0,linePts);
+    gl.uniform3fv(uLine.uColor, rec.hit?[0.4,1.0,0.8]:[0.6,0.8,1.0]);
+    gl.drawArrays(gl.LINE_STRIP,0,2); }
+  gl.disable(gl.BLEND);
+
+  // lore panel
+  if(activeArtifact){ gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(pPanel); gl.bindVertexArray(panelVAO);
+    gl.uniformMatrix4fv(uPanel.uViewProj,false,vp); gl.uniformMatrix4fv(uPanel.uView,false,view);
+    gl.uniform3fv(uPanel.uCenter,[activeArtifact.pos[0],activeArtifact.pos[1]+1.4,activeArtifact.pos[2]]);
+    gl.uniform2f(uPanel.uSize,1.6,0.8); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,panelTex); gl.uniform1i(uPanel.uTex,0);
+    gl.drawArrays(gl.TRIANGLES,0,6); gl.disable(gl.BLEND); }
+
+  gl.bindVertexArray(null);
+}
+
+/* ---------- controllers / teleport / grab state ---------- */
+const controllerRecs=[]; // populated per-frame from session.inputSources
+let teleMarker=null;     // {x,y,z}
+let curTime=0, allCollected=false;
+function rayTerrain(ox,oy,oz, dx,dy,dz){ // step until below terrain
+  let t=0; while(t<260){ const x=ox+dx*t, y=oy+dy*t, z=oz+dz*t; const gy=heightAt(x,z);
+    if(y<gy){ const tt=t-1.5; const x2=ox+dx*tt,y2=oy+dy*tt,z2=oz+dz*tt; return [x2,y2,z2]; }
+    t+=1.5; } return null;
+}
+function processInteractions(){
+  for(const rec of controllerRecs){
+    if(!rec.ray) continue;
+    // teleport target from ray
+    rec.hit=rayTerrain(rec.ray[0],rec.ray[1],rec.ray[2],rec.rayDir[0],rec.rayDir[1],rec.rayDir[2]);
+    if(rec.selecting && rec.hit){ if(!teleMarker) teleMarker={}; teleMarker.x=rec.hit[0]; teleMarker.y=rec.hit[1]; teleMarker.z=rec.hit[2]; }
+    // grab on squeeze
+    if(rec.squeezing && !rec.holding){ let best=null,bd=1e9; for(const a of artifacts){ if(a.heldBy) continue; const d=Math.hypot(a.pos[0]-rec.grip[0],a.pos[1]-rec.grip[1],a.pos[2]-rec.grip[2]); if(d<1.6 && d<bd){ bd=d; best=a; } }
+      if(best){ best.heldBy=rec; rec.holding=best; activeArtifact=best; if(!best.got){ best.got=true; toast('Recovered: '+best.title); drawLore(best.title,best.lore); checkWin(); } } }
+    if(!rec.squeezing && rec.holding){ rec.holding.heldBy=null; if(activeArtifact===rec.holding) activeArtifact=null; rec.holding=null; }
+  }
+  // teleport commit on release of select
+  for(const rec of controllerRecs){ if(rec.prevSelecting && !rec.selecting && rec.hit && !rec.squeezing){ teleportOffset.x+=rec.hit[0]-viewerPos[0]; teleportOffset.z+=rec.hit[2]-viewerPos[2]; teleMarker=null; } rec.prevSelecting=rec.selecting; }
+}
+let viewerPos=[0,1.6,0];
+const teleportOffset={x:0,y:0,z:0};
+let offsetSpace=null;
+function checkWin(){ if(artifacts.every(a=>a.got) && !allCollected){ allCollected=true; document.getElementById('win').style.display='flex'; } }
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),3200); }
+
+/* ============================================================
+   WebXR session
+   ============================================================ */
+let session=null, baseRefSpace=null, xrLayer=null, inXR=false;
+const enterBtn=document.getElementById('enter');
+if(navigator.xr){ navigator.xr.isSessionSupported('immersive-vr').then(ok=>{ if(!ok){ document.getElementById('compat').textContent='No VR headset detected — you can still explore in the desktop preview below.'; } }).catch(()=>{}); }
+else { document.getElementById('compat').textContent='WebXR not available in this browser — showing desktop preview. Use a WebXR VR browser (Meta/Oculus Browser, SteamVR Chrome, or WebXR-enabled mobile) for full immersion.'; enterBtn.disabled=true; }
+
+enterBtn.onclick=async ()=>{
+  if(!navigator.xr) return;
+  try{
+    session=await navigator.xr.requestSession('immersive-vr',{optionalFeatures:['local-floor','bounded-floor','hand-tracking']});
+  }catch(e){ toast('Could not start VR: '+e.message); return; }
+  document.getElementById('ui').classList.add('hide');
+  session.addEventListener('end',()=>{ inXR=false; session=null; document.getElementById('ui').classList.remove('hide'); });
+  baseRefSpace=await session.requestReferenceSpace('local-floor').catch(()=>session.requestReferenceSpace('local'));
+  offsetSpace=baseRefSpace;
+  xrLayer=new XRWebGLLayer(session,gl); session.updateRenderState({baseLayer:xrLayer});
+  session.addEventListener('selectstart',e=>{ const r=getRec(e.inputSource); if(r) r.selecting=true; });
+  session.addEventListener('selectend',e=>{ const r=getRec(e.inputSource); if(r) r.selecting=false; });
+  session.addEventListener('squeezestart',e=>{ const r=getRec(e.inputSource); if(r) r.squeezing=true; });
+  session.addEventListener('squeezeend',e=>{ const r=getRec(e.inputSource); if(r) r.squeezing=false; });
+  inXR=true; session.requestAnimationFrame(onXRFrame);
+};
+function getRec(src){ let r=controllerRecs.find(c=>c.src===src); if(!r){ r={src, grip:null, ray:null, rayDir:[0,0,-1], hit:null, selecting:false, prevSelecting:false, squeezing:false, holding:null}; controllerRecs.push(r); } return r; }
+
+function updateControllerRecs(frame){
+  // reset ray/grip to null; will be set from poses
+  for(const r of controllerRecs){ r.grip=null; r.ray=null; }
+  if(!session) return;
+  for(const src of session.inputSources){ const r=getRec(src);
+    if(src.targetRaySpace){ const pr=frame.getPose(src.targetRaySpace,offsetSpace); if(pr){ const m=pr.transform.matrix; r.ray=[m[12],m[13],m[14]];
+      // forward = -Z in local
+      r.rayDir=[-m[8],-m[9],-m[10]]; } }
+    if(src.gripSpace){ const pg=frame.getPose(src.gripSpace,offsetSpace); if(pg){ r.grip=pg.transform.matrix; } }
+  }
+}
+function onXRFrame(t,frame){
+  if(!session){ return; }
+  curTime=t/1000;
+  const pose=frame.getViewerPose(offsetSpace);
+  if(pose){ viewerPos=[pose.transform.position.x,pose.transform.position.y,pose.transform.position.z]; }
+  updateControllerRecs(frame);
+  processInteractions();
+  rebuildDynamic(curTime);
+
+  const layer=xrLayer; const fb=layer.framebuffer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+  gl.clearColor(env.fog[0],env.fog[1],env.fog[2],1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.SCISSOR_TEST);
+  for(const view of (pose?pose.views:[])){
+    const vp=layer.viewport(view); gl.viewport(vp.x,vp.y,vp.width,vp.height); gl.scissor(vp.x,vp.y,vp.width,vp.height);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    drawScene(view.projectionMatrix, view.transform.matrix, viewerPos);
+  }
+  gl.disable(gl.SCISSOR_TEST);
+  session.requestAnimationFrame(onXRFrame);
+}
+
+/* ============================================================
+   Desktop preview (non-XR) — same renderer, free camera
+   ============================================================ */
+const preview={ eye:[6,heightAt(6,14)+1.6,24], yaw:2.4, pitch:0.12, keys:{} };
+(function(){ // give preview a slow auto-orbit until user interacts
+  preview.auto=true;
+})();
+addEventListener('keydown',e=>{ preview.keys[e.code]=true; preview.auto=false; });
+addEventListener('keyup',e=>{ preview.keys[e.code]=false; });
+canvas.addEventListener('click',()=>{ if(!inXR) canvas.requestPointerLock(); preview.auto=false; });
+addEventListener('mousemove',e=>{ if(document.pointerLockElement===canvas && !inXR){ preview.yaw-=e.movementX*0.0025; preview.pitch=clamp(preview.pitch-e.movementY*0.0025,-1.3,1.3); } });
+const statEl=document.getElementById('stat');
+
+function resize(){ const dpr=Math.min(window.devicePixelRatio||1,2); canvas.width=Math.floor(innerWidth*dpr); canvas.height=Math.floor(innerHeight*dpr); }
+resize(); addEventListener('resize',resize);
+
+function previewFrame(){
+  if(inXR) return; // XR loop drives rendering
+  curTime=performance.now()/1000;
+  const dt=0.016;
+  const sp=preview.keys['ShiftLeft']?28:11;
+  const fx=Math.cos(preview.pitch)*Math.sin(preview.yaw), fy=Math.sin(preview.pitch), fz=Math.cos(preview.pitch)*Math.cos(preview.yaw);
+  const rx=Math.cos(preview.yaw), rz=-Math.sin(preview.yaw);
+  if(preview.keys['KeyW']){ preview.eye[0]+=fx*sp*dt; preview.eye[2]+=fz*sp*dt; }
+  if(preview.keys['KeyS']){ preview.eye[0]-=fx*sp*dt; preview.eye[2]-=fz*sp*dt; }
+  if(preview.keys['KeyD']){ preview.eye[0]+=rx*sp*dt; preview.eye[2]+=rz*sp*dt; }
+  if(preview.keys['KeyA']){ preview.eye[0]-=rx*sp*dt; preview.eye[2]-=rz*sp*dt; }
+  if(preview.keys['Space']){ preview.eye[1]+=sp*dt; }
+  if(preview.keys['ControlLeft']||preview.keys['KeyC']){ preview.eye[1]-=sp*dt; }
+  const gh=heightAt(preview.eye[0],preview.eye[2])+1.6; if(preview.eye[1]<gh) preview.eye[1]=gh;
+  if(preview.auto){ preview.yaw+=0.0016; preview.pitch=0.18+Math.sin(curTime*0.2)*0.06; preview.eye[1]=gh+6+Math.sin(curTime*0.3)*1.5; }
+
+  const center=[preview.eye[0]+fx,preview.eye[1]+fy,preview.eye[2]+fz];
+  const view=M(); lookAt(view,preview.eye,center,[0,1,0]);
+  const proj=M(); perspective(proj, 60*Math.PI/180, canvas.width/canvas.height, 0.1, 1200);
+  rebuildDynamic(curTime);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(env.fog[0],env.fog[1],env.fog[2],1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  drawScene(proj,view,preview.eye);
+  statEl.textContent='AETHERIA · desktop preview — WASD move, mouse look, click to capture pointer';
+  requestAnimationFrame(previewFrame);
+}
+requestAnimationFrame(previewFrame);
+</script>
+</body>
+</html>
