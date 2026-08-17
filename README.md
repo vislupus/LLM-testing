@@ -87,7 +87,7 @@ Testing different LLMs to do software tasks
 | **LongCat 2**         | **4/10** |
 | **Nemotron 3 ultra**  | **1/10** |
 | **Trinity**           | **3/10** |
-| **HY3**               | **0/10** |
+| **HY3**               | **4/10** |
 | **Laguna S 2.1**      | **1/10** |
 | **Muse Spark 1.1**    | **4/10** |
 | **Muse Glimmer**      | **1/10** |
@@ -141,7 +141,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.7 code**    | **5/10** |
 | **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **4/10** |
-| **Kimi K2 Turbo**     | **0/10** |
+| **Kimi K2 Turbo**     | **3/10** |
 | **Deepseek 4 flash**  | **1/10** |
 | **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **5/10** |
@@ -216,11 +216,11 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **1/10** |
-| **Kimi K3**           | **0/10** |
+| **Kimi K3**           | **8/10** |
 | **Kimi K2.7 code**    | **5/10** |
 | **Kimi K2.6**         | **5/10** |
 | **Kimi K2.5**         | **1/10** |
-| **Kimi K2 Turbo**     | **0/10** |
+| **Kimi K2 Turbo**     | **1/10** |
 | **Deepseek 4 flash**  | **1/10** |
 | **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **4/10** |
@@ -299,7 +299,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.7 code**    | **4/10** |
 | **Kimi K2.6**         | **4/10** |
 | **Kimi K2.5**         | **3/10** |
-| **Kimi K2 Turbo**     | **0/10** |
+| **Kimi K2 Turbo**     | **3/10** |
 | **Deepseek 4 flash**  | **3/10** |
 | **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **2/10** |
@@ -320,11 +320,11 @@ Testing different LLMs to do software tasks
 | **Qwen 3.5 35b a3b**  | **1/10** |
 | **Qwen 3.6 27b**      | **3/10** |
 | **MiMo 2.5**          | **3/10** |
-| **MiMo 2**            | **0/10** |
+| **MiMo 2**            | **2/10** |
 | **LongCat 2**         | **3/10** |
 | **Nemotron 3 ultra**  | **2/10** |
 | **Trinity**           | **2/10** |
-| **HY3**               | **4/10** |
+| **HY3**               | **3/10** |
 | **Laguna S 2.1**      | **2/10** |
 | **Muse Spark 1.1**    | **4/10** |
 | **Muse Glimmer**      | **2/10** |
@@ -399,11 +399,11 @@ Testing different LLMs to do software tasks
 | **Qwen 3.5 35b a3b**  | **2/10** |
 | **Qwen 3.6 27b**      | **4/10** |
 | **MiMo 2.5**          | **3/10** |
-| **MiMo 2**            | **0/10** |
+| **MiMo 2**            | **2/10** |
 | **LongCat 2**         | **4/10** |
 | **Nemotron 3 ultra**  | **4/10** |
 | **Trinity**           | **2/10** |
-| **HY3**               | **0/10** |
+| **HY3**               | **5/10** |
 | **Laguna S 2.1**      | **2/10** |
 | **Muse Spark 1.1**    | **4/10** |
 | **Muse Glimmer**      | **2/10** |
@@ -457,7 +457,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.7 code**    | **5/10** |
 | **Kimi K2.6**         | **4/10** |
 | **Kimi K2.5**         | **2/10** |
-| **Kimi K2 Turbo**     | **0/10** |
+| **Kimi K2 Turbo**     | **3/10** |
 | **Deepseek 4 flash**  | **4/10** |
 | **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **3/10** |
@@ -478,11 +478,11 @@ Testing different LLMs to do software tasks
 | **Qwen 3.5 35b a3b**  | **1/10** |
 | **Qwen 3.6 27b**      | **4/10** |
 | **MiMo 2.5**          | **5/10** |
-| **MiMo 2**            | **0/10** |
+| **MiMo 2**            | **2/10** |
 | **LongCat 2**         | **2/10** |
 | **Nemotron 3 ultra**  | **2/10** |
 | **Trinity**           | **2/10** |
-| **HY3**               | **0/10** |
+| **HY3**               | **4/10** |
 | **Laguna S 2.1**      | **2/10** |
 | **Muse Spark 1.1**    | **3/10** |
 | **Muse Glimmer**      | **3/10** |
@@ -557,7 +557,7 @@ Testing different LLMs to do software tasks
 | **Qwen 3.5 35b a3b**  | **1/10** |
 | **Qwen 3.6 27b**      | **1/10** |
 | **MiMo 2.5**          | **1/10** |
-| **MiMo 2**            | **0/10** |
+| **MiMo 2**            | **1/10** |
 | **LongCat 2**         | **1/10** |
 | **Nemotron 3 ultra**  | **1/10** |
 | **Trinity**           | **1/10** |
@@ -585,7 +585,7 @@ Testing different LLMs to do software tasks
 | **Gemma 4 31B**       | **1/10** |
 | **ChatGPT 5.6**       | **1/10** |
 | **ChatGPT 5.5**       | **3/10** |
-| **ChatGPT 5.4**       | **0/10** |
+| **ChatGPT 5.4**       | **1/10** |
 | **ChatGPT 5.3**       | **3/10** |
 | **ChatGPT 5.2**       | **2/10** |
 | **ChatGPT 5.1**       | **2/10** |
@@ -611,7 +611,7 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **1/10** |
 | **Glm 4.7**           | **1/10** |
 | **Glm 4.6**           | **1/10** |
-| **Kimi K3**           | **0/10** |
+| **Kimi K3**           | **5/10** |
 | **Kimi K2.7 code**    | **2/10** |
 | **Kimi K2.6**         | **2/10** |
 | **Kimi K2.5**         | **1/10** |
@@ -636,7 +636,7 @@ Testing different LLMs to do software tasks
 | **Qwen 3.5 35b a3b**  | **1/10** |
 | **Qwen 3.6 27b**      | **1/10** |
 | **MiMo 2.5**          | **3/10** |
-| **MiMo 2**            | **0/10** |
+| **MiMo 2**            | **1/10** |
 | **LongCat 2**         | **1/10** |
 | **Nemotron 3 ultra**  | **1/10** |
 | **Trinity**           | **2/10** |
