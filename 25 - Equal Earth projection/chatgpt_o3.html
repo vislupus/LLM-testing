@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Equal-Earth SVG.js World Map – forward ↔ inverse conversion demo</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;font-family:sans-serif;}
+  #viewport{width:100%;height:100%;background:#f7fbff;position:relative;cursor:grab;}
+  #viewport.dragging{cursor:grabbing;}
+  #coords{
+      position:absolute;top:10px;left:10px;
+      background:rgba(255,255,255,.85);padding:4px 6px;border-radius:4px;
+      font:12px/1.4 monospace;pointer-events:none;
+      box-shadow:0 0 4px rgba(0,0,0,.15);
+  }
+  #hint{
+      position:absolute;bottom:10px;left:10px;color:#555;
+      background:rgba(255,255,255,.8);padding:3px 6px;border-radius:3px;
+      font-size:11px;pointer-events:none;
+  }
+</style>
+</head>
+<body>
+<div id="viewport"></div>
+<div id="coords">lat, lon</div>
+<div id="hint">🖱 drag = pan wheel = zoom click = report lat/lon + drop marker</div>
+
+<!-- SVG.js -->
+<script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3.2/dist/svg.min.js"></script>
+<!-- A tiny helper (optional) letting SVG.js read raw path strings easily -->
+<script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.pathmorphing.js@3"></script>
+
+<script>
+/* -------------------------------------------------------------------------
+   1.  Equal-Earth raw forward & inverse projection (spherical)
+   ---------------------------------------------------------------------- */
+const A1 = 1.340264, A2 = -0.081106, A3 = 0.000893, A4 = 0.003796;
+const M  = Math.SQRT3 / 2,            //  √3 / 2  ≈ 0.866025
+      M2 = 2 * Math.SQRT3 / 3;        //  2√3 / 3 ≈ 1.154700
+
+/** Forward projection:  [lon°, lat°] → [x, y] */
+function project(lonDeg, latDeg){
+  const λ = lonDeg * Math.PI/180,
+        φ = latDeg  * Math.PI/180,
+        θ = Math.asin( M * Math.sin(φ) ),
+        θ2 = θ*θ, θ4 = θ2*θ2, θ6 = θ4*θ2,
+        denom = A1 + 3*A2*θ2 + 5*A3*θ4 + 7*A4*θ6;
+  return [
+    (M2 * λ * Math.cos(θ)) / denom,
+    θ * (A1 + A2*θ2 + A3*θ4 + A4*θ6)
+  ];
+}
+
+/** Inverse projection:  [x, y] → [lon°, lat°]  (Newton–Raphson on θ) */
+function unproject(x, y){
+  // Solve y = θ*(A1 + A2 θ² + A3 θ⁴ + A4 θ⁶) for θ
+  let θ = y;                         // initial guess
+  for(let i=0;i<12;i++){
+    const θ2 = θ*θ, θ4 = θ2*θ2, θ6 = θ4*θ2;
+    const fy  = θ*(A1 + A2*θ2 + A3*θ4 + A4*θ6) - y;
+    const fdy = A1 + 3*A2*θ2 + 5*A3*θ4 + 7*A4*θ6;
+    const δ = fy / fdy;
+    θ -= δ;
+    if(Math.abs(δ) < 1e-14) break;
+  }
+  const θ2 = θ*θ, θ4 = θ2*θ2, θ6 = θ4*θ2,
+        denom = A1 + 3*A2*θ2 + 5*A3*θ4 + 7*A4*θ6,
+        λ = (x * denom) / (M2 * Math.cos(θ)),
+        φ = Math.asin( Math.sin(θ) / M );
+  return [ λ*180/Math.PI, φ*180/Math.PI ];
+}
+
+/* -------------------------------------------------------------------------
+   2.  SVG.js scene & viewport state
+   ---------------------------------------------------------------------- */
+const viewEl = document.getElementById('viewport');
+const draw   = SVG().addTo(viewEl).size('100%','100%');
+const worldG = draw.group();          // world geography
+const marksG = draw.group();          // user markers
+let   scale  = 320;                   // initial px per projected unit
+let   offX   = draw.width()/2,        // translate so (0,0) is center
+      offY   = draw.height()/2;
+
+/* Apply current transform to both map & markers */
+function applyTransform(){
+  worldG.transform({translateX:offX, translateY:offY, scale});
+  marksG.transform({translateX:offX, translateY:offY, scale});
+}
+
+/* -------------------------------------------------------------------------
+   3.  Render vector land outlines (Natural-Earth 110 m, embedded minimal)
+   ---------------------------------------------------------------------- */
+const land = /*  VERY-small, dramatically simplified outline (≈310 pts)  */
+[[[-180,-90],[-180,90],[180,90],[180,-90]]]; // fallback rectangle while loading
+
+// (For brevity in this demo the full 110 m polygons aren’t embedded;
+//  you could paste a detailed GeoJSON MultiPolygon here and it works.)
+
+function drawLand(polygons){
+  polygons.forEach(poly=>{
+    let d='';
+    poly.forEach((ring,ri)=>{
+      ring.forEach(([lon,lat],i)=>{
+        const [x,y] = project(lon,lat);
+        d += (i?'L':'M')+x+','+(-y);
+      });
+      d+='Z';
+    });
+    worldG.path(d).fill('#b7d5e8').stroke({width:0.25,color:'#25485f'});
+  });
+  applyTransform();
+}
+// Draw the placeholder rectangle first
+drawLand(land);
+
+/* -------------------------------------------------------------------------
+   4.  Pan (drag) & zoom (mouse-wheel)
+   ---------------------------------------------------------------------- */
+let dragging=false,startX,startY;
+viewEl.addEventListener('pointerdown',e=>{
+  dragging=true; startX=e.clientX; startY=e.clientY;
+  viewEl.classList.add('dragging'); e.preventDefault();
+});
+window.addEventListener('pointermove',e=>{
+  if(!dragging) return;
+  offX += e.clientX-startX;
+  offY += e.clientY-startY;
+  startX=e.clientX; startY=e.clientY;
+  applyTransform();
+});
+window.addEventListener('pointerup',()=>{dragging=false;viewEl.classList.remove('dragging');});
+
+viewEl.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const mx = e.offsetX, my = e.offsetY;
+  const factor = (e.deltaY>0?0.9:1.1);
+  // Zoom around mouse: adjust offset so point under cursor stays put
+  offX = mx - (mx-offX)*factor;
+  offY = my - (my-offY)*factor;
+  scale *= factor;
+  applyTransform();
+},{passive:false});
+
+/* -------------------------------------------------------------------------
+   5.  Click → inverse projection + marker
+   ---------------------------------------------------------------------- */
+const coordBox = document.getElementById('coords');
+viewEl.addEventListener('click',e=>{
+  const svgPt = draw.node.createSVGPoint();
+  svgPt.x = e.clientX; svgPt.y = e.clientY;
+  const p = svgPt.matrixTransform(draw.node.getScreenCTM().inverse());
+  const x = (p.x - offX)/scale,  y = (p.y - offY)/scale;
+  const [lon,lat] = unproject(x,-y); // -y because SVG y-axis down
+  coordBox.textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+  // tiny red dot
+  marksG.circle(6).center(x,-y).fill('#d62828').stroke({width:0});
+});
+
+/* -------------------------------------------------------------------------
+   6.  Forward demo helper in JS console
+   ---------------------------------------------------------------------- */
+window.addMarker = function(lat,lon){
+  const [x,y] = project(lon,lat);
+  marksG.circle(6).center(x,-y).fill('#003049').stroke({width:0});
+  applyTransform();
+  console.log(`Marker added at (${lat}, ${lon})`);
+};
+
+/* -------------------------------------------------------------------------
+   7.  OPTIONAL: Load full Natural-Earth polygons asynchronously
+          (remove these lines if you pasted GeoJSON above)              */
+fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json')
+  .then(r=>r.json())
+  .then(topo=>import('https://cdn.jsdelivr.net/npm/topojson-client@3'))
+  .then(({feature})=>{
+    fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json')
+      .then(r=>r.json())
+      .then(topo=>feature(topo, topo.objects.countries).features)
+      .then(feats=>{
+        worldG.clear();
+        feats.forEach(f=>{
+          drawLand(f.geometry.coordinates);
+        });
+      });
+  })
+  .catch(()=>console.warn('Using placeholder rectangle – offline?'));
+</script>
+</body>
+</html>

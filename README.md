@@ -40,6 +40,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT o3**        | **3/10** |
 | **ChatGPT 4.1**       | **1/10** |
 | **GPT-OSS-120b**      | **1/10** |
+| **GPT-OSS-20b**       | **0/10** |
 | **Grok 4.6**          | **9/10** |
 | **Grok 4.5**          | **8/10** |
 | **Grok 4.3**          | **3/10** |
@@ -58,7 +59,7 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **3/10** |
 | **Glm 4.7**           | **2/10** |
 | **Glm 4.6**           | **2/10** |
-| **Kimi K3**           | **0/10** |
+| **Kimi K3**           | **7/10** |
 | **Kimi K2.7 code**    | **1/10** |
 | **Kimi K2.6**         | **7/10** |
 | **Kimi K2.5**         | **2/10** |
@@ -119,6 +120,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT o3**        | **1/10** |
 | **ChatGPT 4.1**       | **1/10** |
 | **GPT-OSS-120b**      | **1/10** |
+| **GPT-OSS-20b**       | **0/10** |
 | **Grok 4.6**          | **7/10** |
 | **Grok 4.5**          | **4/10** |
 | **Grok 4.3**          | **3/10** |
@@ -137,7 +139,7 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **1/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **3/10** |
-| **Kimi K3**           | **0/10** |
+| **Kimi K3**           | **6/10** |
 | **Kimi K2.7 code**    | **5/10** |
 | **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **4/10** |
@@ -198,6 +200,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT o3**        | **1/10** |
 | **ChatGPT 4.1**       | **1/10** |
 | **GPT-OSS-120b**      | **1/10** |
+| **GPT-OSS-20b**       | **0/10** |
 | **Grok 4.6**          | **8/10** |
 | **Grok 4.5**          | **7/10** |
 | **Grok 4.3**          | **1/10** |
@@ -255,6 +258,86 @@ Testing different LLMs to do software tasks
 
 ---
 
+### 25 - Equal Earth projection
+**Create a single‑file interactive world map using SVG.js that renders the Earth in the Equal Earth projection and supports full coordinate ↔ screen conversion. The app should draw a clean vector world map in Equal Earth, with zoom and pan (mouse wheel + drag) that keep the projection mathematically correct at any scale. Implement forward projection: given geographic coordinates (latitude, longitude in degrees), convert them to projected x,y in the Equal Earth projection and plot a small SVG circle/marker at the correct location on the map. Implement inverse projection as well: when the user clicks on any point of the map (taking into account current zoom and pan), compute the corresponding latitude and longitude for that position and display them in a small overlay or console readout. All logic (HTML, CSS, JavaScript, SVG.js setup, projection formulas, zoom/pan handling, marker drawing and coordinate display) must be contained in a single self‑contained HTML file that runs directly in the browser.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3.7 flash**  | **0/10** |
+| **Gemini 3.6 flash**  | **0/10** |
+| **Gemini 3.5 flash**  | **0/10** |
+| **Gemini 3.1**        | **2/10** |
+| **Gemini 3 flash**    | **3/10** |
+| **Gemini 2.5**        | **1/10** |
+| **Gemma 4 31B**       | **0/10** |
+| **ChatGPT 5.6**       | **9/10** |
+| **ChatGPT 5.5**       | **5/10** |
+| **ChatGPT 5.4**       | **5/10** |
+| **ChatGPT 5.3**       | **3/10** |
+| **ChatGPT 5.2**       | **3/10** |
+| **ChatGPT 5.1**       | **2/10** |
+| **ChatGPT 5**         | **2/10** |
+| **ChatGPT o3**        | **1/10** |
+| **ChatGPT 4.1**       | **0/10** |
+| **GPT-OSS-120b**      | **0/10** |
+| **GPT-OSS-20b**       | **0/10** |
+| **Grok 4.6**          | **0/10** |
+| **Grok 4.5**          | **10/10** |
+| **Grok 4.3**          | **2/10** |
+| **Grok 4.2**          | **3/10** |
+| **Grok 4.1**          | **1/10** |
+| **Claude Fable 5**    | **8/10** |
+| **Claude Opus 5**     | **10/10** |
+| **Claude Opus 4.8**   | **0/10** |
+| **Claude Opus 4.7**   | **10/10** |
+| **Claude Opus 4.6**   | **6/10** |
+| **Claude Opus 4.5**   | **5/10** |
+| **Claude Opus 4.1**   | **2/10** |
+| **Claude Opus 3**     | **0/10** |
+| **Glm 5.2**           | **1/10** |
+| **Glm 5.1**           | **5/10** |
+| **Glm 5**             | **6/10** |
+| **Glm 4.7**           | **1/10** |
+| **Glm 4.6**           | **2/10** |
+| **Kimi K3**           | **0/10** |
+| **Kimi K2.7 code**    | **5/10** |
+| **Kimi K2.6**         | **1/10** |
+| **Kimi K2.5**         | **5/10** |
+| **Kimi K2 Turbo**     | **2/10** |
+| **Deepseek 4 flash**  | **0/10** |
+| **Deepseek 4**        | **3/10** |
+| **Deepseek 3.2**      | **3/10** |
+| **Мinimax m3**        | **0/10** |
+| **Мinimax m2.7**      | **1/10** |
+| **Мinimax m2.5**      | **5/10** |
+| **Мinimax m2.1**      | **1/10** |
+| **Мinimax m2**        | **0/10** |
+| **Мinimax m1**        | **0/10** |
+| **Qwen 3.8 Max**      | **7/10** |
+| **Qwen 3.7 Max**      | **1/10** |
+| **Qwen 3.6 Max**      | **1/10** |
+| **Qwen 3.6**          | **2/10** |
+| **Qwen 3.5 Max**      | **0/10** |
+| **Qwen 3.5**          | **2/10** |
+| **Qwen 3 Max**        | **0/10** |
+| **Qwen 3.5 122b a10b**| **0/10** |
+| **Qwen 3.5 35b a3b**  | **0/10** |
+| **Qwen 3.6 27b**      | **1/10** |
+| **MiMo 2.5**          | **0/10** |
+| **MiMo 2**            | **3/10** |
+| **LongCat 2**         | **1/10** |
+| **Nemotron 3 ultra**  | **0/10** |
+| **Trinity**           | **1/10** |
+| **HY3**               | **0/10** |
+| **Laguna S 2.1**      | **1/10** |
+| **Muse Spark 1.1**    | **3/10** |
+| **Muse Glimmer**      | **0/10** |
+| **Inkling**           | **0/10** |
+| **Mistral Large 3**   | **1/10** |
+| **Mistral Medium 3.5**| **1/10** |
+
+---
+
 ### 32 - SVG pagoda with dragon
 **Create a complex standalone SVG illustration of a traditional Chinese pagoda in a beautiful garden. The pagoda should have 7 or 8 floors, inspired by important classical Chinese pagoda architecture. It should be symmetrical, elegant, and highly detailed. The SVG must include layered roofs with curved eaves, decorative tiles, wooden beams, balconies, lanterns, windows, carved ornaments, and traditional Chinese architectural details. Around the pagoda, draw a large Chinese dragon coiling gracefully around the structure. The dragon should have a serpentine body, scales, horns, whiskers, claws, flowing mane, and an expressive face. It should wrap around the pagoda without hiding the entire building. Place the pagoda in a peaceful garden with rocks, bamboo, pine trees, flowers, a small pond, clouds, mist, and decorative pathways. Use gradients, shadows, patterns, and fine line details to make the SVG visually rich and complex. The final result should be a single valid SVG file, scalable, cleanly structured, and readable. Use only SVG elements, no external images. Style: detailed vector art, elegant Chinese fantasy atmosphere, balanced composition, rich colors, gold and red accents, ornamental but clean.**
 
@@ -277,6 +360,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT o3**        | **2/10** |
 | **ChatGPT 4.1**       | **2/10** |
 | **GPT-OSS-120b**      | **2/10** |
+| **GPT-OSS-20b**       | **0/10** |
 | **Grok 4.6**          | **5/10** |
 | **Grok 4.5**          | **5/10** |
 | **Grok 4.3**          | **3/10** |
@@ -295,7 +379,7 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **2/10** |
-| **Kimi K3**           | **0/10** |
+| **Kimi K3**           | **5/10** |
 | **Kimi K2.7 code**    | **4/10** |
 | **Kimi K2.6**         | **4/10** |
 | **Kimi K2.5**         | **3/10** |
@@ -356,6 +440,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT o3**        | **3/10** |
 | **ChatGPT 4.1**       | **3/10** |
 | **GPT-OSS-120b**      | **2/10** |
+| **GPT-OSS-20b**       | **0/10** |
 | **Grok 4.6**          | **5/10** |
 | **Grok 4.5**          | **6/10** |
 | **Grok 4.3**          | **4/10** |
@@ -374,7 +459,7 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **3/10** |
 | **Glm 4.6**           | **2/10** |
-| **Kimi K3**           | **0/10** |
+| **Kimi K3**           | **6/10** |
 | **Kimi K2.7 code**    | **4/10** |
 | **Kimi K2.6**         | **3/10** |
 | **Kimi K2.5**         | **4/10** |
@@ -435,6 +520,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT o3**        | **2/10** |
 | **ChatGPT 4.1**       | **1/10** |
 | **GPT-OSS-120b**      | **1/10** |
+| **GPT-OSS-20b**       | **0/10** |
 | **Grok 4.6**          | **6/10** |
 | **Grok 4.5**          | **6/10** |
 | **Grok 4.3**          | **3/10** |
@@ -453,7 +539,7 @@ Testing different LLMs to do software tasks
 | **Glm 5**             | **4/10** |
 | **Glm 4.7**           | **4/10** |
 | **Glm 4.6**           | **1/10** |
-| **Kimi K3**           | **0/10** |
+| **Kimi K3**           | **7/10** |
 | **Kimi K2.7 code**    | **5/10** |
 | **Kimi K2.6**         | **4/10** |
 | **Kimi K2.5**         | **2/10** |
@@ -514,6 +600,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT o3**        | **1/10** |
 | **ChatGPT 4.1**       | **1/10** |
 | **GPT-OSS-120b**      | **1/10** |
+| **GPT-OSS-20b**       | **0/10** |
 | **Grok 4.6**          | **1/10** |
 | **Grok 4.5**          | **3/10** |
 | **Grok 4.3**          | **1/10** |
@@ -593,6 +680,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT o3**        | **1/10** |
 | **ChatGPT 4.1**       | **1/10** |
 | **GPT-OSS-120b**      | **2/10** |
+| **GPT-OSS-20b**       | **0/10** |
 | **Grok 4.6**          | **3/10** |
 | **Grok 4.5**          | **3/10** |
 | **Grok 4.3**          | **1/10** |
@@ -647,3 +735,83 @@ Testing different LLMs to do software tasks
 | **Inkling**           | **1/10** |
 | **Mistral Large 3**   | **1/10** |
 | **Mistral Medium 3.5**| **1/10** |
+
+---
+
+### 43 - SVG Spacecraft Schematic
+**Create a highly detailed technical spacecraft schematic as a single SVG, presented like a professional aerospace engineering blueprint. Show top, side, front, rear, and cutaway views of the same spacecraft, with consistent geometry and proportions across all views. Include labeled engines, propellant tanks, crew module, cockpit, airlocks, docking port, radiators, solar arrays, antennas, landing gear, cargo bay, avionics, and life-support systems. Add dimensions, callouts, section lines, scale markers, structural details, and a clear technical visual hierarchy.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3.7 flash**  | **6/10** |
+| **Gemini 3.6 flash**  | **6/10** |
+| **Gemini 3.5 flash**  | **4/10** |
+| **Gemini 3.1**        | **4/10** |
+| **Gemini 3 flash**    | **2/10** |
+| **Gemini 2.5**        | **5/10** |
+| **Gemma 4 31B**       | **0/10** |
+| **ChatGPT 5.6**       | **5/10** |
+| **ChatGPT 5.5**       | **4/10** |
+| **ChatGPT 5.4**       | **3/10** |
+| **ChatGPT 5.3**       | **4/10** |
+| **ChatGPT 5.2**       | **2/10** |
+| **ChatGPT 5.1**       | **3/10** |
+| **ChatGPT 5**         | **3/10** |
+| **ChatGPT o3**        | **2/10** |
+| **ChatGPT 4.1**       | **3/10** |
+| **GPT-OSS-120b**      | **3/10** |
+| **GPT-OSS-20b**       | **2/10** |
+| **Grok 4.6**          | **6/10** |
+| **Grok 4.5**          | **9/10** |
+| **Grok 4.3**          | **3/10** |
+| **Grok 4.2**          | **3/10** |
+| **Grok 4.1**          | **0/10** |
+| **Claude Fable 5**    | **8/10** |
+| **Claude Opus 5**     | **0/10** |
+| **Claude Opus 4.8**   | **0/10** |
+| **Claude Opus 4.7**   | **0/10** |
+| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 4.5**   | **0/10** |
+| **Claude Opus 4.1**   | **0/10** |
+| **Claude Opus 3**     | **0/10** |
+| **Glm 5.2**           | **5/10** |
+| **Glm 5.1**           | **0/10** |
+| **Glm 5**             | **6/10** |
+| **Glm 4.7**           | **5/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K3**           | **0/10** |
+| **Kimi K2.7 code**    | **4/10** |
+| **Kimi K2.6**         | **1/10** |
+| **Kimi K2.5**         | **3/10** |
+| **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4 flash**  | **4/10** |
+| **Deepseek 4**        | **4/10** |
+| **Deepseek 3.2**      | **0/10** |
+| **Мinimax m3**        | **6/10** |
+| **Мinimax m2.7**      | **3/10** |
+| **Мinimax m2.5**      | **3/10** |
+| **Мinimax m2.1**      | **3/10** |
+| **Мinimax m2**        | **2/10** |
+| **Мinimax m1**        | **1/10** |
+| **Qwen 3.8 Max**      | **6/10** |
+| **Qwen 3.7 Max**      | **2/10** |
+| **Qwen 3.6 Max**      | **3/10** |
+| **Qwen 3.6**          | **2/10** |
+| **Qwen 3.5 Max**      | **0/10** |
+| **Qwen 3.5**          | **0/10** |
+| **Qwen 3 Max**        | **2/10** |
+| **Qwen 3.5 122b a10b**| **2/10** |
+| **Qwen 3.5 35b a3b**  | **2/10** |
+| **Qwen 3.6 27b**      | **2/10** |
+| **MiMo 2.5**          | **5/10** |
+| **MiMo 2**            | **0/10** |
+| **LongCat 2**         | **3/10** |
+| **Nemotron 3 ultra**  | **1/10** |
+| **Trinity**           | **1/10** |
+| **HY3**               | **0/10** |
+| **Laguna S 2.1**      | **2/10** |
+| **Muse Spark 1.1**    | **6/10** |
+| **Muse Glimmer**      | **2/10** |
+| **Inkling**           | **3/10** |
+| **Mistral Large 3**   | **2/10** |
+| **Mistral Medium 3.5**| **3/10** |

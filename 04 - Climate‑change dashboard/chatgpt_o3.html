@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sofia Climate Dashboard</title>
+<style>
+    body{font-family:system-ui,Arial,sans-serif;margin:0;padding:0;background:#f4f7fa;color:#222}
+    header{background:#135589;color:#fff;padding:1rem 2rem}
+    h1{margin:0;font-size:1.6rem}
+    #controls{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0}
+    #controls label{display:flex;flex-direction:column;font-size:.9rem}
+    #stats{display:flex;gap:2rem;flex-wrap:wrap;margin:1rem 0}
+    #stats div{background:#fff;border-radius:6px;padding:.8rem 1rem;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+    canvas{max-width:100%;height:350px;margin:1rem 0;background:#fff;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+    footer{font-size:.8rem;text-align:center;margin:2rem 0;color:#555}
+</style>
+</head>
+<body>
+<header>
+    <h1>Climate Dashboard – Sofia, Bulgaria (1952-2021)</h1>
+</header>
+
+<main style="padding:0 2rem 2rem;">
+    <!-- Year-range controls -->
+    <section id="controls">
+        <label>
+            Start&nbsp;Year
+            <input type="number" id="startYear" min="1952" max="2021" value="1952">
+        </label>
+        <label>
+            End&nbsp;Year
+            <input type="number" id="endYear" min="1952" max="2021" value="2021">
+        </label>
+        <button id="applyBtn" style="align-self:flex-end;padding:.4rem .8rem">Apply</button>
+        <span id="loading" style="display:none;align-self:flex-end;">Loading…</span>
+    </section>
+
+    <!-- Summary statistics -->
+    <section id="stats">
+        <div><strong>Overall mean&nbsp;°C:</strong> <span id="overallMean">–</span></div>
+        <div><strong>Warming trend&nbsp;°C/decade:</strong> <span id="trend">–</span></div>
+        <div><strong>Hottest&nbsp;day:</strong> <span id="hottest">–</span></div>
+        <div><strong>Coldest&nbsp;day:</strong> <span id="coldest">–</span></div>
+    </section>
+
+    <!-- Charts -->
+    <canvas id="annualChart"></canvas>
+    <canvas id="monthlyChart"></canvas>
+    <canvas id="extremeChart"></canvas>
+</main>
+
+<footer>Data source: NOAA GHCN-D via Meteostat · Dashboard generated in the browser</footer>
+
+<!-- External libraries -->
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+<script>
+const CSV_PATH = 'temperature_Sofia_2809794_1952-01-01 - 2021-11-28.csv';
+const state = { rows:[], years:[], charts:{} };
+
+const el = id => document.getElementById(id);
+
+// Fetch & parse CSV once, then initialise UI
+async function init(){
+    el('loading').style.display='inline';
+    const resp = await fetch(CSV_PATH);
+    if(!resp.ok) throw new Error('Cannot load CSV ('+resp.status+')');
+    const csv = await resp.text();
+    const parsed = Papa.parse(csv,{header:true,dynamicTyping:true}).data;
+
+    // Convert tenths of °C to °C
+    state.rows = parsed
+      .filter(r=>r.DATE && r.TAVG!=="")
+      .map(r=>{
+         const date = new Date(r.DATE);
+         return {
+           date,
+           year: date.getFullYear(),
+           month: date.getMonth()+1,
+           tavg: r.TAVG/10,
+           tmax: r.TMAX/10,
+           tmin: r.TMIN/10
+         };
+      });
+
+    state.years = [...new Set(state.rows.map(r=>r.year))].sort((a,b)=>a-b);
+    el('startYear').min = el('startYear').value = state.years[0];
+    el('endYear').max   = el('endYear').value   = state.years[state.years.length-1];
+
+    buildCharts();
+    update();
+
+    el('applyBtn').addEventListener('click',update);
+    el('loading').style.display='none';
+}
+
+function buildCharts(){
+  const makeChart = (ctx,type,opts)=>new Chart(ctx,{type,data:{labels:[],datasets:[]},options:opts});
+  state.charts.annual  = makeChart(el('annualChart').getContext('2d'),'line',{responsive:true,plugins:{title:{display:true,text:'Annual Mean Temperature (°C)'}}});
+  state.charts.monthly = makeChart(el('monthlyChart').getContext('2d'),'line',{responsive:true,plugins:{title:{display:true,text:'Monthly Mean Temperature (°C)'}}});
+  state.charts.extreme = makeChart(el('extremeChart').getContext('2d'),'bar',{responsive:true,plugins:{title:{display:true,text:'Hot (≥30 °C) & Cold (≤-10 °C) Days per Year'}}});
+}
+
+function update(){
+  const start = +el('startYear').value;
+  const end   = +el('endYear').value;
+  if(start>end){alert('Start year must be ≤ end year');return;}
+
+  const data = state.rows.filter(r=>r.year>=start && r.year<=end);
+
+  // ---------- Aggregations ----------
+  const byYear = {}, byMonth = {}, hotColdByYear={};
+  data.forEach(r=>{
+     byYear[r.year] ??= {sum:0,count:0,max:-Infinity,min:Infinity};
+     const y = byYear[r.year];
+     y.sum += r.tavg; y.count++;
+     y.max = Math.max(y.max, r.tmax);
+     y.min = Math.min(y.min, r.tmin);
+
+     const mKey = r.year+'-'+r.month;
+     byMonth[mKey] ??= {sum:0,count:0};
+     byMonth[mKey].sum += r.tavg; byMonth[mKey].count++;
+
+     hotColdByYear[r.year] ??= {hot:0,cold:0};
+     if(r.tmax>=30) hotColdByYear[r.year].hot++;
+     if(r.tmin<=-10) hotColdByYear[r.year].cold++;
+  });
+
+  // Annual means & extremes
+  const annualYears = Object.keys(byYear).map(Number).sort((a,b)=>a-b);
+  const annualMeans = annualYears.map(y=> (byYear[y].sum/byYear[y].count).toFixed(2));
+  const annualMaxes = annualYears.map(y=> byYear[y].max.toFixed(1));
+  const annualMins  = annualYears.map(y=> byYear[y].min.toFixed(1));
+
+  // Monthly means
+  const monthLabels = Object.keys(byMonth).sort((a,b)=>a.localeCompare(b));
+  const monthlyMeans = monthLabels.map(k=>(byMonth[k].sum/byMonth[k].count).toFixed(2));
+
+  // Hot/Cold bars
+  const hotCounts = annualYears.map(y=>hotColdByYear[y].hot);
+  const coldCounts= annualYears.map(y=>hotColdByYear[y].cold);
+
+  // ---------- Charts ----------
+  const clr = Chart.defaults.color; // default color
+  state.charts.annual.data.labels   = annualYears;
+  state.charts.annual.data.datasets = [
+      {label:'Mean °C',data:annualMeans,fill:false,tension:.2},
+      {label:'Yearly Max °C',data:annualMaxes,fill:false,tension:.2,borderDash:[5,5]},
+      {label:'Yearly Min °C',data:annualMins,fill:false,tension:.2,borderDash:[5,5]}
+  ];
+  state.charts.annual.update();
+
+  state.charts.monthly.data.labels   = monthLabels.map(k=>k.replace('-','/'));
+  state.charts.monthly.data.datasets = [
+      {label:'Monthly Mean °C',data:monthlyMeans,fill:false,tension:.2}
+  ];
+  state.charts.monthly.update();
+
+  state.charts.extreme.data.labels   = annualYears;
+  state.charts.extreme.data.datasets = [
+      {label:'Hot days (≥30 °C)',data:hotCounts},
+      {label:'Cold days (≤-10 °C)',data:coldCounts}
+  ];
+  state.charts.extreme.update();
+
+  // ---------- Summary stats ----------
+  const overallMean = (data.reduce((s,r)=>s+r.tavg,0)/data.length).toFixed(2);
+  el('overallMean').textContent = overallMean;
+
+  // Linear regression on yearly mean temps
+  const n = annualYears.length;
+  const xMean = (annualYears.reduce((s,x)=>s+x,0))/n;
+  const yMean = annualMeans.reduce((s,y)=>s+ +y,0)/n;
+  let num=0,den=0;
+  for(let i=0;i<n;i++){
+     num += (annualYears[i]-xMean)*(annualMeans[i]-yMean);
+     den += Math.pow(annualYears[i]-xMean,2);
+  }
+  const slopePerYear = num/den;
+  const slopePerDecade = (slopePerYear*10).toFixed(3);
+  el('trend').textContent = slopePerDecade;
+
+  // Hottest / coldest
+  const hottest = data.reduce((a,b)=> a.tmax>b.tmax?a:b);
+  const coldest = data.reduce((a,b)=> a.tmin<b.tmin?a:b);
+  el('hottest').textContent = hottest.date.toISOString().slice(0,10)+' ('+hottest.tmax.toFixed(1)+' °C)';
+  el('coldest').textContent = coldest.date.toISOString().slice(0,10)+' ('+coldest.tmin.toFixed(1)+' °C)';
+}
+
+init().catch(e=>{alert('Error: '+e.message);});
+</script>
+</body>
+</html>

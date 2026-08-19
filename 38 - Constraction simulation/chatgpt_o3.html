@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Interactive Simulation Sandbox</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{
+  --ui-bg:#222;
+  --ui-fg:#fff;
+  --accent:#0af;
+  --canvas-bg:#111;
+  --stress-low:#2ecc71;
+  --stress-mid:#f1c40f;
+  --stress-high:#e74c3c;
+  font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{display:flex;height:100vh;background:#181818;color:var(--ui-fg)}
+#sidebar{
+  width:260px;flex:none;background:var(--ui-bg);padding:1rem;display:flex;flex-direction:column;gap:.75rem;overflow:auto}
+label{font-size:.85rem;display:flex;flex-direction:column;gap:.25rem}
+input,select,button{
+  padding:.35rem .5rem;border:1px solid #555;border-radius:4px;background:#333;color:#ddd;font-size:.9rem}
+button{cursor:pointer;background:var(--accent);color:#fff;border:none}
+button:active{opacity:.8}
+h2{font-size:1.1rem;margin-bottom:.25rem;color:var(--accent)}
+#canvas-wrap{flex:1;display:flex;justify-content:center;align-items:center}
+canvas{background:var(--canvas-bg);max-height:100%;max-width:100%}
+footer{font-size:.7rem;opacity:.6;text-align:center;margin-top:auto}
+</style>
+</head>
+<body>
+<!-- ─────────────── UI SIDEBAR ─────────────── -->
+<aside id="sidebar">
+  <h2>Create object</h2>
+  <label>Type
+    <select id="obj-type">
+      <option value="circle">Circle</option>
+      <option value="box">Box</option>
+    </select>
+  </label>
+  <label>Size (px)
+    <input id="obj-size" type="number" value="40" min="10" max="150">
+  </label>
+  <label>Mass
+    <input id="obj-mass" type="number" value="1" min=".1" step=".1">
+  </label>
+  <button id="add-btn">Click canvas to add</button>
+  <hr>
+  <h2>Environment</h2>
+  <label>Gravity
+    <input id="gravity" type="range" min="0" max="2000" value="800">
+  </label>
+  <label>Wind
+    <input id="wind" type="range" min="-1000" max="1000" value="0">
+  </label>
+  <hr>
+  <h2>Simulation</h2>
+  <button id="pause-btn">⏸ Pause</button>
+  <button id="reset-btn" style="margin-top:.5rem;background:#e74c3c">Reset</button>
+  <footer>Drag objects to move.<br>Color = stress (green→red).</footer>
+</aside>
+
+<!-- ─────────────── CANVAS ─────────────── -->
+<div id="canvas-wrap"><canvas id="sim"></canvas></div>
+
+<script>
+/* =================== CONFIG =================== */
+const TAU = Math.PI*2;
+const FPS = 60;
+const DT  = 1/FPS;
+const RESTITUTION = 0.4; // bounciness
+const DRAG = 0.999;      // velocity damping per tick
+
+/* =================== STATE =================== */
+const canvas = document.getElementById('sim');
+const ctx = canvas.getContext('2d');
+resizeCanvas();
+addEventListener('resize',resizeCanvas);
+
+let objects=[];          // simulated bodies
+let running=true;        // play/pause flag
+let addMode=false;       // waiting for user click
+let dragTarget=null;     // body being dragged
+
+/* =================== UI HOOKS =================== */
+const $=id=>document.getElementById(id);
+$('add-btn').onclick=()=>{addMode=!addMode;$('add-btn').textContent=addMode?'Click on canvas…':'Click canvas to add'};
+$('pause-btn').onclick=()=>{running=!running;$('pause-btn').textContent=running?'⏸ Pause':'▶ Play'};
+$('reset-btn').onclick=resetSim;
+
+canvas.onpointerdown=e=>{
+  const pos=getPointerPos(e);
+  if(addMode){ addBodyAt(pos); addMode=false;$('add-btn').textContent='Click canvas to add';return}
+  dragTarget=getBodyAt(pos);
+  if(dragTarget){
+    dragTarget.$dragOffset = {x:pos.x-dragTarget.x,y:pos.y-dragTarget.y};
+    dragTarget.vx=dragTarget.vy=0;
+  }
+};
+canvas.onpointermove=e=>{
+  if(dragTarget){
+    const pos=getPointerPos(e);
+    dragTarget.x=pos.x-dragTarget.$dragOffset.x;
+    dragTarget.y=pos.y-dragTarget.$dragOffset.y;
+  }
+};
+canvas.onpointerup=()=>dragTarget=null;
+
+/* =================== BODY HELPERS =================== */
+function addBodyAt({x,y}){
+  const type=$('obj-type').value;
+  const size=parseFloat($('obj-size').value);
+  const mass=parseFloat($('obj-mass').value);
+  const body={type,mass,x,y,vx:0,vy:0,ax:0,ay:0,selected:false,created:Date.now()};
+  if(type==='circle'){
+    body.r=size/2;
+  }else{
+    body.w=size;body.h=size;
+  }
+  objects.push(body);
+}
+
+function getBodyAt({x,y}){
+  for(let i=objects.length-1;i>=0;--i){
+    const b=objects[i];
+    if(b.type==='circle'){
+      if(dist(x,y,b.x,b.y)<=b.r) return b;
+    }else{
+      if(x>=b.x-b.w/2&&x<=b.x+b.w/2&&y>=b.y-b.h/2&&y<=b.y+b.h/2) return b;
+    }
+  }
+  return null;
+}
+
+/* =================== SIMULATION LOOP =================== */
+function step(){
+  requestAnimationFrame(step);
+  if(!running) {draw();return}
+
+  const g = parseFloat($('gravity').value);
+  const wind=parseFloat($('wind').value);
+
+  for(const b of objects){
+    // external forces
+    b.ax=wind/b.mass;
+    b.ay=g/b.mass;
+
+    // integrate
+    b.vx += b.ax*DT;
+    b.vy += b.ay*DT;
+    b.vx *= DRAG;
+    b.vy *= DRAG;
+    b.x  += b.vx*DT*60; // scale to px/s
+    b.y  += b.vy*DT*60;
+
+    // wall collisions
+    if(b.type==='circle'){
+      const r=b.r;
+      if(b.x-r<0){b.x=r;b.vx*=-RESTITUTION}
+      if(b.x+r>canvas.width){b.x=canvas.width-r;b.vx*=-RESTITUTION}
+      if(b.y-r<0){b.y=r;b.vy*=-RESTITUTION}
+      if(b.y+r>canvas.height){b.y=canvas.height-r;b.vy*=-RESTITUTION}
+    }else{
+      const hw=b.w/2,hh=b.h/2;
+      if(b.x-hw<0){b.x=hw;b.vx*=-RESTITUTION}
+      if(b.x+hw>canvas.width){b.x=canvas.width-hw;b.vx*=-RESTITUTION}
+      if(b.y-hh<0){b.y=hh;b.vy*=-RESTITUTION}
+      if(b.y+hh>canvas.height){b.y=canvas.height-hh;b.vy*=-RESTITUTION}
+    }
+  }
+
+  // very simple circle-circle collision (resolve positional overlap)
+  for(let i=0;i<objects.length;i++){
+    for(let j=i+1;j<objects.length;j++){
+      const A=objects[i],B=objects[j];
+      if(A.type!=='circle'||B.type!=='circle')continue;
+      const dx=B.x-A.x,dy=B.y-A.y;
+      const d= Math.hypot(dx,dy);
+      const minDist=(A.r+B.r);
+      if(d<minDist&&d>0){
+        const overlap=minDist-d;
+        const nx=dx/d, ny=dy/d;
+        A.x-=nx*overlap/2; A.y-=ny*overlap/2;
+        B.x+=nx*overlap/2; B.y+=ny*overlap/2;
+        // impulse
+        const relvx=B.vx-A.vx, relvy=B.vy-A.vy;
+        const vn = relvx*nx+relvy*ny;
+        if(vn>0) continue;
+        const impulse = -(1+RESTITUTION)*vn/(1/A.mass+1/B.mass);
+        const ix=impulse*nx, iy=impulse*ny;
+        A.vx -= ix/A.mass; A.vy -= iy/A.mass;
+        B.vx += ix/B.mass; B.vy += iy/B.mass;
+      }
+    }
+  }
+
+  draw();
+}
+
+/* =================== RENDER =================== */
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  for(const b of objects){
+    // compute stress proxy (speed)
+    const speed=Math.hypot(b.vx,b.vy);
+    const stress=Math.min(speed/500,1); // 0-1
+    ctx.fillStyle=stressToColor(stress);
+
+    if(b.type==='circle'){
+      ctx.beginPath();
+      ctx.arc(b.x,b.y,b.r,0,TAU);
+      ctx.fill();
+    }else{
+      ctx.fillRect(b.x-b.w/2,b.y-b.h/2,b.w,b.h);
+    }
+  }
+}
+
+function stressToColor(t){
+  //  green → yellow → red
+  if(t<.5){
+    const k=t/.5;
+    return lerpColor('--stress-low','--stress-mid',k);
+  }else{
+    const k=(t-.5)/.5;
+    return lerpColor('--stress-mid','--stress-high',k);
+  }
+}
+function lerpColor(varA,varB,k){
+  const a=getComputedStyle(document.documentElement).getPropertyValue(varA);
+  const b=getComputedStyle(document.documentElement).getPropertyValue(varB);
+  const ca=parseInt(a.slice(1),16);
+  const cb=parseInt(b.slice(1),16);
+  const r=((ca>>16)&255)*(1-k)+((cb>>16)&255)*k;
+  const g=((ca>>8)&255)*(1-k)+((cb>>8)&255)*k;
+  const bl=(ca&255)*(1-k)+(cb&255)*k;
+  return `rgb(${r|0},${g|0},${bl|0})`;
+}
+
+/* =================== MISC =================== */
+function getPointerPos(e){
+  const rect=canvas.getBoundingClientRect();
+  return {x:(e.clientX-rect.left),y:(e.clientY-rect.top)};
+}
+function resetSim(){objects=[]}
+function resizeCanvas(){
+  canvas.width=window.innerWidth-260;
+  canvas.height=window.innerHeight;
+  draw();
+}
+
+/* =================== START =================== */
+step();
+</script>
+</body>
+</html>

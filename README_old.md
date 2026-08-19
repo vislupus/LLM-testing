@@ -1279,3 +1279,45 @@ Testing different LLMs to do software tasks
 
 ### 42 - VR alien planet
 **Build an immersive WebXR experience where the player can freely explore a mysterious alien planet in VR. Include strange biomes, caves, ruins, wildlife, weather, glowing vegetation, artifacts, and physical interactions focused on exploration and discovery. Use no libraries, no fallback APIs, and implement the entire experience in a single HTML file.**
+
+---
+
+### 43 - SVG Spacecraft Schematic
+**Create a highly detailed technical spacecraft schematic as a single SVG, presented like a professional aerospace engineering blueprint. Show top, side, front, rear, and cutaway views of the same spacecraft, with consistent geometry and proportions across all views. Include labeled engines, propellant tanks, crew module, cockpit, airlocks, docking port, radiators, solar arrays, antennas, landing gear, cargo bay, avionics, and life-support systems. Add dimensions, callouts, section lines, scale markers, structural details, and a clear technical visual hierarchy.**
+
+---
+
+### 44 - Small Spacecraft Simulation
+**Create a compact but highly detailed explorable spacecraft in Babylon.js, only slightly longer than a city bus, with a complete exterior and fully walkable interior. Delivered as a single self-contained HTML file. Include a cockpit, airlock, crew cabin, cargo bay, engineering room, engine compartment, and corridors. Doors must open and close interactively. Simulate oxygen and power networks, system failures, hull damage, fires, repairs, particles, alarms, sound, and persistent ship state. Add an interactive status UI, first-person interior movement, external orbit/free cameras, and orbital day/night lighting. Let players inspect the ship from outside and see interior spaces through windows or opened sections. Systems should visibly affect lights, doors, atmosphere, and ship operation.**
+
+---
+
+### 45 - Bulgarian Calendar
+**Build a polished single-file offline Bulgarian work calendar in HTML/CSS/JS. Use Monday-first weeks, DD.MM.YYYY dates, 24-hour time and Europe/Sofia timezone. Include Year view with all 12 months visible, plus Month, Week and Day views, ISO week numbers, Today navigation and working-hours highlighting. Support create/edit/delete, drag/resize, all-day and multi-day events, overlapping events, categories, search, agenda and conflict detection. Add daily/weekly/monthly recurring events, including editing one occurrence or the whole series. Persist everything in localStorage. Correctly calculate Bulgarian public holidays, Orthodox Easter-related holidays, weekend compensation rules, leap years, DST and year boundaries. Add a calculator for adding/counting working days and show holiday names and types.**
+
+---
+
+### 46 - Solar Home
+Build a single-file offline HTML/SVG solar-home simulator for Sofia from the fixed table below, with 5 appliances, battery, dashboard and CSV report.
+
+| Month | Avg °C | High °C | Low °C | Sun h | Daylight | PV 1kWp | PV 3.6kWp | Irradiation |
+| ----- | -----: | ------: | -----: | ----: | -------- | ------: | --------: | ----------: |
+| Jan   |     -2 |       2 |     -6 |   172 | 9h25m    |   95.03 |     342.1 |      109.02 |
+| Feb   |      2 |       7 |     -3 |   237 | 10h32m   |  105.04 |     378.1 |      121.78 |
+| Mar   |      5 |      10 |      0 |   284 | 11h57m   |  131.18 |     472.2 |      158.19 |
+| Apr   |      9 |      15 |      3 |   342 | 13h24m   |  136.27 |     490.6 |      169.87 |
+| May   |     14 |      20 |      8 |   392 | 14h38m   |  136.49 |     491.4 |      174.87 |
+| Jun   |     18 |      23 |     12 |   393 | 15h15m   |  134.44 |     484.0 |      175.00 |
+| Jul   |     20 |      26 |     14 |   423 | 14h56m   |  145.61 |     524.2 |      192.55 |
+| Aug   |     20 |      27 |     14 |   400 | 13h50m   |  146.42 |     527.1 |      193.44 |
+| Sep   |     16 |      23 |     10 |   341 | 12h26m   |  124.90 |     449.6 |      160.34 |
+| Oct   |     10 |      17 |      5 |   287 | 11h00m   |  112.76 |     405.9 |      139.98 |
+| Nov   |      6 |      11 |      2 |   233 | 9h43m    |   90.33 |     325.2 |      107.48 |
+| Dec   |      1 |       5 |     -2 |   210 | 9h04m    |   82.11 |     295.6 |       95.54 |
+
+Use 8×450W PV panels, a 10kWh battery, fridge, oven, 120L boiler, 1.2kW heat pump/AC and washing machine. Include monthly energy flows, grid import/export, BGN costs and interactive month selection.
+
+---
+
+### 47 - SQLite Database Admin
+**Build a polished single-file offline SQLite database admin tool in HTML/CSS/JS, inspired by DBeaver/phpMyAdmin. Include a predefined database with several related tables and realistic sample data. Support browsing tables, create/alter/drop table, SQLite data types, primary/foreign keys, UNIQUE/NOT NULL/CHECK constraints, indexes, insert/edit/delete rows and transaction-safe changes. Add a SQL console supporting SELECT, INSERT, UPDATE, DELETE, JOIN, GROUP BY, ORDER BY, aggregates and subqueries, with useful SQLite-style errors. Show table structure, indexes and foreign keys, plus an interactive schema/relationship diagram. Include query history, execution time, pagination, search/filtering and reset-to-default data. All UI actions and SQL changes must stay synchronized.**

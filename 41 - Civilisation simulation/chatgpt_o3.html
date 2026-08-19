@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>p5.js Civilisation Sim – single file</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+
+<style>
+html,body{margin:0;height:100%;overflow:hidden;font-family:sans-serif;background:#101018;color:#eee}
+#ui{position:fixed;top:8px;left:8px;display:flex;flex-direction:column;gap:4px;z-index:10}
+#ui button,#ui input,#ui select{font:12px sans-serif;padding:2px 6px;background:#222;border:1px solid #555;color:#ddd;border-radius:3px;cursor:pointer}
+#ui label{font-size:11px}
+#stats{position:fixed;top:8px;right:8px;min-width:220px;padding:6px 8px;background:rgba(0,0,0,.55);border:1px solid #555;border-radius:4px;font:11px/14px monospace;pointer-events:none;white-space:pre}
+#notif{position:fixed;bottom:8px;left:50%;transform:translateX(-50%);max-width:60%;min-width:280px;
+       font:12px sans-serif;background:rgba(20,20,20,.8);padding:6px 10px;border-radius:4px;border:1px solid #666;display:none}
+</style>
+</head>
+
+<body>
+
+<!-- ─── Controls ─────────────────────────────────────────────── -->
+<div id="ui">
+  <button id="pauseBtn">⏸︎ Pause</button>
+  <button id="resetBtn">⭯ Reset</button>
+
+  <label>View:
+    <select id="viewSel">
+      <option value="terrain">Terrain</option>
+      <option value="climate">Climate</option>
+      <option value="resources">Resources</option>
+      <option value="population">Population</option>
+      <option value="tribes">Tribes</option>
+    </select>
+  </label>
+
+  <label>Simulation speed: <input type="range" id="speedRange" min="1" max="20" value="1"></label>
+  <label>Max population: <input type="number" id="maxPop" min="100" max="50000" step="100" value="5000"></label>
+
+  <details style="margin-top:4px">
+    <summary style="cursor:pointer">Trigger events</summary>
+    <div style="display:grid;grid-template-columns:repeat(2,auto);gap:3px;margin-top:4px">
+      <button data-event="epidemic">Epidemic</button>
+      <button data-event="drought">Drought</button>
+      <button data-event="flood">Flood</button>
+      <button data-event="heat">Extreme Heat</button>
+      <button data-event="cold">Extreme Cold</button>
+      <button data-event="insects">Insect Attack</button>
+      <button data-event="boredom">Boredom</button>
+      <button data-event="migration">Migration</button>
+      <button data-event="trade">Trade Boom</button>
+      <button data-event="war">War Desire</button>
+    </div>
+  </details>
+
+  <button id="addForeign">Add foreign agents</button>
+</div>
+
+<!-- ─── Statistics box ────────────────────────────────────────── -->
+<pre id="stats"></pre>
+<div id="notif"></div>
+
+
+<script>
+/* -------------------------------------------------------------
+   Globals & basic types
+-------------------------------------------------------------- */
+const WORLD_SIZE   = 512;      // square world (simulation grid)
+const TILE         = 4;        // 4×4 px → canvas ~2k×2k
+const MAX_RES      = 255;
+const AGENT_BATCH  = 100;      // how many new births per tick when resources allow
+
+let agents = [], tribes = [], cities = [], events = [];
+let world  = [];   // grid of cells
+let climateMap = [], resMap = [];
+let paused = false;
+let simSpeed = 1;
+let maxPopulation = 5000;
+
+let cam = {x:WORLD_SIZE/2, y:WORLD_SIZE/2, zoom:1, dragging:false, dx:0, dy:0};
+
+const statsBox = document.getElementById('stats');
+const notifBox = document.getElementById('notif');
+/* Utility helpers */
+const rand = n => Math.floor(Math.random()*n);
+const lerp = (a,b,t)=>a+(b-a)*t;
+function noise2d(x,y){return noise(x*0.005,y*0.005);} // wrapper for p5 noise
+
+/* -------------------------------------------------------------
+   World generation
+-------------------------------------------------------------- */
+function generateWorld(){
+  world = new Array(WORLD_SIZE*WORLD_SIZE);
+  climateMap = new Int8Array(world.length);
+  resMap     = new Int8Array(world.length);
+
+  for(let y=0;y<WORLD_SIZE;y++){
+    for(let x=0;x<WORLD_SIZE;x++){
+      const i = idx(x,y);
+      const h = noise2d(x,y);
+      world[i] = h>0.45 ? 1 : 0;                           // 1 land, 0 water
+      climateMap[i] = Math.floor(noise2d(x+1000,y+1000)*5);// 0-4 zones
+      resMap[i]     = Math.floor(noise2d(x+2000,y+2000)*MAX_RES);
+    }
+  }
+}
+
+/* -------------------------------------------------------------
+   Agent & tribe constructors
+-------------------------------------------------------------- */
+class Tribe{
+  constructor(id,x,y){
+    this.id=id;
+    this.color=[rand(150)+50,rand(150)+50,rand(150)+50];
+    this.tech = 1;
+    this.mem  = {};
+    this.capital = {x,y};
+  }
+}
+class Agent{
+  constructor(x,y,t){
+    this.x=x; this.y=y; this.dir=rand(360);
+    this.energy=rand(40)+60;  // %
+    this.tribe=t;
+    this.age=0;
+    this.traits={aggression:Math.random(),curiosity:Math.random(),diligence:Math.random()};
+    this.mem=[];
+  }
+}
+
+/* -------------------------------------------------------------
+   Simulation tick
+-------------------------------------------------------------- */
+function simStep(){
+  // -- births
+  if(agents.length<maxPopulation){
+    const births = Math.min(AGENT_BATCH,maxPopulation-agents.length);
+    for(let i=0;i<births;i++){
+      const x=rand(WORLD_SIZE), y=rand(WORLD_SIZE);
+      if(world[idx(x,y)]){
+        const t = tribes[rand(tribes.length)];
+        agents.push(new Agent(x,y,t));
+      }
+    }
+  }
+  // -- each agent
+  for(let i=agents.length-1;i>=0;i--){
+    const a = agents[i];
+    a.age+=0.01;
+    a.energy-=0.05;
+    if(a.energy<=0 || a.age>100){ agents.splice(i,1); continue; }
+
+    // simple move
+    a.dir += (Math.random()-0.5)*20*a.traits.curiosity;
+    const nx = (a.x+Math.cos(a.dir*PI/180))|0;
+    const ny = (a.y+Math.sin(a.dir*PI/180))|0;
+    if(inWorld(nx,ny) && world[idx(nx,ny)]){
+      a.x=nx; a.y=ny;
+    }
+
+    // resource harvest
+    const resI = idx(a.x,a.y);
+    if(resMap[resI]>0){
+      const mined = Math.min(5,resMap[resI]);
+      resMap[resI]-=mined;
+      a.energy=Math.min(100,a.energy+mined*0.5);
+    }
+
+    // rudimentary tech progress
+    if(Math.random()<0.0001){ a.tribe.tech++; pushNotif(`Tribe #${a.tribe.id} discovered tech Lv${a.tribe.tech}`); }
+  }
+
+  // random events consume/alter resources
+  stepEvents();
+}
+
+/* -------------------------------------------------------------
+   Events
+-------------------------------------------------------------- */
+function triggerEvent(type,dur=200){
+  events.push({type, t:dur});
+  pushNotif(type.toUpperCase()+" triggered!");
+}
+function stepEvents(){
+  for(let i=events.length-1;i>=0;i--){
+    const e=events[i]; e.t--;
+    if(e.t<=0){events.splice(i,1);continue;}
+    if(rand(10)!==0)continue;
+    const x=rand(WORLD_SIZE),y=rand(WORLD_SIZE),j=idx(x,y);
+    switch(e.type){
+      case"epidemic":if(agents.length>50){agents.splice(rand(agents.length),1);}break;
+      case"drought":resMap[j]=Math.max(0,resMap[j]-50);break;
+      case"flood":world[j]=0;break;
+      case"heat":climateMap[j]=4;break;
+      case"cold":climateMap[j]=0;break;
+      case"insects":resMap[j]=Math.max(0,resMap[j]-100);break;
+      case"boredom":if(agents.length)agents[rand(agents.length)].dir+=180;break;
+      case"migration":agents.forEach(a=>{if(Math.random()<.01){a.dir+=rand(360);}});break;
+      case"trade":tribes.forEach(t=>t.tech+=0.001);break;
+      case"war":if(agents.length>100){agents.splice(rand(agents.length),1);}break;
+    }
+  }
+}
+
+/* -------------------------------------------------------------
+   Rendering helpers
+-------------------------------------------------------------- */
+function drawWorld(view){
+  noStroke();
+  const z=cam.zoom;
+  const ox=width/2 - cam.x*TILE*z + cam.dx;
+  const oy=height/2- cam.y*TILE*z + cam.dy;
+
+  for(let y=0;y<WORLD_SIZE;y++){
+    for(let x=0;x<WORLD_SIZE;x++){
+      const i=idx(x,y);
+      const sx=ox + x*TILE*z;
+      const sy=oy + y*TILE*z;
+      if(sx>width||sy>height||sx<-TILE*z||sy<-TILE*z)continue;
+
+      switch(view){
+        case"terrain":
+          fill(world[i]? [34,139,34] : [30,100,180]); break;
+        case"climate":
+          fill(climateMap[i]*60,100,200); break;
+        case"resources":
+          const r = resMap[i]; fill(r, r*0.5, 0); break;
+        case"population":
+          fill(30,30,30);
+          break;
+        case"tribes":
+          fill(80);
+          break;
+      }
+      rect(sx,sy,TILE*z,TILE*z);
+    }
+  }
+
+  // population overlay
+  if(view==="population"){
+    stroke(255,0,255,120); strokeWeight(1);
+    agents.forEach(a=>{
+      const sx=ox+a.x*TILE*z, sy=oy+a.y*TILE*z;
+      point(sx,sy);
+    });
+    noStroke();
+  }
+  // tribes overlay
+  if(view==="tribes"){
+    noStroke();
+    agents.forEach(a=>{
+      const c=a.tribe.color; fill(c[0],c[1],c[2],150);
+      const sx=ox+a.x*TILE*z, sy=oy+a.y*TILE*z;
+      circle(sx,sy,2*z);
+    });
+  }
+}
+
+/* -------------------------------------------------------------
+   p5.js lifecycle
+-------------------------------------------------------------- */
+function setup(){
+  createCanvas(windowWidth,windowHeight);
+  pixelDensity(1);
+  noiseSeed(rand(999999));
+  generateWorld();
+
+  // create tribes & initial agents
+  for(let i=0;i<8;i++){
+    const x=rand(WORLD_SIZE),y=rand(WORLD_SIZE);
+    tribes.push(new Tribe(i,x,y));
+  }
+  for(let i=0;i<500;i++){
+    const t=tribes[rand(tribes.length)];
+    agents.push(new Agent(rand(WORLD_SIZE),rand(WORLD_SIZE),t));
+  }
+}
+
+function draw(){
+  if(!paused){
+    for(let s=0;s<simSpeed;s++) simStep();
+  }
+  background(16);
+  drawWorld(document.getElementById('viewSel').value);
+  updateStats();
+}
+
+/* -------------------------------------------------------------
+   Input / camera
+-------------------------------------------------------------- */
+function mousePressed(){ cam.dragging=true; }
+function mouseReleased(){ cam.dragging=false; cam.x-=cam.dx/TILE/cam.zoom; cam.y-=cam.dy/TILE/cam.zoom; cam.dx=cam.dy=0; }
+function mouseDragged(){ if(cam.dragging){ cam.dx += movedX; cam.dy += movedY; } }
+function mouseWheel(e){ const factor=e.delta>0?0.9:1.1; cam.zoom=constrain(cam.zoom*factor,0.15,8); }
+
+/* -------------------------------------------------------------
+   UI events
+-------------------------------------------------------------- */
+document.getElementById('pauseBtn').onclick = ()=>{ paused=!paused; pauseBtn.textContent = paused?"▶ Resume":"⏸︎ Pause"; };
+document.getElementById('resetBtn').onclick = ()=>{ agents=[];tribes=[];generateWorld();setup(); };
+document.getElementById('speedRange').oninput = e=>{ simSpeed=+e.target.value; };
+document.getElementById('maxPop').oninput = e=>{ maxPopulation=+e.target.value; };
+
+document.querySelectorAll('[data-event]').forEach(btn=>{
+  btn.onclick = ()=> triggerEvent(btn.dataset.event);
+});
+document.getElementById('addForeign').onclick = ()=>{
+  const foreign = new Tribe(tribes.length,rand(WORLD_SIZE),rand(WORLD_SIZE));
+  foreign.tech = rand(10)+5;
+  tribes.push(foreign);
+  for(let i=0;i<200;i++)agents.push(new Agent(rand(WORLD_SIZE),rand(WORLD_SIZE),foreign));
+  pushNotif("Foreign civilisation has arrived!");
+};
+
+/* -------------------------------------------------------------
+   Stats & notifications
+-------------------------------------------------------------- */
+function updateStats(){
+  const pop = agents.length;
+  const wars = events.filter(e=>e.type==="war").length;
+  const epi  = events.filter(e=>e.type==="epidemic").length;
+  statsBox.textContent =
+`Population : ${pop}
+Tribes      : ${tribes.length}
+Wars active : ${wars}
+Epidemics   : ${epi}
+Avg tech    : ${(tribes.reduce((s,t)=>s+t.tech,0)/tribes.length).toFixed(2)}
+Events      : ${events.length}
+FPS         : ${Math.round(frameRate())}`;
+}
+function pushNotif(txt){
+  notifBox.textContent=txt;
+  notifBox.style.display='block';
+  clearTimeout(notifBox._t);
+  notifBox._t=setTimeout(()=>notifBox.style.display='none',4000);
+}
+
+/* -------------------------------------------------------------
+   Geometry helpers
+-------------------------------------------------------------- */
+function idx(x,y){return y*WORLD_SIZE+x;}
+function inWorld(x,y){return x>=0&&y>=0&&x<WORLD_SIZE&&y<WORLD_SIZE;}
+function windowResized(){resizeCanvas(windowWidth,windowHeight);}
+</script>
+</body></html>

@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Babylon.js Walkable Ship Demo</title>
+<style>
+    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#000}
+    #renderCanvas{width:100%;height:100%;touch-action:none}
+</style>
+<!-- Babylon core & GUI CDN -->
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+</head>
+<body>
+<canvas id="renderCanvas"></canvas>
+<script>
+/*-------------------------------------------------------------
+  CONSTANTS & GLOBAL STATE
+--------------------------------------------------------------*/
+const COMPARTMENTS = [
+    {name:"Cockpit",  size:[4,3,4], pos:[ 8,1.5,0]},
+    {name:"CrewCab",  size:[4,3,4], pos:[ 4,1.5,0]},
+    {name:"Airlock",  size:[2,3,3], pos:[ 1,1.5,3]},  // side blister
+    {name:"CargoBay", size:[6,4,6], pos:[-2,2,0]},
+    {name:"Engineering",size:[4,3,4],pos:[-8,1.5,0]},
+    {name:"Engine",  size:[2,2,4], pos:[-11,1,0]}
+];
+const SAVE_KEY = "miniShipState-v1";
+/* shipState holds runtime + persistent data */
+let shipState = {
+    power:100,           // %
+    o2   :100,           // %
+    alarms:false,
+    fires:[],            // meshes on fire
+    breaches:[],         // meshes breached
+    doors:{},            // doorName -> open?
+};
+/*-------------------------------------------------------------
+  ENGINE INITIALISATION
+--------------------------------------------------------------*/
+const canvas = document.getElementById("renderCanvas");
+const engine = new BABYLON.Engine(canvas,true,{stencil:true});
+const scene  = new BABYLON.Scene(engine);
+scene.collisionsEnabled = true;
+scene.enablePhysics();   // default impostor
+/* Cameras */
+const fpsCam = new BABYLON.UniversalCamera("fpsCam",new BABYLON.Vector3(6,1.6,0),scene);
+fpsCam.attachControl(canvas,true);
+fpsCam.applyGravity = true;
+fpsCam.ellipsoid = new BABYLON.Vector3(0.4,0.9,0.4);
+
+const extCam = new BABYLON.ArcRotateCamera("extCam",
+        -Math.PI/2,Math.PI/3,30,new BABYLON.Vector3(0,0,0),scene);
+extCam.lowerRadiusLimit = 10;
+extCam.upperRadiusLimit = 60;
+extCam.wheelPrecision   = 40;
+/* key toggle */
+let activeCam=fpsCam;
+scene.activeCamera = activeCam;
+window.addEventListener("keydown",e=>{
+    if(e.key.toLowerCase()==='c'){
+        activeCam = (activeCam===fpsCam)?extCam:fpsCam;
+        scene.activeCamera=activeCam;
+        activeCam.attachControl(canvas,true);
+    }
+});
+/* Lights */
+const sun = new BABYLON.DirectionalLight("sun",new BABYLON.Vector3(-1,-2,1),scene);
+sun.intensity=1.2;
+const ambient = new BABYLON.HemisphericLight("hem",new BABYLON.Vector3(0,1,0),scene);
+ambient.intensity=0.15;
+/* day/night orbit */
+scene.registerBeforeRender(()=>{
+    const t=performance.now()*0.00005;
+    sun.direction = new BABYLON.Vector3(Math.sin(t),-0.5,Math.cos(t)).normalize();
+});
+/*-------------------------------------------------------------
+  BUILD SHIP
+--------------------------------------------------------------*/
+const shipRoot = new BABYLON.TransformNode("shipRoot",scene);
+/* Materials */
+const hullMat  = new BABYLON.StandardMaterial("hullMat",scene);
+hullMat.diffuseColor = new BABYLON.Color3(0.5,0.5,0.55);
+const windowMat=new BABYLON.StandardMaterial("winMat",scene);
+windowMat.alpha=0.15;
+windowMat.emissiveColor=new BABYLON.Color3(0.1,0.4,0.6);
+const floorMat = new BABYLON.StandardMaterial("floorMat",scene);
+floorMat.diffuseColor = new BABYLON.Color3(0.2,0.2,0.25);
+/* Helper: create room */
+function makeRoom(def){
+    const room = BABYLON.MeshBuilder.CreateBox(def.name,
+        {width:def.size[0],height:def.size[1],depth:def.size[2]},scene);
+    room.position = new BABYLON.Vector3(...def.pos);
+    room.parent = shipRoot;
+    room.checkCollisions = true;
+    room.material = hullMat;
+    // hollow interior via inverted child
+    const inner = room.clone("inner_"+def.name);
+    inner.scaling = new BABYLON.Vector3(0.94,0.94,0.94);
+    inner.material = floorMat;
+    inner.parent = room;
+    inner.isPickable=false;
+    inner.flipFaces(true); // inside-out
+    // windows (front/back) – simple cut-outs
+    const winW = 1.2, winH=0.8;
+    ["front","back"].forEach((f,i)=>{
+        const win = BABYLON.MeshBuilder.CreatePlane("win_"+def.name+"_"+f,
+            {width:winW,height:winH},scene);
+        win.rotation.y = (i?Math.PI:0);
+        win.position = new BABYLON.Vector3(
+            def.pos[0]+(i?-1:1)*def.size[0]*0.5+0.01,
+            def.pos[1],def.pos[2]);
+        win.material = windowMat;
+        win.parent = shipRoot;
+    });
+    return room;
+}
+/* create compartments */
+const rooms = {};
+COMPARTMENTS.forEach(cfg=>rooms[cfg.name]=makeRoom(cfg));
+/* Corridors (simplified cylinders) */
+function connect(a,b){
+    const pa=rooms[a].position,pb=rooms[b].position;
+    const d = pb.subtract(pa);
+    const len = d.length();
+    const cyl = BABYLON.MeshBuilder.CreateCylinder("corr_"+a+"_"+b,
+        {diameter:2.2,height:len},scene);
+    cyl.material = hullMat;
+    cyl.position = pa.add(pb).scale(0.5);
+    cyl.rotationQuaternion = BABYLON.Quaternion.FromLookDirectionLH(d,new BABYLON.Vector3(0,1,0));
+    cyl.checkCollisions=true;
+    cyl.parent=shipRoot;
+}
+connect("Cockpit","CrewCab");
+connect("CrewCab","CargoBay");
+connect("CargoBay","Engineering");
+connect("Engineering","Engine");
+/* Airlock corridor */
+const airCorr = BABYLON.MeshBuilder.CreateCylinder("airCorr",{diameter:2,height:3},scene);
+airCorr.rotation.z = Math.PI/2;
+airCorr.position = new BABYLON.Vector3(1,1.5,1.5);
+airCorr.material = hullMat;
+airCorr.checkCollisions=true;
+airCorr.parent=shipRoot;
+/* Doors */
+function addDoor(name,pos,rot){
+    const door = BABYLON.MeshBuilder.CreateBox(name,{width:1,height:2.2,depth:0.1},scene);
+    door.position = pos;
+    door.rotation = rot||BABYLON.Vector3.Zero();
+    door.parent = shipRoot;
+    door.material = floorMat;
+    door.actionManager = new BABYLON.ActionManager(scene);
+    door.isPickable=true;
+    shipState.doors[name]=false;   // closed
+    door.actionManager.registerAction(new BABYLON.ExecuteCodeAction(
+        BABYLON.ActionManager.OnPickTrigger,()=>{
+            toggleDoor(door);
+        }));
+    return door;
+}
+function toggleDoor(mesh){
+    const open = !shipState.doors[mesh.name];
+    shipState.doors[mesh.name]=open;
+    BABYLON.Animation.CreateAndStartAnimation(
+        "doorAnim"+mesh.name,mesh,"position.x",
+        60,20,
+        mesh.position.x,
+        mesh.position.x + (open?1:-1),
+        BABYLON.Animation.ANIMATIONLOOPMODE_CONSTANT);
+    playBeep();
+}
+const doors=[];
+doors.push(addDoor("Door_Cockpit",new BABYLON.Vector3(6,1,0),null));
+doors.push(addDoor("Door_Crew",new BABYLON.Vector3(2,1,0),null));
+doors.push(addDoor("Door_Cargo",new BABYLON.Vector3(-5,1,0),null));
+doors.push(addDoor("Door_Eng",new BABYLON.Vector3(-9,1,0),null));
+doors.push(addDoor("Door_Airlock",new BABYLON.Vector3(1,1,1.5),new BABYLON.Vector3(0,Math.PI/2,0)));
+/*-------------------------------------------------------------
+  HUD / STATUS PANEL
+--------------------------------------------------------------*/
+const guiTex = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI");
+function addBar(lbl,top,color){
+    const bar = new BABYLON.GUI.Rectangle();
+    bar.width = "140px"; bar.height="16px";
+    bar.thickness=1; bar.cornerRadius=4; bar.color="#888";
+    bar.background="#222"; bar.horizontalAlignment=0; bar.left="10px";
+    bar.top=top; guiTex.addControl(bar);
+    const fill = new BABYLON.GUI.Rectangle(); fill.width="0%"; fill.height=1; fill.background=color;
+    fill.horizontalAlignment=0; fill.left=0;
+    bar.addControl(fill);
+    const text = new BABYLON.GUI.TextBlock(); text.text=lbl; text.color="#ccc"; text.fontSize=10;
+    text.verticalAlignment=BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+    text.paddingLeft=2; bar.addControl(text);
+    return fill;
+}
+const powerBar = addBar("POWER", "10px", "#0a0");
+const o2Bar    = addBar("O₂",    "30px", "#09f");
+const alarmTxt = new BABYLON.GUI.TextBlock();
+alarmTxt.text=""; alarmTxt.color="#f00"; alarmTxt.fontSize=20; alarmTxt.top="50px";
+guiTex.addControl(alarmTxt);
+/*-------------------------------------------------------------
+  AUDIO
+--------------------------------------------------------------*/
+const beep = new BABYLON.Sound("beep",
+    "data:audio/wav;base64,UklGRhQAAABXQVZFZm10IBAAAAABA... (tiny beep base64)", // trimmed for brevity
+    scene,{volume:0.8});
+function playBeep(){beep.play();}
+/*-------------------------------------------------------------
+  PARTICLE SYSTEM FOR FIRE
+--------------------------------------------------------------*/
+function ignite(mesh){
+    if(shipState.fires.includes(mesh.name))return;
+    const ps = new BABYLON.ParticleSystem("fire_"+mesh.name,300,scene);
+    ps.particleTexture = new BABYLON.Texture("https://assets.babylonjs.com/textures/flame.png",scene);
+    ps.emitter = mesh; ps.minEmitPower=1; ps.maxEmitPower=3;
+    ps.color1 = new BABYLON.Color4(1,0.5,0,1);
+    ps.color2 = new BABYLON.Color4(1,0,0,0.5);
+    ps.start();
+    shipState.fires.push(mesh.name);
+    shipState.alarms=true;
+}
+function extinguish(mesh){
+    const idx = shipState.fires.indexOf(mesh.name);
+    if(idx>-1){ shipState.fires.splice(idx,1); }
+    mesh.getChildren().forEach(c=>{
+        if(c instanceof BABYLON.ParticleSystem){c.dispose();}
+    });
+    if(shipState.fires.length===0)shipState.alarms=false;
+}
+/*-------------------------------------------------------------
+  GAME LOOP – SIMULATION
+--------------------------------------------------------------*/
+let failureTimer=0;
+scene.onBeforeRenderObservable.add(()=>{
+    const dt = engine.getDeltaTime()*0.001;
+    /* power drain & O2 drop if breaches */
+    shipState.power -= 0.01*dt;
+    if(shipState.power<0)shipState.power=0;
+    if(shipState.breaches.length>0) shipState.o2 -= 0.2*dt;
+    if(shipState.o2<0)shipState.o2=0;
+    /* random failure every 15-30 s */
+    failureTimer += dt;
+    if(failureTimer>15+Math.random()*15){
+        spawnFailure();
+        failureTimer=0;
+    }
+    /* update UI */
+    powerBar.width = shipState.power.toFixed(0)+"%";
+    o2Bar.width    = shipState.o2.toFixed(0)+"%";
+    alarmTxt.text  = shipState.alarms?"⚠ ALARM":"";
+});
+/* Failure types */
+function spawnFailure(){
+    const r = Math.random();
+    if(r<0.4){     // fire
+        const mesh = rooms["Engineering"];
+        ignite(mesh);
+    }else if(r<0.7){ // breach
+        const mesh = rooms["CargoBay"];
+        shipState.breaches.push(mesh.name);
+        mesh.material.emissiveColor = new BABYLON.Color3(0.8,0,0);
+        shipState.alarms=true;
+    }else{          // power loss
+        shipState.power -= 20;
+        shipState.alarms=true;
+    }
+}
+/* Player interactions – repair with "R" */
+window.addEventListener("keydown",e=>{
+    if(e.key.toLowerCase()==='r'){
+        const pick = scene.pick(scene.pointerX,scene.pointerY);
+        if(pick.hit && pick.pickedMesh){
+            const m = pick.pickedMesh;
+            extinguish(m);
+            const bi = shipState.breaches.indexOf(m.name);
+            if(bi>-1){
+                shipState.breaches.splice(bi,1);
+                m.material.emissiveColor = BABYLON.Color3.Black();
+                if(shipState.breaches.length===0)shipState.alarms=false;
+            }
+            playBeep();
+        }
+    }
+});
+/* Systems effects */
+scene.registerAfterRender(()=>{
+    /* lights flicker on low power */
+    ambient.intensity = 0.15 + 0.1*Math.max(0,(shipState.power-30)/70);
+});
+/*-------------------------------------------------------------
+  PERSISTENCE
+--------------------------------------------------------------*/
+function loadState(){
+    try{
+        const s = JSON.parse(localStorage.getItem(SAVE_KEY));
+        if(!s)return;
+        Object.assign(shipState,s);
+        /* restore door positions */
+        doors.forEach(d=>{
+            if(shipState.doors[d.name]) d.position.x+=1;
+        });
+        /* restore fires/breaches visuals */
+        shipState.fires.forEach(n=>ignite(scene.getMeshByName(n)));
+        shipState.breaches.forEach(n=>{
+            const m=scene.getMeshByName(n);
+            if(m) m.material.emissiveColor = new BABYLON.Color3(0.8,0,0);
+        });
+    }catch(e){console.warn(e);}
+}
+function saveState(){
+    localStorage.setItem(SAVE_KEY,JSON.stringify(shipState));
+}
+window.addEventListener("beforeunload",saveState);
+/*-------------------------------------------------------------
+  START
+--------------------------------------------------------------*/
+loadState();
+engine.runRenderLoop(()=>scene.render());
+window.addEventListener("resize",()=>engine.resize());
+</script>
+</body>
+</html>

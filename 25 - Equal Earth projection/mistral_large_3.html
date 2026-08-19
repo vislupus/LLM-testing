@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Equal Earth Map</title>
+    <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3.0/dist/svg.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background-color: #111;
+            color: white;
+        }
+        #map-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+        #coords-display {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            pointer-events: none;
+        }
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 4px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        button {
+            padding: 6px 12px;
+            background-color: #333;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #444;
+        }
+        input {
+            padding: 6px;
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 3px;
+            width: 120px;
+        }
+        .marker {
+            fill: #ff4444;
+            stroke: white;
+            stroke-width: 1;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="map-container">
+        <div id="controls">
+            <div>
+                <input type="number" id="lat-input" placeholder="Latitude" step="0.0001">
+                <input type="number" id="lon-input" placeholder="Longitude" step="0.0001">
+                <button id="add-marker">Add Marker</button>
+            </div>
+            <div>
+                <button id="reset-view">Reset View</button>
+                <button id="clear-markers">Clear Markers</button>
+            </div>
+        </div>
+        <div id="coords-display">Click on map for coordinates</div>
+    </div>
+
+    <script>
+        // Main application
+        document.addEventListener('DOMContentLoaded', function() {
+            // Map dimensions
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            // Create SVG canvas
+            const draw = SVG().addTo('#map-container').size(width, height).attr('id', 'map-svg');
+
+            // Map state
+            const state = {
+                scale: 1,
+                translateX: width / 2,
+                translateY: height / 2,
+                isDragging: false,
+                lastX: 0,
+                lastY: 0,
+                markers: []
+            };
+
+            // Equal Earth projection parameters
+            const A1 = 1.340264;
+            const A2 = -0.081106;
+            const A3 = 0.000893;
+            const A4 = 0.003796;
+            const M = Math.sqrt(3) / 2;
+
+            // Forward projection: lat, lon → x, y
+            function forwardProjection(lat, lon) {
+                const latRad = lat * Math.PI / 180;
+                const lonRad = lon * Math.PI / 180;
+
+                // Equal Earth projection formulas
+                const theta = Math.asin(M * Math.sin(latRad));
+                const theta2 = theta * theta;
+                const theta6 = theta2 * theta2 * theta2;
+
+                const x = A1 * lonRad * Math.cos(theta) / (M * (A2 + 3 * A3 * theta2 + theta6 * (7 * A4 + 9 * A3 * theta2)));
+                const y = theta * (A2 + A3 * theta2 + theta6 * (A4 + A3 * theta2));
+
+                return { x, y };
+            }
+
+            // Inverse projection: x, y → lat, lon
+            function inverseProjection(x, y) {
+                let theta = y;
+                let theta2 = theta * theta;
+                let theta6 = theta2 * theta2 * theta2;
+
+                // Newton-Raphson iteration
+                for (let i = 0; i < 10; i++) {
+                    const dTheta = (theta * (A2 + A3 * theta2 + theta6 * (A4 + A3 * theta2)) - y) /
+                                  (A2 + 3 * A3 * theta2 + theta6 * (7 * A4 + 9 * A3 * theta2));
+                    theta = theta - dTheta;
+                    theta2 = theta * theta;
+                    theta6 = theta2 * theta2 * theta2;
+                    if (Math.abs(dTheta) < 1e-12) break;
+                }
+
+                const lat = Math.asin(Math.sin(theta) / M) * 180 / Math.PI;
+                const lon = M * x * (A2 + 3 * A3 * theta2 + theta6 * (7 * A4 + 9 * A3 * theta2)) /
+                            (A1 * Math.cos(theta));
+
+                return {
+                    lat: lat,
+                    lon: lon * 180 / Math.PI
+                };
+            }
+
+            // Convert geographic coordinates to screen coordinates
+            function geoToScreen(lat, lon) {
+                const { x, y } = forwardProjection(lat, lon);
+
+                // Scale and translate to screen coordinates
+                const screenX = x * state.scale + state.translateX;
+                const screenY = -y * state.scale + state.translateY;
+
+                return { x: screenX, y: screenY };
+            }
+
+            // Convert screen coordinates to geographic coordinates
+            function screenToGeo(screenX, screenY) {
+                // Inverse the translation and scaling
+                const x = (screenX - state.translateX) / state.scale;
+                const y = (state.translateY - screenY) / state.scale;
+
+                return inverseProjection(x, y);
+            }
+
+            // Draw the world map
+            function drawMap() {
+                // Clear previous map
+                draw.clear();
+
+                // Create a group for the map
+                const mapGroup = draw.group().attr('id', 'map-group');
+
+                // Load world map data (simplified GeoJSON)
+                const world = getWorldGeoJSON();
+
+                // Draw each country
+                world.features.forEach(feature => {
+                    const path = mapGroup.path();
+                    let pathData = '';
+
+                    feature.geometry.coordinates.forEach(polygon => {
+                        polygon.forEach((ring, i) => {
+                            let first = true;
+                            ring.forEach(coord => {
+                                const { x, y } = geoToScreen(coord[1], coord[0]);
+                                if (first) {
+                                    pathData += `M ${x} ${y} `;
+                                    first = false;
+                                } else {
+                                    pathData += `L ${x} ${y} `;
+                                }
+                            });
+                            if (i === 0) {
+                                pathData += 'Z ';
+                            }
+                        });
+                    });
+
+                    path.plot(pathData)
+                        .fill('#2a5c8a')
+                        .stroke({ width: 0.5, color: '#1a3c5a' });
+                });
+
+                // Draw graticule (latitude/longitude lines)
+                drawGraticule(mapGroup);
+
+                // Redraw markers
+                state.markers.forEach(marker => {
+                    drawMarker(marker.lat, marker.lon);
+                });
+            }
+
+            // Draw graticule (latitude/longitude lines)
+            function drawGraticule(group) {
+                const graticuleGroup = group.group().attr('id', 'graticule');
+
+                // Draw meridians (longitude lines)
+                for (let lon = -180; lon <= 180; lon += 10) {
+                    const path = graticuleGroup.path();
+                    let pathData = '';
+
+                    for (let lat = -90; lat <= 90; lat += 1) {
+                        const { x, y } = geoToScreen(lat, lon);
+                        if (lat === -90) {
+                            pathData += `M ${x} ${y} `;
+                        } else {
+                            pathData += `L ${x} ${y} `;
+                        }
+                    }
+
+                    path.plot(pathData)
+                        .stroke({ width: 0.3, color: '#555' })
+                        .attr('stroke-dasharray', '2,2');
+                }
+
+                // Draw parallels (latitude lines)
+                for (let lat = -90; lat <= 90; lat += 10) {
+                    const path = graticuleGroup.path();
+                    let pathData = '';
+
+                    for (let lon = -180; lon <= 180; lon += 1) {
+                        const { x, y } = geoToScreen(lat, lon);
+                        if (lon === -180) {
+                            pathData += `M ${x} ${y} `;
+                        } else {
+                            pathData += `L ${x} ${y} `;
+                        }
+                    }
+
+                    path.plot(pathData)
+                        .stroke({ width: 0.3, color: '#555' })
+                        .attr('stroke-dasharray', '2,2');
+                }
+
+                // Draw equator
+                const equator = graticuleGroup.path();
+                let equatorData = '';
+                for (let lon = -180; lon <= 180; lon += 1) {
+                    const { x, y } = geoToScreen(0, lon);
+                    if (lon === -180) {
+                        equatorData += `M ${x} ${y} `;
+                    } else {
+                        equatorData += `L ${x} ${y} `;
+                    }
+                }
+                equator.plot(equatorData)
+                    .stroke({ width: 0.8, color: '#ff8888' });
+            }
+
+            // Draw a marker at given coordinates
+            function drawMarker(lat, lon) {
+                const { x, y } = geoToScreen(lat, lon);
+                const marker = draw.circle(8)
+                    .attr('class', 'marker')
+                    .cx(x)
+                    .cy(y)
+                    .data({ lat, lon });
+
+                state.markers.push({ lat, lon, element: marker });
+                return marker;
+            }
+
+            // Clear all markers
+            function clearMarkers() {
+                state.markers.forEach(marker => {
+                    marker.element.remove();
+                });
+                state.markers = [];
+            }
+
+            // Reset view to default
+            function resetView() {
+                state.scale = 1;
+                state.translateX = width / 2;
+                state.translateY = height / 2;
+                drawMap();
+            }
+
+            // Handle mouse wheel for zooming
+            function handleWheel(e) {
+                e.preventDefault();
+
+                // Get mouse position in screen coordinates
+                const rect = draw.node.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                // Calculate zoom factor
+                const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                const newScale = state.scale * delta;
+
+                // Adjust translation to zoom toward mouse position
+                const scaleRatio = newScale / state.scale;
+                state.translateX = mouseX - (mouseX - state.translateX) * scaleRatio;
+                state.translateY = mouseY - (mouseY - state.translateY) * scaleRatio;
+                state.scale = newScale;
+
+                drawMap();
+            }
+
+            // Handle mouse down for panning
+            function handleMouseDown(e) {
+                if (e.button !== 0) return; // Only left mouse button
+
+                state.isDragging = true;
+                state.lastX = e.clientX;
+                state.lastY = e.clientY;
+
+                draw.node.style.cursor = 'grabbing';
+            }
+
+            // Handle mouse move for panning
+            function handleMouseMove(e) {
+                if (!state.isDragging) return;
+
+                const dx = e.clientX - state.lastX;
+                const dy = e.clientY - state.lastY;
+
+                state.translateX += dx;
+                state.translateY += dy;
+
+                state.lastX = e.clientX;
+                state.lastY = e.clientY;
+
+                drawMap();
+            }
+
+            // Handle mouse up for panning
+            function handleMouseUp() {
+                state.isDragging = false;
+                draw.node.style.cursor = 'grab';
+            }
+
+            // Handle click for coordinate display
+            function handleClick(e) {
+                const rect = draw.node.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                const { lat, lon } = screenToGeo(x, y);
+
+                // Update coordinate display
+                const display = document.getElementById('coords-display');
+                display.textContent = `Lat: ${lat.toFixed(4)}°, Lon: ${lon.toFixed(4)}°`;
+
+                // Log to console
+                console.log(`Clicked at: Latitude ${lat.toFixed(4)}°, Longitude ${lon.toFixed(4)}°`);
+            }
+
+            // Initialize the map
+            function init() {
+                // Set up event listeners
+                draw.node.addEventListener('wheel', handleWheel, { passive: false });
+                draw.node.addEventListener('mousedown', handleMouseDown);
+                document.addEventListener('mousemove', handleMouseMove);
+                document.addEventListener('mouseup', handleMouseUp);
+                draw.node.addEventListener('click', handleClick);
+
+                // Set cursor to grab
+                draw.node.style.cursor = 'grab';
+
+                // Add marker button
+                document.getElementById('add-marker').addEventListener('click', function() {
+                    const latInput = document.getElementById('lat-input');
+                    const lonInput = document.getElementById('lon-input');
+
+                    const lat = parseFloat(latInput.value);
+                    const lon = parseFloat(lonInput.value);
+
+                    if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+                        drawMarker(lat, lon);
+                        latInput.value = '';
+                        lonInput.value = '';
+                    } else {
+                        alert('Please enter valid coordinates (lat: -90 to 90, lon: -180 to 180)');
+                    }
+                });
+
+                // Reset view button
+                document.getElementById('reset-view').addEventListener('click', resetView);
+
+                // Clear markers button
+                document.getElementById('clear-markers').addEventListener('click', clearMarkers);
+
+                // Initial draw
+                drawMap();
+            }
+
+            // Simplified world GeoJSON data (just for demonstration)
+            // In a real application, you would load a proper GeoJSON file
+            function getWorldGeoJSON() {
+                // This is a very simplified version - in practice you'd use a proper GeoJSON file
+                return {
+                    "type": "FeatureCollection",
+                    "features": [
+                        // North America
+                        {
+                            "type": "Feature",
+                            "properties": { "name": "North America" },
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[
+                                    [-125, 50], [-120, 30], [-80, 25], [-60, 30], [-65, 50], [-85, 50], [-100, 60], [-125, 50]
+                                ]]
+                            }
+                        },
+                        // South America
+                        {
+                            "type": "Feature",
+                            "properties": { "name": "South America" },
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[
+                                    [-80, 10], [-60, -50], [-40, -55], [-35, 10], [-55, 15], [-80, 10]
+                                ]]
+                            }
+                        },
+                        // Europe
+                        {
+                            "type": "Feature",
+                            "properties": { "name": "Europe" },
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[
+                                    [-10, 35], [30, 35], [30, 70], [-10, 70], [-10, 35]
+                                ]]
+                            }
+                        },
+                        // Africa
+                        {
+                            "type": "Feature",
+                            "properties": { "name": "Africa" },
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[
+                                    [-20, 35], [50, 35], [50, -35], [20, -35], [-20, -35], [-20, 35]
+                                ]]
+                            }
+                        },
+                        // Asia
+                        {
+                            "type": "Feature",
+                            "properties": { "name": "Asia" },
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[
+                                    [30, 35], [180, 35], [180, 70], [100, 70], [60, 50], [30, 35]
+                                ]]
+                            }
+                        },
+                        // Australia
+                        {
+                            "type": "Feature",
+                            "properties": { "name": "Australia" },
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[
+                                    [110, -45], [155, -45], [155, -10], [110, -10], [110, -45]
+                                ]]
+                            }
+                        }
+                    ]
+                };
+            }
+
+            // Start the application
+            init();
+        });
+    </script>
+</body>
+</html>

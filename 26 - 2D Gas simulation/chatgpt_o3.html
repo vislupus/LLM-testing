@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>2-D Gas Simulation – Statistical Mechanics Demo (p5.js)</title>
+<!-- --- Basic styling for UI --- -->
+<style>
+  body            { margin:0; background:#111; color:#fff; font-family:system-ui, sans-serif; }
+  #ui             { position:fixed; top:8px; left:8px; background:rgba(0,0,0,.5); padding:8px 12px; border-radius:6px; }
+  .label          { display:block; font-size:13px; margin-top:6px; }
+  canvas          { display:block; margin:0 auto; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <span class="label">Particles (N)</span><div id="nSlider"></div>
+  <span class="label">Initial Temp (speed)</span><div id="tSlider"></div>
+  <span class="label">Box Size (%)</span><div id="boxSlider"></div>
+  <span class="label">Heavy : Light Mass Ratio</span><div id="massSlider"></div>
+  <span class="label">Collisions enabled</span><div id="colChk"></div>
+  <button id="resetBtn">Reset / Apply</button>
+  <hr>
+  <div id="readout" style="font-size:13px; line-height:1.4"></div>
+</div>
+
+<!-- p5.js library (minified) -->
+<script src="https://cdn.jsdelivr.net/npm/p5@1.6.0/lib/p5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5@1.6.0/lib/addons/p5.dom.min.js"></script>
+
+<script>
+// =====================================================================================
+// 2-D GAS SIMULATION  —  All code in this single file.  Written for clarity, not brevity.
+// =====================================================================================
+
+// ---------- Global parameters (overwritable through UI controls) ----------
+let N           = 250;    // number of particles
+let initSpeed   = 150;    // pixels / second RMS
+let boxFrac     = 0.80;   // fraction of canvas occupied by the "container"
+let massRatio   = 4.0;    // heavy / light
+let collisionsOn= true;
+const rLight    = 4;      // radius of light particles (px)
+const rHeavy    = 7;      // radius of heavy particles (px)
+
+// ---------- State arrays ----------
+let pos  = [];  // p5.Vector positions
+let vel  = [];  // p5.Vector velocities
+let m    = [];  // masses
+let rad  = [];  // radii
+let species = [];// 0=light,1=heavy
+
+// ---------- Simulation bookkeeping ----------
+let lastT, dt;
+let widthBox, heightBox, offsetX, offsetY;
+// Pressure: running impulse total averaged with exponential moving avg
+let P = 0, Pavg = 0, alphaP = 0.95; 
+// Histogram
+const bins = 30;
+let hist = new Array(bins).fill(0);
+
+// ---------- UI elements ----------
+let nSlider, tSlider, boxSlider, massSlider, colChk, readout;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  frameRate(60);
+  textFont('monospace', 12);
+  initUI();
+  resetSim();
+}
+
+function windowResized(){
+  resizeCanvas(windowWidth, windowHeight);
+  computeBox();
+}
+
+function initUI(){
+  // sliders: min, max, value, step
+  nSlider   = createSlider(20, 600, N,   10).parent('nSlider');
+  tSlider   = createSlider(20, 400, initSpeed, 10).parent('tSlider');
+  boxSlider = createSlider(40, 100, boxFrac*100, 1).parent('boxSlider');
+  massSlider= createSlider(1, 10, massRatio, 0.1).parent('massSlider');
+  colChk    = createCheckbox('', collisionsOn).parent('colChk');
+  select('#resetBtn').mousePressed(resetSim);
+  readout   = select('#readout');
+}
+
+function computeBox(){
+  widthBox  = width  * boxFrac;
+  heightBox = height * boxFrac;
+  offsetX   = (width  - widthBox )/2;
+  offsetY   = (height - heightBox)/2 - 10; // lift a bit for histogram room
+}
+
+function resetSim(){
+  // fetch UI values
+  N           = nSlider.value();
+  initSpeed   = tSlider.value();
+  boxFrac     = boxSlider.value()/100;
+  massRatio   = massSlider.value();
+  collisionsOn= colChk.checked();
+  
+  computeBox();
+  
+  // allocate particles
+  pos.length = vel.length = m.length = rad.length = species.length = 0;
+  for(let i=0;i<N;i++){
+    let sp = (random()<0.5)?0:1; // 50-50 mix
+    species[i]=sp;
+    rad[i]    = sp? rHeavy : rLight;
+    m[i]      = sp? massRatio : 1.0;
+    // random position ensuring no initial overlap (simple rejection sampling)
+    let tries=0, okay=false, p;
+    while(!okay && tries<1e3){
+      p = createVector(random(offsetX+rad[i], offsetX+widthBox -rad[i]),
+                       random(offsetY+rad[i], offsetY+heightBox-rad[i]));
+      okay=true;
+      for(let j=0;j<pos.length;j++){
+        if(p.dist(pos[j]) < rad[i]+rad[j]) { okay=false; break; }
+      }
+      tries++;
+    }
+    pos[i]=p;
+    // Maxwell-Boltzmann-like speed magnitude from 2-D: f(v) = v exp(-v²/2σ²)
+    let mag = randomGaussian()*0.5 + 1; // crude; RMS~1
+    mag = abs(mag)*initSpeed;
+    let angle = random(TWO_PI);
+    vel[i] = p5.Vector.fromAngle(angle).mult(mag);
+  }
+  
+  hist.fill(0);
+  Pavg = 0;
+  lastT = millis();
+}
+
+function draw(){
+  background(17);
+  stroke(255); noFill();
+  // container
+  rect(offsetX, offsetY, widthBox, heightBox);
+  
+  dt = (millis()-lastT)/1000.0;      // seconds
+  lastT = millis();
+  if(dt<=0) return;
+  
+  // reset pressure accumulator for this frame
+  P = 0;
+  
+  // Move & wall collisions
+  for(let i=0;i<N;i++){
+    pos[i].add(p5.Vector.mult(vel[i], dt));
+    // left / right
+    if(pos[i].x - rad[i] < offsetX){
+      pos[i].x = offsetX + rad[i];
+      vel[i].x *= -1;
+      P += 2*m[i]*abs(vel[i].x);
+    } else if(pos[i].x + rad[i] > offsetX+widthBox){
+      pos[i].x = offsetX+widthBox - rad[i];
+      vel[i].x *= -1;
+      P += 2*m[i]*abs(vel[i].x);
+    }
+    // top / bottom
+    if(pos[i].y - rad[i] < offsetY){
+      pos[i].y = offsetY + rad[i];
+      vel[i].y *= -1;
+      P += 2*m[i]*abs(vel[i].y);
+    } else if(pos[i].y + rad[i] > offsetY+heightBox){
+      pos[i].y = offsetY+heightBox - rad[i];
+      vel[i].y *= -1;
+      P += 2*m[i]*abs(vel[i].y);
+    }
+  }
+  
+  // Particle–particle collisions (naïve O(N²))
+  if(collisionsOn){
+    for(let i=0;i<N;i++){
+      for(let j=i+1;j<N;j++){
+        let d = pos[i].dist(pos[j]);
+        let minDist = rad[i]+rad[j];
+        if(d < minDist && d>0){
+          // resolve overlap
+          let overlap = minDist - d;
+          let dir = p5.Vector.sub(pos[i], pos[j]).normalize();
+          pos[i].add(dir.mult(overlap/2));
+          pos[j].sub(dir.mult(overlap/2));
+          // velocities in CM frame
+          let v1 = vel[i].copy(), v2 = vel[j].copy();
+          let m1 = m[i], m2 = m[j];
+          let n = p5.Vector.sub(pos[i], pos[j]).normalize();
+          let p = 2*(v1.dot(n) - v2.dot(n))/(m1 + m2);
+          vel[i].sub(n.copy().mult(p*m2));
+          vel[j].add(n.copy().mult(p*m1));
+        }
+      }
+    }
+  }
+  
+  // Draw particles
+  noStroke();
+  for(let i=0;i<N;i++){
+    fill(species[i]? 'orange':'#39f');
+    circle(pos[i].x, pos[i].y, rad[i]*2);
+  }
+  
+  // Compute macroscopic quantities
+  let KE=0;
+  for(let i=0;i<N;i++){
+    KE += 0.5*m[i]*vel[i].magSq();
+  }
+  let T = KE / N;                      // "temperature" proportional to mean KE (k_B=1)
+  // pressure estimate: impulse / (wall length * dt)
+  let wallLen = 2*(widthBox+heightBox);
+  let Pinst = P / (wallLen*dt);
+  Pavg = lerp(Pinst, Pavg, alphaP);    // EMA
+  
+  // Build histogram
+  hist.fill(0);
+  let maxSpeed = 0;
+  for(let i=0;i<N;i++){
+    let s = vel[i].mag();
+    maxSpeed = max(maxSpeed, s);
+  }
+  let binWidth = maxSpeed/bins;
+  if(binWidth>0){
+    for(let i=0;i<N;i++){
+      let idx = floor(vel[i].mag()/binWidth);
+      idx = constrain(idx,0,bins-1);
+      hist[idx]++;
+    }
+  }
+  
+  // Draw histogram at canvas bottom
+  push();
+  let hHeight = 100;
+  translate(offsetX, offsetY+heightBox+10);
+  stroke('#6cf'); noFill();
+  rect(0,0,widthBox,hHeight);
+  noStroke(); fill('#6cf');
+  for(let b=0;b<bins;b++){
+    let barH = map(hist[b],0, N/bins, 0, hHeight);
+    rect(b*widthBox/bins, hHeight-barH, widthBox/bins, barH);
+  }
+  pop();
+  
+  // Text readout
+  readout.html(
+    `T (avg KE): ${T.toFixed(1)}  <br>`+
+    `P (avg): ${Pavg.toFixed(1)}  <br>`+
+    `Collisions: ${collisionsOn ? 'ON':'OFF'}  <br>`+
+    `Heavy:Light mass = ${massRatio.toFixed(1)}  `
+  );
+}
+
+// =================== END OF FILE ===================
+</script>
+</body>
+</html>

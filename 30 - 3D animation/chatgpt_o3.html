@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Zen-Garden – single-file 3-D scene</title>
+<style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#eef3ff;font-family:sans-serif;}
+    #glCanvas{width:100vw;height:100vh;display:block;cursor:grab;}
+    #overlay{
+        position:fixed;left:0;bottom:0;width:100%;padding:6px 10px;
+        background:linear-gradient(180deg,transparent 0%,rgba(0,0,0,.55) 100%);
+        color:#fff;font-size:13px;pointer-events:none;text-align:center;
+    }
+</style>
+</head>
+<body>
+<canvas id="glCanvas"></canvas>
+<div id="overlay">drag to rotate – wheel to zoom – idle orbit demo</div>
+
+<script>
+/* ---------- minimal matrix helpers (inline, no external libs) ---------- */
+function mat4(){return new Float32Array(16);}
+function mat4Identity(out){out.set([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);return out;}
+function mat4Perspective(out,fov,aspect,near,far){
+    const f=1/Math.tan(fov/2), nf=1/(near-far);
+    out.set([f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,(2*far*near)*nf,0]);
+    return out;
+}
+function mat4LookAt(out,eye,target,up){
+    const ex=eye[0],ey=eye[1],ez=eye[2],
+          tx=target[0],ty=target[1],tz=target[2],
+          ux=up[0],uy=up[1],uz=up[2];
+    let zx=ex-tx,zy=ey-ty,zz=ez-tz;
+    let len=Math.hypot(zx,zy,zz); zx/=len;zy/=len;zz/=len;
+    let xx=uy*zz-uz*zy,xy=uz*zx-ux*zz,xz=ux*zy-uy*zx;
+    len=Math.hypot(xx,xy,xz);xx/=len;xy/=len;xz/=len;
+    let yx=zy*xz-zz*xy,yy=zz*xx-zx*xz,yz=zx*xy-zy*xx;
+    out.set([xx,yx,zx,0,  xy,yy,zy,0,  xz,yz,zz,0,
+             -(xx*ex+xy*ey+xz*ez),-(yx*ex+yy*ey+yz*ez),-(zx*ex+zy*ey+zz*ez),1]);
+    return out;
+}
+function mat4Mul(a,b){ // a = a*b
+    const out=new Float32Array(16);
+    for(let i=0;i<4;i++)
+        for(let j=0;j<4;j++)
+            out[i*4+j]=a[i*4]*b[j]+a[i*4+1]*b[j+4]+a[i*4+2]*b[j+8]+a[i*4+3]*b[j+12];
+    return out;
+}
+function deg(v){return v*Math.PI/180;}
+
+/* --------------- WebGL setup ---------------- */
+const canvas=document.getElementById('glCanvas');
+const gl=canvas.getContext('webgl',{antialias:true});
+if(!gl){alert('WebGL not supported');throw'no WebGL';}
+
+function resize(){canvas.width=innerWidth*devicePixelRatio;canvas.height=innerHeight*devicePixelRatio;gl.viewport(0,0,canvas.width,canvas.height);}
+addEventListener('resize',resize);resize();
+
+/* -------- shaders (simple lambert with fog) -------- */
+const vs=`attribute vec3 p;attribute vec3 n;attribute vec3 c;
+uniform mat4 mvp,model;uniform vec3 lightDir;
+varying vec3 vCol;void main(){
+ vec3 norm=normalize((model*vec4(n,0.)).xyz);
+ float diff=max(dot(norm,-lightDir),.25);
+ vCol=c*diff;
+ gl_Position=mvp*vec4(p,1.);
+}`;
+const fs=`precision mediump float;varying vec3 vCol;
+uniform float fogNear,fogFar;void main(){
+ float depth=gl_FragCoord.z/gl_FragCoord.w;
+ float f=clamp((depth-fogNear)/(fogFar-fogNear),0.,1.);
+ vec3 fogCol=vec3(0.85,0.9,1.0);
+ gl_FragColor=vec4(mix(vCol,fogCol,f),1.0);
+}`;
+function compile(src,type){
+ const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+ if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(s);
+ return s;
+}
+const prog=gl.createProgram();
+gl.attachShader(prog,compile(vs,gl.VERTEX_SHADER));
+gl.attachShader(prog,compile(fs,gl.FRAGMENT_SHADER));
+gl.linkProgram(prog);if(!gl.getProgramParameter(prog,gl.LINK_STATUS))throw gl.getProgramInfoLog(prog);
+gl.useProgram(prog);
+const loc={p:gl.getAttribLocation(prog,'p'),
+           n:gl.getAttribLocation(prog,'n'),
+           c:gl.getAttribLocation(prog,'c'),
+           mvp:gl.getUniformLocation(prog,'mvp'),
+           model:gl.getUniformLocation(prog,'model'),
+           lightDir:gl.getUniformLocation(prog,'lightDir'),
+           fogNear:gl.getUniformLocation(prog,'fogNear'),
+           fogFar:gl.getUniformLocation(prog,'fogFar')};
+
+/* -------- geometry helpers -------- */
+function pushBox(arr, w,h,d, col, tx=0,ty=0,tz=0){
+ const x=w/2,y=h/2,z=d/2; // 24 verts (quad per face)
+ const verts=[
+  [-x,-y,-z],[x,-y,-z],[x,y,-z],[-x,y,-z], // back
+  [-x,-y,z],[x,-y,z],[x,y,z],[-x,y,z]       // front
+ ];
+ const faces=[[0,1,2,3,0,0,-1],[4,5,6,7,0,0,1],
+              [0,4,7,3,0,-1,0],[1,5,6,2,0,1,0],
+              [3,2,6,7,0,0,0],[0,1,5,4,0,0,0]]; // top/bottom normals
+ for(const f of faces){
+  const [a,b,c,d,nx,ny,nz]=f;
+  const id=arr.p.length/3;
+  for(const i of [a,b,c,d]) arr.p.push(verts[i][0]+tx,verts[i][1]+ty,verts[i][2]+tz), arr.n.push(nx,ny,nz), arr.col.push(...col);
+  arr.idx.push(id,id+1,id+2, id,id+2,id+3);
+ }
+}
+function pushPyramid(arr, size,h, col, tx=0,ty=0,tz=0){
+ const b=size/2;const top=[tx,ty+h,tz];
+ const base=[[-b,-b],[b,-b],[b,b],[-b,b]];
+ const norm=(u,v)=>{const nx=u[1]*v[2]-u[2]*v[1],ny=u[2]*v[0]-u[0]*v[2],nz=u[0]*v[1]-u[1]*v[0];
+   const l=Math.hypot(nx,ny,nz);return [nx/l,ny/l,nz/l];};
+ for(let i=0;i<4;i++){
+   const p0=[base[i][0]+tx,ty,base[i][1]+tz];
+   const p1=[base[(i+1)%4][0]+tx,ty,base[(i+1)%4][1]+tz];
+   const id=arr.p.length/3;
+   arr.p.push(...p0,...p1,...top);
+   const u=[p1[0]-p0[0],p1[1]-p0[1],p1[2]-p0[2]];
+   const v=[top[0]-p0[0],top[1]-p0[1],top[2]-p0[2]];
+   const [nx,ny,nz]=norm(u,v);
+   for(let k=0;k<3;k++)arr.n.push(nx,ny,nz),arr.col.push(...col);
+   arr.idx.push(id,id+1,id+2);
+ }
+}
+/* build scene buffers */
+const geo={p:[],n:[],col:[],idx:[]};
+// ground
+pushBox(geo,40,0.2,40,[0.55,0.72,0.46],0,-0.1,0);
+// pond
+pushBox(geo,10,0.1,6,[0.47,0.86,0.96],10,-0.05,4);
+// bridge (simple arch as box)
+pushBox(geo,4,0.5,1,[0.75,0.25,0.25],8,0.25,4);
+// pagoda body (3 tiers)
+for(let i=0;i<3;i++){
+ const h=1.5, y=i*(h+0.4);
+ pushBox(geo,4-0.4*i,h,4-0.4*i,[1,1,1],0,y,0); // white walls
+ pushBox(geo,4-0.4*i,h*0.05,4-0.4*i,[0.65,0.1,0.1],0,y+h*0.5,0); // mid rail
+ pushPyramid(geo,5-0.4*i,0.8,[0.1,0.1,0.1],0,y+h,0); // roof
+}
+// cherry blossom spheres (icosa-like with small boxes)
+for(const [x,z] of [[-6,-4],[ -8,6]]){
+ for(let i=0;i<60;i++){
+   const theta=Math.random()*Math.PI,phi=Math.random()*Math.PI*2;
+   const r=1.8+Math.random()*0.4;
+   const px=x+r*Math.sin(theta)*Math.cos(phi);
+   const py=2.5+r*Math.cos(theta);
+   const pz=z+r*Math.sin(theta)*Math.sin(phi);
+   pushBox(geo,0.3,0.3,0.3,[1.0,0.75+Math.random()*0.2,0.8+Math.random()*0.1],px,py,pz);
+ }
+}
+// bamboo cylinders approximated by tall boxes
+for(const [x,z] of [[-9,-2],[-9,-1],[-9,0],[-9,1],[-9,2]]){
+ pushBox(geo,0.3,4,0.3,[0.5,0.7,0.35],x,2,z);
+}
+
+// upload buffers
+function buf(data, itemSize, attrLoc){const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);
+ gl.enableVertexAttribArray(attrLoc);gl.vertexAttribPointer(attrLoc,itemSize,gl.FLOAT,false,0,0);return b;}
+buf(geo.p,3,loc.p);buf(geo.n,3,loc.n);buf(geo.col,3,loc.c);
+const idxBuf=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,idxBuf);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(geo.idx),gl.STATIC_DRAW);
+
+gl.uniform3fv(loc.lightDir,new Float32Array([0.5,1,0.8]));
+gl.uniform1f(loc.fogNear,8.0);gl.uniform1f(loc.fogFar,35.0);
+
+/* ------------ interaction & animation ------------- */
+let camAng=0,camDist=22,cx=0,cy=0,isDrag=false,prevX=0,prevY=0;
+canvas.addEventListener('mousedown',e=>{isDrag=true;prevX=e.clientX;prevY=e.clientY;canvas.style.cursor='grabbing';});
+addEventListener('mouseup',()=>{isDrag=false;canvas.style.cursor='grab';});
+addEventListener('mousemove',e=>{
+ if(!isDrag)return;
+ const dx=(e.clientX-prevX)*0.005,dy=(e.clientY-prevY)*0.005;
+ camAng+=dx;
+ cy=Math.min(Math.max(cy+dy,-1.2),1.2);
+ prevX=e.clientX;prevY=e.clientY;
+});
+addEventListener('wheel',e=>{camDist=Math.min(Math.max(camDist+e.deltaY*0.01,7),40);});
+
+/* ----------- render loop ---------- */
+const model=mat4Identity(mat4());
+function draw(t){
+  const autoRotate=!isDrag&&(Date.now()%5000)<4900; // idle spin
+  if(autoRotate) camAng+=0.0015;
+  gl.clearColor(0.85,0.9,1.0,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  const aspect=canvas.width/canvas.height;
+  const proj=mat4Perspective(mat4(),deg(55),aspect,0.1,100);
+  const eye=[Math.sin(camAng)*camDist,6+cy*5,Math.cos(camAng)*camDist];
+  const view=mat4LookAt(mat4(),eye,[0,2,0],[0,1,0]);
+  const mvp=mat4Mul(proj,view);
+  gl.uniformMatrix4fv(loc.mvp,false,mvp);
+  gl.uniformMatrix4fv(loc.model,false,model);
+  gl.drawElements(gl.TRIANGLES,geo.idx.length,gl.UNSIGNED_SHORT,0);
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
