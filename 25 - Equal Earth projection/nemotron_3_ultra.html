@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Equal‑Earth Interactive World Map (SVG.js)</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;font-family:system-ui,sans-serif;background:#111;color:#eee}
+  #svg{width:100%;height:100%;display:block}
+  .ui{
+    position:absolute;left:10px;top:10px;z-index:10;
+    background:rgba(0,0,0,0.6);padding:8px 12px;border-radius:6px;
+    display:flex;gap:8px;align-items:center;flex-wrap:wrap
+  }
+  .ui label{font-size:12px;color:#bbb}
+  .ui input{width:70px;padding:2px 6px;border:1px solid #444;background:#222;color:#fff;border-radius:3px}
+  .ui button{padding:2px 10px;border:none;background:#444;color:#fff;border-radius:3px;cursor:pointer}
+  .ui button:hover{background:#666}
+  #readout{
+    position:absolute;left:10px;bottom:10px;z-index:10;
+    background:rgba(0,0,0,0.7);color:#0f0;padding:6px 10px;
+    border-radius:4px;font-family:monospace;font-size:13px;display:none
+  }
+  .marker{cursor:pointer}
+</style>
+</head>
+<body>
+
+<div id="svg"></div>
+
+<div class="ui">
+  <label>Lat</label><input id="latIn" type="number" step="any" placeholder="lat" value="40.7128">
+  <label>Lon</label><input id="lonIn" type="number" step="any" placeholder="lon" value="-74.0060">
+  <button id="addMarker">Add marker</button>
+  <button id="resetView">Reset view</button>
+</div>
+<div id="readout"></div>
+
+<!-- SVG.js (UMD global) -->
+<script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3/dist/svg.min.js"></script>
+<!-- TopoJSON client (UMD global) -->
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+
+<script>
+(() => {
+  // --------------------------------------------------------------
+  // 1️⃣  CONSTANTS & PROJECTION MATH  (Equal‑Earth)
+  // --------------------------------------------------------------
+  const DEG2RAD = Math.PI/180, RAD2DEG = 180/Math.PI;
+  const SQRT3   = Math.sqrt(3);
+
+  // Polynomial coefficients (Šavrič et al. 2019)
+  const A1 =  1.340264, A2 = -0.081106, A3 = 0.000893, A4 = 0.003796;
+
+  // Solve θ from y = θ·P(θ)  (Newton‑Raphson, 6‑7 iterations enough)
+  function solveTheta(y) {
+    // y is already sin(φ)  →  θ ≈ φ  is a good start
+    let θ = Math.asin(Math.max(-1, Math.min(1, y)));
+    for (let i = 0; i < 10; ++i) {
+      const t2 = θ*θ, t4 = t2*t2, t6 = t4*t2;
+      const P  = A1 + A2*t2 + A3*t4 + A4*t6;
+      const f  = θ * P - y;
+      const fp = A1 + 3*A2*t2 + 5*A3*t4 + 7*A4*t6;   // d/dθ (θ·P)
+      const Δ  = f / fp;
+      θ -= Δ;
+      if (Math.abs(Δ) < 1e-12) break;
+    }
+    return θ;
+  }
+
+  // Forward: (lon°, lat°) → [x, y]  (projection space, y ∈ [-1,1])
+  function forward(lon, lat) {
+    const λ = lon * DEG2RAD;
+    const φ = lat * DEG2RAD;
+    const sinφ = Math.sin(φ);
+    const θ = solveTheta(sinφ);
+    const cosθ = Math.cos(θ);
+    const t2 = θ*θ, t4 = t2*t2, t6 = t4*t2, t8 = t6*t2;
+    const denom = 3 * (9*A4*t8 + 7*A3*t6 + 3*A2*t2 + A1);
+    const x = (2 * SQRT3 * λ * cosθ) / denom;
+    const y = sinφ;                     // Equal‑Earth has y = sin φ
+    return [x, y];
+  }
+
+  // Inverse: [x, y] (projection space) → [lon°, lat°]
+  function inverse(x, y) {
+    const clampedY = Math.max(-1, Math.min(1, y));
+    const φ = Math.asin(clampedY);
+    const θ = solveTheta(clampedY);
+    const cosθ = Math.cos(θ);
+    const t2 = θ*θ, t4 = t2*t2, t6 = t4*t2, t8 = t6*t2;
+    const denom = 3 * (9*A4*t8 + 7*A3*t6 + 3*A2*t2 + A1);
+    const λ = (x * denom) / (2 * SQRT3 * cosθ);
+    return [λ * RAD2DEG, φ * RAD2DEG];
+  }
+
+  // --------------------------------------------------------------
+  // 2️⃣  SVG.js SETUP
+  // --------------------------------------------------------------
+  const draw = SVG().addTo('#svg').size('100%', '100%');
+  // ViewBox matches the raw projection extent (≈ ±2.71 × ±1.0)
+  const PROJ_W = 5.5, PROJ_H = 2.2;               // a bit of padding
+  draw.viewbox(-PROJ_W/2, -PROJ_H/2, PROJ_W, PROJ_H);
+
+  const mapG = draw.group();      // all map geometry lives here (zoom/pan target)
+  const markG = draw.group();     // markers on top
+
+  // --------------------------------------------------------------
+  // 3️⃣  LOAD WORLD GEOMETRY (TopoJSON → GeoJSON → SVG paths)
+  // --------------------------------------------------------------
+  async function loadWorld() {
+    const url = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
+    const topo = await fetch(url).then(r => r.json());
+    const countries = topojson.feature(topo, topo.objects.countries).features;
+
+    // Helper: project a ring of [lon,lat] pairs → SVG path string
+    function ringToPath(ring) {
+      return ring.map(p => forward(p[0], p[1])).map(([x,y],i) => (i?'L':'M')+x+','+y).join(' ') + 'Z';
+    }
+
+    countries.forEach(f => {
+      const geom = f.geometry;
+      if (!geom) return;
+      let d = '';
+      if (geom.type === 'Polygon') {
+        geom.coordinates.forEach(ring => d += ringToPath(ring));
+      } else if (geom.type === 'MultiPolygon') {
+        geom.coordinates.forEach(poly => poly.forEach(ring => d += ringToPath(ring)));
+      }
+      if (d) mapG.path(d).fill('#3a3a3a').stroke({width:0.15, color:'#555', linejoin:'round'});
+    });
+  }
+
+  // --------------------------------------------------------------
+  // 4️⃣  ZOOM / PAN  (transform applied to mapG + markG)
+  // --------------------------------------------------------------
+  let scale = 1, tx = 0, ty = 0;          // current transform
+  const applyTransform = () => {
+    mapG.transform({scale, translateX: tx, translateY: ty});
+    markG.transform({scale, translateX: tx, translateY: ty});
+  };
+
+  // Wheel zoom (centered on mouse)
+  draw.node.addEventListener('wheel', e => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 1/1.15;
+    const mouse = draw.point(e.offsetX, e.offsetY);   // in viewBox coords (projection space)
+    // map-space coordinate under cursor before zoom
+    const mx = (mouse.x - tx) / scale;
+    const my = (mouse.y - ty) / scale;
+    scale *= factor;
+    // keep that map point under cursor
+    tx = mouse.x - mx * scale;
+    ty = mouse.y - my * scale;
+    applyTransform();
+  }, {passive:false});
+
+  // Drag pan
+  let dragging = false, dragStart = null;
+  draw.node.addEventListener('mousedown', e => {
+    if (e.button !== 0) return; // left only
+    dragging = true;
+    dragStart = {x:e.clientX, y:e.clientY, tx, ty};
+    draw.node.style.cursor = 'grabbing';
+  });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - dragStart.x;
+    const dy = e.clientY - dragStart.y;
+    tx = dragStart.tx + dx;
+    ty = dragStart.ty + dy;
+    applyTransform();
+  });
+  window.addEventListener('mouseup',   () => { dragging=false; draw.node.style.cursor=''; });
+  window.addEventListener('mouseleave',() => { dragging=false; draw.node.style.cursor=''; });
+
+  // --------------------------------------------------------------
+  // 5️⃣  MARKER HANDLING (forward projection)
+  // --------------------------------------------------------------
+  function addMarker(lat, lon, color = '#ff4444') {
+    const [x, y] = forward(lon, lat);
+    const circle = markG.circle(6).fill(color).stroke({width:0.5, color:'#000'}).addClass('marker');
+    circle.center(x, y);
+    // store original lat/lon for tooltip
+    circle.data('ll', [lat, lon]);
+    circle.on('mouseover', e => {
+      const [lt, ln] = circle.data('ll');
+      showReadout(`${lt.toFixed(4)}°, ${ln.toFixed(4)}°`, e.clientX, e.clientY);
+    });
+    circle.on('mouseout', hideReadout);
+  }
+
+  // --------------------------------------------------------------
+  // 6️⃣  CLICK → INVERSE PROJECTION → READOUT
+  // --------------------------------------------------------------
+  const readout = document.getElementById('readout');
+  function showReadout(txt, px, py) {
+    readout.textContent = txt;
+    readout.style.left = px + 12 + 'px';
+    readout.style.top  = py + 12 + 'px';
+    readout.style.display = 'block';
+  }
+  function hideReadout() { readout.style.display = 'none'; }
+
+  draw.node.addEventListener('click', e => {
+    if (dragging) return;                 // ignore clicks after drag
+    // screen → viewBox (projection space)
+    const vb = draw.point(e.offsetX, e.offsetY);
+    // undo current transform to get raw projection coords
+    const mx = (vb.x - tx) / scale;
+    const my = (vb.y - ty) / scale;
+    const [lon, lat] = inverse(mx, my);
+    showReadout(`Click: ${lat.toFixed(4)}°, ${lon.toFixed(4)}°`, e.clientX, e.clientY);
+    setTimeout(hideReadout, 4000);
+  });
+
+  // --------------------------------------------------------------
+  // 7️⃣  UI CONTROLS
+  // --------------------------------------------------------------
+  document.getElementById('addMarker').onclick = () => {
+    const lat = parseFloat(document.getElementById('latIn').value);
+    const lon = parseFloat(document.getElementById('lonIn').value);
+    if (isNaN(lat) || isNaN(lon)) return alert('Invalid coordinates');
+    addMarker(lat, lon, '#44ff44');
+  };
+  document.getElementById('resetView').onclick = () => {
+    scale = 1; tx = 0; ty = 0; applyTransform();
+  };
+
+  // --------------------------------------------------------------
+  // 8️⃣  BOOTSTRAP
+  // --------------------------------------------------------------
+  loadWorld().then(() => {
+    // Demo markers
+    addMarker(40.7128, -74.0060, '#ffaa00');   // New York
+    addMarker(51.5074,  -0.1278, '#00ffff');   // London
+    addMarker(-33.8688, 151.2093, '#ff44ff');  // Sydney
+    addMarker(35.6762, 139.6503, '#ffff00');   // Tokyo
+    console.log('Equal‑Earth map ready – scroll to zoom, drag to pan, click for coords.');
+  });
+})();
+</script>
+</body>
+</html>

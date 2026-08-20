@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Equal Earth Projection - Interactive World Map</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3.2.4/dist/svg.min.js"></script>
+    <style>
+        #map-container {
+            width: 100%;
+            height: 100vh;
+            overflow: hidden;
+            cursor: grab;
+        }
+        #map-container:active {
+            cursor: grabbing;
+        }
+        .coordinate-overlay {
+            background: rgba(15, 23, 42, 0.9);
+            border: 1px solid rgba(59, 130, 246, 0.5);
+        }
+        .graticule-line {
+            stroke: rgba(148, 163, 184, 0.3);
+            stroke-width: 0.5;
+            fill: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white overflow-hidden">
+    <div id="map-container"></div>
+    
+    <!-- Control Panel -->
+    <div class="fixed top-4 left-4 coordinate-overlay rounded-lg p-4 shadow-xl max-w-xs">
+        <h2 class="text-lg font-bold text-blue-400 mb-2">Equal Earth Projection</h2>
+        <p class="text-xs text-gray-400 mb-3">Zoom: Scroll | Pan: Drag</p>
+        
+        <!-- Forward Projection Input -->
+        <div class="mb-4">
+            <h3 class="text-sm font-semibold text-green-400 mb-2">Forward: Lat/Lon → Map</h3>
+            <div class="flex gap-2 mb-2">
+                <div class="flex-1">
+                    <label class="text-xs text-gray-400">Latitude</label>
+                    <input type="number" id="input-lat" value="40" step="0.1" 
+                        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white">
+                </div>
+                <div class="flex-1">
+                    <label class="text-xs text-gray-400">Longitude</label>
+                    <input type="number" id="input-lon" value="-74" step="0.1"
+                        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white">
+                </div>
+            </div>
+            <button id="btn-project" class="w-full bg-green-600 hover:bg-green-700 text-white text-sm py-1.5 rounded transition">
+                Plot Coordinates
+            </button>
+        </div>
+        
+        <!-- Click Result -->
+        <div class="mb-4">
+            <h3 class="text-sm font-semibold text-yellow-400 mb-2">Inverse: Click Result</h3>
+            <div class="bg-gray-800 rounded p-2 text-xs font-mono">
+                <div class="flex justify-between mb-1">
+                    <span class="text-gray-400">Lat:</span>
+                    <span id="click-lat" class="text-yellow-300">—</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Lon:</span>
+                    <span id="click-lon" class="text-yellow-300">—</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Info -->
+        <div class="text-xs text-gray-500">
+            <div class="flex justify-between">
+                <span>Zoom:</span>
+                <span id="zoom-level">1.00x</span>
+            </div>
+            <div class="flex justify-between">
+                <span>Markers:</span>
+                <span id="marker-count">0</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Instructions overlay that disappears -->
+    <div id="instructions" class="fixed bottom-4 right-4 coordinate-overlay rounded-lg p-3 text-sm max-w-xs">
+        <p class="text-blue-300">Click anywhere on the map to see coordinates (Inverse projection)</p>
+        <p class="text-green-300 mt-1">Use the panel to plot coordinates (Forward projection)</p>
+    </div>
+
+    <script>
+        // =====================================================
+        // EQUAL EARTH PROJECTION IMPLEMENTATION
+        // Based on: https://proj.org/en/9.3/operations/projections/eqearth.html
+        // Using spherical approximation for simplicity and accuracy
+        // =====================================================
+        
+        // Earth radius (meters) - using mean radius
+        const R = 6371000;
+        
+        // Polynomial coefficients for Equal Earth projection (on sphere)
+        const A1 = 1.340264;
+        const A2 = -0.081106;
+        const A3 = 0.000893;
+        const A4 = 0.003796;
+        
+        // Scale factor to fit map in viewport
+        let SCALE = 150; // pixels per radian at zoom 1
+        let mapWidth, mapHeight;
+        
+        // =====================================================
+        // FORWARD PROJECTION: Lat/Lon → x,y (Equal Earth)
+        // Using polynomial approximation on a sphere
+        // =====================================================
+        function forwardProjection(latDeg, lonDeg) {
+            // Convert to radians
+            const latRad = latDeg * Math.PI / 180;
+            const lonRad = lonDeg * Math.PI / 180;
+            
+            // For Equal Earth on a sphere:
+            // β (beta) = arcsin(sin(φ)) = φ (for sphere, authalic latitude = geodetic latitude)
+            const beta = latRad;
+            
+            // Solve for θ using iterative method
+            // θ = β + β³*A2 + β⁷*A3 + β⁹*A4
+            let theta = beta;
+            const maxIter = 20;
+            for (let i = 0; i < maxIter; i++) {
+                const theta2 = theta * theta;
+                const theta3 = theta2 * theta;
+                const theta7 = Math.pow(theta, 7);
+                const theta9 = Math.pow(theta, 9);
+                
+                // Next iteration
+                const thetaNew = beta + theta3 * A2 + theta7 * A3 + theta9 * A4;
+                
+                if (Math.abs(thetaNew - theta) < 1e-12) {
+                    theta = thetaNew;
+                    break;
+                }
+                theta = thetaNew;
+            }
+            
+            // Final theta calculation
+            const theta2 = theta * theta;
+            const theta3 = theta2 * theta;
+            const theta7 = Math.pow(theta, 7);
+            const theta9 = Math.pow(theta, 9);
+            theta = beta + theta3 * A2 + theta7 * A3 + theta9 * A4;
+            
+            // Calculate x, y coordinates
+            // x = R * λ * cos(θ) / C (where C ≈ 1.5)
+            // y = R * θ
+            const C = Math.sqrt(3) / 2; // 0.866025...
+            
+            const x = R * lonRad * Math.cos(theta) / C;
+            const y = R * theta;
+            
+            // Scale down to reasonable screen coordinates
+            const screenScale = 0.00005;
+            return { x: x * screenScale, y: -y * screenScale };
+        }
+        
+        // =====================================================
+        // INVERSE PROJECTION: x,y → Lat/Lon (Equal Earth)
+        // =====================================================
+        function inverseProjection(x, y) {
+            const screenScale = 0.00005;
+            const C = Math.sqrt(3) / 2;
+            
+            // Reverse the screen scaling
+            const mapX = x / screenScale;
+            const mapY = -y / screenScale;
+            
+            // First solve for θ using Newton-Raphson
+            // y/R = θ = β + A2*θ³ + A3*θ⁷ + A4*θ⁹
+            // where β = y/R
+            const yNorm = mapY / R;
+            
+            let theta = yNorm; // Initial guess
+            for (let iter = 0; iter < 20; iter++) {
+                const theta2 = theta * theta;
+                const theta3 = theta2 * theta;
+                const theta6 = Math.pow(theta, 6);
+                const theta7 = theta6 * theta;
+                const theta8 = theta6 * theta2;
+                const theta9 = theta8 * theta;
+                
+                // f(θ) = θ - A2*θ³ - A3*θ⁷ - A4*θ⁹ - yNorm = 0
+                const f = theta - A2 * theta3 - A3 * theta7 - A4 * theta9 - yNorm;
+                // f'(θ) = 1 - 3*A2*θ² - 7*A3*θ⁶ - 9*A4*θ⁸
+                const fPrime = 1 - 3 * A2 * theta2 - 7 * A3 * theta6 - 9 * A4 * theta8;
+                
+                const delta = f / fPrime;
+                theta = theta - delta;
+                
+                if (Math.abs(delta) < 1e-12) break;
+            }
+            
+            // Now calculate β (authalic latitude) from θ
+            const theta2 = theta * theta;
+            const theta3 = theta2 * theta;
+            const theta7 = Math.pow(theta, 7);
+            const theta9 = Math.pow(theta, 9);
+            const beta = theta - theta3 * A2 - theta7 * A3 - theta9 * A4;
+            
+            // For sphere, latitude = beta
+            const latRad = beta;
+            
+            // Calculate longitude
+            // x = R * λ * cos(θ) / C
+            // λ = x * C / (R * cos(θ))
+            let lambda = (mapX * C) / (R * Math.cos(theta));
+            
+            // Convert to degrees
+            const latDeg = latRad * 180 / Math.PI;
+            const lonDeg = lambda * 180 / Math.PI;
+            
+            return { lat: latDeg, lon: lonDeg };
+        }
+        
+        // =====================================================
+        // SVG.js MAP SETUP
+        // =====================================================
+        
+        // Zoom and pan state
+        let zoom = 1;
+        let panX = 0;
+        let panY = 0;
+        let isDragging = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        
+        // Markers array
+        let markers = [];
+        
+        // Initialize SVG
+        const container = document.getElementById('map-container');
+        const draw = SVG().addTo('#map-container').size('100%', '100%');
+        
+        // Get dimensions
+        function updateDimensions() {
+            mapWidth = container.clientWidth;
+            mapHeight = container.clientHeight;
+        }
+        updateDimensions();
+        
+        // Create main group for transformations
+        const mapGroup = draw.group();
+        
+        // Create groups for layers
+        const graticuleGroup = mapGroup.group();
+        const landGroup = mapGroup.group();
+        const markerGroup = mapGroup.group();
+        
+        // =====================================================
+        // DRAW GRATICULE (lat/lon grid)
+        // =====================================================
+        function drawGraticule() {
+            // Longitude lines (every 30°)
+            for (let lon = -180; lon <= 180; lon += 30) {
+                const pathData = [];
+                for (let lat = -90; lat <= 90; lat += 2) {
+                    const pos = forwardProjection(lat, lon);
+                    if (pathData.length === 0) {
+                        pathData.push(`M ${pos.x} ${pos.y}`);
+                    } else {
+                        pathData.push(`L ${pos.x} ${pos.y}`);
+                    }
+                }
+                const path = graticuleGroup.path(pathData.join(' '));
+                path.addClass('graticule-line');
+            }
+            
+            // Latitude lines (every 30°)
+            for (let lat = -60; lat <= 60; lat += 30) {
+                const pathData = [];
+                for (let lon = -180; lon <= 180; lon += 2) {
+                    const pos = forwardProjection(lat, lon);
+                    if (pathData.length === 0) {
+                        pathData.push(`M ${pos.x} ${pos.y}`);
+                    } else {
+                        pathData.push(`L ${pos.x} ${pos.y}`);
+                    }
+                }
+                const path = graticuleGroup.path(pathData.join(' '));
+                path.addClass('graticule-line');
+            }
+        }
+        
+        // =====================================================
+        // SIMPLIFIED WORLD MAP DATA (continent outlines)
+        // =====================================================
+        // Simplified world countries/continents as coordinate arrays
+        const worldCountries = [
+            // North America
+            [[-168, 65], [-166, 66], [-163, 67], [-140, 70], [-130, 70], [-124, 69], [-124, 66], [-117, 66], [-117, 64], [-111, 64], [-106, 64], [-103, 64], [-103, 60], [-97, 60], [-97, 58], [-94, 58], [-94, 49], [-82, 49], [-82, 42], [-81, 42], [-80, 43], [-81, 44], [-71, 45], [-71, 47], [-70, 47], [-70, 44], [-67, 45], [-67, 47], [-65, 45], [-65, 44], [-64, 44], [-64, 46], [-63, 46], [-63, 49], [-55, 51], [-55, 61], [-56, 61], [-56, 62], [-57, 62], [-58, 63], [-59, 64], [-60, 64], [-61, 64], [-62, 65], [-63, 65], [-64, 66], [-65, 66], [-65, 68], [-66, 68], [-66, 70], [-67, 70], [-68, 71], [-75, 71], [-94, 71], [-120, 71], [-140, 71], [-168, 65]],
+            // South America
+            [[-81, 12], [-80, 12], [-80, 9], [-75, 9], [-75, 6], [-70, 6], [-70, 4], [-69, 4], [-69, 1], [-70, 1], [-70, -4], [-70, -8], [-71, -8], [-71, -17], [-70, -17], [-70, -22], [-57, -22], [-57, -34], [-55, -34], [-55, -38], [-57, -38], [-57, -52], [-67, -52], [-75, -52], [-75, -18], [-74, -9], [-75, -5], [-76, -2], [-77, 0], [-77, 2], [-78, 2], [-78, 4], [-79, 4], [-79, 7], [-80, 8], [-81, 9], [-81, 12]],
+            // Europe
+            [[-10, 37], [-10, 36], [-9, 36], [-9, 35], [-7, 35], [-7, 34], [-6, 34], [-6, 33], [-5, 33], [-5, 32], [-2, 32], [-2, 31], [3, 31], [3, 30], [9, 30], [9, 37], [10, 37], [10, 42], [14, 42], [14, 43], [17, 43], [17, 45], [18, 45], [18, 46], [20, 46], [20, 47], [22, 47], [22, 51], [23, 51], [23, 55], [24, 55], [24, 57], [28, 57], [28, 60], [30, 60], [30, 62], [31, 62], [31, 70], [25, 70], [25, 72], [-10, 72], [-10, 37]],
+            // Africa
+            [[-17, 35], [-17, 32], [-16, 32], [-16, 30], [-13, 30], [-13, 28], [-12, 28], [-12, 27], [-11, 27], [-11, 20], [-11, 12], [-10, 12], [-10, 6], [-11, 6], [-11, 0], [-11, -1], [-10, -1], [-10, -6], [-11, -6], [-11, -8], [-11, -12], [-11, -22], [-11, -25], [-12, -25], [-12, -28], [-13, -28], [-13, -32], [-13, -35], [-17, -35], [-17, -34], [-18, -34], [-18, -28], [-23, -28], [-23, -22], [-25, -22], [-25, -18], [-26, -18], [-26, -16], [-26, -12], [-32, -12], [-32, -26], [-40, -26], [-40, -12], [-50, -12], [-50, -26], [-52, -26], [-52, -10], [-51, -8], [-50, -8], [-50, 12], [-40, 12], [-40, 37], [-17, 37], [-17, 35]],
+            // Asia
+            [[-10, 37], [5, 37], [5, 43], [10, 43], [10, 47], [20, 47], [20, 52], [25, 52], [25, 55], [30, 55], [30, 58], [35, 58], [35, 61], [40, 61], [40, 63], [45, 63], [45, 70], [50, 70], [50, 72], [55, 72], [55, 76], [60, 76], [60, 78], [70, 78], [70, 80], [90, 80], [90, 76], [100, 76], [100, 72], [110, 72], [110, 70], [120, 70], [120, 65], [130, 65], [130, 60], [140, 60], [140, 55], [145, 55], [145, 50], [150, 50], [150, 45], [155, 45], [155, 40], [160, 40], [160, 35], [165, 35], [165, 30], [170, 30], [170, 20], [165, 20], [165, 10], [160, 10], [160, 5], [155, 5], [155, 0], [150, 0], [150, -10], [145, -10], [145, -10], [140, -10], [140, -10], [135, -10], [135, -10], [130, -10], [130, 0], [125, 0], [125, 10], [120, 10], [120, 15], [110, 15], [110, 20], [105, 20], [105, 22], [100, 22], [100, 28], [97, 28], [97, 30], [95, 30], [95, 35], [92, 35], [92, 38], [88, 38], [88, 40], [85, 40], [85, 42], [80, 42], [80, 45], [75, 45], [75, 50], [70, 50], [70, 52], [60, 52], [60, 50], [50, 50], [50, 42], [45, 42], [45, 40], [40, 40], [40, 38], [35, 38], [35, 36], [30, 36], [30, 35], [25, 35], [25, 37], [20, 37], [20, 35], [15, 35], [15, 37], [10, 37], [-10, 37]],
+            // Australia
+            [[115, -20], [115, -13], [117, -13], [117, -10], [120, -10], [120, -14], [123, -14], [123, -16], [126, -16], [126, -14], [129, -14], [129, -12], [131, -12], [131, -14], [135, -14], [135, -12], [142, -12], [142, -10], [145, -10], [145, -18], [147, -18], [147, -22], [150, -22], [150, -25], [153, -25], [153, -28], [155, -28], [155, -31], [157, -31], [157, -33], [160, -33], [160, -35], [162, -35], [162, -38], [160, -38], [160, -40], [158, -40], [158, -42], [155, -42], [155, -40], [153, -40], [153, -38], [150, -38], [150, -36], [148, -36], [148, -34], [145, -34], [145, -32], [143, -32], [143, -30], [140, -30], [140, -28], [138, -28], [138, -26], [136, -26], [136, -24], [134, -24], [134, -22], [132, -22], [132, -20], [130, -20], [130, -18], [128, -18], [128, -16], [125, -16], [125, -18], [123, -18], [123, -20], [120, -20], [115, -20]],
+            // Greenland
+            [[-45, 83], [-45, 80], [-44, 80], [-44, 78], [-40, 78], [-40, 75], [-38, 75], [-38, 73], [-35, 73], [-35, 72], [-33, 72], [-33, 70], [-30, 70], [-30, 68], [-27, 68], [-27, 66], [-24, 66], [-24, 64], [-21, 64], [-21, 62], [-20, 62], [-20, 60], [-22, 60], [-22, 60], [-23, 60], [-23, 62], [-25, 62], [-25, 65], [-28, 65], [-28, 68], [-32, 68], [-32, 70], [-35, 70], [-35, 72], [-37, 72], [-37, 74], [-40, 74], [-40, 76], [-42, 76], [-42, 78], [-44, 78], [-44, 80], [-45, 80], [-45, 83]],
+            // Iceland
+            [[-25, 66], [-25, 65], [-24, 65], [-24, 64], [-22, 64], [-22, 65], [-20, 65], [-20, 66], [-18, 66], [-18, 67], [-16, 67], [-16, 68], [-14, 68], [-14, 66], [-13, 66], [-13, 65], [-14, 65], [-14, 64], [-16, 64], [-16, 63], [-18, 63], [-18, 62], [-20, 62], [-20, 63], [-22, 63], [-22, 64], [-24, 64], [-24, 65], [-25, 65], [-25, 66]],
+            // Japan
+            [[145, 46], [145, 41], [141, 41], [141, 36], [140, 36], [140, 34], [139, 34], [139, 33], [138, 33], [138, 32], [137, 32], [137, 34], [136, 34], [136, 35], [135, 35], [135, 34], [133, 34], [133, 33], [132, 33], [132, 34], [130, 34], [130, 33], [129, 33], [129, 32], [130, 32], [130, 31], [131, 31], [131, 30], [132, 30], [132, 33], [133, 33], [133, 34], [134, 34], [134, 35], [135, 35], [135, 36], [136, 36], [136, 37], [137, 37], [137, 38], [138, 38], [138, 39], [139, 39], [139, 40], [140, 40], [140, 41], [141, 41], [141, 42], [142, 42], [142, 43], [141, 43], [141, 44], [142, 44], [142, 45], [141, 45], [141, 46], [145, 46]],
+            // UK
+            [[-8, 60], [-8, 58], [-7, 58], [-7, 55], [-6, 55], [-6, 54], [-5, 54], [-5, 52], [-4, 52], [-4, 51], [-3, 51], [-3, 50], [-2, 50], [-2, 51], [-1, 51], [-1, 52], [0, 52], [0, 51], [1, 51], [1, 50], [2, 50], [2, 52], [3, 52], [3, 55], [4, 55], [4, 58], [5, 58], [5, 60], [5, 61], [4, 61], [4, 60], [3, 60], [3, 61], [-8, 61], [-8, 60]],
+            // New Zealand
+            [[166, -34], [166, -38], [169, -38], [169, -41], [174, -41], [174, -46], [178, -46], [178, -48], [-179, -48], [-179, -47], [-178, -47], [-178, -44], [-177, -44], [-177, -42], [-175, -42], [-175, -40], [-174, -40], [-174, -38], [-173, -38], [-173, -36], [-172, -36], [-172, -34], [-171, -34], [-171, -36], [-170, -36], [-170, -38], [-169, -38], [-169, -34], [166, -34]],
+            // Madagascar
+            [[50, -12], [50, -15], [49, -15], [49, -22], [50, -22], [50, -25], [48, -25], [48, -22], [47, -22], [47, -17], [46, -17], [46, -12], [47, -12], [47, -11], [48, -11], [48, -10], [49, -10], [49, -11], [50, -11], [50, -12]],
+            // Indonesia/Major islands
+            [[95, 5], [95, 0], [98, 0], [98, -5], [104, -5], [104, -7], [110, -7], [110, -8], [120, -8], [120, -10], [125, -10], [125, -12], [130, -12], [130, -10], [135, -10], [135, 0], [140, 0], [140, 5], [145, 5], [145, 10], [140, 10], [140, 20], [135, 20], [135, 25], [120, 25], [120, 20], [110, 20], [110, 15], [105, 15], [105, 10], [100, 10], [100, 5], [95, 5]],
+            // Saudi Arabia
+            [[35, 30], [35, 28], [38, 28], [38, 24], [42, 24], [42, 20], [46, 20], [46, 18], [48, 18], [48, 17], [51, 17], [51, 20], [55, 20], [55, 22], [56, 22], [56, 24], [55, 24], [55, 26], [52, 26], [52, 28], [50, 28], [50, 30], [45, 30], [45, 32], [40, 32], [40, 31], [35, 31], [35, 30]],
+            // India
+            [[70, 35], [70, 32], [72, 32], [72, 30], [74, 30], [74, 28], [76, 28], [76, 26], [78, 26], [78, 24], [80, 24], [80, 22], [82, 22], [82, 20], [84, 20], [84, 18], [86, 18], [86, 20], [88, 20], [88, 22], [90, 22], [90, 26], [92, 26], [92, 28], [94, 28], [94, 30], [92, 30], [92, 32], [90, 32], [90, 34], [88, 34], [88, 36], [86, 36], [86, 35], [82, 35], [82, 36], [80, 36], [80, 35], [78, 35], [78, 34], [76, 34], [76, 32], [74, 32], [74, 30], [72, 30], [72, 32], [70, 32], [70, 35]],
+            // Southeast Asia
+            [[100, 20], [100, 18], [102, 18], [102, 17], [104, 17], [104, 10], [106, 10], [106, 8], [108, 8], [108, 10], [110, 10], [110, 12], [112, 12], [112, 15], [110, 15], [110, 17], [108, 17], [108, 20], [105, 20], [105, 21], [103, 21], [103, 20], [100, 20]],
+        ];
+        
+        // =====================================================
+        // DRAW WORLD MAP
+        // =====================================================
+        function drawWorldMap() {
+            worldCountries.forEach((country, index) => {
+                const pathData = country.map((coord, i) => {
+                    const pos = forwardProjection(coord[1], coord[0]);
+                    return (i === 0 ? 'M ' : 'L ') + pos.x + ' ' + pos.y;
+                }).join(' ') + ' Z';
+                
+                const path = landGroup.path(pathData);
+                path.fill(index % 2 === 0 ? '#1e3a5f' : '#1e4a6f')
+                    .stroke({ color: '#3b82f6', width: 1, opacity: 0.5 });
+            });
+            
+            // Draw world boundary (rectangle showing projection bounds)
+            const bounds = [
+                forwardProjection(90, -180),
+                forwardProjection(90, 180),
+                forwardProjection(-90, 180),
+                forwardProjection(-90, -180)
+            ];
+            const boundsPath = `M ${bounds[0].x} ${bounds[0].y} L ${bounds[1].x} ${bounds[1].y} L ${bounds[2].x} ${bounds[2].y} L ${bounds[3].x} ${bounds[3].y} Z`;
+            graticuleGroup.path(boundsPath)
+                .fill('none')
+                .stroke({ color: '#ef4444', width: 2, dasharray: '5,5' });
+        }
+        
+        // =====================================================
+        // MARKER PLOTTING
+        // =====================================================
+        function addMarker(lat, lon, color = '#22c55e') {
+            const pos = forwardProjection(lat, lon);
+            const circle = markerGroup.circle(10)
+                .fill(color)
+                .stroke({ color: '#fff', width: 2 })
+                .center(pos.x, pos.y);
+            
+            // Add pulse animation
+            const pulse = markerGroup.circle(20)
+                .fill('none')
+                .stroke({ color: color, width: 2, opacity: 0.5 })
+                .center(pos.x, pos.y);
+            
+            pulse.animate(1500, 0, 'now').ease('<>')
+                .scale(2)
+                .attr({ opacity: 0 })
+                .loop();
+            
+            markers.push({ circle, pulse, lat, lon });
+            updateMarkerCount();
+        }
+        
+        function clearMarkers() {
+            markers.forEach(m => {
+                m.circle.remove();
+                m.pulse.remove();
+            });
+            markers = [];
+            updateMarkerCount();
+        }
+        
+        function updateMarkerCount() {
+            document.getElementById('marker-count').textContent = markers.length;
+        }
+        
+        // =====================================================
+        // ZOOM AND PAN
+        // =====================================================
+        function updateTransform() {
+            mapGroup.transform({
+                translateX: mapWidth / 2 + panX,
+                translateY: mapHeight / 2 + panY,
+                scale: zoom
+            });
+            document.getElementById('zoom-level').textContent = zoom.toFixed(2) + 'x';
+        }
+        
+        // Mouse wheel zoom
+        container.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            zoom = Math.max(0.1, Math.min(10, zoom * delta));
+            updateTransform();
+        });
+        
+        // Pan (drag)
+        container.addEventListener('mousedown', (e) => {
+            if (e.target === container || e.target.tagName === 'svg') {
+                isDragging = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            }
+        });
+        
+        window.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const deltaX = e.clientX - lastMouseX;
+                const deltaY = e.clientY - lastMouseY;
+                panX += deltaX;
+                panY += deltaY;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                updateTransform();
+            }
+        });
+        
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+        
+        // =====================================================
+        // INVERSE PROJECTION - CLICK TO GET COORDINATES
+        // =====================================================
+        container.addEventListener('click', (e) => {
+            // Don't process if this was a drag
+            if (isDragging) return;
+            
+            // Get click position relative to SVG center (accounting for zoom/pan)
+            const rect = container.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+            
+            // Convert screen coordinates to map coordinates
+            const mapX = (clickX - mapWidth / 2 - panX) / zoom;
+            const mapY = (clickY - mapHeight / 2 - panY) / zoom;
+            
+            // Inverse project
+            const coords = inverseProjection(mapX, mapY);
+            
+            // Normalize longitude to -180 to 180
+            let lon = coords.lon;
+            while (lon > 180) lon -= 360;
+            while (lon < -180) lon += 360;
+            
+            // Display coordinates
+            document.getElementById('click-lat').textContent = coords.lat.toFixed(4) + '°';
+            document.getElementById('click-lon').textContent = lon.toFixed(4) + '°';
+            
+            // Hide instructions after first click
+            document.getElementById('instructions').style.display = 'none';
+        });
+        
+        // =====================================================
+        // FORWARD PROJECTION - PLOT COORDINATES
+        // =====================================================
+        document.getElementById('btn-project').addEventListener('click', () => {
+            const lat = parseFloat(document.getElementById('input-lat').value);
+            const lon = parseFloat(document.getElementById('input-lon').value);
+            
+            if (isNaN(lat) || isNaN(lon)) {
+                alert('Please enter valid latitude and longitude');
+                return;
+            }
+            
+            if (lat < -90 || lat > 90) {
+                alert('Latitude must be between -90 and 90');
+                return;
+            }
+            
+            if (lon < -180 || lon > 180) {
+                alert('Longitude must be between -180 and 180');
+                return;
+            }
+            
+            addMarker(lat, lon, '#22c55e');
+        });
+        
+        // =====================================================
+        // KEYBOARD CONTROLS
+        // =====================================================
+        document.addEventListener('keydown', (e) => {
+            switch(e.key) {
+                case 'c':
+                case 'C':
+                    clearMarkers();
+                    break;
+                case '0':
+                    // Reset view
+                    zoom = 1;
+                    panX = 0;
+                    panY = 0;
+                    updateTransform();
+                    break;
+            }
+        });
+        
+        // =====================================================
+        // INITIALIZATION
+        // =====================================================
+        function init() {
+            drawGraticule();
+            drawWorldMap();
+            
+            // Calculate map bounds for centering
+            const topLeft = forwardProjection(90, -180);
+            const bottomRight = forwardProjection(-90, 180);
+            const centerX = (topLeft.x + bottomRight.x) / 2;
+            const centerY = (topLeft.y + bottomRight.y) / 2;
+            
+            // Calculate scale to fit map in viewport
+            const mapWidth = bottomRight.x - topLeft.x;
+            const mapHeight = bottomRight.y - topLeft.y;
+            const scaleX = (container.clientWidth * 0.9) / mapWidth;
+            const scaleY = (container.clientHeight * 0.9) / mapHeight;
+            zoom = Math.min(scaleX, scaleY);
+            
+            updateTransform();
+            
+            // Add some example markers
+            addMarker(40.7128, -74.0060, '#22c55e');  // New York
+            addMarker(51.5074, -0.1278, '#f59e0b');   // London
+            addMarker(35.6762, 139.6503, '#ef4444'); // Tokyo
+            addMarker(-33.8688, 151.2093, '#8b5cf6'); // Sydney
+            addMarker(48.8566, 2.3522, '#06b6d4');    // Paris
+            addMarker(-22.9068, -43.1729, '#ec4899'); // Rio de Janeiro
+            addMarker(55.7558, 37.6173, '#f97316');   // Moscow
+            addMarker(39.9042, 116.4074, '#eab308');  // Beijing
+            
+            // Add coordinate labels (as small circles with tooltips)
+            const labelCoords = [
+                { lat: 40.7128, lon: -74.0060, name: 'NYC' },
+                { lat: 51.5074, lon: -0.1278, name: 'London' },
+                { lat: 35.6762, lon: 139.6503, name: 'Tokyo' },
+                { lat: -33.8688, lon: 151.2093, name: 'Sydney' },
+                { lat: 48.8566, lon: 2.3522, name: 'Paris' },
+                { lat: -22.9068, lon: -43.1729, name: 'Rio' },
+                { lat: 55.7558, lon: 37.6173, name: 'Moscow' },
+                { lat: 39.9042, lon: 116.4074, name: 'Beijing' }
+            ];
+            
+            labelCoords.forEach(coord => {
+                const pos = forwardProjection(coord.lat, coord.lon);
+                const group = markerGroup.group();
+                
+                // Create text label
+                const text = group.text(coord.name)
+                    .font({ size: 12, family: 'sans-serif', fill: '#fff' })
+                    .move(pos.x + 8, pos.y - 6);
+            });
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            updateDimensions();
+            updateTransform();
+        });
+        
+        // Start
+        init();
+        
+        // Test forward/inverse projection accuracy
+        console.log('Testing Equal Earth projection:');
+        const testLat = 34.0549;
+        const testLon = -118.2441;
+        const projected = forwardProjection(testLat, testLon);
+        console.log(`Forward: (${testLat}, ${testLon}) -> (${projected.x.toFixed(2)}, ${projected.y.toFixed(2)})`);
+        const inverted = inverseProjection(projected.x, projected.y);
+        console.log(`Inverse: (${projected.x.toFixed(2)}, ${projected.y.toFixed(2)}) -> (${inverted.lat.toFixed(4)}, ${inverted.lon.toFixed(4)})`);
+    </script>
+</body>
+</html>

@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Equal Earth Projection Map</title>
+    <!-- Load SVG.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/3.1.2/svg.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #f0f4f8;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        #map-container {
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+        }
+
+        #map-container:active {
+            cursor: grabbing;
+        }
+
+        /* UI Overlay Styling */
+        .ui-panel {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            pointer-events: auto;
+        }
+
+        #controls {
+            top: 20px;
+            left: 20px;
+            width: 280px;
+        }
+
+        #info-box {
+            bottom: 20px;
+            right: 20px;
+            min-width: 200px;
+            display: none; /* Hidden until clicked */
+        }
+
+        h2 { margin: 0 0 10px 0; font-size: 16px; color: #333; }
+        p { margin: 5px 0; font-size: 14px; color: #555; }
+        
+        .input-group {
+            display: flex;
+            gap: 5px;
+            margin-top: 10px;
+        }
+
+        input {
+            width: 100%;
+            padding: 6px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        button {
+            padding: 6px 12px;
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        button:hover { background-color: #2563eb; }
+
+        .coord-display {
+            font-family: monospace;
+            font-size: 14px;
+            background: #eee;
+            padding: 5px;
+            border-radius: 4px;
+            margin-top: 5px;
+            word-break: break-all;
+        }
+
+        /* Map Styles */
+        .country {
+            fill: #d1d5db;
+            stroke: #9ca3af;
+            stroke-width: 0.5px;
+            transition: fill 0.2s;
+        }
+        .country:hover {
+            fill: #bfdbfe;
+        }
+        
+        .graticule {
+            fill: none;
+            stroke: #e5e7eb;
+            stroke-width: 0.5px;
+            opacity: 0.5;
+        }
+
+        .marker {
+            fill: #ef4444;
+            stroke: #fff;
+            stroke-width: 1px;
+        }
+        
+        .click-point {
+            fill: #10b981;
+            stroke: #fff;
+            stroke-width: 1px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="map-container"></div>
+
+    <div id="controls" class="ui-panel">
+        <h2>Equal Earth Projection</h2>
+        <p style="font-size: 12px; color: #666;">
+            Drag to Pan • Scroll to Zoom<br>
+            Click map for coordinates
+        </p>
+        
+        <hr style="border: 0; border-top: 1px solid #eee; margin: 10px 0;">
+        
+        <p><strong>Forward Projection</strong><br>Plot Lat/Lon:</p>
+        <div class="input-group">
+            <input type="number" id="in-lat" placeholder="Lat (e.g. 40)" value="40">
+            <input type="number" id="in-lon" placeholder="Lon (e.g. -74)" value="-74">
+        </div>
+        <div class="input-group">
+            <button id="btn-plot">Plot Marker</button>
+        </div>
+    </div>
+
+    <div id="info-box" class="ui-panel">
+        <h2>Inverse Projection</h2>
+        <p>Clicked Coordinates:</p>
+        <div class="coord-display" id="click-coords">--</div>
+    </div>
+
+<script>
+/**
+ * CONFIGURATION & MATH
+ */
+const CONFIG = {
+    // Base map dimensions. Equal Earth width/height ratio is approx 2:1.58
+    // We define a Width, calculate Radius based on Width = 2 * PI * R
+    baseWidth: 1000,
+    projectionScale: 1 
+};
+
+// --- Equal Earth Projection Math ---
+
+// Calculate Radius R based on width (W = 2*PI*R)
+const R = CONFIG.baseWidth / (2 * Math.PI); 
+const mapHeight = R * 1.58; // Approx height of Equal Earth
+
+/**
+ * Forward Projection: Lat/Lon (degrees) -> X/Y (pixels relative to center)
+ * @param {number} lat - Latitude in degrees
+ * @param {number} lon - Longitude in degrees
+ * @returns {x, y} - Projected coordinates
+ */
+function projectEqualEarth(lat, lon) {
+    // Convert to radians
+    const phi = lat * (Math.PI / 180);
+    const lambda = lon * (Math.PI / 180);
+
+    // Solve for theta: 2*theta + sin(2*theta) = PI * sin(phi)
+    // Using Newton-Raphson iteration
+    let theta = 0;
+    if (Math.abs(phi) > 0.001) {
+        let theta = phi; // Initial guess
+        for (let i = 0; i < 10; i++) {
+            const f = 2 * theta + Math.sin(2 * theta) - Math.PI * Math.sin(phi);
+            const fPrime = 2 + 2 * Math.cos(2 * theta);
+            theta = theta - f / fPrime;
+        }
+    }
+
+    // Project
+    const x = R * lambda * Math.cos(theta);
+    const y = R * theta;
+
+    return { x, y };
+}
+
+/**
+ * Inverse Projection: X/Y (pixels) -> Lat/Lon (degrees)
+ * @param {number} x - X coordinate relative to map center
+ * @param {number} y - Y coordinate relative to map center
+ * @returns {lat, lon} - Geographic coordinates
+ */
+function unprojectEqualEarth(x, y) {
+    // theta = y / R
+    const theta = y / R;
+    
+    // Calculate phi: phi = arcsin( (2*theta + sin(2*theta)) / PI )
+    const sinPhi = (2 * theta + Math.sin(2 * theta)) / Math.PI;
+    // Clamp to -1, 1 to avoid floating point errors causing NaN
+    const clampedSinPhi = Math.max(-1, Math.min(1, sinPhi));
+    const phi = Math.asin(clampedSinPhi);
+
+    // Calculate lambda: lambda = x / (R * cos(theta))
+    // Handle poles edge case where cos(theta) approaches 0
+    let lambda = 0;
+    if (Math.abs(Math.cos(theta)) > 1e-10) {
+        lambda = x / (R * Math.cos(theta));
+    }
+
+    return {
+        lat: phi * (180 / Math.PI),
+        lon: lambda * (180 / Math.PI)
+    };
+}
+
+// Coordinate transform helpers
+// Converts absolute projected coords to SVG screen coords (handling center offset)
+function toScreen(x, y, transform) {
+    // 1. Apply projection center offset
+    const cx = x + CONFIG.baseWidth / 2;
+    const cy = -y + mapHeight / 2; // Flip Y because SVG Y is down, Math Y is up
+    
+    // 2. Apply Zoom/Pan Transform
+    const finalX = (cx * transform.scale) + transform.x;
+    const finalY = (cy * transform.scale) + transform.y;
+    
+    return { x: finalX, y: finalY };
+}
+
+// Converts SVG screen coords back to relative projected coords
+function toMapSpace(screenX, screenY, transform) {
+    const cx = (screenX - transform.x) / transform.scale;
+    const cy = (screenY - transform.y) / transform.scale;
+    
+    // Remove center offset
+    const x = cx - CONFIG.baseWidth / 2;
+    const y = -(cy - mapHeight / 2);
+    
+    return { x, y };
+}
+
+
+/**
+ * APP INITIALIZATION
+ */
+const draw = SVG().addTo('#map-container').size('100%', '100%');
+
+// Groups
+const mapGroup = draw.group();
+const markerGroup = draw.group();
+const uiGroup = draw.group(); // For things that don't zoom (if needed)
+
+// Background click catcher
+const bgRect = draw.rect('100%', '100%').fill({ color: '#f0f4f8', opacity: 0 }).back();
+
+// Viewport State
+let view = {
+    x: 0,
+    y: 0,
+    scale: 1,
+    isDragging: false,
+    lastX: 0,
+    lastY: 0
+};
+
+// Center the map initially
+function resetView() {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    // Center the base map (width/2, height/2)
+    view.x = (width - CONFIG.baseWidth) / 2;
+    view.y = (height - mapHeight) / 2;
+    mapGroup.transform({ translateX: view.x, translateY: view.y, scale: view.scale });
+}
+resetView();
+
+/**
+ * DATA LOADING & RENDERING
+ */
+// Using a reliable GeoJSON source
+const geoUrl = 'https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson';
+
+fetch(geoUrl)
+    .then(response => response.json())
+    .then(data => {
+        renderMap(data);
+    })
+    .catch(err => {
+        console.error("Failed to load map data", err);
+        alert("Could not load map data. Check internet connection.");
+    });
+
+function renderMap(geoData) {
+    // 1. Draw Graticule (Grid lines) - Optional but helpful
+    // Skipping complex grid for performance/simplicity, focusing on land.
+
+    // 2. Draw Countries
+    geoData.features.forEach(feature => {
+        if (feature.geometry.type === 'Polygon') {
+            drawPolygon(feature.geometry.coordinates);
+        } else if (feature.geometry.type === 'MultiPolygon') {
+            feature.geometry.coordinates.forEach(polygon => {
+                drawPolygon(polygon);
+            });
+        }
+    });
+}
+
+function drawPolygon(coordinates) {
+    // Create path string
+    let pathData = "";
+    
+    // A polygon is an array of rings. The first ring is the outer boundary.
+    const ring = coordinates[0]; 
+    
+    ring.forEach((coord, index) => {
+        const [lon, lat] = coord;
+        const proj = projectEqualEarth(lat, lon);
+        const screen = toScreen(proj.x, proj.y, {x:0, y:0, scale:1}); // Use base transform
+        
+        if (index === 0) {
+            pathData += `M ${screen.x} ${screen.y} `;
+        } else {
+            pathData += `L ${screen.x} ${screen.y} `;
+        }
+    });
+    pathData += "Z";
+
+    mapGroup.path(pathData).addClass('country');
+}
+
+/**
+ * INTERACTION: ZOOM & PAN
+ */
+const container = document.getElementById('map-container');
+
+container.addEventListener('mousedown', (e) => {
+    view.isDragging = true;
+    view.lastX = e.clientX;
+    view.lastY = e.clientY;
+    container.style.cursor = 'grabbing';
+});
+
+window.addEventListener('mousemove', (e) => {
+    if (!view.isDragging) return;
+    
+    const dx = e.clientX - view.lastX;
+    const dy = e.clientY - view.lastY;
+    
+    view.x += dx;
+    view.y += dy;
+    view.lastX = e.clientX;
+    view.lastY = e.clientY;
+    
+    updateTransform();
+});
+
+window.addEventListener('mouseup', () => {
+    view.isDragging = false;
+    container.style.cursor = 'grab';
+});
+
+// Zoom (Wheel)
+container.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    
+    const zoomIntensity = 0.1;
+    const direction = e.deltaY < 0 ? 1 : -1;
+    const factor = 1 + (zoomIntensity * direction);
+    
+    const newScale = view.scale * factor;
+    
+    // Zoom towards mouse pointer logic
+    // 1. Get mouse pos relative to map container
+    const mouseX = e.clientX;
+    const mouseY = e.clientY;
+    
+    // 2. Calculate where the mouse is in the *current* map coordinate space
+    // This math calculates the offset needed to keep the point under mouse stationary
+    const mapX = (mouseX - view.x) / view.scale;
+    const mapY = (mouseY - view.y) / view.scale;
+    
+    // 3. Apply new scale
+    view.scale = newScale;
+    
+    // 4. Recalculate translation
+    view.x = mouseX - mapX * view.scale;
+    view.y = mouseY - mapY * view.scale;
+
+    updateTransform();
+});
+
+function updateTransform() {
+    // We apply transform to the group containing the paths
+    // However, because we calculated 'toScreen' using a fixed base offset during render,
+    // we need to be careful. 
+    // Actually, simpler approach: Render map at 1:1 scale centered at (0,0) in local space,
+    // then apply the SVG transform to the whole group.
+    
+    // In this code:
+    // We drew paths at absolute positions assuming (0,0) is top-left of map content.
+    // So we simply translate/scale the mapGroup.
+    
+    mapGroup.transform({ 
+        translateX: view.x, 
+        translateY: view.y, 
+        scale: view.scale 
+    });
+    
+    // Re-render markers if needed or transform them too. 
+    // Since we store markers in markerGroup, let's apply same transform to markerGroup
+    markerGroup.transform({
+        translateX: view.x,
+        translateY: view.y,
+        scale: view.scale
+    });
+}
+
+/**
+ * INTERACTION: MARKERS & COORDINATES
+ */
+
+// Forward: Plot a marker
+document.getElementById('btn-plot').addEventListener('click', () => {
+    const lat = parseFloat(document.getElementById('in-lat').value);
+    const lon = parseFloat(document.getElementById('in-lon').value);
+
+    if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        alert("Invalid coordinates. Lat: -90 to 90, Lon: -180 to 180");
+        return;
+    }
+
+    // Project
+    const proj = projectEqualEarth(lat, lon);
+    
+    // Convert to Screen (applying current view transform)
+    // Note: toScreen calculates offsets based on base map dims, but ignores zoom/pan.
+    // So we add zoom/pan manually here.
+    const screenX = (proj.x + CONFIG.baseWidth/2) * view.scale + view.x;
+    const screenY = (-proj.y + mapHeight/2) * view.scale + view.y;
+
+    // Draw
+    markerGroup.circle(10).center(screenX, screenY).addClass('marker');
+});
+
+// Inverse: Click to get coordinates
+// We attach to the background rect (which covers the whole screen) 
+// but we need to ignore drags (if user was panning)
+let startDragTime = 0;
+container.addEventListener('mousedown', () => { startDragTime = Date.now(); });
+
+bgRect.on('click', (e) => {
+    // If it was a drag operation, ignore
+    if (Date.now() - startDragTime > 200) return;
+
+    const rect = container.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    // Convert Screen -> Map Space (relative to map center)
+    const mapRel = toMapSpace(clickX, clickY, view);
+
+    // Inverse Project
+    const geo = unprojectEqualEarth(mapRel.x, mapRel.y);
+
+    // Display
+    const infoBox = document.getElementById('info-box');
+    const coordText = document.getElementById('click-coords');
+    
+    infoBox.style.display = 'block';
+    coordText.innerHTML = `Lat: ${geo.lat.toFixed(4)}°<br>Lon: ${geo.lon.toFixed(4)}°`;
+
+    // Visual feedback on map
+    markerGroup.circle(8).center(clickX, clickY).addClass('click-point').front();
+});
+
+// Handle Window Resize
+window.addEventListener('resize', () => {
+    resetView();
+    updateTransform();
+});
+
+</script>
+</body>
+</html>

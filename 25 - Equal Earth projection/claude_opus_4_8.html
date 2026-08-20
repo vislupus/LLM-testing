@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Equal Earth — Projection Console</title>
+
+<!-- Libraries (order matters: globals must exist before the app script runs) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/3.2.4/svg.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson-client/3.1.0/topojson-client.min.js"></script>
+
+<style>
+  /* ---------- Design tokens ----------
+     Direction: an observatory "projection console". Deep indigo space,
+     luminous ivory landmasses, faint cyan graticule, amber survey markers.
+     The signature is a live reticle that reads latitude/longitude
+     continuously as an instrument, not a decoration.                     */
+  :root{
+    --space-0:#080b16;
+    --space-1:#0a0e1c;
+    --ocean-hi:#0f2340;
+    --ocean-lo:#0a1526;
+    --land:#ece3cf;
+    --coast:rgba(9,24,44,0.60);
+    --border:rgba(86,108,140,0.34);
+    --grid:rgba(150,196,240,0.11);
+    --grid-key:rgba(150,196,240,0.22);
+    --rim:rgba(176,208,242,0.42);
+    --amber:#ffb24a;
+    --amber-soft:#ffcf8a;
+    --ink:#e7ecf6;
+    --ink-dim:#93a2bd;
+    --ink-faint:#5f6f8c;
+    --panel:rgba(11,17,31,0.72);
+    --panel-line:rgba(150,196,240,0.14);
+    --panel-line-strong:rgba(150,196,240,0.28);
+    --font-ui:"Space Grotesk",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{
+    background:var(--space-1);
+    color:var(--ink);
+    font-family:var(--font-ui);
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+
+  /* Stage holds the SVG map. The radial vignette gives the console depth. */
+  #stage{
+    position:fixed; inset:0;
+    background:
+      radial-gradient(120% 100% at 50% 42%, #101a30 0%, var(--space-1) 58%, var(--space-0) 100%);
+    touch-action:none;
+    cursor:crosshair;
+  }
+  #stage svg{display:block;}
+  #stage.dragging{cursor:grabbing;}
+
+  /* ---------- Instrument panels ---------- */
+  .panel{
+    position:fixed;
+    background:var(--panel);
+    border:1px solid var(--panel-line);
+    border-radius:12px;
+    backdrop-filter:blur(9px) saturate(1.1);
+    -webkit-backdrop-filter:blur(9px) saturate(1.1);
+    box-shadow:0 18px 44px -22px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.03);
+  }
+  .eyebrow{
+    font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--ink-faint); font-weight:600;
+  }
+
+  /* Masthead */
+  #brand{ top:18px; left:18px; padding:13px 16px 12px; }
+  #brand h1{
+    margin:2px 0 0; font-size:16px; font-weight:600;
+    letter-spacing:0.06em;
+  }
+  #brand h1 span{color:var(--amber);}
+  #brand .sub{ margin-top:3px; font-size:11px; color:var(--ink-dim); letter-spacing:0.02em; max-width:230px; }
+
+  /* Readout instrument (top-right) */
+  #readout{ top:18px; right:18px; width:250px; padding:14px 15px 13px; }
+  .readout-block{ padding:9px 0; border-top:1px solid var(--panel-line); }
+  .readout-block:first-of-type{ border-top:none; padding-top:2px; }
+  .rb-head{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; }
+  .rb-head .eyebrow{ font-size:9.5px; }
+  .rb-head .state{ font-size:9.5px; letter-spacing:0.12em; color:var(--ink-faint); text-transform:uppercase; }
+  .coord-row{ display:flex; justify-content:space-between; font-family:var(--font-mono); font-size:13px; line-height:1.7; }
+  .coord-row .k{ color:var(--ink-faint); }
+  .coord-row .v{ color:var(--ink); font-variant-numeric:tabular-nums; }
+  .coord-row .v.amber{ color:var(--amber-soft); }
+  .offglobe .v{ color:var(--ink-faint); }
+  .mini{ font-family:var(--font-mono); font-size:10.5px; color:var(--ink-faint); margin-top:5px; letter-spacing:0.01em; }
+
+  /* Marker plotter + view controls (left, below brand) */
+  #tools{ left:18px; top:112px; width:250px; padding:14px 15px 13px; }
+  #tools .eyebrow{ display:block; margin-bottom:9px; }
+  .field-row{ display:flex; gap:8px; margin-bottom:9px; }
+  .field{ flex:1; position:relative; }
+  .field label{
+    position:absolute; top:6px; left:10px; font-size:9px; letter-spacing:0.14em;
+    text-transform:uppercase; color:var(--ink-faint); pointer-events:none;
+  }
+  .field input{
+    width:100%; padding:19px 10px 7px; border-radius:8px;
+    background:rgba(7,11,22,0.66); border:1px solid var(--panel-line);
+    color:var(--ink); font-family:var(--font-mono); font-size:13px;
+    outline:none; transition:border-color .15s;
+  }
+  .field input:focus{ border-color:var(--panel-line-strong); }
+  .btn{
+    appearance:none; cursor:pointer; font-family:var(--font-ui);
+    border-radius:8px; border:1px solid var(--panel-line);
+    background:rgba(255,178,74,0.06); color:var(--amber-soft);
+    font-size:12px; font-weight:600; letter-spacing:0.03em;
+    padding:9px 12px; transition:background .15s,border-color .15s,color .15s;
+  }
+  .btn:hover{ background:rgba(255,178,74,0.13); border-color:rgba(255,178,74,0.45); color:var(--amber); }
+  .btn:active{ transform:translateY(1px); }
+  .btn.wide{ width:100%; }
+  .btn.ghost{ background:rgba(150,196,240,0.05); color:var(--ink-dim); }
+  .btn.ghost:hover{ background:rgba(150,196,240,0.11); color:var(--ink); border-color:var(--panel-line-strong); }
+
+  .divider{ height:1px; background:var(--panel-line); margin:12px 0 11px; }
+
+  .toggle-row{ display:flex; gap:8px; }
+  .toggle-row .btn{ flex:1; text-align:center; padding:8px 6px; }
+  .btn[aria-pressed="true"]{
+    background:rgba(255,178,74,0.16); border-color:rgba(255,178,74,0.5); color:var(--amber);
+  }
+
+  .zoom-row{ display:flex; gap:8px; align-items:center; margin-top:11px; }
+  .zoom-row .btn{ width:38px; text-align:center; padding:8px 0; font-size:15px; line-height:1; }
+  .zoom-read{ flex:1; text-align:center; font-family:var(--font-mono); font-size:12px; color:var(--ink-dim); font-variant-numeric:tabular-nums; }
+
+  /* Plotted-points log */
+  #log{ left:18px; bottom:18px; width:250px; max-height:34vh; padding:12px 6px 10px 15px; display:flex; flex-direction:column; }
+  #log .eyebrow{ display:flex; justify-content:space-between; align-items:center; padding-right:9px; margin-bottom:8px; }
+  #log .clear{ cursor:pointer; color:var(--ink-faint); font-size:9px; letter-spacing:0.12em; }
+  #log .clear:hover{ color:var(--amber-soft); }
+  #logList{ overflow-y:auto; padding-right:9px; }
+  .log-item{
+    display:flex; align-items:center; gap:9px; padding:6px 0;
+    border-top:1px solid var(--panel-line); font-family:var(--font-mono); font-size:11.5px;
+  }
+  .log-item:first-child{ border-top:none; }
+  .log-dot{ width:9px; height:9px; border-radius:50%; background:var(--amber); box-shadow:0 0 8px rgba(255,178,74,0.6); flex:none; }
+  .log-coord{ color:var(--ink); flex:1; font-variant-numeric:tabular-nums; letter-spacing:-0.02em; }
+  .log-x{ cursor:pointer; color:var(--ink-faint); padding:0 2px; }
+  .log-x:hover{ color:#ff8080; }
+  #log .empty{ font-family:var(--font-mono); font-size:11px; color:var(--ink-faint); padding:2px 0; }
+
+  /* Hint strip */
+  #hint{
+    position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
+    font-size:11px; color:var(--ink-faint); letter-spacing:0.03em;
+    font-family:var(--font-mono); pointer-events:none; text-align:center;
+    background:rgba(8,11,22,0.5); padding:6px 14px; border-radius:20px;
+    border:1px solid rgba(150,196,240,0.08);
+  }
+  #hint b{ color:var(--ink-dim); font-weight:600; }
+
+  /* Status toast for data-load feedback */
+  #status{
+    position:fixed; top:18px; left:50%; transform:translateX(-50%) translateY(-8px);
+    background:var(--panel); border:1px solid var(--panel-line); border-radius:20px;
+    padding:7px 16px; font-size:11.5px; font-family:var(--font-mono); color:var(--ink-dim);
+    letter-spacing:0.02em; opacity:0; transition:opacity .3s,transform .3s;
+    backdrop-filter:blur(8px); pointer-events:none; z-index:20;
+  }
+  #status.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+  #status .dot{ color:var(--amber); }
+
+  :focus-visible{ outline:2px solid var(--amber); outline-offset:2px; }
+
+  /* ---------- SVG element theming (CSS resolves var(); attributes do not) ---------- */
+  #stage svg .ocean{ fill:url(#oceanGrad); }
+  #stage svg .rim{ fill:none; stroke:var(--rim); stroke-width:1.3; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
+  #stage svg .grid{ fill:none; stroke:var(--grid); stroke-width:0.8; vector-effect:non-scaling-stroke; }
+  #stage svg .grid-key{ fill:none; stroke:var(--grid-key); stroke-width:1; vector-effect:non-scaling-stroke; }
+  #stage svg .land{ fill:var(--land); stroke:none; }
+  #stage svg .borders{ fill:none; stroke:var(--border); stroke-width:0.6; vector-effect:non-scaling-stroke; }
+  #stage svg .coast{ fill:none; stroke:var(--coast); stroke-width:0.85; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
+  #stage svg .grat-label{ fill:var(--ink-faint); font-family:var(--font-mono); font-size:10px; text-anchor:middle; dominant-baseline:middle; }
+  #stage svg .mk-ring{ fill:none; stroke:var(--amber); stroke-width:1; }
+  #stage svg .mk-core{ fill:var(--amber); stroke:#3a2400; stroke-width:0.75; }
+  #stage svg .ret-line{ stroke:var(--amber); stroke-width:1; stroke-dasharray:2 4; }
+  #stage svg .ret-dot{ fill:none; stroke:var(--amber); stroke-width:1.2; }
+
+  @media (max-width:760px){
+    #tools,#log{ display:none; }
+    #readout{ width:214px; }
+    #brand .sub{ display:none; }
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{ transition:none !important; animation:none !important; }
+  }
+</style>
+</head>
+<body>
+  <div id="stage" aria-label="Interactive Equal Earth world map"></div>
+
+  <!-- Masthead -->
+  <div id="brand" class="panel">
+    <div class="eyebrow">Projection Console</div>
+    <h1>EQUAL <span>EARTH</span></h1>
+    <div class="sub">Šavrič–Patterson–Jenny equal-area projection. Click the map to invert a point; type coordinates to project one.</div>
+  </div>
+
+  <!-- Live readout instrument -->
+  <div id="readout" class="panel">
+    <div class="readout-block" id="rbCursor">
+      <div class="rb-head"><span class="eyebrow">Cursor</span><span class="state" id="cursorState">on globe</span></div>
+      <div class="coord-row"><span class="k">LAT</span><span class="v" id="curLat">—</span></div>
+      <div class="coord-row"><span class="k">LON</span><span class="v" id="curLon">—</span></div>
+      <div class="mini" id="curProj">x — · y —</div>
+    </div>
+    <div class="readout-block" id="rbClick">
+      <div class="rb-head"><span class="eyebrow">Last fix</span><span class="state" id="clickState">—</span></div>
+      <div class="coord-row"><span class="k">LAT</span><span class="v amber" id="fixLat">—</span></div>
+      <div class="coord-row"><span class="k">LON</span><span class="v amber" id="fixLon">—</span></div>
+    </div>
+  </div>
+
+  <!-- Tools: forward projection + view -->
+  <div id="tools" class="panel">
+    <span class="eyebrow">Project a coordinate</span>
+    <div class="field-row">
+      <div class="field"><label for="inLat">Lat</label><input id="inLat" inputmode="decimal" value="40.7128" /></div>
+      <div class="field"><label for="inLon">Lon</label><input id="inLon" inputmode="decimal" value="-74.0060" /></div>
+    </div>
+    <button class="btn wide" id="plotBtn">Plot marker</button>
+
+    <div class="divider"></div>
+
+    <span class="eyebrow">Layers</span>
+    <div class="toggle-row" style="margin-top:9px;">
+      <button class="btn ghost" id="gridToggle" aria-pressed="true">Graticule</button>
+      <button class="btn ghost" id="reticleToggle" aria-pressed="true">Reticle</button>
+    </div>
+
+    <div class="zoom-row">
+      <button class="btn" id="zoomOut" title="Zoom out">−</button>
+      <span class="zoom-read" id="zoomRead">1.0×</span>
+      <button class="btn" id="zoomIn" title="Zoom in">+</button>
+      <button class="btn ghost" id="resetBtn" title="Reset view" style="width:auto;padding:8px 12px;">Reset</button>
+    </div>
+  </div>
+
+  <!-- Plotted points log -->
+  <div id="log" class="panel">
+    <div class="eyebrow"><span>Plotted points</span><span class="clear" id="clearLog">clear all</span></div>
+    <div id="logList"><div class="empty">No points yet — click the map.</div></div>
+  </div>
+
+  <div id="hint"><b>drag</b> pan &nbsp;·&nbsp; <b>wheel</b> zoom &nbsp;·&nbsp; <b>click</b> read coordinates</div>
+  <div id="status"><span class="dot">●</span> <span id="statusText">Loading coastlines…</span></div>
+
+<script>
+"use strict";
+(function(){
+/* ============================================================================
+   1. EQUAL EARTH PROJECTION  (Šavrič, Patterson & Jenny, 2018)
+   Forward and inverse are exact analytic + Newton inverse. Angles in degrees
+   at the public boundary; radians internally. Projected units are the native
+   projection units (equator half-width ≈ 2.7066).
+   ========================================================================== */
+  const A1 = 1.340264, A2 = -0.081106, A3 = 0.000893, A4 = 0.003796;
+  const M  = Math.sqrt(3) / 2;
+  const DEG = Math.PI / 180;
+
+  // Geographic (lon°, lat°) -> projected (x, y).  y is "up-positive" (math).
+  function forward(lonDeg, latDeg){
+    const lam = lonDeg * DEG, phi = latDeg * DEG;
+    const l  = Math.asin(M * Math.sin(phi));      // parametric latitude θ
+    const l2 = l * l, l6 = l2 * l2 * l2;
+    const x = lam * Math.cos(l) / (M * (A1 + 3*A2*l2 + l6*(7*A3 + 9*A4*l2)));
+    const y = l * (A1 + A2*l2 + l6*(A3 + A4*l2));
+    return [x, y];
+  }
+
+  // Projected (x, y) -> geographic (lon°, lat°).  Newton solves y for θ.
+  function inverse(x, y){
+    let l = y, l2 = l*l, l6 = l2*l2*l2, d = 0;
+    for (let i = 0; i < 24; i++){
+      const fy  = l*(A1 + A2*l2 + l6*(A3 + A4*l2)) - y;
+      const fpy = A1 + 3*A2*l2 + l6*(7*A3 + 9*A4*l2);
+      d = fy / fpy; l -= d;
+      l2 = l*l; l6 = l2*l2*l2;
+      if (Math.abs(d) < 1e-12) break;
+    }
+    const lam = M * x * (A1 + 3*A2*l2 + l6*(7*A3 + 9*A4*l2)) / Math.cos(l);
+    const phi = Math.asin(Math.max(-1, Math.min(1, Math.sin(l) / M)));
+    return [lam / DEG, phi / DEG];
+  }
+
+  // Native projected extent (computed, not hard-coded).
+  const X_MAX = forward(180, 0)[0];   // ≈ 2.70663
+  const Y_MAX = forward(0, 90)[1];    // ≈ 1.31736
+  const PROJ_W = 2 * X_MAX, PROJ_H = 2 * Y_MAX;
+
+  // Is a geographic point genuinely inside the projected sphere boundary?
+  // (Clicks in the map's rounded corners invert to |lon|>180 — reject those.)
+  function insideGlobe(lon, lat, px, py){
+    if (!(lat >= -90.0001 && lat <= 90.0001)) return false;
+    if (!(lon >= -180.0001 && lon <= 180.0001)) return false;
+    const [rx, ry] = forward(lon, lat);          // round-trip guard for corners
+    return Math.abs(rx - px) < 1e-6 && Math.abs(ry - py) < 1e-6;
+  }
+
+/* ============================================================================
+   2. VIEW TRANSFORM  (projected <-> screen), with zoom & pan.
+   screenX = px*scale + panX ;  screenY = -py*scale + panY
+   ========================================================================== */
+  let scale = 1, panX = 0, panY = 0;         // current view
+  let W = window.innerWidth, H = window.innerHeight;
+
+  const projToScreen  = (px, py) => [px*scale + panX, -py*scale + panY];
+  const screenToProj  = (sx, sy) => [(sx - panX)/scale, -(sy - panY)/scale];
+  const lonLatToScreen = (lon, lat) => projToScreen(...forward(lon, lat));
+  const screenToLonLat = (sx, sy) => inverse(...screenToProj(sx, sy));
+
+  const PAD = 26;
+  function fitScale(){ return Math.min((W - 2*PAD)/PROJ_W, (H - 2*PAD)/PROJ_H); }
+  function resetView(){
+    scale = fitScale();
+    panX = W/2; panY = H/2;                    // projected origin -> screen centre
+    applyTransform();
+  }
+  const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+
+  function zoomAt(sx, sy, factor){
+    const base = fitScale();
+    const ns = clamp(scale*factor, base*0.6, base*60);
+    const f = ns/scale;
+    panX = sx - (sx - panX)*f;                 // keep point under cursor fixed
+    panY = sy - (sy - panY)*f;
+    scale = ns;
+    applyTransform();
+  }
+
+/* ============================================================================
+   3. SVG SCENE  (SVG.js). mapGroup is transformed; strokes are non-scaling so
+   lines stay crisp at any zoom. fgGroup holds screen-space overlays (markers,
+   graticule labels, reticle) repositioned on every transform.
+   ========================================================================== */
+  const stage = document.getElementById('stage');
+  const draw = SVG().addTo(stage).size('100%','100%');
+  const mapGroup = draw.group();     // sphere, graticule, land — projected coords
+  const fgGroup  = draw.group();     // overlays — screen coords
+
+  // Build "M..L..[Z]" from an array of projected points.
+  function ptsToPath(pts, close){
+    if (!pts.length) return '';
+    let d = 'M' + pts[0][0].toFixed(5) + ' ' + pts[0][1].toFixed(5);
+    for (let i = 1; i < pts.length; i++) d += 'L' + pts[i][0].toFixed(5) + ' ' + pts[i][1].toFixed(5);
+    return close ? d + 'Z' : d;
+  }
+  // Project a coordinate list, splitting where longitude jumps the antimeridian.
+  function projectSegments(coords){
+    const out = []; let cur = [];
+    for (let i = 0; i < coords.length; i++){
+      const lon = coords[i][0], lat = coords[i][1];
+      if (i > 0 && Math.abs(lon - coords[i-1][0]) > 180){ if (cur.length) out.push(cur); cur = []; }
+      cur.push(forward(lon, lat));
+    }
+    if (cur.length) out.push(cur);
+    return out;
+  }
+  function geomToPath(geom, closed){
+    let d = '';
+    const rings = closed
+      ? (geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates)         // -> [poly][ring]
+      : (geom.type === 'LineString' ? [geom.coordinates] : geom.coordinates);     // -> [line]
+    if (closed){
+      for (const poly of rings) for (const ring of poly)
+        for (const seg of projectSegments(ring)) d += ptsToPath(seg, true);
+    } else {
+      for (const line of rings)
+        for (const seg of projectSegments(line)) d += ptsToPath(seg, false);
+    }
+    return d;
+  }
+
+  // --- Sphere boundary (ocean fill + rim) by tracing the four graticule edges.
+  function spherePath(){
+    const p = [], s = 0.5;
+    for (let lat=-90; lat<=90; lat+=s) p.push(forward(-180, lat));
+    for (let lon=-180; lon<=180; lon+=s) p.push(forward(lon, 90));
+    for (let lat=90; lat>=-90; lat-=s) p.push(forward(180, lat));
+    for (let lon=180; lon>=-180; lon-=s) p.push(forward(lon, -90));
+    return ptsToPath(p, true);
+  }
+
+  // --- Graticule (pure math; always available even if coastlines fail).
+  function graticulePath(){
+    let d = '';
+    for (let lon=-180; lon<=180; lon+=30){
+      const pts=[]; for (let lat=-90; lat<=90; lat+=1) pts.push(forward(lon, lat));
+      d += ptsToPath(pts, false);
+    }
+    for (let lat=-60; lat<=60; lat+=30){
+      const pts=[]; for (let lon=-180; lon<=180; lon+=1) pts.push(forward(lon, lat));
+      d += ptsToPath(pts, false);
+    }
+    return d;
+  }
+  function graticuleKeyPath(){ // equator + central meridian, emphasised
+    let d = '';
+    let pts=[]; for (let lat=-90; lat<=90; lat+=1) pts.push(forward(0, lat)); d += ptsToPath(pts,false);
+    pts=[]; for (let lon=-180; lon<=180; lon+=1) pts.push(forward(lon, 0)); d += ptsToPath(pts,false);
+    return d;
+  }
+
+  // Ocean gradient (defs) — concrete stop colours (var() is invalid in attributes)
+  draw.defs().node.insertAdjacentHTML('beforeend',
+    '<linearGradient id="oceanGrad" x1="0" y1="0" x2="0" y2="1">' +
+    '<stop offset="0" stop-color="#0f2340"/>' +
+    '<stop offset="1" stop-color="#0a1526"/></linearGradient>');
+
+  // Ocean + rim (styled by CSS classes)
+  const ocean = mapGroup.path(spherePath()).addClass('ocean');
+  const rim   = mapGroup.path(spherePath()).addClass('rim');
+
+  // Graticule layers
+  const gridLayer = mapGroup.group();
+  gridLayer.path(graticulePath()).addClass('grid');
+  gridLayer.path(graticuleKeyPath()).addClass('grid-key');
+
+  // Land placeholders (filled once data loads)
+  const landFill    = mapGroup.path('').addClass('land');
+  const landBorders = mapGroup.path('').addClass('borders');
+  const landCoast   = mapGroup.path('').addClass('coast');
+  rim.front();   // keep the sphere outline above land & graticule
+
+/* ============================================================================
+   4. SCREEN-SPACE OVERLAYS: graticule labels, markers, reticle
+   ========================================================================== */
+  // Graticule value labels (kept upright & constant-size in screen space).
+  const labelAnchors = [];
+  for (let lat=-60; lat<=60; lat+=30) labelAnchors.push({ lon:0, lat, text:(lat>0?lat+'°N':lat<0?(-lat)+'°S':'0°') });
+  for (let lon=-150; lon<=150; lon+=30){ if(lon===0) continue; labelAnchors.push({ lon, lat:0, text:(lon>0?lon+'°E':(-lon)+'°W') }); }
+  const labelEls = labelAnchors.map(a=> fgGroup.text(a.text).addClass('grat-label').opacity(0.7) );
+
+  // Reticle (the signature instrument): crosshair that reads out the cursor fix.
+  const reticle = fgGroup.group().opacity(0);
+  const retH = reticle.line(0,0,0,0).addClass('ret-line').opacity(0.55);
+  const retV = reticle.line(0,0,0,0).addClass('ret-line').opacity(0.55);
+  const retDot = reticle.circle(6).addClass('ret-dot');
+
+  // Markers live in their own group so a "clear" is trivial.
+  const markerGroup = fgGroup.group();
+  let markers = [];   // { lon, lat, el(group) }
+
+  function drawMarkers(){
+    markerGroup.clear();
+    markers.forEach(m=>{
+      const [sx, sy] = lonLatToScreen(m.lon, m.lat);
+      const g = markerGroup.group();
+      g.circle(15).center(sx,sy).addClass('mk-ring').opacity(0.35);
+      g.circle(7).center(sx,sy).addClass('mk-core');
+      m.el = g;
+    });
+  }
+
+  function repositionMarkers(){
+    markers.forEach(m=>{
+      if(!m.el) return;
+      const [sx, sy] = lonLatToScreen(m.lon, m.lat);
+      m.el.children().forEach(c=>c.center(sx,sy));
+    });
+  }
+
+/* ============================================================================
+   5. RENDER LOOP
+   ========================================================================== */
+  function applyTransform(){
+    mapGroup.attr('transform',
+      'translate(' + panX + ' ' + panY + ') scale(' + scale + ' ' + (-scale) + ')');
+    repositionMarkers();
+    // graticule labels
+    labelAnchors.forEach((a,i)=>{
+      const [sx, sy] = lonLatToScreen(a.lon, a.lat);
+      labelEls[i].attr({ x:sx, y:sy });
+      const vis = sx>-40 && sx<W+40 && sy>-20 && sy<H+20;
+      labelEls[i].opacity(vis?0.7:0);
+    });
+    // zoom readout
+    const z = scale / fitScale();
+    document.getElementById('zoomRead').textContent = (z>=10? z.toFixed(0): z.toFixed(1)) + '×';
+  }
+
+/* ============================================================================
+   6. COORDINATE FORMATTING + READOUTS
+   ========================================================================== */
+  const fmt = (v, hemi) => {
+    const a = Math.abs(v).toFixed(4).padStart(8,' ');
+    return a + '° ' + hemi;
+  };
+  const fmtLat = v => fmt(v, v>=0?'N':'S');
+  const fmtLon = v => fmt(v, v>=0?'E':'W');
+
+  function updateCursor(sx, sy){
+    const [px, py] = screenToProj(sx, sy);
+    const [lon, lat] = inverse(px, py);
+    const inside = insideGlobe(lon, lat, px, py);
+    const block = document.getElementById('rbCursor');
+    document.getElementById('cursorState').textContent = inside ? 'on globe' : 'off globe';
+    if (inside){
+      block.classList.remove('offglobe');
+      document.getElementById('curLat').textContent = fmtLat(lat);
+      document.getElementById('curLon').textContent = fmtLon(lon);
+      document.getElementById('curProj').textContent = 'x ' + px.toFixed(4) + ' · y ' + py.toFixed(4);
+    } else {
+      block.classList.add('offglobe');
+      document.getElementById('curLat').textContent = '—';
+      document.getElementById('curLon').textContent = '—';
+      document.getElementById('curProj').textContent = 'x — · y —';
+    }
+    // reticle
+    if (reticleOn){
+      reticle.opacity(1);
+      retH.plot(0, sy, W, sy); retV.plot(sx, 0, sx, H); retDot.center(sx, sy);
+    }
+  }
+  function hideCursor(){
+    reticle.opacity(0);
+    document.getElementById('curLat').textContent = '—';
+    document.getElementById('curLon').textContent = '—';
+    document.getElementById('curProj').textContent = 'x — · y —';
+  }
+
+  function registerFix(lon, lat){
+    document.getElementById('fixLat').textContent = fmtLat(lat);
+    document.getElementById('fixLon').textContent = fmtLon(lon);
+    document.getElementById('clickState').textContent = 'inverted';
+    console.log('[Equal Earth] inverse fix →', { lat:+lat.toFixed(6), lon:+lon.toFixed(6) });
+  }
+
+/* ============================================================================
+   7. MARKERS + LOG
+   ========================================================================== */
+  function addMarker(lon, lat, {fromClick=false}={}){
+    markers.push({ lon, lat, el:null });
+    drawMarkers();
+    renderLog();
+    if (fromClick) registerFix(lon, lat);
+    else console.log('[Equal Earth] forward projection →', { lat, lon, projected: forward(lon,lat) });
+  }
+  function renderLog(){
+    const list = document.getElementById('logList');
+    if (!markers.length){ list.innerHTML = '<div class="empty">No points yet — click the map.</div>'; return; }
+    list.innerHTML = '';
+    markers.forEach((m, i)=>{
+      const row = document.createElement('div'); row.className = 'log-item';
+      row.innerHTML =
+        '<span class="log-dot"></span>' +
+        '<span class="log-coord">' + fmtLat(m.lat).trim() + '  ' + fmtLon(m.lon).trim() + '</span>' +
+        '<span class="log-x" title="remove">✕</span>';
+      row.querySelector('.log-x').addEventListener('click', ()=>{ markers.splice(i,1); drawMarkers(); renderLog(); });
+      list.appendChild(row);
+    });
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function plotFromScreen(sx, sy){
+    const [px, py] = screenToProj(sx, sy);
+    const [lon, lat] = inverse(px, py);
+    if (!insideGlobe(lon, lat, px, py)){ document.getElementById('clickState').textContent = 'off globe'; return; }
+    addMarker(lon, lat, {fromClick:true});
+  }
+
+/* ============================================================================
+   8. INPUT: drag-pan, wheel-zoom, click-plot
+   ========================================================================== */
+  const P = (e) => { const q = draw.point(e.clientX, e.clientY); return [q.x, q.y]; };
+  let dragging = false, moved = false, lastX=0, lastY=0, downX=0, downY=0;
+
+  stage.addEventListener('pointerdown', e=>{
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    dragging = true; moved = false;
+    const [x,y] = P(e); lastX=x; lastY=y; downX=x; downY=y;
+    stage.classList.add('dragging');
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener('pointermove', e=>{
+    const [x,y] = P(e);
+    updateCursor(x, y);
+    if (dragging){
+      if (Math.hypot(x-downX, y-downY) > 3) moved = true;
+      panX += x - lastX; panY += y - lastY; lastX = x; lastY = y;
+      applyTransform();
+    }
+  });
+  function endDrag(e){
+    if (!dragging) return;
+    const [x,y] = P(e);
+    if (!moved) plotFromScreen(x, y);          // a genuine click, not a drag
+    dragging = false; stage.classList.remove('dragging');
+  }
+  stage.addEventListener('pointerup', endDrag);
+  stage.addEventListener('pointercancel', ()=>{ dragging=false; stage.classList.remove('dragging'); });
+  stage.addEventListener('pointerleave', e=>{ if(e.pointerType==='mouse') hideCursor(); });
+
+  stage.addEventListener('wheel', e=>{
+    e.preventDefault();
+    const [x,y] = P(e);
+    zoomAt(x, y, Math.exp(-e.deltaY * 0.0015));
+    updateCursor(x, y);
+  }, { passive:false });
+
+/* ============================================================================
+   9. CONTROLS
+   ========================================================================== */
+  document.getElementById('plotBtn').addEventListener('click', ()=>{
+    let lat = parseFloat(document.getElementById('inLat').value);
+    let lon = parseFloat(document.getElementById('inLon').value);
+    if (Number.isNaN(lat) || Number.isNaN(lon)) return;
+    lat = clamp(lat, -90, 90); lon = clamp(lon, -180, 180);
+    document.getElementById('inLat').value = lat; document.getElementById('inLon').value = lon;
+    addMarker(lon, lat, {fromClick:false});
+  });
+  document.getElementById('clearLog').addEventListener('click', ()=>{ markers=[]; drawMarkers(); renderLog(); });
+  document.getElementById('resetBtn').addEventListener('click', resetView);
+  document.getElementById('zoomIn').addEventListener('click', ()=>zoomAt(W/2,H/2,1.4));
+  document.getElementById('zoomOut').addEventListener('click', ()=>zoomAt(W/2,H/2,1/1.4));
+
+  let gridOn = true, reticleOn = true;
+  const gridToggle = document.getElementById('gridToggle');
+  const reticleToggle = document.getElementById('reticleToggle');
+  gridToggle.addEventListener('click', ()=>{
+    gridOn = !gridOn; gridToggle.setAttribute('aria-pressed', gridOn);
+    gridLayer.opacity(gridOn?1:0); labelEls.forEach(l=>l.opacity(gridOn?0.7:0));
+  });
+  reticleToggle.addEventListener('click', ()=>{
+    reticleOn = !reticleOn; reticleToggle.setAttribute('aria-pressed', reticleOn);
+    if(!reticleOn) reticle.opacity(0);
+  });
+
+  window.addEventListener('keydown', e=>{
+    if (e.target.tagName === 'INPUT') return;
+    if (e.key === '+' || e.key === '=') zoomAt(W/2,H/2,1.4);
+    else if (e.key === '-' || e.key === '_') zoomAt(W/2,H/2,1/1.4);
+    else if (e.key === '0') resetView();
+    else if (e.key === 'g' || e.key === 'G') gridToggle.click();
+    else if (e.key === 'r' || e.key === 'R') reticleToggle.click();
+  });
+
+/* ============================================================================
+   10. RESIZE  — keep the geographic point under viewport centre stable.
+   ========================================================================== */
+  function onResize(){
+    const [cx, cy] = screenToProj(W/2, H/2);   // centre point (old dims)
+    W = stage.clientWidth; H = stage.clientHeight;
+    draw.viewbox(0, 0, W, H);
+    panX = W/2 - cx*scale; panY = H/2 + cy*scale;
+    applyTransform();
+  }
+  window.addEventListener('resize', onResize);
+
+/* ============================================================================
+   11. LOAD COASTLINE DATA (world-atlas 110m TopoJSON) — graceful if offline.
+   ========================================================================== */
+  const statusEl = document.getElementById('status');
+  const statusText = document.getElementById('statusText');
+  function status(msg, keep){ statusText.textContent = msg; statusEl.classList.add('show');
+    if(!keep) setTimeout(()=>statusEl.classList.remove('show'), 2600); }
+
+  const DATA_URLS = [
+    'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json',
+    'https://unpkg.com/world-atlas@2/countries-110m.json'
+  ];
+  async function loadWorld(){
+    if (typeof topojson === 'undefined'){ status('Coastline library blocked — grid + projection active.'); return; }
+    status('Loading coastlines…', true);
+    for (const url of DATA_URLS){
+      try{
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const topo = await res.json();
+        const obj  = topo.objects.countries;
+        landFill.plot(geomToPath(topojson.merge(topo, obj.geometries), true));
+        landBorders.plot(geomToPath(topojson.mesh(topo, obj, (a,b)=>a!==b), false));
+        landCoast.plot(geomToPath(topojson.mesh(topo, obj, (a,b)=>a===b), false));
+        status('Coastlines loaded · Natural Earth 110m');
+        return;
+      }catch(err){ /* try next url */ }
+    }
+    status('Offline — grid + projection active, coastlines unavailable.');
+  }
+
+/* ============================================================================
+   12. BOOT
+   ========================================================================== */
+  W = stage.clientWidth || window.innerWidth;
+  H = stage.clientHeight || window.innerHeight;
+  draw.viewbox(0, 0, W, H);
+  resetView();
+  addMarker(-74.0060, 40.7128, {fromClick:false});   // seed: New York — a live forward projection
+  loadWorld();
+
+  // Public API for console experimentation.
+  window.EqualEarth = { forward, inverse, lonLatToScreen, screenToLonLat, projToScreen, screenToProj,
+                        addMarker, resetView, get view(){ return { scale, panX, panY }; } };
+  console.log('%cEqual Earth console ready.', 'color:#ffb24a');
+  console.log('Try: EqualEarth.forward(2.3522, 48.8566)  ·  EqualEarth.screenToLonLat(innerWidth/2, innerHeight/2)');
+})();
+</script>
+</body>
+</html>

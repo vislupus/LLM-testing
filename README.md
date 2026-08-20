@@ -263,13 +263,13 @@ Testing different LLMs to do software tasks
 
 | Model                 | Score    |
 | --------------------- | -------- |
-| **Gemini 3.7 flash**  | **0/10** |
-| **Gemini 3.6 flash**  | **0/10** |
-| **Gemini 3.5 flash**  | **0/10** |
+| **Gemini 3.7 flash**  | **9/10** |
+| **Gemini 3.6 flash**  | **7/10** |
+| **Gemini 3.5 flash**  | **7/10** |
 | **Gemini 3.1**        | **2/10** |
 | **Gemini 3 flash**    | **3/10** |
 | **Gemini 2.5**        | **1/10** |
-| **Gemma 4 31B**       | **0/10** |
+| **Gemma 4 31B**       | **2/10** |
 | **ChatGPT 5.6**       | **9/10** |
 | **ChatGPT 5.5**       | **5/10** |
 | **ChatGPT 5.4**       | **5/10** |
@@ -278,23 +278,23 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5.1**       | **2/10** |
 | **ChatGPT 5**         | **2/10** |
 | **ChatGPT o3**        | **1/10** |
-| **ChatGPT 4.1**       | **0/10** |
-| **GPT-OSS-120b**      | **0/10** |
-| **GPT-OSS-20b**       | **0/10** |
-| **Grok 4.6**          | **0/10** |
+| **ChatGPT 4.1**       | **2/10** |
+| **GPT-OSS-120b**      | **1/10** |
+| **GPT-OSS-20b**       | **1/10** |
+| **Grok 4.6**          | **10/10** |
 | **Grok 4.5**          | **10/10** |
 | **Grok 4.3**          | **2/10** |
 | **Grok 4.2**          | **3/10** |
 | **Grok 4.1**          | **1/10** |
 | **Claude Fable 5**    | **8/10** |
 | **Claude Opus 5**     | **10/10** |
-| **Claude Opus 4.8**   | **0/10** |
+| **Claude Opus 4.8**   | **1/10** |
 | **Claude Opus 4.7**   | **10/10** |
 | **Claude Opus 4.6**   | **6/10** |
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **2/10** |
-| **Claude Opus 3**     | **0/10** |
-| **Glm 5.2**           | **1/10** |
+| **Claude Opus 3**     | **1/10** |
+| **Glm 5.2**           | **9/10** |
 | **Glm 5.1**           | **5/10** |
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **1/10** |
@@ -304,35 +304,35 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **2/10** |
-| **Deepseek 4 flash**  | **0/10** |
+| **Deepseek 4 flash**  | **6/10** |
 | **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **3/10** |
-| **Мinimax m3**        | **0/10** |
+| **Мinimax m3**        | **5/10** |
 | **Мinimax m2.7**      | **1/10** |
 | **Мinimax m2.5**      | **5/10** |
 | **Мinimax m2.1**      | **1/10** |
-| **Мinimax m2**        | **0/10** |
-| **Мinimax m1**        | **0/10** |
+| **Мinimax m2**        | **3/10** |
+| **Мinimax m1**        | **1/10** |
 | **Qwen 3.8 Max**      | **7/10** |
 | **Qwen 3.7 Max**      | **1/10** |
 | **Qwen 3.6 Max**      | **1/10** |
 | **Qwen 3.6**          | **2/10** |
 | **Qwen 3.5 Max**      | **0/10** |
 | **Qwen 3.5**          | **2/10** |
-| **Qwen 3 Max**        | **0/10** |
-| **Qwen 3.5 122b a10b**| **0/10** |
-| **Qwen 3.5 35b a3b**  | **0/10** |
+| **Qwen 3 Max**        | **1/10** |
+| **Qwen 3.5 122b a10b**| **2/10** |
+| **Qwen 3.5 35b a3b**  | **1/10** |
 | **Qwen 3.6 27b**      | **1/10** |
-| **MiMo 2.5**          | **0/10** |
+| **MiMo 2.5**          | **4/10** |
 | **MiMo 2**            | **3/10** |
 | **LongCat 2**         | **1/10** |
-| **Nemotron 3 ultra**  | **0/10** |
+| **Nemotron 3 ultra**  | **1/10** |
 | **Trinity**           | **1/10** |
 | **HY3**               | **0/10** |
 | **Laguna S 2.1**      | **1/10** |
 | **Muse Spark 1.1**    | **3/10** |
-| **Muse Glimmer**      | **0/10** |
-| **Inkling**           | **0/10** |
+| **Muse Glimmer**      | **1/10** |
+| **Inkling**           | **1/10** |
 | **Mistral Large 3**   | **1/10** |
 | **Mistral Medium 3.5**| **1/10** |
 
@@ -601,8 +601,8 @@ Testing different LLMs to do software tasks
 | **ChatGPT 4.1**       | **1/10** |
 | **GPT-OSS-120b**      | **1/10** |
 | **GPT-OSS-20b**       | **0/10** |
-| **Grok 4.6**          | **1/10** |
-| **Grok 4.5**          | **3/10** |
+| **Grok 4.6**          | **6/10** |
+| **Grok 4.5**          | **5/10** |
 | **Grok 4.3**          | **1/10** |
 | **Grok 4.2**          | **1/10** |
 | **Grok 4.1**          | **1/10** |

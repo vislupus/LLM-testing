@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Equal‑Earth Interactive Map (SVG.js)</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;font-family:sans-serif;}
+  #svg{width:100%;height:100%;}
+  .overlay{
+    position:absolute;pointer-events:none;
+    background:rgba(0,0,0,0.7);color:#fff;padding:2px 5px;
+    border-radius:3px;font-size:12px;white-space:nowrap;
+  }
+</style>
+</head>
+<body>
+<div id="svg"></div>
+<div id="info" class="overlay" style="display:none;"></div>
+
+<!-- SVG.js -->
+<script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3"></script>
+<!-- topojson (to turn the TopoJSON world‑110m file into GeoJSON) -->
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+
+<script>
+(async () => {
+  // --------------------------------------------------------------
+  // 1️⃣  INITIAL SETUP
+  // --------------------------------------------------------------
+  const draw = SVG().addTo('#svg').size('100%', '100%');
+  const mapGroup = draw.group(); // <g> that will receive zoom/pan
+
+  const W = draw.width(), H = draw.height();
+
+  // --------------------------------------------------------------
+  // 2️⃣  EQUAL‑EARTH PROJECTION (forward & inverse)
+  // --------------------------------------------------------------
+  const A = 1.340264, B = 0.081106, C = 0.000715, D = -0.009270;
+  const eps = 1e-10, maxIter = 15;
+
+  // helpers
+  const rad = Math.PI/180, deg = 180/Math.PI;
+  const sin = Math.sin, cos = Math.cos, asin = Math.asin, atan2 = Math.atan2, sqrt = Math.sqrt;
+
+  // forward: (lon°, lat°) → [x, y] (radians → map units)
+  function forward(lonDeg, latDeg) {
+    const λ = lonDeg * rad;
+    const φ = latDeg * rad;
+    const θ = asin((2*φ + sin(2*φ))/3);
+    const x = A * λ * cos(θ);
+    const y = D*θ + sin(θ)*(B + C*cos(θ)*cos(θ));
+    return [x, y];
+  }
+
+  // inverse: ([x, y] in map units) → [lon°, lat°]
+  function inverse(x, y) {
+    // ------------------------------------------------------------
+    // 1) solve for θ from the y‑equation using Newton‑Raphson
+    // ------------------------------------------------------------
+    let θ = y;               // initial guess
+    for (let i=0; i<maxIter; ++i) {
+      const sθ = sin(θ), cθ = cos(θ);
+      const f  = D*θ + sθ*(B + C*cθ*cθ) - y;
+      const f′ = D + (B + 3*C*cθ*cθ)*cθ;
+      const Δ = f / f′;
+      θ -= Δ;
+      if (Math.abs(Δ) < eps) break;
+    }
+    // ------------------------------------------------------------
+    // 2) from θ → φ  (latitude)
+    // ------------------------------------------------------------
+    const φ = asin((2*θ + sin(2*θ))/3);
+    // ------------------------------------------------------------
+    // 3) from θ & x → λ  (longitude)
+    // ------------------------------------------------------------
+    const λ = x / (A * cos(θ));
+    return [λ*deg, φ*deg];
+  }
+
+  // --------------------------------------------------------------
+  // 3️⃣  WORLD MAP DATA (TopoJSON → GeoJSON)
+  // --------------------------------------------------------------
+  const worldTopo = await fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/world/110m.json')
+                         .then(r=>r.json());
+  const countries = topojson.feature(worldTopo, worldTopo.objects.countries).features;
+
+  // --------------------------------------------------------------
+  // 4️⃣  BUILD PATHS (project every coordinate)
+  // --------------------------------------------------------------
+  function projectPath(coordinates) {
+    // coordinates can be an array of linear rings (for Polygons) or an array
+    // of arrays of rings (for MultiPolygons). Recursively project.
+    const proj = (arr) => arr.map(p=>forward(p[0], p[1]));
+    if (typeof coordinates[0][0][0] === 'number') {
+      // Polygon: [ [lon,lat], ... ]
+      const pts = proj(coordinates);
+      return 'M' + pts.map(p=>p[0]+','+p[1]).join('L') + 'Z';
+    } else {
+      // MultiPolygon
+      return coordinates.map(ring=>projectPath(ring)).join('');
+    }
+  }
+
+  // Convert every country to an SVG path
+  const countryPaths = countries.map(f => {
+    const d = projectPath(f.geometry.coordinates);
+    return draw.path(d).fill('#e0e0e0').stroke({width:0.2,color:'#777'});
+  });
+
+  // Add all country paths to the group (so they share the same transform)
+  mapGroup.add(countryPaths);
+
+  // --------------------------------------------------------------
+  // 5️⃣  ZOOM & PAN (mouse wheel + drag)
+  // --------------------------------------------------------------
+  let scale = 1, tx = 0, ty = 0; // current transform
+  const applyTransform = () => mapGroup.transform({scale, translateX:tx, translateY:ty});
+
+  // ----- Zoom (mouse wheel) -----
+  draw.node.addEventListener('wheel', e => {
+    e.preventDefault();
+    const zoomFactor = e.deltaY < 0 ? 1.15 : 0.85;
+    const mouse = draw.point(e.offsetX, e.offsetY);
+
+    // convert screen → map coordinates before scaling
+    const mx = (mouse.x - tx) / scale;
+    const my = (mouse.y - ty) / scale;
+
+    scale *= zoomFactor;
+
+    // after scaling, move the map so that the point under the mouse stays fixed
+    tx = e.offsetX - mx * scale;
+    ty = e.offsetY - my * scale;
+
+    applyTransform();
+  });
+
+  // ----- Pan (drag) -----
+  let dragging = false, start = null;
+  draw.node.addEventListener('mousedown', e => {
+    dragging = true;
+    start = {x:e.clientX, y:e.clientY, tx, ty};
+  });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    tx = start.tx + dx;
+    ty = start.ty + dy;
+    applyTransform();
+  });
+  window.addEventListener('mouseup', () => dragging = false);
+  window.addEventListener('mouseleave', () => dragging = false);
+
+  applyTransform(); // initialise
+
+  // --------------------------------------------------------------
+  // 6️⃣  MARKER DRAWING (forward projection)
+  // --------------------------------------------------------------
+  function addMarker(lat, lon, color = 'red') {
+    const [x, y] = forward(lon, lat);
+    // markers are drawn in map‑space (i.e. before the current transform)
+    const marker = draw.circle(6).fill(color).stroke({width:0.5,color:'#000'});
+    marker.center(x, y);
+    mapGroup.add(marker);
+  }
+
+  // Demo markers
+  addMarker(40.7128, -74.0060, 'orange'); // New‑York
+  addMarker(51.5074, -0.1278, 'lime');   // London
+  addMarker(-33.8688, 151.2093, 'cyan'); // Sydney
+
+  // --------------------------------------------------------------
+  // 7️⃣  INVERSE‑PROJECTION ON CLICK + INFO OVERLAY
+  // --------------------------------------------------------------
+  const info = document.getElementById('info');
+
+  draw.node.addEventListener('click', e => {
+    // screen → map coordinates (undo current transform)
+    const mapX = (e.offsetX - tx) / scale;
+    const mapY = (e.offsetY - ty) / scale;
+    const [lon, lat] = inverse(mapX, mapY);
+    const txt = `lat: ${lat.toFixed(4)}°, lon: ${lon.toFixed(4)}°`;
+    info.textContent = txt;
+    info.style.left = (e.pageX + 8) + 'px';
+    info.style.top  = (e.pageY + 8) + 'px';
+    info.style.display = 'block';
+    setTimeout(()=>info.style.display='none', 3000);
+  });
+
+})(); // end async IIFE
+</script>
+</body>
+</html>
