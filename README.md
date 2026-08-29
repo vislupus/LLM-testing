@@ -54,6 +54,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **2/10** |
 | **Claude Opus 4.1**   | **2/10** |
 | **Claude Opus 3**     | **2/10** |
+| **Glm 5.3**           | **6/10** |
 | **Glm 5.2**           | **2/10** |
 | **Glm 5.1**           | **6/10** |
 | **Glm 5**             | **3/10** |
@@ -134,6 +135,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **1/10** |
 | **Claude Opus 3**     | **2/10** |
+| **Glm 5.3**           | **1/10** |
 | **Glm 5.2**           | **2/10** |
 | **Glm 5.1**           | **6/10** |
 | **Glm 5**             | **1/10** |
@@ -214,6 +216,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **1/10** |
 | **Claude Opus 3**     | **3/10** |
+| **Glm 5.3**           | **8/10** |
 | **Glm 5.2**           | **5/10** |
 | **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **3/10** |
@@ -294,6 +297,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **2/10** |
 | **Claude Opus 3**     | **1/10** |
+| **Glm 5.3**           | **9/10** |
 | **Glm 5.2**           | **9/10** |
 | **Glm 5.1**           | **5/10** |
 | **Glm 5**             | **6/10** |
@@ -328,7 +332,7 @@ Testing different LLMs to do software tasks
 | **LongCat 2**         | **1/10** |
 | **Nemotron 3 ultra**  | **1/10** |
 | **Trinity**           | **1/10** |
-| **HY3**               | **0/10** |
+| **HY3**               | **2/10** |
 | **Laguna S 2.1**      | **1/10** |
 | **Muse Spark 1.1**    | **3/10** |
 | **Muse Glimmer**      | **1/10** |
@@ -374,6 +378,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **2/10** |
+| **Glm 5.3**           | **4/10** |
 | **Glm 5.2**           | **4/10** |
 | **Glm 5.1**           | **3/10** |
 | **Glm 5**             | **4/10** |
@@ -454,6 +459,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **2/10** |
+| **Glm 5.3**           | **4/10** |
 | **Glm 5.2**           | **5/10** |
 | **Glm 5.1**           | **4/10** |
 | **Glm 5**             | **4/10** |
@@ -534,6 +540,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **2/10** |
+| **Glm 5.3**           | **5/10** |
 | **Glm 5.2**           | **5/10** |
 | **Glm 5.1**           | **3/10** |
 | **Glm 5**             | **4/10** |
@@ -614,6 +621,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **1/10** |
+| **Glm 5.3**           | **1/10** |
 | **Glm 5.2**           | **1/10** |
 | **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **1/10** |
@@ -681,7 +689,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 4.1**       | **1/10** |
 | **GPT-OSS-120b**      | **2/10** |
 | **GPT-OSS-20b**       | **0/10** |
-| **Grok 4.6**          | **3/10** |
+| **Grok 4.6**          | **6/10** |
 | **Grok 4.5**          | **3/10** |
 | **Grok 4.3**          | **1/10** |
 | **Grok 4.2**          | **1/10** |
@@ -694,6 +702,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **1/10** |
+| **Glm 5.3**           | **1/10** |
 | **Glm 5.2**           | **1/10** |
 | **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **1/10** |
@@ -749,7 +758,7 @@ Testing different LLMs to do software tasks
 | **Gemini 3.1**        | **4/10** |
 | **Gemini 3 flash**    | **2/10** |
 | **Gemini 2.5**        | **5/10** |
-| **Gemma 4 31B**       | **0/10** |
+| **Gemma 4 31B**       | **4/10** |
 | **ChatGPT 5.6**       | **5/10** |
 | **ChatGPT 5.5**       | **4/10** |
 | **ChatGPT 5.4**       | **3/10** |
@@ -765,17 +774,18 @@ Testing different LLMs to do software tasks
 | **Grok 4.5**          | **9/10** |
 | **Grok 4.3**          | **3/10** |
 | **Grok 4.2**          | **3/10** |
-| **Grok 4.1**          | **0/10** |
+| **Grok 4.1**          | **2/10** |
 | **Claude Fable 5**    | **8/10** |
-| **Claude Opus 5**     | **0/10** |
-| **Claude Opus 4.8**   | **0/10** |
-| **Claude Opus 4.7**   | **0/10** |
-| **Claude Opus 4.6**   | **0/10** |
+| **Claude Opus 5**     | **7/10** |
+| **Claude Opus 4.8**   | **6/10** |
+| **Claude Opus 4.7**   | **6/10** |
+| **Claude Opus 4.6**   | **5/10** |
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
-| **Claude Opus 3**     | **0/10** |
+| **Claude Opus 3**     | **3/10** |
+| **Glm 5.3**           | **5/10** |
 | **Glm 5.2**           | **5/10** |
-| **Glm 5.1**           | **0/10** |
+| **Glm 5.1**           | **1/10** |
 | **Glm 5**             | **6/10** |
 | **Glm 4.7**           | **5/10** |
 | **Glm 4.6**           | **0/10** |
@@ -786,7 +796,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2 Turbo**     | **0/10** |
 | **Deepseek 4 flash**  | **4/10** |
 | **Deepseek 4**        | **4/10** |
-| **Deepseek 3.2**      | **0/10** |
+| **Deepseek 3.2**      | **3/10** |
 | **Мinimax m3**        | **6/10** |
 | **Мinimax m2.7**      | **3/10** |
 | **Мinimax m2.5**      | **3/10** |
@@ -798,7 +808,7 @@ Testing different LLMs to do software tasks
 | **Qwen 3.6 Max**      | **3/10** |
 | **Qwen 3.6**          | **2/10** |
 | **Qwen 3.5 Max**      | **0/10** |
-| **Qwen 3.5**          | **0/10** |
+| **Qwen 3.5**          | **3/10** |
 | **Qwen 3 Max**        | **2/10** |
 | **Qwen 3.5 122b a10b**| **2/10** |
 | **Qwen 3.5 35b a3b**  | **2/10** |
@@ -808,7 +818,7 @@ Testing different LLMs to do software tasks
 | **LongCat 2**         | **3/10** |
 | **Nemotron 3 ultra**  | **1/10** |
 | **Trinity**           | **1/10** |
-| **HY3**               | **0/10** |
+| **HY3**               | **3/10** |
 | **Laguna S 2.1**      | **2/10** |
 | **Muse Spark 1.1**    | **6/10** |
 | **Muse Glimmer**      | **2/10** |
