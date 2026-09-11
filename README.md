@@ -41,7 +41,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **1/10** |
 | **ChatGPT o3**        | **3/10** |
 | **ChatGPT 4.1**       | **1/10** |
-| **ChatGPT 3.5**       | **0/10** |
+| **ChatGPT 3.5**       | **1/10** |
 | **GPT-OSS-120b**      | **1/10** |
 | **Grok 4.6**          | **9/10** |
 | **Grok 4.5**          | **8/10** |
@@ -128,7 +128,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **3/10** |
 | **ChatGPT o3**        | **1/10** |
 | **ChatGPT 4.1**       | **1/10** |
-| **ChatGPT 3.5**       | **0/10** |
+| **ChatGPT 3.5**       | **2/10** |
 | **GPT-OSS-120b**      | **1/10** |
 | **Grok 4.6**          | **7/10** |
 | **Grok 4.5**          | **4/10** |
@@ -215,7 +215,7 @@ Testing different LLMs to do software tasks
 | **ChatGPT 5**         | **1/10** |
 | **ChatGPT o3**        | **1/10** |
 | **ChatGPT 4.1**       | **1/10** |
-| **ChatGPT 3.5**       | **0/10** |
+| **ChatGPT 3.5**       | **1/10** |
 | **GPT-OSS-120b**      | **1/10** |
 | **Grok 4.6**          | **8/10** |
 | **Grok 4.5**          | **7/10** |
