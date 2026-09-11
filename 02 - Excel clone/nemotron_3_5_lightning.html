@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniExcel</title>
+<style>
+:root {
+  --bg:#f0f2f5; --card:#ffffff; --accent:#1f77b4; --text:#202020;
+  --toolbar-h:44px; --tab-h:32px; --cell-padding:4px; --cell-size:28px;
+  --selection-bg:#e0e7ff; --border:#d0d0d0;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; 
+       background:var(--bg); color:var(--text); line-height:1.4; }
+#toolbar { display:flex; gap:6px; padding:4px 8px; background:var(--card); 
+           border-bottom:1px solid var(--border); height:var(--toolbar-h); align-items:center; flex-wrap:wrap; }
+.toolbar-btn { padding:4px 8px; border:1px solid var(--border); border-radius:6px; 
+              background:transparent; cursor:pointer; font-size:12px; }
+.toolbar-btn:hover { background:#e8e8e8; }
+.toolbar-btn.active { background:var(--accent); color:white; }
+#formula-bar { flex:1; margin:2px 8px 2px 0; padding:0 8px; height:var(--toolbar-h); 
+               border:1px solid var(--border); border-radius:6px; background:#fff; 
+               font-size:14px; font-family:inherit; }
+#formula-bar:focus { outline:none; border-color:var(--accent); }
+#sheet-tabs { display:flex; gap:2px; padding:4px 8px; background:var(--card); 
+              border-bottom:1px solid var(--border); overflow-x:auto; }
+.sheet-tab { padding:4px 8px; border:1px solid var(--border); border-radius:6px 6px 0 0; 
+           min-width:60px; font-size:12px; cursor:pointer; white-space:nowrap; }
+.sheet-tab.active { border-bottom:2px solid var(--accent); background:var(--card); }
+.sheet-tab:hover { background:#f8f8f8; }
+#grid-container { overflow:auto; max-height:calc(100vh - 200px); }
+.grid-header { display:grid; grid-template-columns:40px 1fr; gap:0; height:var(--cell-size); 
+               align-items:center; padding:0 4px; background:var(--card); border-bottom:1px solid var(--border); }
+.grid-header span { font-size:12px; padding:0 2px; }
+.cell { width:var(--cell-size); height:var(--cell-size); min-width:var(--cell-size); 
+        border:1px solid var(--border); background:var(--card); 
+        outline:none; font-size:13px; font-family:monospace; padding:var(--cell-padding); }
+.cell:focus { border-color:var(--accent); }
+.cell:hover:not(.selected):not(.focus) { background:#f5f5f5; }
+.cell.selected { background:var(--selection-bg); }
+.cell.selected.focus { border-color:var(--accent); }
+#status-bar { padding:2px 8px; height:24px; font-size:12px; color:#555; background:var(--card); 
+              border-top:1px solid var(--border); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <button class="toolbar-btn" id="boldBtn">B</button>
+    <button class="toolbar-btn" id="italicBtn">I</button>
+    <button class="toolbar-btn" id="bgColorBtn">Fill</button>
+    <button class="toolbar-btn" id="clearBtn">Clear</button>
+    <button class="toolbar-btn" id="downloadBtn">CSV ↓</button>
+    <button class="toolbar-btn" id="uploadBtn">CSV ↑</button>
+  </div>
+  <div id="formula-bar" contenteditable="true" spellcheck="false" aria-label="Formula bar"></div>
+  <div id="sheet-tabs"></div>
+  <div id="grid-container">
+    <div class="grid-header">
+      <span></span>
+      <div id="col-headers" class="flex"></div>
+    </div>
+  </div>
+  <div id="status-bar">Cell A1 | Ready</div>
+</div>
+
+<script>
+  // ── Configuration ──────────────────────────────────────────────────────────
+  const COLUMNS = 26; // A-Z
+  const ROWS = 50;
+  const MAX_DEPTH = 100; // formula recursion guard
+
+  // ── State ───────────────────────────────────────────────────────────────────
+  let sheets = [{ name: 'Sheet1', cells: {} }]; // cells: "A1" → { value: '', type: 'val'|'form' }
+  let sheetCount = 1;
+  let activeSheet = 0;
+  let activeCell = { r: 0, c: 0 }; // 0-indexed
+  let selection = { from: null, to: null }; // {r,c} or null
+  let formulaEditing = false;
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+  const colIdxToLetter = (i) => {
+    let s = '';
+    while (i >= 0) { s = String.fromCharCode(65 + (i % 26)) + s; i = Math.floor(i / 26) - 1; }
+    return s;
+  };
+  const letterToColIdx = (letter) => {
+    let s = letter.toUpperCase().replace(/[^A-Z]/g, '');
+    let r = 0;
+    for (let i = 0; i < s.length; i++) r = r * 26 + (s.charCodeAt(i) - 64);
+    return r - 1;
+  };
+  const addr = (r, c) => colIdxToLetter(c) + (r + 1);
+  const parseAddr = (a) => {
+    const m = a.match(/^([A-Z]+)(\d+)$/i);
+    if (!m) return null;
+    return { c: letterToColIdx(m[1]), r: parseInt(m[2]) - 1 };
+  };
+  const cellRef = (r, c) => addr(r, c);
+
+  // ── DOM Elements ────────────────────────────────────────────────────────────
+  const grid = document.getElementById('grid-container');
+  const colHeaders = document.getElementById('col-headers');
+  const formulaBar = document.getElementById('formula-bar');
+  const statusBar = document.getElementById('status-bar');
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+  const renderGrid = () => {
+    grid.innerHTML = '';
+    colHeaders.innerHTML = '';
+    // Row numbers + grid cells
+    const docFragment = document.createDocumentFragment();
+    const hdrFragment = document.createDocumentFragment();
+
+    // Column headers
+    for (let c = 0; c < COLUMNS; c++) {
+      const sp = document.createElement('div');
+      sp.className = 'grid-header';
+      sp.textContent = colIdxToLetter(c);
+      hdrFragment.appendChild(sp);
+    }
+    colHeaders.appendChild(hdrFragment);
+
+    // Cells
+    for (let r = 0; r < ROWS; r++) {
+      const rowDiv = document.createElement('div');
+      rowDiv.style.display = 'grid';
+      rowDiv.style.gridTemplateColumns = `40px repeat(${COLUMNS}, var(--cell-size))`;
+      rowDiv.style.gap = '0';
+      rowDiv.style.alignItems = 'center';
+
+      // Row number
+      const rn = document.createElement('div');
+      rn.className = 'grid-header';
+      rn.textContent = r + 1;
+      rowDiv.appendChild(rn);
+
+      for (let c = 0; c < COLUMNS; c++) {
+        const key = addr(r, c);
+        const cellDef = sheets[activeSheet].cells[key] || { value: '', type: 'val' };
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.contentEditable = 'true';
+        cell.tabIndex = 0;
+        cell.dataset.key = key;
+        cell.dataset.row = r;
+        cell.dataset.col = c;
+        cell.textContent = cellDef.value || '';
+
+        // Selection highlight
+        if (selection.from && selection.to) {
+          const r1 = Math.min(selection.from.r, selection.to.r);
+          const r2 = Math.max(selection.from.r, selection.to.r);
+          const c1 = Math.min(selection.from.c, selection.to.c);
+          const c2 = Math.max(selection.from.c, selection.to.c);
+          if (r === r1 && c === c1 || r === r2 && c === c2) {
+            cell.classList.add('selected');
+          }
+        }
+
+        // Focus highlight
+        if (activeCell.r === r && activeCell.c === c) {
+          cell.classList.add('focus');
+          cell.setAttribute('aria-activedescendant', `cell-${key}`);
+        } else {
+          cell.classList.remove('focus');
+        }
+
+        // Click → select / edit
+        cell.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (formulaEditing) {
+            insertCellRefIntoFormula(key);
+            return;
+          }
+          // Toggle selection with Shift/Click
+          const shift = e.shiftKey;
+          if (shift && selection.from) {
+            selection.to = { r: parseInt(cell.dataset.row), c: parseInt(cell.dataset.col) };
+            updateSelectionHighlight();
+          } else {
+            selection.from = { r, c: parseInt(cell.dataset.col) };
+            selection.to = { r, c: parseInt(cell.dataset.col) };
+            updateSelectionHighlight();
+          }
+          setActiveCell(r, c);
+          formulaBar.textContent = getCellValue(r, c);
+        });
+
+        // Double-click → edit cell content directly
+        cell.addEventListener('dblclick', (e) => {
+          e.stopPropagation();
+          formulaBar.textContent = cell.textContent;
+          formulaBar.focus();
+          formulaBar.setSelectionRange(0, formulaBar.textContent.length);
+          formulaEditing = true;
+        });
+
+        // Arrow keys/Enter/Tab handling (via grid keydown)
+        cell.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const val = cell.textContent.trim();
+            // Save content to state
+            sheets[activeSheet].cells[key] = { value: val, type: val.startsWith('=') ? 'form' : 'val' };
+            formulaEditing = false;
+            updateFormulaBar();
+            // Move focus down
+            setActiveCell(r + 1, c);
+          } else if (e.key === 'Tab') {
+            e.preventDefault();
+            setActiveCell(r, c + 1 < COLUMNS ? c + 1 : 0, true); // true = don't select
+          } else if (e.key === 'ArrowDown') {
+            setActiveCell(r + 1, c);
+          } else if (e.key === 'ArrowUp') {
+            setActiveCell(r - 1, c);
+          } else if (e.key === 'ArrowLeft') {
+            setActiveCell(r, c - 1);
+          } else if (e.key === 'ArrowRight') {
+            setActiveCell(r, c + 1);
+          }
+        });
+
+        rowDiv.appendChild(cell);
+      }
+      docFragment.appendChild(rowDiv);
+    }
+    grid.appendChild(docFragment);
+  };
+
+  const renderSheetTabs = () => {
+    const tabs = document.getElementById('sheet-tabs');
+    tabs.innerHTML = '';
+    sheets.forEach((s, i) => {
+      const tab = document.createElement('div');
+      tab.className = `sheet-tab ${i === activeSheet ? 'active' : ''}`;
+      tab.textContent = s.name;
+      tab.title = 'Click to switch';
+      tab.addEventListener('click', () => {
+        activeSheet = i;
+        updateFormulaBar();
+        renderGrid();
+      });
+      tabs.appendChild(tab);
+    });
+    // Add new sheet button
+    const addBtn = document.createElement('div');
+    addBtn.className = 'sheet-tab';
+    addBtn.textContent = '+';
+    addBtn.title = 'New sheet';
+    addBtn.style.cursor = 'pointer';
+    addBtn.style.fontSize = '1.2em';
+    addBtn.style.userSelect = 'none';
+    addBtn.addEventListener('click', () => {
+      sheets.push({ name: `Sheet${sheetCount + 1}`, cells: {} });
+      sheetCount++;
+      renderSheetTabs();
+      renderGrid();
+    });
+    tabs.appendChild(addBtn);
+  };
+
+  const updateFormulaBar = () => {
+    const v = getCellValue(activeCell.r, activeCell.c);
+    formulaBar.textContent = v;
+    formulaEditing = false;
+    statusBar.textContent = `Cell ${addr(activeCell.r, activeCell.c)} | ${v.substring(0, 40)}`;
+  };
+  const getCellValue = (r, c) => {
+    const key = addr(r, c);
+    const def = sheets[activeSheet].cells[key];
+    return def ? def.value : '';
+  };
+  const setActiveCell = (r, c, skipSelect = false) => {
+    activeCell.r = Math.max(0, Math.min(ROWS - 1, r));
+    activeCell.c = Math.max(0, Math.min(COLUMNS - 1, c));
+    renderGrid();
+    if (!skipSelect) {
+      selection.from = { r: activeCell.r, c: activeCell.c };
+      selection.to = { r: activeCell.r, c: activeCell.c };
+      updateSelectionHighlight();
+    }
+  };
+
+  const updateSelectionHighlight = () => {
+    const r1 = Math.min(selection.from.r, selection.to.r);
+    const r2 = Math.max(selection.from.r, selection.to.r);
+    const c1 = Math.min(selection.from.c, selection.to.c);
+    const c2 = Math.max(selection.from.c, selection.to.c);
+    const cells = grid.querySelectorAll('.cell');
+    cells.forEach(cell => {
+      const r = parseInt(cell.dataset.row);
+      const c = parseInt(cell.dataset.col);
+      const inside = r >= r1 && r <= r2 && c >= c1 && c <= c2;
+      if (inside) cell.classList.add('selected');
+      else cell.classList.remove('selected');
+    });
+  };
+
+  // ── Formula Engine ─────────────────────────────────────────────────────────
+  const evalFormula = (formula, depth = 0) => {
+    if (depth > MAX_DEPTH) return 0;
+    if (!formula || !formula.startsWith('=')) return Number(formula) || 0;
+    const expr = formula.slice(1); // strip =
+
+    // Function dispatch
+    const fnMatch = expr.match(/^(\w+)\(([^)]*)\)/);
+    if (fnMatch) {
+      const fnName = fnMatch[1].toUpperCase();
+      const argsStr = fnMatch[2];
+      const args = parseFormulaArgs(argsStr);
+      const vals = args.map(a => evalFormula(a, depth + 1));
+      switch (fnName) {
+        case 'SUM': return vals.reduce((a, b) => a + b, 0);
+        case 'AVERAGE': return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+        case 'MIN': return Math.min(...vals);
+        case 'MAX': return Math.max(...vals);
+        default: return 0;
+      }
+    }
+
+    // Arithmetic expression with cell refs → evaluate with precedence
+    // Tokenize: numbers, cell refs (A1, B2, A1:A10), operators + - * /
+    const tokens = [];
+    let i = 0;
+    while (i < expr.length) {
+      const ch = expr[i];
+      if (ch === ' ') { i++; continue; }
+      // Cell ref or range
+      if (/[A-Z]/.test(ch)) {
+        let ref = '';
+        while (i < expr.length && (/[A-Za-z0-9:]/.test(expr[i]))) {
+          ref += expr[i++];
+        }
+        ref = ref.replace(/:/g, ':'); // keep for range detection
+        // check for range
+        if (ref.includes(':')) {
+          const [a, b] = ref.split(':').map(parseAddr).filter(x => x);
+          if (a && b) {
+            const rStart = Math.min(a.r, b.r), rEnd = Math.max(a.r, b.r);
+            const cStart = Math.min(a.c, b.c), cEnd = Math.max(a.c, b.c);
+            for (let r = rStart; r <= rEnd; r++)
+              for (let c = cStart; c <= cEnd; c++) {
+                const v = getCellValue(r, c);
+                tokens.push({ type: 'ref', value: parseFloat(evalFormula(v, depth + 1)) || 0 });
+              }
+            i++; continue;
+          }
+        }
+        const parsed = parseAddr(ref);
+        if (parsed) {
+          const v = getCellValue(parsed.r, parsed.c);
+          tokens.push({ type: 'ref', value: parseFloat(evalFormula(v, depth + 1)) || 0 });
+        } else {
+          tokens.push({ type: 'val', value: parseFloat(ref) || 0 });
+        }
+        continue;
+      }
+      // Number
+      if (/[\d.]/.test(ch)) {
+        let num = '';
+        while (i < expr.length && (/[\d.]/.test(expr[i]))) num += expr[i++];
+        tokens.push({ type: 'val', value: parseFloat(num) });
+        continue;
+      }
+      // Operators
+      if (+['+', '-', '*', '/'].includes(ch.charCodeAt(0))) {
+        tokens.push({ type: ch });
+        i++;
+        continue;
+      }
+      // Parens
+      if (ch === '(' || ch === ')') {
+        tokens.push(ch); i++; continue;
+      }
+      i++;
+    }
+
+    // Shunting-yard to postfix, then evaluate
+    const precedence = { '+': 1, '-': 1, '*': 2, '/': 2 };
+    const output = [];
+    const ops = [];
+    for (const t of tokens) {
+      if (t.type === 'val' || t.type === 'ref') output.push(t);
+      else if (t === '(') ops.push(t);
+      else if (t === ')') {
+        while (ops.length && ops[ops.length - 1] !== '(') {
+          const op = ops.pop(); output.push(op);
+        }
+        ops.pop(); // remove (
+      } else { // operator
+        while (ops.length && ops[ops.length - 1] !== '(' &&
+               precedence[ops[ops.length - 1]] >= precedence[t]) {
+          output.push(ops.pop());
+        }
+        ops.push(t);
+      }
+    }
+    while (ops.length) output.push(ops.pop());
+
+    // Evaluate postfix
+    const stack = [];
+    for (const t of output) {
+      if (t.type === 'val') stack.push(t.value);
+      else if (t.type === 'ref') {
+        // ref already resolved to number during tokenization
+        stack.push(t.value);
+      } else if (+['+', '-', '*', '/'].includes(t.charCodeAt(0))) {
+        const b = stack.pop(), a = stack.pop();
+        switch (t) {
+          case '+': stack.push(a + b); break;
+          case '-': stack.push(a - b); break;
+          case '*': stack.push(a * b); break;
+          case '/': stack.push(b ? a / b : 0); break;
+        }
+      }
+    }
+    return stack[0] || 0;
+  };
+
+  const parseFormulaArgs = (argsStr) => {
+    const arr = [];
+    // Split by comma, but not inside refs/ranges
+    let depth = 0, start = 0;
+    for (let i = 0; i < argsStr.length; i++) {
+      if (argsStr[i] === '(') depth++;
+      if (argsStr[i] === ')') depth--;
+      if (argsStr[i] === ',' && depth === 0) {
+        arr.push(argsStr.slice(start, i).trim());
+        start = i + 1;
+      }
+    }
+    arr.push(argsStr.slice(start).trim());
+    return arr;
+  };
+
+  // ── Insert cell ref while editing formula ──────────────────────────────────
+  const insertCellRefIntoFormula = (key) => {
+    const pos = formulaBar.selectionStart;
+    const text = formulaBar.textContent;
+    const before = text.slice(0, pos);
+    const after = text.slice(pos);
+    formulaBar.textContent = before + key + after;
+    formulaBar.focus();
+    formulaBar.setSelectionRange(pos + key.length, pos + key.length);
+  };
+
+  // ── Toolbar actions ────────────────────────────────────────────────────────
+  const applyToolbarStyle = (style) => {
+    const r = activeCell.r, c = activeCell.c;
+    const key = addr(r, c);
+    let cell = document.querySelector(`.cell[data-key="${key}"]`);
+    if (!cell) return;
+    let val = cell.textContent.trim();
+    if (style === 'clear') {
+      val = '';
+      sheets[activeSheet].cells[key] = { value: '', type: 'val' };
+    } else {
+      // For bold/italic we just mark; actual rich text is complex, so we prepend symbols
+      if (style === 'bold') val = `**${val}**`;
+      else if (style === 'italic') val = `*${val}*`;
+      else if (style.startsWith('bg')) {
+        const color = style.split('-')[1];
+        cell.style.backgroundColor = color;
+        val = val; // value unchanged
+      }
+    }
+    cell.textContent = val;
+    sheets[activeSheet].cells[key] = { value: val, type: 'val' };
+    updateFormulaBar();
+  };
+
+  // ── CSV ─────────────────────────────────────────────────────────────────────
+  const downloadCSV = () => {
+    const key = addr(0, 0);
+    const firstRow = sheets[activeSheet].cells[key];
+    if (!firstRow) return;
+    // Simple row-by-row CSV of used cells (just content, no formulas eval)
+    // We'll output all cells with content
+    const rows = {};
+    for (const [k, v] of Object.entries(sheets[activeSheet].cells)) {
+      const m = k.match(/^([A-Z]+)(\d+)$/i);
+      if (m) {
+        const [, letters, num] = m;
+        const r = parseInt(num) - 1;
+        if (!rows[r]) rows[r] = [];
+        rows[r][letterToColIdx(letters)] = v.value || '';
+      }
+    }
+    let csv = '';
+    const sortedRows = Object.keys(rows).sort((a, b) => a - b);
+    sortedRows.forEach(r => {
+      const cells = rows[r];
+      const maxCol = Math.max(...Object.keys(cells).map(Number), -1) + 1;
+      const rowArr = Array(maxCol).fill('');
+      Object.entries(cells).forEach(([cIdx, val]) => { rowArr[cIdx] = val; });
+      csv += rowArr.join(',') + '\n';
+    });
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'sheet.csv'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const uploadCSV = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target.result;
+      const lines = text.split('\n').filter(l => l.trim());
+      // Clear current sheet data
+      sheets[activeSheet].cells = {};
+      // Re-populate (simple grid resize assumed)
+      lines.forEach((line, rIdx) => {
+        const cols = line.split(',');
+        cols.forEach((val, cIdx) => {
+          const key = addr(rIdx, cIdx);
+          sheets[activeSheet].cells[key] = { value: val.trim(), type: 'val' };
+        });
+      });
+      renderGrid();
+      updateFormulaBar();
+    };
+    reader.readAsText(file);
+  };
+
+  // ── Initialize ──────────────────────────────────────────────────────────────
+  const init = () => {
+    // Toolbar events
+    document.getElementById('boldBtn').addEventListener('click', () => applyToolbarStyle('bold'));
+    document.getElementById('italicBtn').addEventListener('click', () => applyToolbarStyle('italic'));
+    document.getElementById('clearBtn').addEventListener('click', () => applyToolbarStyle('clear'));
+    document.getElementById('bgColorBtn').addEventListener('click', () => {
+      const c = prompt('Enter hex color (e.g. #ff0000):');
+      if (c && /^#[0-9A-Fa-f]{6}$/.test(c)) applyToolbarStyle(`bg-${c}`);
+    });
+    document.getElementById('downloadBtn').addEventListener('click', downloadCSV);
+    document.getElementById('uploadBtn').addEventListener('change', uploadCSV);
+
+    // Formula bar edit events
+    formulaBar.addEventListener('input', updateFormulaBar);
+    formulaBar.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const val = formulaBar.textContent.trim();
+        const r = activeCell.r, c = activeCell.c;
+        const key = addr(r, c);
+        sheets[activeSheet].cells[key] = { value: val.startsWith('=') ? val : `=${val}`, type: 'form' };
+        formulaEditing = false;
+        renderGrid();
+        updateFormulaBar();
+        setActiveCell(r, c); // re-focus with new value
+      } else if (e.key === 'Escape') {
+        formulaEditing = false;
+        updateFormulaBar();
+      }
+    });
+
+    // Keyboard navigation on grid (document level for arrow keys when a cell is focused)
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        const { r, c } = activeCell;
+        let nr = r, nc = c;
+        if (e.key === 'ArrowDown') nr++;
+        else if (e.key === 'ArrowUp') nr--;
+        else if (e.key === 'ArrowLeft') nc--;
+        else if (e.key === 'ArrowRight') nc++;
+        setActiveCell(nr, nc);
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        const r = activeCell.r, c = activeCell.c;
+        const key = addr(r, c);
+        sheets[activeSheet].cells[key] = { value: '', type: 'val' };
+        renderGrid();
+        updateFormulaBar();
+      }
+    });
+
+    // Initial render
+    renderSheetTabs();
+    renderGrid();
+    updateFormulaBar();
+  };
+
+  init();
+</script>
+</body>
+</html>

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Equal Earth Interactive Map</title>
+<style>
+  body { margin:0; font-family:sans-serif; }
+  #mapSvg { width:800px; height:400px; background:#fff; }
+  .overlay {
+    position:absolute; top:20px; left:20px;
+    padding:10px; background:rgba(255,255,255,0.9);
+    border-radius:4px; box-shadow:0 2px 5px rgba(0,0,0,0.3); z-index:10;
+  }
+  .controls {
+    position:absolute; top:20px; right:20px;
+    display:flex; flex-direction:column; gap:5px;
+  }
+  .control-btn { padding:4px 8px; font-size:12px; }
+</style>
+</head>
+<body>
+
+<div class="overlay" id="coordOverlay">Lat: --, Lon: --</div>
+
+<div class="controls">
+  <button class="control-btn" id="resetView">Reset View</button>
+  <br>
+  <label>Lat: <input type="number" id="latInput" step="any" value="40"></label>
+  <label>Lon: <input type="number" id="lonInput" step="any" value="0"></label>
+  <button class="control-btn" id="plotMarker">Plot Marker</button>
+</div>
+
+<svg id="mapSvg" width="800" height="400" xmlns="http://www.w3.org/2000/svg"></svg>
+
+<script src="https://cdn.jsdelivr.net/npm/svg.js@2.7.1/dist/svg.min.js"></script>
+<script>
+/* =====================================================================
+   Equal Earth projection constants and formulas
+   N = 0.9966471  (the shape constant that makes the projection equal‑area)
+   The forward and inverse equations are derived from the original
+   Bojanala‑Butler‑Becket (2018) specification.
+   ===================================================================== */
+
+const N = 0.9966471;
+const W = 800, H = 400;               // viewport pixel size
+let scale = W / (2 * Math.PI);        // initial scale fits whole world
+let translateX = 0;                   // projected‑radian centre (x)
+let translateY = 0;                   // projected‑radian centre (y)
+
+let lastMarkerLon = 0, lastMarkerLat = 40; // stored coords of the plotted marker
+
+/* ---------- Forward projection: lon, lat (deg) → [x, y] (radians) ---------- */
+function forward(lon, lat) {
+  const φ = lat * Math.PI / 180;
+  const λ = lon * Math.PI / 180;
+  const sφ = Math.sin(φ / 2);
+  const y = (2 / N) * Math.asin(N * sφ);                     // vertical coordinate
+  const cφ_half = Math.cos(φ / 2);
+  const g = Math.cos(φ) * Math.sqrt(1 - N * N * sφ * sφ) / cφ_half; // x‑scale factor
+  const x = λ * g;                                            // horizontal coordinate
+  return [x, y];
+}
+
+/* ---------- Inverse projection: [x, y] (radians) → [lon, lat] (deg) ---------- */
+function inverse(x, y) {
+  const φ = 2 * Math.asin((1 / N) * Math.sin(N * y / 2));
+  const sφ = Math.sin(φ / 2);
+  const cφ_half = Math.cos(φ / 2);
+  const g = Math.cos(φ) * Math.sqrt(1 - N * N * sφ * sφ) / cφ_half;
+  const λ = x / g;
+  return [λ * 180 / Math.PI, φ * 180 / Math.PI];
+}
+
+/* ---------- Projected → screen pixels ---------- */
+function projToScreen(x, y) {
+  const sx = (x - translateX) * scale + W / 2;
+  const sy = -(y - translateY) * scale + H / 2;   // minus flips y so North is up
+  return { x: sx, y: sy };
+}
+
+/* ---------- Screen pixels → projected ---------- */
+function screenToProj(sx, sy) {
+  const x = (sx - W / 2) / scale + translateX;
+  const y = -(sy - H / 2) / scale + translateY;
+  return { x, y };
+}
+
+/* =====================================================================
+   SVG.js interaction logic
+   ===================================================================== */
+
+var paper = SVG('mapSvg');          // initialise SVG.js paper
+var overlay = document.getElementById('coordOverlay');
+
+/* Draw the Equal‑Earth graticule (parallels & meridians) */
+function drawGraticule() {
+  paper.clear();                    // remove everything, we’ll rebuild
+
+  // ---- Parallels (every 10° latitude) ----
+  for (let lat = -90; lat <= 90; lat += 10) {
+    const [x1, y1] = forward(-180, lat);   // left edge
+    const [x2, y2] = forward( 180, lat);   // right edge
+    const {x: sx1, y: sy1} = projToScreen(x1, y1);
+    const {x: sx2, y: sy2} = projToScreen(x2, y1); // y1==y2 because parallels are horizontal in projection
+    paper.line(sx1, sy1, sx2, sy2)
+       .attr({stroke:'#aaa', strokeWidth:0.5});
+  }
+
+  // ---- Meridians (every 15° longitude) ----
+  for (let lon = -180; lon <= 180; lon += 15) {
+    const points = [];
+    for (let lat = -90; lat <= 90; lat += 5) {   // sample every 5°
+      const [x, y] = forward(lon, lat);
+      const {x: sx, y: sy} = projToScreen(x, y);
+      points.push(sx, sy);
+    }
+    if (points.length > 1) {
+      paper.path('M' + points.join(' L'))
+           .attr({stroke:'#aaa', strokeWidth:0.5});
+    }
+  }
+
+  // ---- Re‑plot the marker at its stored coordinates ----
+  plotMarker(lastMarkerLon, lastMarkerLat);
+}
+
+/* ---------- Plot (or move) the red marker ---------- */
+function plotMarker(lon, lat) {
+  lastMarkerLon = lon; lastMarkerLat = lat;
+  // remove old marker elements if they exist
+  if (window.markerCircle) window.markerCircle.remove();
+  if (window.markerText)  window.markerText.remove();
+
+  const [x, y] = forward(lon, lat);
+  const {x: sx, y: sy} = projToScreen(x, y);
+
+  window.markerCircle = paper.circle(5).cx(sx).cy(sy).fill('#ff0000');
+  window.markerText   = paper.text(`${lat.toFixed(1)}°, ${lon.toFixed(1)}°`)
+                               .dx(sx + 8).dy(-8).fill('#000');
+}
+
+/* ---------- Zoom (mouse wheel) – keep mouse position fixed in projection ---------- */
+paper.canvas.addEventListener('wheel', function(e) {
+  e.preventDefault();
+  const rect = paper.canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const factor = e.deltaY > 0 ? 0.9 : 1.1;
+  const oldScale = scale;
+
+  // projected coords under the mouse *before* the zoom
+  const projX = (mx - W/2) / oldScale + translateX;
+  const projY = -(my - H/2) / oldScale + translateY;
+
+  scale *= factor;
+
+  // adjust translate so the same projected point stays under the mouse
+  translateX = projX - (mx - W/2) / scale;
+  translateY = projY + (my - H/2) / scale;
+
+  drawGraticule();
+});
+
+/* ---------- Pan (drag) ---------- */
+let isDragging = false;
+let dragStartX, dragStartY;
+let dragStartTX, dragStartTY;
+
+paper.canvas.addEventListener('mousedown', function(e) {
+  e.preventDefault();
+  isDragging = true;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  dragStartTX = translateX;
+  dragStartTY = translateY;
+  paper.canvas.setPointerCapture(e.target.id);
+});
+
+paper.canvas.addEventListener('mousemove', function(e) {
+  if (!isDragging) return;
+  const dx = e.clientX - dragStartX;
+  const dy = e.clientY - dragStartY;
+  // dragging right (dx>0) moves the map right → translateX decreases
+  translateX = dragStartTX - dx / scale;
+  translateY = dragStartTY - dy / scale;
+  drawGraticule();
+});
+
+paper.canvas.addEventListener('mouseup', function() {
+  isDragging = false;
+  paper.canvas.releasePointerCapture?.(paper.canvas.id);
+});
+
+/* ---------- Click on map → inverse project & show coords ---------- */
+paper.canvas.addEventListener('click', function(e) {
+  e.preventDefault();
+  const rect = paper.canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  const {x, y} = screenToProj(sx, sy);
+  const [lon, lat] = inverse(x, y);
+  overlay.innerHTML = `Lat: ${lat.toFixed(2)}°, Lon: ${lon.toFixed(2)}°`;
+  // store these coords so the marker moves there on next redraw
+  lastMarkerLon = lon; lastMarkerLat = lat;
+  drawGraticule();   // redraws graticule and repositions the marker
+});
+
+/* ---------- "Plot Marker" button ---------- */
+document.getElementById('plotMarker').addEventListener('click', function() {
+  const lat = parseFloat(document.getElementById('latInput').value);
+  const lon = parseFloat(document.getElementById('lonInput').value);
+  lastMarkerLon = lon; lastMarkerLat = lat;
+  overlay.innerHTML = `Lat: ${lat}, Lon: ${lon}`;
+  drawGraticule();
+});
+
+/* ---------- "Reset View" button ---------- */
+document.getElementById('resetView').addEventListener('click', function() {
+  scale = W / (2 * Math.PI);
+  translateX = 0;
+  translateY = 0;
+  lastMarkerLon = 0; lastMarkerLat = 40;
+  overlay.innerHTML = 'Lat: --, Lon: --';
+  drawGraticule();
+});
+
+/* --------------------------------------------------------------
+   Initialisation – draw the graticule once and place a default marker
+   -------------------------------------------------------------- */
+drawGraticule();
+plotMarker(0, 40);   // a marker at 40° N, 0° E
+</script>
+
+</body>
+</html>

@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Equal Earth World Map · SVG.js</title>
+<style>
+  :root { --bg:#0f1720; --panel:#ffffff; --ink:#0d2339; --accent:#e63946; --grid:#d8e1ea; --graticule:#b7c5d3; --land:#f3efe6; --land-stroke:#9aa6b3; --ocean:#d8e7f3; --hover:#ffdc7a; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:#e8eef5; }
+  #stage { position:fixed; inset:0; }
+  #stage svg { display:block; width:100%; height:100%; cursor: grab; background: radial-gradient(1200px 800px at 50% 40%, #1b2b3d, #0a111a); }
+  #stage svg.dragging { cursor: grabbing; }
+  .panel { position:absolute; background: rgba(255,255,255,.96); color:#1a2736; border-radius:10px; padding:12px 14px; box-shadow:0 8px 30px rgba(0,0,0,.35); backdrop-filter: blur(6px); font-size:13px; line-height:1.45; }
+  #info { top:16px; left:16px; max-width:320px; }
+  #info h1 { margin:0 0 6px; font-size:16px; letter-spacing:.5px; }
+  #info .sub { color:#596b7d; font-size:12px; margin-bottom:8px; }
+  #info kbd { background:#eef2f6; border:1px solid #c8d2dd; border-bottom-width:2px; border-radius:4px; padding:1px 5px; font-family: ui-monospace, Menlo, monospace; font-size:11px; color:#0d2339; }
+  #readout { top:16px; right:16px; min-width:220px; }
+  #readout h2 { margin:0 0 6px; font-size:13px; color:#0d2339; text-transform:uppercase; letter-spacing:1px; }
+  #readout .row { display:flex; justify-content:space-between; gap:10px; }
+  #readout .k { color:#596b7d; }
+  #readout .v { font-family: ui-monospace, Menlo, monospace; color:#0d2339; }
+  #markers { bottom:16px; left:16px; max-width:360px; }
+  #markers h2 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:1px; }
+  #markers ul { margin:0; padding-left:18px; font-size:12px; max-height:130px; overflow:auto; }
+  #markers li { margin:2px 0; }
+  #markers .hint { color:#596b7d; font-size:11px; margin-top:6px; }
+  .legend { position:absolute; bottom:16px; right:16px; background:rgba(255,255,255,.92); padding:8px 10px; border-radius:8px; font-size:11px; color:#0d2339; }
+  .badge { display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--accent); margin-right:6px; vertical-align: middle; box-shadow:0 0 0 2px #fff; }
+  button.zoom { position:absolute; background:#fff; border:1px solid #c8d2dd; width:30px; height:30px; border-radius:6px; font-size:16px; font-weight:700; cursor:pointer; color:#0d2339; }
+  button.zoom:hover { background:#f3f7fb; }
+  #zin  { top:16px; left:350px; }
+  #zout { top:16px; left:388px; }
+  #zr   { top:16px; left:426px; font-size:11px; width:auto; padding:0 10px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="info" class="panel">
+  <h1>Equal Earth Projection</h1>
+  <div class="sub">SVG.js · forward &amp; inverse projection · pan &amp; zoom</div>
+  <div style="margin-bottom:6px"><kbd>Drag</kbd> to pan &nbsp;·&nbsp; <kbd>Wheel</kbd> to zoom &nbsp;·&nbsp; <kbd>Click</kbd> to read lat/lon</div>
+  <div style="font-size:12px; color:#3a4a5c;">Hold <kbd>Shift</kbd>+click to drop a red marker. Coordinates are converted through the Equal Earth equations (Šavrič et al., 2018) at any zoom level.</div>
+</div>
+
+<div id="readout" class="panel">
+  <h2>Pointer (inverse projection)</h2>
+  <div class="row"><span class="k">Lon (λ):</span><span class="v" id="lon">—</span></div>
+  <div class="row"><span class="k">Lat (φ):</span><span class="v" id="lat">—</span></div>
+  <div class="row"><span class="k">Projected x,y:</span><span class="v" id="xy">—</span></div>
+</div>
+
+<button id="zin" class="zoom" title="Zoom in">+</button>
+<button id="zout" class="zoom" title="Zoom out">−</button>
+<button id="zr" class="zoom" title="Reset view">Reset</button>
+
+<div id="markers" class="panel">
+  <h2><span class="badge"></span>Markers</h2>
+  <ul id="markerlist"><li style="color:#596b7d; list-style:none;">Shift+click anywhere to add a marker</li></ul>
+  <div class="hint">Markers store geographic coordinates, so they stay correctly placed after pan/zoom.</div>
+</div>
+
+<div class="legend">Equal Earth · pseudocylindrical, equal-area · central meridian 0°</div>
+
+<!-- Load SVG.js from CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3.2.0/dist/svg.min.js"></script>
+
+<script>
+/* ================================================================
+   Equal Earth projection (forward & inverse)
+   ----------------------------------------------------------------
+   Reference: Bojan Šavrič, Tom Patterson, Bernhard Jenny (2018)
+   The Equal Earth map projection. DOI: 10.1080/13658816.2018.1504949
+   ================================================================ */
+const R    = 256;                     // base radius in px (controls map size in world units)
+const A1 =  1.340264, A2 = -0.081106, A3 =  0.000893, A4 =  0.003796;
+const M   = Math.sqrt(3)/2;
+const DEG = Math.PI/180, RAD = 180/Math.PI;
+
+// Forward: λ,φ in degrees, λ0 central meridian in degrees.
+// Returns [x, y] in *projected* map units.
+function project(lonDeg, latDeg, lon0 = 0) {
+  const lam = (lonDeg - lon0) * DEG;
+  const phi = latDeg * DEG;
+  const sinPhi = Math.sin(phi);
+  let theta = Math.asin(M * sinPhi);             // parametric latitude
+  const t2 = theta*theta, t4 = t2*t2, t6 = t4*t2;
+  const xNum = Math.cos(theta);
+  const xDen = M * (A1 + 3*A2*t2 + t4*(5*A3 + 7*A4*t2));
+  const yVal = theta * (A1 + A2*t2 + A3*t4 + A4*t6);
+  // Negate y because SVG's y axis points down, but north should be up.
+  return [ R * (lam * xNum / xDen), -R * yVal ];
+}
+
+// Inverse: given projected [x,y] in map units, return [lon, lat] in degrees.
+// Note that we flipped y in forward() so north is up; flip back here.
+function unproject(xPx, yPx, lon0 = 0) {
+  const x = xPx / R, y = -yPx / R;
+  // Newton-Raphson to solve for θ from y
+  let theta = y;
+  for (let i = 0; i < 12; i++) {
+    const t2 = theta*theta, t4 = t2*t2, t6 = t4*t2;
+    const f  = theta*(A1 + A2*t2 + A3*t4 + A4*t6) - y;
+    const fp = A1 + 3*A2*t2 + 5*A3*t4 + 7*A4*t6;
+    theta -= f / fp;
+    if (Math.abs(f) < 1e-12) break;
+  }
+  const lam = x * M * (A1 + 3*A2*theta*theta + theta**4*(5*A3 + 7*A4*theta*theta)) / Math.cos(theta);
+  const phi = Math.asin(Math.sin(theta) / M);
+  return [ lon0 + lam*RAD, phi*RAD ];
+}
+
+/* ================================================================
+   World map geometry (very compact built-in dataset)
+   6 continents as rough polygons. The geometry is in lon/lat degrees.
+   These are hand-drawn simplified shapes that read well at global
+   scale — not for precise GIS use, but enough to demonstrate that
+   the projection is correct.
+   ================================================================ */
+const GEO = {
+  type: "FeatureCollection",
+  features: [
+    // North America
+    { name:"North America", polys: [[
+      [-168,65],[-158,71],[-140,70],[-128,70],[-110,73],[-95,73],[-80,73],[-70,68],[-55,50],[-60,45],
+      [-70,42],[-78,32],[-80,25],[-88,29],[-98,26],[-106,23],[-115,30],[-122,35],[-124,45],[-130,53],
+      [-140,56],[-152,58],[-162,55],[-168,60],[-168,65]
+    ],[
+      // Central America tail
+      [-98,26],[-94,18],[-88,15],[-84,10],[-78,8],[-82,14],[-88,20],[-96,25],[-98,26]
+    ]] },
+    // South America
+    { name:"South America", polys: [[
+      [-82,12],[-75,10],[-68,11],[-58,8],[-52,0],[-50,-10],[-48,-22],[-58,-32],[-70,-53],[-74,-50],
+      [-72,-40],[-72,-28],[-75,-18],[-78,-10],[-80,-4],[-82,5],[-82,12]
+    ]] },
+    // Europe
+    { name:"Europe", polys: [[
+      [-10,36],[-8,43],[-2,48],[4,52],[8,54],[12,58],[20,60],[28,66],[32,70],[40,68],[44,62],[42,54],
+      [36,48],[30,44],[22,40],[14,38],[6,38],[-2,36],[-8,36],[-10,36]
+    ]] },
+    // Africa
+    { name:"Africa", polys: [[
+      [-18,22],[-16,28],[-8,33],[0,33],[10,34],[20,33],[30,32],[34,28],[36,18],[38,10],[42,0],[40,-12],
+      [38,-22],[32,-32],[22,-34],[16,-30],[12,-18],[8,-8],[0,0],[-6,4],[-12,6],[-16,12],[-18,22]
+    ]] },
+    // Asia
+    { name:"Asia", polys: [[
+      [40,68],[50,72],[75,75],[100,76],[130,72],[150,68],[170,68],[178,62],[170,56],[155,52],[140,48],
+      [130,40],[128,30],[124,20],[120,10],[108,4],[100,8],[96,16],[88,22],[80,22],[74,18],[68,24],
+      [58,24],[48,28],[44,36],[38,40],[32,44],[30,54],[36,60],[40,68]
+    ],[
+      // Japan (small blip)
+      [130,34],[134,36],[138,38],[144,40],[142,36],[136,34],[130,34]
+    ]] },
+    // Australia
+    { name:"Australia", polys: [[
+      [112,-22],[122,-18],[132,-12],[140,-12],[148,-18],[153,-28],[148,-38],[138,-38],[128,-33],[118,-34],[112,-22]
+    ]] },
+    // Antarctica (stylized)
+    { name:"Antarctica", polys: [[
+      [-180,-64],[-140,-70],[-100,-73],[-60,-78],[-20,-72],[20,-70],[60,-68],[100,-68],[140,-70],[180,-68],
+      [180,-62],[140,-60],[100,-62],[60,-63],[20,-65],[-20,-63],[-60,-62],[-100,-60],[-140,-60],[-180,-62],[-180,-64]
+    ]] },
+    // Greenland
+    { name:"Greenland", polys: [[
+      [-55,82],[-30,82],[-22,76],[-25,70],[-40,60],[-50,62],[-56,70],[-55,82]
+    ]] },
+    // Madagascar
+    { name:"Madagascar", polys: [[
+      [42,-12],[50,-14],[50,-22],[46,-26],[42,-20],[42,-12]
+    ]] },
+    // UK
+    { name:"British Isles", polys: [[
+      [-8,50],[-2,52],[0,58],[-6,60],[-8,56],[-10,52],[-8,50]
+    ]] },
+    // Japan (already as part of Asia's second ring)
+  ]
+};
+
+/* ================================================================
+   SVG.js setup
+   ================================================================ */
+const draw = SVG().addTo('#stage').viewbox(-R*Math.PI*1.05, -R*1.7, R*2*Math.PI*1.05, R*3.4);
+const world = draw.group();
+const graticuleG = world.group().addClass('graticules');
+const landG = world.group().addClass('land');
+const markersG = world.group().addClass('markers');
+const highlightG = world.group().addClass('highlight');
+
+// World ocean background (slightly larger than projection extent)
+world.rect(R*2*Math.PI + 40, R*3.4).cx(0).cy(0).fill('#cfe1f0').radius(12).stroke({color:'#b1c7da', width:1});
+
+// Graticule (lat/lon grid every 15° long, 15° lat)
+for (let d = -180; d <= 180; d += 15) {
+  const pts = [];
+  for (let lat = -85; lat <= 85; lat += 2) {
+    const [x,y] = project(d, lat);
+    pts.push([x, y]);
+  }
+  const p = graticuleG.polyline(pts).fill('none').stroke({ color: d===0 ? '#6a8aa3' : '#bcccdb', width: d===0 ? 1.2 : 0.6, opacity: 0.7 });
+  p.attr('vector-effect', 'non-scaling-stroke');
+}
+for (let lat = -75; lat <= 75; lat += 15) {
+  const pts = [];
+  for (let lon = -180; lon <= 180; lon += 2) {
+    pts.push(project(lon, lat));
+  }
+  const p = graticuleG.polyline(pts).fill('none').stroke({ color: lat===0 ? '#6a8aa3' : '#bcccdb', width: lat===0 ? 1.2 : 0.6, opacity: 0.7 });
+  p.attr('vector-effect', 'non-scaling-stroke');
+}
+
+// Build land polygons
+GEO.features.forEach(f => {
+  f.polys.forEach(ring => {
+    const poly = ring.map(([lon, lat]) => project(lon, lat));
+    const p = landG.polygon(poly).fill(f.name === 'Antarctica' ? '#e7edf2' : '#f3efe6').stroke({ color: '#9aa6b3', width: 0.8 });
+    p.attr('vector-effect', 'non-scaling-stroke');
+    p.attr('stroke-linejoin', 'round');
+  });
+});
+
+// Equator, Prime Meridian already emphasized by graticule.
+
+/* ================================================================
+   Zoom & pan via viewBox manipulation. We keep a single affine
+   (scale + translate) defined in *screen* pixels; before rendering,
+   we compute a new viewBox: [vx, vy, vw, vh]. Forward projection
+   is untouched (we just multiply screen coords by 1/scale and add
+   the translate to get projected coords). Inverse projection uses
+   the inverse transform before calling unproject().
+   ================================================================ */
+let view = { k: 1, tx: 0, ty: 0 };
+function getSvgSize() {
+  const r = document.getElementById('stage').getBoundingClientRect();
+  return { w: r.width, h: r.height };
+}
+const BASE_W = 2*Math.PI*R*1.05;
+const BASE_H = 3.4*R;
+function applyView() {
+  const vw = BASE_W / view.k;
+  const vh = BASE_H / view.k;
+  const vx = -vw/2 + view.tx/view.k;
+  const vy = -vh/2 + view.ty/view.k;
+  draw.viewbox(vx, vy, vw, vh);
+}
+applyView();
+
+// Convert screen pixel (clientX, clientY) -> projected map coords
+function screenToProjected(cx, cy) {
+  const { w, h } = getSvgSize();
+  const { k, tx, ty } = view;
+  const dx = cx - w/2 - tx;
+  const dy = cy - h/2 - ty;
+  const ux = dx * (BASE_W/k) / w;
+  const uy = dy * (BASE_H/k) / h;
+  return [ux, uy];
+}
+
+function projectedToScreen(px, py) {
+  const { w, h } = getSvgSize();
+  const { k, tx, ty } = view;
+  const cx = px * w / (BASE_W/k) + w/2 + tx;
+  const cy = py * h / (BASE_H/k) + h/2 + ty;
+  return [cx, cy];
+}
+
+/* Mouse interactions */
+const stage = document.getElementById('stage');
+let dragging = false, dragStart = null;
+
+draw.on('mousedown', (e) => {
+  if (e.button !== 0) return;
+  dragging = true;
+  stage.classList.add('dragging');
+  dragStart = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+});
+window.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  view.tx = dragStart.tx + (e.clientX - dragStart.x);
+  view.ty = dragStart.ty + (e.clientY - dragStart.y);
+  applyView();
+});
+window.addEventListener('mouseup', () => { dragging = false; stage.classList.remove('dragging'); });
+
+stage.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const factor = Math.exp(-e.deltaY * 0.001);
+  zoomAt(e.clientX, e.clientY, factor);
+}, { passive: false });
+
+function zoomAt(cx, cy, factor) {
+  const before = screenToProjected(cx, cy);
+  const newK = Math.max(0.6, Math.min(24, view.k * factor));
+  view.k = newK;
+  applyView();
+  const after = screenToProjected(cx, cy);
+  // Shift so that the projected point under the cursor stays in the same projected coords.
+  // after = before * (k ratio?): we need to adjust tx/ty so (cx,cy) maps back to 'before' after zoom.
+  // The pixel delta caused by zoom: after - before in projected units (converted to px) is the needed shift.
+  const { w, h } = getSvgSize();
+  view.tx -= (after[0] - before[0]) * w / (BASE_W / view.k);
+  view.ty -= (after[1] - before[1]) * h / (BASE_H / view.k);
+  applyView();
+}
+
+// Click / readout / add markers
+let clickStart = null;
+draw.on('mousedown', (e) => {
+  clickStart = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
+});
+draw.on('click', (e) => {
+  if (!clickStart) return;
+  if (Math.abs(e.clientX - clickStart.x) + Math.abs(e.clientY - clickStart.y) > 4) return;
+  const [px, py] = screenToProjected(e.clientX, e.clientY);
+  const [lon, lat] = unproject(px, py);
+  setReadout(lon, lat, px, py);
+  if (e.shiftKey) addMarker(lon, lat);
+});
+draw.on('mousemove', (e) => {
+  if (dragging) return;
+  const [px, py] = screenToProjected(e.clientX, e.clientY);
+  const [lon, lat] = unproject(px, py);
+  setReadout(lon, lat, px, py);
+});
+
+document.getElementById('zin').onclick  = () => { view.k = Math.min(24, view.k*1.25); applyView(); };
+document.getElementById('zout').onclick = () => { view.k = Math.max(0.6, view.k/1.25); applyView(); };
+document.getElementById('zr').onclick   = () => { view = {k:1, tx:0, ty:0}; applyView(); };
+window.addEventListener('resize', () => applyView());
+
+function setReadout(lon, lat, px, py) {
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
+  document.getElementById('lon').textContent = fmt(lon, 4) + '°';
+  document.getElementById('lat').textContent = fmt(lat, 4) + '°';
+  document.getElementById('xy').textContent  = fmt(px,1) + ', ' + fmt(py,1);
+}
+function fmt(v, d) { return (Math.round(v*Math.pow(10,d))/Math.pow(10,d)).toFixed(d); }
+
+/* Markers */
+const markers = [];
+const listEl = document.getElementById('markerlist');
+function addMarker(lon, lat) {
+  if (Math.abs(lat) > 90) return;
+  markers.push({ lon, lat });
+  redrawMarkers();
+}
+function redrawMarkers() {
+  markersG.clear();
+  listEl.innerHTML = '';
+  markers.forEach((m, i) => {
+    const [x,y] = project(m.lon, m.lat);
+    const c = markersG.circle(10).cx(x).cy(y).fill({ color:'#e63946' }).stroke({ color:'#fff', width:2 });
+    c.attr('vector-effect','non-scaling-stroke');
+    const c2 = markersG.circle(3).cx(x).cy(y).fill('#fff');
+    c2.attr('vector-effect','non-scaling-stroke');
+    if (m.name) {
+      const lbl = markersG.text(m.name).font({ size: 11, family: 'ui-sans-serif, system-ui', weight: 600 })
+        .fill('#0d2339').move(x + 10, y - 8);
+      lbl.attr('vector-effect','non-scaling-stroke');
+    }
+    const li = document.createElement('li');
+    const label = m.name ? m.name : `Marker ${i+1}`;
+    li.innerHTML = `<span style="color:#e63946">●</span> <b>${label}</b> <span style="color:#596b7d">${fmt(m.lat,2)}°, ${fmt(m.lon,2)}°</span>`;
+    listEl.appendChild(li);
+  });
+}
+// Seed with a few famous cities so the map is alive on load
+[
+  { lat: 40.7128, lon: -74.0060, name: 'New York' },
+  { lat: 51.5074, lon: -0.1278,  name: 'London' },
+  { lat: 35.6762, lon: 139.6503, name: 'Tokyo' },
+  { lat:-33.8688, lon: 151.2093, name: 'Sydney' },
+  { lat:-22.9068, lon: -43.1729, name: 'Rio' },
+  { lat: 30.0444, lon: 31.2357, name: 'Cairo' },
+  { lat: -1.2921, lon: 36.8219, name: 'Nairobi' },
+  { lat:  1.3521, lon: 103.8198, name: 'Singapore' },
+  { lat: 48.8566, lon: 2.3522,   name: 'Paris' },
+  { lat: 55.7558, lon: 37.6173,  name: 'Moscow' },
+  { lat: -34.6037, lon: -58.3816, name: 'Buenos Aires' },
+].forEach(m => markers.push(m));
+redrawMarkers();
+
+// Style: ensure SVG root does not capture scroll
+document.querySelector('#stage svg').setAttribute('preserveAspectRatio', 'xMidYMid meet');
+</script>
+</body>
+</html>

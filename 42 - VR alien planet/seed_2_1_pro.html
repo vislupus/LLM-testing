@@ -1,0 +1,1743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Xenara — Alien Planet Explorer (WebXR)</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#000; font-family: 'Courier New', monospace; color:#cfe; }
+  canvas { display:block; width:100%; height:100%; }
+  #ui { position:fixed; inset:0; pointer-events:none; z-index:10; }
+  #enterXR {
+    position:absolute; top:50%; left:50%; transform:translate(-50%, -50%);
+    padding:20px 40px; background:linear-gradient(135deg, #4a148c, #006064);
+    color:#fff; border:2px solid #80deea; border-radius:12px; font-size:22px;
+    cursor:pointer; pointer-events:auto; font-family:inherit; letter-spacing:2px;
+    box-shadow:0 0 40px #80deea80, inset 0 0 20px #00000080;
+    text-transform:uppercase;
+  }
+  #enterXR:hover { background:linear-gradient(135deg, #7b1fa2, #00838f); box-shadow:0 0 60px #80deea; }
+  #enterXR:disabled { opacity:0.5; cursor:not-allowed; }
+  #hud {
+    position:absolute; top:20px; left:20px; right:20px;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    text-shadow:0 0 8px #000, 0 0 4px #00e5ff;
+    font-size:14px; pointer-events:none; opacity:0; transition:opacity 0.5s;
+  }
+  #hud.visible { opacity:1; }
+  .panel { background:#00000080; padding:12px 18px; border:1px solid #80deea80; border-radius:8px; backdrop-filter:blur(8px); }
+  #reticle { position:absolute; top:50%; left:50%; width:8px; height:8px; margin:-4px 0 0 -4px; border:2px solid #80deea; border-radius:50%; box-shadow:0 0 12px #80deea; opacity:0.6; }
+  #prompt {
+    position:absolute; bottom:15%; left:50%; transform:translateX(-50%);
+    padding:10px 20px; background:#000000a0; border:1px solid #ffd54f; border-radius:8px;
+    color:#ffd54f; font-size:16px; text-shadow:0 0 8px #000;
+    opacity:0; transition:opacity 0.3s;
+  }
+  #prompt.visible { opacity:1; }
+  #artifacts { position:absolute; bottom:20px; left:20px; font-size:16px; text-shadow:0 0 8px #000; }
+  #hint { position:absolute; bottom:20px; right:20px; font-size:12px; opacity:0.7; text-align:right; }
+  #vignette { position:absolute; inset:0; pointer-events:none; box-shadow:inset 0 0 150px #000; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="ui">
+  <button id="enterXR">Enter VR — Explore Xenara</button>
+  <div id="hud">
+    <div class="panel" id="biomeInfo">Biome: <span id="biomeName">—</span></div>
+    <div class="panel" id="fpsInfo">60 FPS</div>
+  </div>
+  <div id="reticle"></div>
+  <div id="prompt"></div>
+  <div id="artifacts" class="panel">Artifacts: <span id="artifactCount">0</span></div>
+  <div id="hint" class="panel">
+    Left stick: Move &nbsp; Right stick: Turn<br>
+    Trigger: Interact &nbsp; Grip: Grab
+  </div>
+  <div id="vignette"></div>
+</div>
+
+<script>
+"use strict";
+// =========================================================================
+// Xenara — WebXR Alien Planet Explorer
+// Vanilla WebGL + WebXR, no libraries
+// =========================================================================
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { xrCompatible: true, antialias: true, alpha: false });
+if (!gl) { document.body.innerHTML = '<p style="color:#fff;padding:20px">WebGL 2 required.</p>'; throw new Error('no webgl2'); }
+
+// -------------------------------------------------------------------------
+// Matrix / Vector math (column-major mat4 as Float32Array length 16)
+// -------------------------------------------------------------------------
+const M = {
+  create() { const m = new Float32Array(16); m[0]=m[5]=m[10]=m[15]=1; return m; },
+  ident(m) { m.fill(0); m[0]=m[5]=m[10]=m[15]=1; return m; },
+  set(m, v) { for (let i=0;i<16;i++) m[i]=v[i]; return m; },
+  mul(a, b) {
+    const o = new Float32Array(16);
+    for (let c=0;c<4;c++) for (let r=0;r<4;r++) {
+      o[c*4+r] = a[0*4+r]*b[c*4+0] + a[1*4+r]*b[c*4+1] + a[2*4+r]*b[c*4+2] + a[3*4+r]*b[c*4+3];
+    }
+    return o;
+  },
+  perspective(fov, aspect, near, far) {
+    const m = new Float32Array(16);
+    const f = 1.0 / Math.tan(fov/2);
+    m[0]=f/aspect; m[5]=f; m[10]=(far+near)/(near-far); m[11]=-1;
+    m[14]=(2*far*near)/(near-far);
+    return m;
+  },
+  translation(x,y,z) { const m=M.create(); m[12]=x; m[13]=y; m[14]=z; return m; },
+  scaling(x,y,z) { const m=M.create(); m[0]=x; m[5]=y; m[10]=z; return m; },
+  rotX(a) { const m=M.create(); const c=Math.cos(a),s=Math.sin(a); m[5]=c; m[6]=s; m[9]=-s; m[10]=c; return m; },
+  rotY(a) { const m=M.create(); const c=Math.cos(a),s=Math.sin(a); m[0]=c; m[2]=-s; m[8]=s; m[10]=c; return m; },
+  rotZ(a) { const m=M.create(); const c=Math.cos(a),s=Math.sin(a); m[0]=c; m[1]=s; m[4]=-s; m[5]=c; return m; },
+  translate(m,x,y,z){ m[12]+=x; m[13]+=y; m[14]+=z; return m; },
+  scale(m,x,y,z){ m[0]*=x; m[1]*=x; m[2]*=x; m[4]*=y; m[5]*=y; m[6]*=y; m[8]*=z; m[9]*=z; m[10]*=z; return m; },
+  lookAt(eye, center, up) {
+    const [ex,ey,ez]=eye, [cx,cy,cz]=center, [ux,uy,uz]=up;
+    let zx=ex-cx, zy=ey-cy, zz=ez-cz;
+    let zl=Math.hypot(zx,zy,zz); zx/=zl; zy/=zl; zz/=zl;
+    let xx=uy*zz-uz*zy, xy=uz*zx-ux*zz, xz=ux*zy-uy*zx;
+    let xl=Math.hypot(xx,xy,xz); xx/=xl; xy/=xl; xz/=xl;
+    const yx=zy*xz-zz*xy, yy=zz*xx-zx*xz, yz=zx*xy-zy*xx;
+    const m = new Float32Array(16);
+    m[0]=xx; m[1]=yx; m[2]=zx; m[3]=0;
+    m[4]=xy; m[5]=yy; m[6]=zy; m[7]=0;
+    m[8]=xz; m[9]=yz; m[10]=zz; m[11]=0;
+    m[12]=-(xx*ex+xy*ey+xz*ez);
+    m[13]=-(yx*ex+yy*ey+yz*ez);
+    m[14]=-(zx*ex+zy*ey+zz*ez);
+    m[15]=1;
+    return m;
+  },
+  invert(a) {
+    const o=new Float32Array(16);
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3];
+    const a10=a[4],a11=a[5],a12=a[6],a13=a[7];
+    const a20=a[8],a21=a[9],a22=a[10],a23=a[11];
+    const a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+    const b00=a00*a11-a01*a10, b01=a00*a12-a02*a10, b02=a00*a13-a03*a10, b03=a01*a12-a02*a11, b04=a01*a13-a03*a11, b05=a02*a13-a03*a12;
+    const b06=a20*a31-a21*a30, b07=a20*a32-a22*a30, b08=a20*a33-a23*a30, b09=a21*a32-a22*a31, b10=a21*a33-a23*a31, b11=a22*a33-a23*a32;
+    let det = b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06;
+    if (!det) return M.ident(o);
+    det = 1.0/det;
+    o[0]=(a11*b11 - a12*b10 + a13*b09)*det;
+    o[1]=(a02*b10 - a01*b11 - a03*b09)*det;
+    o[2]=(a31*b05 - a32*b04 + a33*b03)*det;
+    o[3]=(a22*b04 - a21*b05 - a23*b03)*det;
+    o[4]=(a12*b08 - a10*b11 - a13*b07)*det;
+    o[5]=(a00*b11 - a02*b08 + a03*b07)*det;
+    o[6]=(a32*b02 - a30*b05 - a33*b01)*det;
+    o[7]=(a20*b05 - a22*b02 + a23*b01)*det;
+    o[8]=(a10*b10 - a11*b08 + a13*b06)*det;
+    o[9]=(a01*b08 - a00*b10 - a03*b06)*det;
+    o[10]=(a30*b04 - a31*b02 + a33*b00)*det;
+    o[11]=(a21*b02 - a20*b04 - a23*b00)*det;
+    o[12]=(a11*b07 - a10*b09 - a12*b06)*det;
+    o[13]=(a00*b09 - a01*b07 + a02*b06)*det;
+    o[14]=(a31*b01 - a30*b03 - a32*b00)*det;
+    o[15]=(a20*b03 - a21*b01 + a22*b00)*det;
+    return o;
+  },
+  transformPoint(m, p) {
+    const [x,y,z]=p;
+    const w = m[3]*x + m[7]*y + m[11]*z + m[15];
+    return [
+      (m[0]*x + m[4]*y + m[8]*z + m[12])/w,
+      (m[1]*x + m[5]*y + m[9]*z + m[13])/w,
+      (m[2]*x + m[6]*y + m[10]*z + m[14])/w
+    ];
+  },
+  transformDir(m, d) {
+    const [x,y,z]=d;
+    return [
+      m[0]*x + m[4]*y + m[8]*z,
+      m[1]*x + m[5]*y + m[9]*z,
+      m[2]*x + m[6]*y + m[10]*z
+    ];
+  }
+};
+
+// -------------------------------------------------------------------------
+// Shaders
+// -------------------------------------------------------------------------
+const VERT_SRC = `#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aNormal;
+in vec3 aColor;
+in float aEmissive;
+
+uniform mat4 uProj;
+uniform mat4 uView;
+uniform mat4 uModel;
+uniform mat3 uNormalMat;
+
+out vec3 vNormal;
+out vec3 vColor;
+out vec3 vWorldPos;
+out float vEmissive;
+out float vFog;
+
+uniform float uTime;
+
+void main() {
+  vec4 worldPos = uModel * vec4(aPos, 1.0);
+  vWorldPos = worldPos.xyz;
+  vNormal = normalize(uNormalMat * aNormal);
+  vColor = aColor;
+  vEmissive = aEmissive;
+  gl_Position = uProj * uView * worldPos;
+  float d = length(worldPos.xz - vec3(uView[3]).xz);
+  vFog = clamp((d - 30.0) / 120.0, 0.0, 1.0);
+}
+`;
+
+const FRAG_SRC = `#version 300 es
+precision highp float;
+in vec3 vNormal;
+in vec3 vColor;
+in vec3 vWorldPos;
+in float vEmissive;
+in float vFog;
+
+uniform vec3 uLightDir;
+uniform vec3 uAmbient;
+uniform vec3 uFogColor;
+uniform vec3 uLightColor;
+uniform float uTime;
+
+out vec4 frag;
+
+void main() {
+  vec3 N = normalize(vNormal);
+  vec3 L = normalize(uLightDir);
+  float diff = max(dot(N, L), 0.0);
+  // rim light
+  vec3 V = normalize(-vWorldPos);
+  float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.4;
+  vec3 color = vColor * (uAmbient + diff * uLightColor) + vColor * vEmissive * 1.8;
+  color += rim * vEmissive * vec3(0.6, 0.8, 1.0);
+  // fog
+  color = mix(color, uFogColor, vFog);
+  frag = vec4(color, 1.0);
+}
+`;
+
+// Particle shader
+const PART_VERT = `#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aColor;
+in float aSize;
+in float aEmissive;
+
+uniform mat4 uProj;
+uniform mat4 uView;
+
+out vec3 vColor;
+out float vEmissive;
+
+void main() {
+  vec4 viewPos = uView * vec4(aPos, 1.0);
+  gl_Position = uProj * viewPos;
+  gl_PointSize = aSize / gl_Position.w * 400.0;
+  vColor = aColor;
+  vEmissive = aEmissive;
+}
+`;
+const PART_FRAG = `#version 300 es
+precision highp float;
+in vec3 vColor;
+in float vEmissive;
+out vec4 frag;
+void main() {
+  vec2 c = gl_PointCoord - vec2(0.5);
+  float d = length(c);
+  if (d > 0.5) discard;
+  float a = smoothstep(0.5, 0.0, d);
+  vec3 col = vColor * (1.0 + vEmissive * 2.0);
+  frag = vec4(col, a * (0.4 + vEmissive * 0.6));
+}
+`;
+
+// Sky shader
+const SKY_VERT = `#version 300 es
+precision highp float;
+in vec3 aPos;
+out vec3 vDir;
+uniform mat4 uProj;
+uniform mat4 uView;
+void main() {
+  vDir = aPos;
+  mat4 v = uView; v[12]=v[13]=v[14]=0.0;
+  gl_Position = (uProj * v * vec4(aPos, 0.0)).xyww;
+}
+`;
+const SKY_FRAG = `#version 300 es
+precision highp float;
+in vec3 vDir;
+out vec4 frag;
+uniform float uTime;
+uniform vec3 uFogColor;
+uniform vec3 uSunDir;
+
+// hash
+float h(vec3 p){p=fract(p*0.3183099+.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z));}
+void main(){
+  vec3 d = normalize(vDir);
+  float t = clamp(d.y*0.5+0.5, 0.0, 1.0);
+  vec3 sky;
+  // twilight gradient alien
+  vec3 horizon = vec3(0.45, 0.25, 0.55);
+  vec3 zenith = vec3(0.08, 0.05, 0.2);
+  vec3 upper = vec3(0.02, 0.0, 0.08);
+  sky = mix(horizon, zenith, pow(t, 0.7));
+  sky = mix(sky, upper, pow(t, 3.0));
+  // nebula band
+  float band = exp(-pow(dot(d, normalize(vec3(0.4, 0.2, -0.9)))*1.5, 2.0));
+  sky += band * vec3(0.8, 0.3, 0.6) * 0.35;
+  float band2 = exp(-pow(dot(d, normalize(vec3(-0.7, -0.1, 0.2)))*1.2, 2.0));
+  sky += band2 * vec3(0.2, 0.6, 0.9) * 0.2;
+  // stars
+  vec3 sp = floor(d * 300.0);
+  float s = h(sp);
+  float star = pow(smoothstep(0.995, 1.0, s), 8.0) * t;
+  sky += vec3(star);
+  // few bright colored stars
+  float cs = h(sp * 1.3);
+  if (cs > 0.9992) {
+    vec3 cc = vec3(h(sp*2.0), h(sp*3.0+5.0), h(sp*4.0+7.0));
+    sky += cc * 2.0 * t;
+  }
+  // sun/moon
+  float sun = max(dot(d, normalize(uSunDir)), 0.0);
+  sky += vec3(0.9, 0.5, 0.7) * pow(sun, 8.0) * 0.5;
+  sky += vec3(1.0, 0.7, 0.9) * pow(sun, 256.0) * 3.0;
+  // blend with fog near horizon
+  sky = mix(uFogColor * 0.8, sky, smoothstep(0.0, 0.2, d.y + 0.1));
+  frag = vec4(sky, 1.0);
+}
+`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+    throw new Error('shader compile error');
+  }
+  return s;
+}
+function program(vsrc, fsrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsrc));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(p));
+    throw new Error('program link error');
+  }
+  return p;
+}
+
+const prog = program(VERT_SRC, FRAG_SRC);
+const partProg = program(PART_VERT, PART_FRAG);
+const skyProg = program(SKY_VERT, SKY_FRAG);
+
+// cache uniform/attribute locations
+const L = (prg, names, isUniform) => {
+  const o = {};
+  for (const n of names) o[n] = isUniform ? gl.getUniformLocation(prg, n) : gl.getAttribLocation(prg, n);
+  return o;
+};
+const mainLocs = {
+  u: L(prog, ['uProj','uView','uModel','uNormalMat','uLightDir','uAmbient','uFogColor','uLightColor','uTime'], true),
+  a: L(prog, ['aPos','aNormal','aColor','aEmissive'], false)
+};
+const partLocs = {
+  u: L(partProg, ['uProj','uView'], true),
+  a: L(partProg, ['aPos','aColor','aSize','aEmissive'], false)
+};
+const skyLocs = {
+  u: L(skyProg, ['uProj','uView','uTime','uFogColor','uSunDir'], true),
+  a: L(skyProg, ['aPos'], false)
+};
+
+// -------------------------------------------------------------------------
+// Mesh helpers
+// -------------------------------------------------------------------------
+function createMesh(vertices, indices) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const vb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+  // vertex layout: pos(3) normal(3) color(3) emissive(1) = stride 10 floats
+  const stride = 10 * 4;
+  gl.enableVertexAttribArray(mainLocs.a.aPos);
+  gl.vertexAttribPointer(mainLocs.a.aPos, 3, gl.FLOAT, false, stride, 0);
+  gl.enableVertexAttribArray(mainLocs.a.aNormal);
+  gl.vertexAttribPointer(mainLocs.a.aNormal, 3, gl.FLOAT, false, stride, 12);
+  gl.enableVertexAttribArray(mainLocs.a.aColor);
+  gl.vertexAttribPointer(mainLocs.a.aColor, 3, gl.FLOAT, false, stride, 24);
+  gl.enableVertexAttribArray(mainLocs.a.aEmissive);
+  gl.vertexAttribPointer(mainLocs.a.aEmissive, 1, gl.FLOAT, false, stride, 36);
+  let ib = null;
+  let count = vertices.length / 10;
+  if (indices) {
+    ib = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+    count = indices.length;
+  }
+  gl.bindVertexArray(null);
+  return { vao, vb, ib, count, indexed: !!indices, vertices, indices };
+}
+
+// Geometry generators — return Float32Array (verts) and Uint16Array (indices)
+function concatVerts(arrs) {
+  let len = 0; for (const a of arrs) len += a.length;
+  const o = new Float32Array(len);
+  let off = 0; for (const a of arrs) { o.set(a, off); off += a.length; }
+  return o;
+}
+function concatIdx(arrs, offsets) {
+  let len = 0; for (const a of arrs) len += a.length;
+  const o = new Uint32Array(len);
+  let off = 0;
+  for (let i=0;i<arrs.length;i++) {
+    const a = arrs[i];
+    const b = offsets[i];
+    for (let j=0;j<a.length;j++) o[off++] = a[j] + b;
+  }
+  return o;
+}
+
+// Generate a box with per-face colors & emissive
+function boxGeom(cx, cy, cz, sx, sy, sz, color, emissive=0) {
+  const x0=cx-sx/2, x1=cx+sx/2, y0=cy, y1=cy+sy, z0=cz-sz/2, z1=cz+sz/2;
+  const [r,g,b] = color;
+  // positions, normals for 6 faces, 2 tris each = 36 verts (10 floats each)
+  const verts = new Float32Array(36*10);
+  const faces = [
+    // +X
+    [[x1,y0,z1],[1,0,0],[x1,y1,z1],[x1,y1,z0],[x1,y0,z0]],
+    // -X
+    [[x0,y0,z0],[-1,0,0],[x0,y1,z0],[x0,y1,z1],[x0,y0,z1]],
+    // +Y
+    [[x0,y1,z1],[0,1,0],[x1,y1,z1],[x1,y1,z0],[x0,y1,z0]],
+    // -Y
+    [[x0,y0,z0],[0,-1,0],[x1,y0,z0],[x1,y0,z1],[x0,y0,z1]],
+    // +Z
+    [[x1,y0,z1],[0,0,1],[x0,y0,z1],[x0,y1,z1],[x1,y1,z1]],
+    // -Z
+    [[x0,y0,z0],[0,0,-1],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0]],
+  ];
+  let p = 0;
+  for (const f of faces) {
+    const n = f[1];
+    const v0=f[0], v1=f[2], v2=f[3], v3=f[4];
+    // v0,v1,v2 + v0,v2,v3
+    const tris = [[v0,v1,v2],[v0,v2,v3]];
+    for (const t of tris) {
+      for (const v of t) {
+        verts[p++]=v[0]; verts[p++]=v[1]; verts[p++]=v[2];
+        verts[p++]=n[0]; verts[p++]=n[1]; verts[p++]=n[2];
+        verts[p++]=r; verts[p++]=g; verts[p++]=b;
+        verts[p++]=emissive;
+      }
+    }
+  }
+  return verts;
+}
+
+// Cone / pyramid for plants
+function coneGeom(cx, cy, cz, radius, height, segments, color, emissive=0) {
+  const [r,g,b] = color;
+  const verts = [];
+  const idx = [];
+  const topIdx = 0;
+  // top
+  verts.push(cx, cy+height, cz, 0,1,0, r,g,b, emissive);
+  // side ring
+  for (let i=0;i<segments;i++) {
+    const a = (i/segments)*Math.PI*2;
+    const x = cx + Math.cos(a)*radius;
+    const z = cz + Math.sin(a)*radius;
+    const nx = Math.cos(a), nz = Math.sin(a);
+    const n = [nx*0.5, 0.5, nz*0.5];
+    const nl = Math.hypot(n[0],n[1],n[2]);
+    verts.push(x, cy, z, n[0]/nl, n[1]/nl, n[2]/nl, r,g,b, emissive);
+  }
+  for (let i=0;i<segments;i++) {
+    const a = i+1;
+    const b = (i+1)%segments + 1;
+    idx.push(0, a, b);
+  }
+  // cap (base)
+  const capCenter = segments+1;
+  verts.push(cx, cy, cz, 0,-1,0, r*0.5,g*0.5,b*0.5, emissive);
+  for (let i=0;i<segments;i++) {
+    const a = i+1;
+    const b2 = (i+1)%segments + 1;
+    idx.push(capCenter, b2, a);
+  }
+  return { verts: new Float32Array(verts), idx: new Uint32Array(idx) };
+}
+
+// Sphere (icosphere-like, low-poly for artifacts/creatures)
+function sphereGeom(cx, cy, cz, radius, detail, color, emissive=0) {
+  const [r,g,b] = color;
+  // Start with octahedron
+  let verts = [
+    [0,1,0],[0,-1,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]
+  ];
+  let faces = [
+    [0,2,4],[0,4,3],[0,3,5],[0,5,2],[1,4,2],[1,3,4],[1,5,3],[1,2,5]
+  ];
+  for (let d=0; d<detail; d++) {
+    const newFaces = [];
+    const midCache = {};
+    const midpoint = (a,b) => {
+      const key = a<b ? a+'_'+b : b+'_'+a;
+      if (midCache[key] !== undefined) return midCache[key];
+      const va=verts[a], vb=verts[b];
+      const mx=(va[0]+vb[0])/2, my=(va[1]+vb[1])/2, mz=(va[2]+vb[2])/2;
+      const l=Math.hypot(mx,my,mz);
+      verts.push([mx/l, my/l, mz/l]);
+      midCache[key] = verts.length-1;
+      return verts.length-1;
+    };
+    for (const f of faces) {
+      const ab = midpoint(f[0], f[1]);
+      const bc = midpoint(f[1], f[2]);
+      const ca = midpoint(f[2], f[0]);
+      newFaces.push([f[0], ab, ca], [f[1], bc, ab], [f[2], ca, bc], [ab, bc, ca]);
+    }
+    faces = newFaces;
+  }
+  const outV = new Float32Array(faces.length * 3 * 10);
+  const outI = new Uint32Array(faces.length * 3);
+  let p=0, pi=0;
+  const idxMap = new Map();
+  for (let fi=0; fi<faces.length; fi++) {
+    const f = faces[fi];
+    for (let i=0; i<3; i++) {
+      const vi = f[i];
+      if (!idxMap.has(vi)) {
+        const v = verts[vi];
+        outV[p++] = cx + v[0]*radius;
+        outV[p++] = cy + v[1]*radius;
+        outV[p++] = cz + v[2]*radius;
+        outV[p++] = v[0]; outV[p++] = v[1]; outV[p++] = v[2];
+        outV[p++] = r; outV[p++] = g; outV[p++] = b;
+        outV[p++] = emissive;
+        idxMap.set(vi, (p/10)-1);
+      }
+      outI[pi++] = idxMap.get(vi);
+    }
+  }
+  return { verts: outV.slice(0, p), idx: outI.slice(0, pi) };
+}
+
+// Cylinder for pillars / ruins
+function cylinderGeom(cx, cy, cz, r, h, segs, color, emissive=0) {
+  const [cr,cg,cb] = color;
+  const verts = [];
+  const idx = [];
+  // top center, bottom center
+  verts.push(cx, cy+h, cz, 0,1,0, cr,cg,cb, emissive); // 0
+  verts.push(cx, cy, cz, 0,-1,0, cr*0.4,cg*0.4,cb*0.4, emissive); // 1
+  for (let i=0;i<segs;i++) {
+    const a = (i/segs)*Math.PI*2;
+    const x = cx+Math.cos(a)*r, z = cz+Math.sin(a)*r;
+    const nx = Math.cos(a), nz = Math.sin(a);
+    // side top
+    verts.push(x, cy+h, z, nx,0,nz, cr,cg,cb, emissive);
+    // side bottom
+    verts.push(x, cy, z, nx,0,nz, cr*0.7,cg*0.7,cb*0.7, emissive);
+  }
+  const baseSideTop = 2;
+  for (let i=0;i<segs;i++) {
+    const t1 = baseSideTop + i*2;
+    const b1 = t1+1;
+    const t2 = baseSideTop + ((i+1)%segs)*2;
+    const b2 = t2+1;
+    idx.push(t1, b1, b2, t1, b2, t2);
+    // top cap
+    idx.push(0, t1, t2);
+    // bottom cap
+    idx.push(1, b2, b1);
+  }
+  return { verts: new Float32Array(verts), idx: new Uint32Array(idx) };
+}
+
+// Flatten helper
+function buildMesh(parts) {
+  // parts: array of { verts: Float32Array, idx: Uint32Array }
+  const allVerts = [];
+  const allIdx = [];
+  let vtxOffset = 0;
+  for (const p of parts) {
+    allVerts.push(p.verts);
+    const shifted = new Uint32Array(p.idx.length);
+    for (let i=0;i<p.idx.length;i++) shifted[i] = p.idx[i] + vtxOffset;
+    allIdx.push(shifted);
+    vtxOffset += p.verts.length / 10;
+  }
+  const v = concatVerts(allVerts);
+  let totalIdx = 0; for (const a of allIdx) totalIdx += a.length;
+  const ind = new Uint32Array(totalIdx);
+  let off=0; for (const a of allIdx) { ind.set(a, off); off += a.length; }
+  return createMesh(v, ind);
+}
+
+// -------------------------------------------------------------------------
+// Procedural noise (hash-based value noise with fbm)
+// -------------------------------------------------------------------------
+function hash2(x, y) {
+  let h = Math.sin(x*127.1 + y*311.7) * 43758.5453;
+  return h - Math.floor(h);
+}
+function smooth(t) { return t*t*(3-2*t); }
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const a = hash2(xi, yi);
+  const b = hash2(xi+1, yi);
+  const c = hash2(xi, yi+1);
+  const d = hash2(xi+1, yi+1);
+  const u = smooth(xf), v = smooth(yf);
+  return a*(1-u)*(1-v) + b*u*(1-v) + c*(1-u)*v + d*u*v;
+}
+function fbm(x, y, oct=5, lac=2.0, gain=0.5) {
+  let amp=1, freq=1, sum=0, norm=0;
+  for (let i=0;i<oct;i++) {
+    sum += amp * vnoise(x*freq, y*freq);
+    norm += amp;
+    amp *= gain;
+    freq *= lac;
+  }
+  return sum/norm;
+}
+function hash3(x, y, z) {
+  let h = Math.sin(x*127.1 + y*311.7 + z*74.7) * 43758.5453;
+  return h - Math.floor(h);
+}
+
+// -------------------------------------------------------------------------
+// World: Biome types
+// -------------------------------------------------------------------------
+// 0: Crystal Wastes, 1: Spore Forest, 2: Ash Plains, 3: Violet Dunes, 4: Ruins, 5: Caves
+const BIOME_NAMES = ['Crystal Wastes','Spore Forest','Ash Plains','Violet Dunes','Ancient Ruins','Caverns'];
+const BIOME_COLORS = [
+  [0.6, 0.7, 0.9], // crystal
+  [0.3, 0.2, 0.5], // spore forest
+  [0.25, 0.2, 0.25], // ash
+  [0.5, 0.3, 0.6], // violet dunes
+  [0.4, 0.35, 0.3], // ruins
+  [0.15, 0.12, 0.2] // caves
+];
+
+// Height function - returns { height, biome, cave }
+function sampleHeight(x, z, detail=1) {
+  // Large-scale continent
+  const s1 = fbm(x*0.004, z*0.004, 4) * 18;
+  // Medium hills
+  const s2 = fbm(x*0.02 + 10, z*0.02 - 5, 4) * 4;
+  // Small detail
+  const s3 = detail ? fbm(x*0.08, z*0.08, 3) * 1.2 : 0;
+  // Cave/crater depressions
+  const caveN = fbm(x*0.01+100, z*0.01-100, 3);
+  let h = s1 + s2 + s3;
+  // Determine biome by noise
+  const bn = fbm(x*0.005+50, z*0.005-30, 3);
+  let biome;
+  if (bn < 0.28) biome = 0;
+  else if (bn < 0.5) biome = 1;
+  else if (bn < 0.68) biome = 2;
+  else if (bn < 0.84) biome = 3;
+  else biome = 4;
+  // Ruins also triggered in spore forest sometimes
+  const ruinN = fbm(x*0.01+999, z*0.01+999, 2);
+  if (ruinN > 0.78 && biome === 1) biome = 4;
+  return { h, biome };
+}
+
+// Check if inside a cave at position (caves are carved below surface sometimes)
+function isCave(x,y,z) {
+  const n = fbm(x*0.03, z*0.03, 3);
+  if (n > 0.55 && y < 2) return true;
+  return false;
+}
+
+// -------------------------------------------------------------------------
+// Generate terrain mesh as a chunk grid centered on origin
+// Chunks are fixed world tiles; we'll generate a radius of chunks around player
+// -------------------------------------------------------------------------
+const CHUNK_SIZE = 24;
+const CHUNK_RES = 24; // vertices per chunk side
+const CHUNK_RADIUS = 3; // 3x3 chunks around player = ~144m wide
+const terrainChunks = new Map(); // key "cx,cz" -> mesh
+let staticObjects = []; // non-terrain static things with transforms + meshes
+let interactables = []; // artifacts, etc
+let creatures = []; // wildlife
+let particles = []; // weather / ambient
+
+// Determine terrain color based on biome + slope
+function terrainColor(biome, h, slope) {
+  let c = BIOME_COLORS[biome].slice();
+  // Random variation
+  const vv = (hash2(h*10, slope*10) - 0.5) * 0.1;
+  for (let i=0;i<3;i++) c[i] = Math.max(0, Math.min(1, c[i] + vv));
+  if (slope > 0.5) {
+    // rocky
+    c = c.map(v => v*0.5);
+  }
+  return c;
+}
+
+function buildChunkMesh(cx, cz) {
+  const verts = [];
+  const idx = [];
+  const step = CHUNK_SIZE / CHUNK_RES;
+  const ox = cx * CHUNK_SIZE;
+  const oz = cz * CHUNK_SIZE;
+  const heights = new Float32Array((CHUNK_RES+1)*(CHUNK_RES+1));
+  const biomes = new Uint8Array((CHUNK_RES+1)*(CHUNK_RES+1));
+  for (let z=0; z<=CHUNK_RES; z++) {
+    for (let x=0; x<=CHUNK_RES; x++) {
+      const wx = ox + x*step;
+      const wz = oz + z*step;
+      const s = sampleHeight(wx, wz);
+      heights[z*(CHUNK_RES+1)+x] = s.h;
+      biomes[z*(CHUNK_RES+1)+x] = s.biome;
+    }
+  }
+  // emit vertices
+  for (let z=0; z<=CHUNK_RES; z++) {
+    for (let x=0; x<=CHUNK_RES; x++) {
+      const wx = ox + x*step;
+      const wz = oz + z*step;
+      const h = heights[z*(CHUNK_RES+1)+x];
+      // compute normal from neighbors
+      const hL = heights[z*(CHUNK_RES+1)+Math.max(0,x-1)];
+      const hR = heights[z*(CHUNK_RES+1)+Math.min(CHUNK_RES,x+1)];
+      const hD = heights[Math.max(0,z-1)*(CHUNK_RES+1)+x];
+      const hU = heights[Math.min(CHUNK_RES,z+1)*(CHUNK_RES+1)+x];
+      const nx = hL - hR;
+      const nz = hD - hU;
+      const ny = 2*step;
+      const nl = Math.hypot(nx,ny,nz);
+      const slope = 1 - ny/nl;
+      const b = biomes[z*(CHUNK_RES+1)+x];
+      const col = terrainColor(b, h, slope);
+      let emissive = 0;
+      if (b === 0) emissive = 0.15; // crystal wastes glow slightly
+      if (b === 1) emissive = 0.08;
+      verts.push(wx, h, wz, nx/nl, ny/nl, nz/nl, col[0], col[1], col[2], emissive);
+    }
+  }
+  for (let z=0; z<CHUNK_RES; z++) {
+    for (let x=0; x<CHUNK_RES; x++) {
+      const i00 = z*(CHUNK_RES+1)+x;
+      const i10 = i00+1;
+      const i01 = (z+1)*(CHUNK_RES+1)+x;
+      const i11 = i01+1;
+      idx.push(i00, i01, i10, i10, i01, i11);
+    }
+  }
+  return createMesh(new Float32Array(verts), new Uint32Array(idx));
+}
+
+// Sky sphere (cube)
+function createSky() {
+  const verts = new Float32Array([
+    -1,-1,-1, 1,-1,-1, -1,1,-1,
+     1,-1,-1, 1,1,-1, -1,1,-1,
+    -1,-1, 1, 1,-1, 1, -1,1, 1,
+     1,-1, 1, 1,1, 1, -1,1, 1,
+    // sides omitted? need full box
+  ]);
+  // Actually full cube:
+  const v = [
+    // front
+    -1,-1,1, 1,-1,1, -1,1,1, 1,-1,1, 1,1,1, -1,1,1,
+    // back
+    1,-1,-1, -1,-1,-1, 1,1,-1, -1,-1,-1, -1,1,-1, 1,1,-1,
+    // left
+    -1,-1,-1, -1,-1,1, -1,1,-1, -1,-1,1, -1,1,1, -1,1,-1,
+    // right
+    1,-1,1, 1,-1,-1, 1,1,1, 1,-1,-1, 1,1,-1, 1,1,1,
+    // top
+    -1,1,1, 1,1,1, -1,1,-1, 1,1,1, 1,1,-1, -1,1,-1,
+    // bottom
+    -1,-1,-1, 1,-1,-1, -1,-1,1, 1,-1,-1, 1,-1,1, -1,-1,1
+  ];
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const vb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(skyLocs.a.aPos);
+  gl.vertexAttribPointer(skyLocs.a.aPos, 3, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  return { vao, count: v.length/3 };
+}
+const skyMesh = createSky();
+
+// -------------------------------------------------------------------------
+// Populate world with vegetation, ruins, rocks, artifacts
+// -------------------------------------------------------------------------
+function mulberry32(a) { return function() { let t = a += 0x6D2B79F5; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+function populateWorld() {
+  const rng = mulberry32(1337);
+  // vegetation scattered within chunk radius area
+  const AREA = CHUNK_SIZE * CHUNK_RADIUS * 2 + CHUNK_SIZE;
+  const halfArea = AREA/2;
+  // Glowing mushrooms / crystal plants
+  for (let i=0;i<400;i++) {
+    const x = (rng()-0.5) * AREA * 1.5;
+    const z = (rng()-0.5) * AREA * 1.5;
+    const s = sampleHeight(x,z);
+    const y = s.h;
+    let color, emissive, scale, kind;
+    const b = s.biome;
+    // skip if below "cave" threshold maybe
+    if (b === 0) {
+      // crystal wastes: tall crystal shards
+      kind = 'crystal';
+      const hue = rng();
+      if (hue < 0.33) color = [0.4, 0.8, 1.0];
+      else if (hue < 0.66) color = [0.9, 0.5, 1.0];
+      else color = [0.6, 1.0, 0.8];
+      emissive = 1.0;
+      scale = 0.8 + rng()*2.5;
+    } else if (b === 1) {
+      // spore forest: glowing mushroom-trees
+      kind = 'mushroom';
+      color = [0.6+rng()*0.4, 0.2+rng()*0.2, 0.7+rng()*0.3];
+      emissive = 0.8;
+      scale = 1.2 + rng()*2.5;
+    } else if (b === 2) {
+      kind = 'rock';
+      color = [0.2+rng()*0.1, 0.18+rng()*0.1, 0.22+rng()*0.1];
+      emissive = 0;
+      scale = 0.3 + rng()*1.2;
+    } else if (b === 3) {
+      // violet dunes: tall grass-like glowing fronds
+      kind = 'frond';
+      color = [0.7, 0.3+rng()*0.3, 0.9];
+      emissive = 0.5;
+      scale = 0.5 + rng()*1.2;
+    } else {
+      // ruins: debris rocks
+      kind = 'rock';
+      color = [0.35, 0.3, 0.25];
+      emissive = 0;
+      scale = 0.4 + rng()*1.0;
+    }
+    let mesh;
+    const rot = rng()*Math.PI*2;
+    if (kind === 'crystal') {
+      const g = coneGeom(0,0,0, 0.25*scale, scale*2.5, 5, color, emissive);
+      mesh = buildMesh([g]);
+    } else if (kind === 'mushroom') {
+      // stem + cap
+      const stem = cylinderGeom(0,0,0, 0.1*scale, scale*1.5, 6, [0.3,0.2,0.35], 0.2);
+      const cap = sphereGeom(0, scale*1.5, 0, 0.6*scale, 1, color, emissive);
+      mesh = buildMesh([stem, cap]);
+    } else if (kind === 'rock') {
+      const g = sphereGeom(0,0,0, scale*0.6, 1, color, emissive);
+      mesh = buildMesh([g]);
+      // squash
+      const model = M.mul(M.translation(x, y, z), M.mul(M.rotY(rot), M.scaling(1, 0.6+scale*0.2, 1)));
+      staticObjects.push({ mesh, model, kind:'rock' });
+      continue;
+    } else if (kind === 'frond') {
+      const g = coneGeom(0,0,0, 0.08*scale, scale*2, 4, color, emissive);
+      mesh = buildMesh([g]);
+    }
+    const model = M.mul(M.translation(x, y, z), M.rotY(rot));
+    staticObjects.push({ mesh, model, kind, emissive });
+  }
+  // Rocks scattered everywhere
+  for (let i=0;i<200;i++) {
+    const x = (rng()-0.5)*AREA*1.5;
+    const z = (rng()-0.5)*AREA*1.5;
+    const s = sampleHeight(x,z);
+    const scale = 0.3 + rng()*1.2;
+    const col = [0.25+rng()*0.1, 0.22+rng()*0.1, 0.3+rng()*0.1];
+    const g = sphereGeom(0,0,0, scale, 1, col, 0);
+    const mesh = buildMesh([g]);
+    const rot = rng()*Math.PI*2;
+    const model = M.mul(M.translation(x, s.h+scale*0.2, z), M.mul(M.rotY(rot), M.scaling(1, 0.5+rng()*0.3, 1)));
+    staticObjects.push({ mesh, model, kind:'rock' });
+  }
+  // Ruins - pillars & blocks in ruin biome
+  for (let i=0;i<40;i++) {
+    const x = (rng()-0.5)*AREA*1.2;
+    const z = (rng()-0.5)*AREA*1.2;
+    const s = sampleHeight(x,z);
+    if (s.biome !== 4) continue;
+    const isPillar = rng() > 0.4;
+    let mesh;
+    const col = [0.45, 0.38, 0.3];
+    if (isPillar) {
+      const h = 2 + rng()*4;
+      const r = 0.5 + rng()*0.3;
+      const g = cylinderGeom(0,0,0, r, h, 8, col, 0);
+      mesh = buildMesh([g]);
+      const model = M.translation(x, s.h, z);
+      staticObjects.push({ mesh, model, kind:'ruin', solid:true, radius:r, height:h });
+    } else {
+      const w = 1 + rng()*2;
+      const h2 = 0.5 + rng()*1.5;
+      const d = 1 + rng()*2;
+      const v = boxGeom(0,0,0, w, h2, d, col, 0);
+      mesh = createMesh(v, null);
+      const model = M.mul(M.translation(x, s.h, z), M.rotY(rng()*Math.PI*2));
+      staticObjects.push({ mesh, model, kind:'ruin', solid:true, radius:Math.max(w,d)/2, height:h2, box:{w,h:d:h2} });
+    }
+  }
+  // Artifacts - glowing collectible orbs
+  for (let i=0;i<20;i++) {
+    const x = (rng()-0.5)*AREA*1.3;
+    const z = (rng()-0.5)*AREA*1.3;
+    const s = sampleHeight(x,z);
+    const g = sphereGeom(0,0,0, 0.3, 2, [1.0, 0.85, 0.3], 1.2);
+    const mesh = buildMesh([g]);
+    interactables.push({
+      mesh,
+      pos: [x, s.h + 1.2, z],
+      basePos: [x, s.h + 1.2, z],
+      collected: false,
+      kind: 'artifact',
+      phase: rng()*Math.PI*2,
+      radius: 0.5
+    });
+  }
+  // Monoliths - big mysterious artifacts
+  for (let i=0;i<5;i++) {
+    const x = (rng()-0.5)*AREA;
+    const z = (rng()-0.5)*AREA;
+    const s = sampleHeight(x,z);
+    const v = boxGeom(0,0,0, 1.0, 5, 0.4, [0.3, 0.25, 0.4], 0.5);
+    // Add runes (glowing)
+    let runes = boxGeom(0,2.2,0.22, 0.7, 0.08, 0.02, [0.3, 0.9, 1.0], 2.0);
+    const g = { verts: v, idx: null };
+    const g2 = { verts: runes, idx: null };
+    const mesh = buildMesh([g, g2]);
+    staticObjects.push({ mesh, model: M.mul(M.translation(x,s.h,z), M.rotY(rng()*Math.PI*2)), kind:'monolith', solid:true, radius:1.0, height:5 });
+  }
+  // Wildlife - floating jellyfish-like creatures
+  for (let i=0;i<30;i++) {
+    const x = (rng()-0.5)*AREA*1.4;
+    const z = (rng()-0.5)*AREA*1.4;
+    const s = sampleHeight(x,z);
+    const bodyCol = [0.4+rng()*0.6, 0.6+rng()*0.4, 1.0];
+    const body = sphereGeom(0,0,0, 0.4, 2, bodyCol, 0.6);
+    // tentacles (cones)
+    const parts = [body];
+    for (let t=0; t<6; t++) {
+      const ang = (t/6)*Math.PI*2;
+      const cone = coneGeom(Math.cos(ang)*0.2, -0.4, Math.sin(ang)*0.2, 0.05, 0.7, 4, bodyCol.map(c=>c*0.7), 0.4);
+      parts.push(cone);
+    }
+    const mesh = buildMesh(parts);
+    creatures.push({
+      mesh,
+      pos: [x, s.h + 3 + rng()*5, z],
+      vel: [(rng()-0.5)*0.5, 0, (rng()-0.5)*0.5],
+      phase: rng()*Math.PI*2,
+      type: 'jelly',
+      radius: 0.6
+    });
+  }
+  // Crawlers
+  for (let i=0;i<15;i++) {
+    const x = (rng()-0.5)*AREA*1.2;
+    const z = (rng()-0.5)*AREA*1.2;
+    const s = sampleHeight(x,z);
+    const col = [0.8, 0.3, 0.5];
+    const body = sphereGeom(0,0,0, 0.3, 1, col, 0.3);
+    const mesh = buildMesh([body]);
+    creatures.push({
+      mesh,
+      pos: [x, s.h+0.3, z],
+      vel: [0,0,0],
+      phase: rng()*Math.PI*2,
+      type: 'crawler',
+      target: [x, z],
+      radius: 0.4
+    });
+  }
+}
+
+// -------------------------------------------------------------------------
+// Particle system (weather/spores/snow)
+// -------------------------------------------------------------------------
+const MAX_PARTICLES = 1500;
+let particleData;
+let partVAO, partVB;
+function initParticles() {
+  particleData = new Float32Array(MAX_PARTICLES * 8); // pos(3) color(3) size(1) emissive(1)
+  for (let i=0;i<MAX_PARTICLES;i++) resetParticle(i, true, [0,0,0]);
+  partVAO = gl.createVertexArray();
+  gl.bindVertexArray(partVAO);
+  partVB = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, partVB);
+  gl.bufferData(gl.ARRAY_BUFFER, particleData, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(partLocs.a.aPos);
+  gl.vertexAttribPointer(partLocs.a.aPos, 3, gl.FLOAT, false, 8*4, 0);
+  gl.enableVertexAttribArray(partLocs.a.aColor);
+  gl.vertexAttribPointer(partLocs.a.aColor, 3, gl.FLOAT, false, 8*4, 12);
+  gl.enableVertexAttribArray(partLocs.a.aSize);
+  gl.vertexAttribPointer(partLocs.a.aSize, 1, gl.FLOAT, false, 8*4, 24);
+  gl.enableVertexAttribArray(partLocs.a.aEmissive);
+  gl.vertexAttribPointer(partLocs.a.aEmissive, 1, gl.FLOAT, false, 8*4, 28);
+  gl.bindVertexArray(null);
+}
+function resetParticle(i, initial, playerPos) {
+  const off = i*8;
+  particleData[off+0] = playerPos[0] + (Math.random()-0.5)*60;
+  particleData[off+1] = (initial ? Math.random()*15 : 12 + Math.random()*8);
+  particleData[off+2] = playerPos[2] + (Math.random()-0.5)*60;
+  const biome = currentBiome;
+  let c, e;
+  if (biome === 0) { c=[0.6,0.85,1.0]; e=1.0; }
+  else if (biome === 1) { c=[0.9,0.5,1.0]; e=1.2; }
+  else if (biome === 2) { c=[0.5,0.45,0.5]; e=0.0; }
+  else if (biome === 3) { c=[0.8,0.6,0.95]; e=0.4; }
+  else { c=[0.5,0.8,0.9]; e=0.6; }
+  particleData[off+3] = c[0];
+  particleData[off+4] = c[1];
+  particleData[off+5] = c[2];
+  particleData[off+6] = 4 + Math.random()*6;
+  particleData[off+7] = e;
+}
+let currentBiome = 0;
+
+function updateParticles(dt, playerPos) {
+  for (let i=0;i<MAX_PARTICLES;i++) {
+    const o = i*8;
+    particleData[o+0] += (Math.sin((particleData[o+1]+i)*0.5)*0.3 + (Math.random()-0.5)*0.2) * dt;
+    particleData[o+2] += Math.cos((particleData[o+1]+i)*0.3)*0.2 * dt;
+    particleData[o+1] -= (0.5 + Math.random()*0.8) * dt;
+    const dx = particleData[o+0];
+    const dz = particleData[o+2];
+    if (particleData[o+1] < -2 || Math.abs(dx - playerPos[0]) > 35 || Math.abs(dz - playerPos[2]) > 35) {
+      particleData[o+0] = playerPos[0] + (Math.random()-0.5)*50;
+      particleData[o+1] = 8 + Math.random()*8;
+      particleData[o+2] = playerPos[2] + (Math.random()-0.5)*50;
+    }
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, partVB);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, particleData);
+}
+
+// -------------------------------------------------------------------------
+// WebXR setup
+// -------------------------------------------------------------------------
+let xrSession = null;
+let xrRefSpace = null;
+let xrViewerSpace = null;
+let glLayer = null;
+let frameBuf = null;
+let leftViewProj = new Float32Array(16);
+let rightViewProj = new Float32Array(16);
+let views = [];
+let inputSources = [];
+let headMatrix = null;
+
+// Player state — pos is FEET position (ground level) in world space
+const player = {
+  pos: [0, 5, 0],
+  vel: [0,0,0],
+  yaw: 0,
+  onGround: false,
+  eyeHeight: 1.7, // for desktop camera and standing collision
+  grabbed: null,
+  artifactCount: 0
+};
+
+// Player root transform: player-root (ref space) -> world space
+// Computed each frame; P maps ref-space points into world space.
+let playerTransform = M.create();
+function computePlayerTransform() {
+  // P = T(pos) * R_y(yaw)
+  const t = M.translation(player.pos[0], player.pos[1], player.pos[2]);
+  const r = M.rotY(player.yaw);
+  playerTransform = M.mul(t, r);
+}
+
+// Controller state
+const controllers = [
+  { gamepad: null, aim: new Float32Array(16), grip: new Float32Array(16), active:false, trigger:false, gripBtn:false, touched:false },
+  { gamepad: null, aim: new Float32Array(16), grip: new Float32Array(16), active:false, trigger:false, gripBtn:false, touched:false }
+];
+
+async function onFrame(time, xrFrame) {
+  if (!xrSession) return;
+  const session = xrSession;
+  session.requestAnimationFrame(onFrame);
+  if (!xrFrame) return;
+  const pose = xrFrame.getViewerPose(xrRefSpace);
+  if (!pose) return;
+  views = pose.views;
+  // Store head transform (ref space -> head's... wait: pose.transform is the head pose in ref space).
+  headMatrix = pose.transform.matrix;
+
+  // Update input sources
+  const sources = session.inputSources;
+  for (let i=0;i<2;i++) {
+    controllers[i].active = false;
+    controllers[i].gamepad = null;
+  }
+  for (const src of sources) {
+    const idx = src.handedness === 'right' ? 1 : (src.handedness === 'left' ? 0 : 0);
+    controllers[idx].active = true;
+    controllers[idx].gamepad = src.gamepad;
+    const aimPose = xrFrame.getPose(src.targetRaySpace, xrRefSpace);
+    if (aimPose) { M.set(controllers[idx].aim, aimPose.transform.matrix); }
+    if (src.gripSpace) {
+      const gripPose = xrFrame.getPose(src.gripSpace, xrRefSpace);
+      if (gripPose) M.set(controllers[idx].grip, gripPose.transform.matrix);
+    }
+  }
+  tick(time/1000, xrFrame);
+}
+
+function desktopLoop(t) {
+  if (xrSession) return;
+  tick(t/1000, null);
+  requestAnimationFrame(desktopLoop);
+}
+
+// -------------------------------------------------------------------------
+// Main tick
+// -------------------------------------------------------------------------
+let lastTime = 0;
+let fpsTime = 0, fpsCount = 0, fps = 60;
+
+function tick(time, xrFrame) {
+  const dt = Math.min(0.05, time - lastTime || 0.016);
+  lastTime = time;
+
+  // FPS
+  fpsCount++; fpsTime += dt;
+  if (fpsTime > 0.5) {
+    fps = Math.round(fpsCount / fpsTime);
+    fpsTime = 0; fpsCount = 0;
+    document.getElementById('fpsInfo').textContent = fps + ' FPS';
+  }
+
+  // Handle input / movement
+  handleInput(dt);
+
+  // Physics
+  applyPhysics(dt);
+
+  // Update world
+  updateWorld(dt, time);
+
+  // Update chunks around player
+  updateChunks();
+
+  // Update particles
+  updateParticles(dt, player.pos);
+
+  // Render
+  render(time);
+}
+
+function handleInput(dt) {
+  if (xrSession) {
+    // VR movement: left stick move, right stick turn
+    let mx=0, my=0;
+    if (controllers[0].gamepad) {
+      const gp = controllers[0].gamepad;
+      // On XR gamepads, axes[0]/[1] are the primary thumbstick for that hand
+      mx = gp.axes.length > 0 ? gp.axes[0] : 0;
+      my = gp.axes.length > 1 ? gp.axes[1] : 0;
+    }
+    // Deadzone
+    if (Math.abs(mx) < 0.18) mx = 0;
+    if (Math.abs(my) < 0.18) my = 0;
+    // Movement direction is based on head orientation (projected to ground).
+    let fwdRef = [0, 0, -1];
+    if (headMatrix) {
+      const f = M.transformDir(headMatrix, [0,0,-1]);
+      const fl = Math.hypot(f[0], f[2]);
+      if (fl > 0.001) fwdRef = [f[0]/fl, 0, f[2]/fl];
+    }
+    const cy = Math.cos(player.yaw), sy = Math.sin(player.yaw);
+    const headForward = [
+      fwdRef[0]*cy - fwdRef[2]*sy,
+      0,
+      fwdRef[0]*sy + fwdRef[2]*cy
+    ];
+    const right = [headForward[2], 0, -headForward[0]];
+    const speed = 3.5;
+    player.vel[0] = (headForward[0]*(-my) + right[0]*mx) * speed;
+    player.vel[2] = (headForward[2]*(-my) + right[2]*mx) * speed;
+
+    // Right controller stick for snap turning
+    if (controllers[1].gamepad) {
+      const gp = controllers[1].gamepad;
+      const rx = gp.axes.length > 0 ? gp.axes[0] : 0;
+      if (Math.abs(rx) > 0.7) {
+        if (!controllers[1].touched) {
+          player.yaw += rx > 0 ? -Math.PI/4 : Math.PI/4;
+          controllers[1].touched = true;
+        }
+      } else {
+        controllers[1].touched = false;
+      }
+    }
+
+    // Triggers for interaction
+    for (let i=0;i<2;i++) {
+      if (!controllers[i].active) continue;
+      let pressed = false;
+      let gripPressed = false;
+      if (controllers[i].gamepad) {
+        pressed = controllers[i].gamepad.buttons[0] && controllers[i].gamepad.buttons[0].pressed;
+        gripPressed = controllers[i].gamepad.buttons[1] && controllers[i].gamepad.buttons[1].pressed;
+        if (!pressed && controllers[i].gamepad.buttons.length > 4) pressed = controllers[i].gamepad.buttons[4]?.pressed;
+      }
+      if (pressed && !controllers[i].trigger) {
+        controllers[i].trigger = true;
+        tryInteract(i);
+      } else if (!pressed) {
+        controllers[i].trigger = false;
+      }
+      if (gripPressed && !controllers[i].gripBtn) {
+        controllers[i].gripBtn = true;
+        tryGrab(i);
+      } else if (!gripPressed) {
+        controllers[i].gripBtn = false;
+        if (player.grabbed && player.grabbed.hand === i) releaseGrab();
+      }
+    }
+  } else {
+    // Desktop mode (for testing) - WASD + mouse look
+    if (keys['w']) player.vel[2] = -3;
+    else if (keys['s']) player.vel[2] = 3;
+    else player.vel[2] *= 0.8;
+    if (keys['a']) player.vel[0] = -3;
+    else if (keys['d']) player.vel[0] = 3;
+    else player.vel[0] *= 0.8;
+    // rotate vel by yaw (R_y: x'=cx - sz; z'=sx + cz)
+    const cy=Math.cos(player.yaw), sy=Math.sin(player.yaw);
+    const vx = player.vel[0]*cy - player.vel[2]*sy;
+    const vz = player.vel[0]*sy + player.vel[2]*cy;
+    player.vel[0] = vx; player.vel[2] = vz;
+    // Mouse look
+    if (mouseDown) {
+      player.yaw -= mouseDX * 0.003;
+      player.pitch = Math.max(-Math.PI/2+0.1, Math.min(Math.PI/2-0.1, (player.pitch||0) - mouseDY * 0.003));
+    }
+    mouseDX = 0; mouseDY = 0;
+  }
+}
+
+const keys = {};
+let mouseDown = false, mouseDX = 0, mouseDY = 0;
+window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+canvas.addEventListener('mousedown', () => { mouseDown = true; canvas.requestPointerLock && canvas.requestPointerLock(); });
+window.addEventListener('mouseup', () => mouseDown = false);
+window.addEventListener('mousemove', e => { if (mouseDown) { mouseDX += e.movementX; mouseDY += e.movementY; } });
+
+function applyPhysics(dt) {
+  // Gravity (only applies vertical velocity; in VR y is world up for feet)
+  player.vel[1] -= 20 * dt;
+  // Move
+  player.pos[0] += player.vel[0] * dt;
+  player.pos[1] += player.vel[1] * dt;
+  player.pos[2] += player.vel[2] * dt;
+  // Ground collision: feet follow terrain
+  const s = sampleHeight(player.pos[0], player.pos[2]);
+  const groundY = s.h;
+  currentBiome = s.biome;
+  document.getElementById('biomeName').textContent = BIOME_NAMES[s.biome];
+  if (player.pos[1] < groundY) {
+    player.pos[1] = groundY;
+    player.vel[1] = 0;
+    player.onGround = true;
+  } else {
+    player.onGround = false;
+  }
+  computePlayerTransform();
+  // Collision with solid static objects (pillars, monoliths, blocks)
+  for (const obj of staticObjects) {
+    if (!obj.solid) continue;
+    const ox = obj.model[12], oy = obj.model[13], oz = obj.model[14];
+    const dx = player.pos[0] - ox;
+    const dz = player.pos[2] - oz;
+    const dist = Math.hypot(dx, dz);
+    const minDist = obj.radius + 0.4;
+    if (dist < minDist && dist > 0.001) {
+      const push = (minDist - dist);
+      player.pos[0] += (dx/dist) * push;
+      player.pos[2] += (dz/dist) * push;
+    }
+  }
+  // Clamp position to a large world (don't let them fall off)
+  const bound = CHUNK_SIZE * CHUNK_RADIUS * 1.8;
+  player.pos[0] = Math.max(-bound, Math.min(bound, player.pos[0]));
+  player.pos[2] = Math.max(-bound, Math.min(bound, player.pos[2]));
+}
+
+function tryInteract(handIdx) {
+  // Ray from controller (transform aim pose into world space)
+  const aimWorld = M.mul(playerTransform, controllers[handIdx].aim);
+  const origin = M.transformPoint(aimWorld, [0,0,0]);
+  const dir = M.transformDir(aimWorld, [0,0,-1]);
+  // Check artifacts
+  for (const a of interactables) {
+    if (a.collected) continue;
+    const dx = a.pos[0]-origin[0], dy=a.pos[1]-origin[1], dz=a.pos[2]-origin[2];
+    const t = dx*dir[0] + dy*dir[1] + dz*dir[2];
+    if (t < 0 || t > 4) continue;
+    const cx = origin[0]+dir[0]*t - a.pos[0];
+    const cy = origin[1]+dir[1]*t - a.pos[1];
+    const cz = origin[2]+dir[2]*t - a.pos[2];
+    const d2 = cx*cx+cy*cy+cz*cz;
+    if (d2 < a.radius*a.radius + 0.1) {
+      a.collected = true;
+      player.artifactCount++;
+      document.getElementById('artifactCount').textContent = player.artifactCount;
+      showPrompt('Artifact recovered! (' + player.artifactCount + '/20)');
+      return;
+    }
+  }
+  showPrompt('Nothing here...');
+  setTimeout(()=>hidePrompt(), 1500);
+}
+function tryGrab(handIdx) {
+  // Grab nearest artifact
+  const gripWorld = M.mul(playerTransform, controllers[handIdx].grip);
+  const handPos = M.transformPoint(gripWorld, [0,0,0]);
+  for (const a of interactables) {
+    if (a.collected) continue;
+    const dx=a.pos[0]-handPos[0], dy=a.pos[1]-handPos[1], dz=a.pos[2]-handPos[2];
+    if (dx*dx+dy*dy+dz*dz < 1.0) {
+      player.grabbed = { obj: a, hand: handIdx, offset:[dx,dy,dz] };
+      return;
+    }
+  }
+}
+function releaseGrab() {
+  if (!player.grabbed) return;
+  // Collect if close to head?
+  const a = player.grabbed.obj;
+  const headPos = [player.pos[0], player.pos[1]-0.2, player.pos[2]];
+  const dx=a.pos[0]-headPos[0], dy=a.pos[1]-headPos[1], dz=a.pos[2]-headPos[2];
+  if (dx*dx+dy*dy+dz*dz < 0.8) {
+    a.collected = true;
+    player.artifactCount++;
+    document.getElementById('artifactCount').textContent = player.artifactCount;
+    showPrompt('Artifact recovered! ('+player.artifactCount+'/20)');
+  } else {
+    // drop to base position?
+    a.pos = a.basePos.slice();
+  }
+  player.grabbed = null;
+}
+
+function showPrompt(text) {
+  const p = document.getElementById('prompt');
+  p.textContent = text;
+  p.classList.add('visible');
+  clearTimeout(p._t);
+  p._t = setTimeout(()=>p.classList.remove('visible'), 2500);
+}
+function hidePrompt() {
+  document.getElementById('prompt').classList.remove('visible');
+}
+
+function updateWorld(dt, time) {
+  // Update creatures
+  for (const c of creatures) {
+    c.phase += dt;
+    if (c.type === 'jelly') {
+      // drift
+      c.pos[0] += c.vel[0] * dt;
+      c.pos[2] += c.vel[2] * dt;
+      c.pos[1] += Math.sin(c.phase*0.8) * 0.5 * dt;
+      // wander
+      if (Math.random() < 0.01) {
+        c.vel[0] += (Math.random()-0.5)*0.3;
+        c.vel[2] += (Math.random()-0.5)*0.3;
+      }
+      // keep near ground
+      const sh = sampleHeight(c.pos[0], c.pos[2]).h;
+      if (c.pos[1] < sh + 1) c.vel[1] = 0.5;
+      if (c.pos[1] > sh + 10) c.vel[1] = -0.3;
+      c.vel[0] *= 0.99; c.vel[2] *= 0.99;
+      // flee player if close
+      const dx = c.pos[0] - player.pos[0];
+      const dz = c.pos[2] - player.pos[2];
+      const d2 = dx*dx+dz*dz;
+      if (d2 < 25) {
+        const d = Math.sqrt(d2);
+        c.vel[0] += (dx/d) * 2 * dt;
+        c.vel[2] += (dz/d) * 2 * dt;
+      }
+    } else if (c.type === 'crawler') {
+      // move to target
+      const dx = c.target[0] - c.pos[0];
+      const dz = c.target[1] - c.pos[2];
+      const d = Math.hypot(dx,dz);
+      if (d < 0.3) {
+        c.target = [c.pos[0] + (Math.random()-0.5)*6, c.pos[2] + (Math.random()-0.5)*6];
+      } else {
+        c.pos[0] += (dx/d) * 0.7 * dt;
+        c.pos[2] += (dz/d) * 0.7 * dt;
+      }
+      const sh = sampleHeight(c.pos[0], c.pos[2]).h;
+      c.pos[1] = sh + 0.3 + Math.sin(c.phase*4)*0.05;
+    }
+  }
+  // Update artifacts
+  for (const a of interactables) {
+    if (a.collected) continue;
+    a.phase += dt * 2;
+    if (player.grabbed && player.grabbed.obj === a) {
+      const gripWorld = M.mul(playerTransform, controllers[player.grabbed.hand].grip);
+      const handPos = M.transformPoint(gripWorld, [0,0,0]);
+      a.pos[0] = handPos[0] + player.grabbed.offset[0];
+      a.pos[1] = handPos[1] + player.grabbed.offset[1];
+      a.pos[2] = handPos[2] + player.grabbed.offset[2];
+    } else {
+      a.pos[1] = a.basePos[1] + Math.sin(a.phase)*0.15;
+      a.pos[0] = a.basePos[0] + Math.cos(a.phase*0.3)*0.1;
+    }
+  }
+}
+
+// -------------------------------------------------------------------------
+// Chunk streaming
+// -------------------------------------------------------------------------
+function chunkKey(cx, cz) { return cx+','+cz; }
+function updateChunks() {
+  const pcx = Math.floor(player.pos[0] / CHUNK_SIZE);
+  const pcz = Math.floor(player.pos[2] / CHUNK_SIZE);
+  const needed = new Set();
+  for (let dz=-CHUNK_RADIUS; dz<=CHUNK_RADIUS; dz++) {
+    for (let dx=-CHUNK_RADIUS; dx<=CHUNK_RADIUS; dx++) {
+      const cx = pcx+dx, cz = pcz+dz;
+      needed.add(chunkKey(cx, cz));
+      if (!terrainChunks.has(chunkKey(cx,cz))) {
+        terrainChunks.set(chunkKey(cx,cz), buildChunkMesh(cx, cz));
+      }
+    }
+  }
+  for (const k of Array.from(terrainChunks.keys())) {
+    if (!needed.has(k)) {
+      const m = terrainChunks.get(k);
+      gl.deleteBuffer(m.vb);
+      gl.deleteBuffer(m.ib);
+      gl.deleteVertexArray(m.vao);
+      terrainChunks.delete(k);
+    }
+  }
+}
+
+// -------------------------------------------------------------------------
+// Rendering
+// -------------------------------------------------------------------------
+const tmpMat = M.create();
+const tmpNormal = new Float32Array(9);
+const viewMat = M.create();
+
+function computeNormalMat(modelMat) {
+  // model is affine; use upper-left 3x3 inverse transpose
+  const a00=modelMat[0],a01=modelMat[1],a02=modelMat[2];
+  const a10=modelMat[4],a11=modelMat[5],a12=modelMat[6];
+  const a20=modelMat[8],a21=modelMat[9],a22=modelMat[10];
+  const b01=a22*a11 - a12*a21, b02=a12*a20 - a22*a10, b03=a21*a10 - a11*a20;
+  let det = a00*b01 + a01*b02 + a02*b03;
+  if (!det) det = 1;
+  const i00=b01/det, i01=(a02*a21 - a22*a01)/det, i03=(a12*a01 - a02*a11)/det;
+  const i10=b02/det, i11=(a22*a00 - a02*a20)/det, i13=(a02*a10 - a12*a00)/det;
+  const i20=b03/det, i21=(a01*a20 - a21*a00)/det, i23=(a11*a00 - a01*a10)/det;
+  tmpNormal[0]=i00; tmpNormal[1]=i10; tmpNormal[2]=i20;
+  tmpNormal[3]=i01; tmpNormal[4]=i11; tmpNormal[5]=i21;
+  tmpNormal[6]=i03; tmpNormal[7]=i13; tmpNormal[8]=i23;
+  return tmpNormal;
+}
+
+function drawMesh(mesh, model) {
+  gl.bindVertexArray(mesh.vao);
+  gl.uniformMatrix4fv(mainLocs.u.uModel, false, model);
+  gl.uniformMatrix3fv(mainLocs.u.uNormalMat, false, computeNormalMat(model));
+  if (mesh.indexed) {
+    gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0);
+  } else {
+    gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
+  }
+}
+
+function render(time) {
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LEQUAL);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+
+  // Lighting
+  const lightDir = [-0.3, 0.8, -0.4];
+  const ll = Math.hypot(lightDir[0],lightDir[1],lightDir[2]);
+  lightDir[0]/=ll; lightDir[1]/=ll; lightDir[2]/=ll;
+  // Fog color based on time-of-day-ish; keep a mystical purple
+  const fogColor = new Float32Array([0.25, 0.15, 0.35]);
+  const ambient = [0.25, 0.22, 0.35];
+  const lightColor = [0.9, 0.7, 1.0];
+
+  const renderForView = (view, proj) => {
+    let v;
+    if (view && view.transform) {
+      // v2w maps eye-local -> xrRefSpace (which is player-root space, floor-level).
+      // Player root in world is P (playerTransform), so eye in world is P * v2w.
+      // View matrix (world->eye) = inverse(P * v2w) = inverse(v2w) * inverse(P)
+      const v2w = view.transform.matrix;
+      const invView = M.invert(v2w);
+      // inverse(P) = inverse(R_y(yaw)) * inverse(T(pos)) = R_y(-yaw) * T(-pos)
+      const invRot = M.rotY(-player.yaw);
+      const invTrans = M.translation(-player.pos[0], -player.pos[1], -player.pos[2]);
+      const invP = M.mul(invRot, invTrans);
+      v = M.mul(invView, invP);
+    } else {
+      // Desktop camera — eye at head height (feet + eyeHeight)
+      const eyePos = [player.pos[0], player.pos[1] + player.eyeHeight, player.pos[2]];
+      const pitch = player.pitch || 0;
+      const lookDir = [-Math.sin(player.yaw)*Math.cos(pitch), Math.sin(pitch), -Math.cos(player.yaw)*Math.cos(pitch)];
+      const center = [eyePos[0]+lookDir[0], eyePos[1]+lookDir[1], eyePos[2]+lookDir[2]];
+      v = M.lookAt(eyePos, center, [0,1,0]);
+    }
+    M.set(viewMat, v);
+
+    // Sky
+    gl.useProgram(skyProg);
+    gl.depthMask(false);
+    gl.uniformMatrix4fv(skyLocs.u.uProj, false, proj);
+    gl.uniformMatrix4fv(skyLocs.u.uView, false, v);
+    gl.uniform1f(skyLocs.u.uTime, time*0.1);
+    gl.uniform3fv(skyLocs.u.uFogColor, fogColor);
+    gl.uniform3fv(skyLocs.u.uSunDir, lightDir);
+    gl.bindVertexArray(skyMesh.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, skyMesh.count);
+    gl.depthMask(true);
+
+    // Main opaque
+    gl.useProgram(prog);
+    gl.uniformMatrix4fv(mainLocs.u.uProj, false, proj);
+    gl.uniformMatrix4fv(mainLocs.u.uView, false, v);
+    gl.uniform3fv(mainLocs.u.uLightDir, lightDir);
+    gl.uniform3fv(mainLocs.u.uAmbient, ambient);
+    gl.uniform3fv(mainLocs.u.uFogColor, fogColor);
+    gl.uniform3fv(mainLocs.u.uLightColor, lightColor);
+    gl.uniform1f(mainLocs.u.uTime, time);
+
+    // Terrain chunks
+    for (const [key, mesh] of terrainChunks) {
+      const model = M.create();
+      drawMesh(mesh, model);
+    }
+
+    // Static objects (ruins, plants, rocks, monoliths)
+    for (const obj of staticObjects) {
+      drawMesh(obj.mesh, obj.model);
+    }
+
+    // Artifacts
+    for (const a of interactables) {
+      if (a.collected) continue;
+      const m = M.mul(M.translation(a.pos[0], a.pos[1], a.pos[2]), M.rotY(time + a.phase));
+      drawMesh(a.mesh, m);
+    }
+
+    // Creatures
+    for (const cr of creatures) {
+      // orientation: jellyfish bob upright; crawler oriented to move
+      let m;
+      if (cr.type === 'jelly') {
+        const bob = Math.sin(cr.phase*2) * 0.2;
+        m = M.mul(M.translation(cr.pos[0], cr.pos[1]+bob, cr.pos[2]), M.rotY(cr.phase*0.3));
+      } else {
+        m = M.translation(cr.pos[0], cr.pos[1], cr.pos[2]);
+      }
+      drawMesh(cr.mesh, m);
+    }
+
+    // Controllers (simple) — transform from ref-space to world space via P
+    for (let i=0;i<2;i++) {
+      if (!controllers[i].active) continue;
+      const gripWorld = M.mul(playerTransform, controllers[i].grip);
+      drawController(gripWorld, i);
+    }
+
+    // Particles (additive blending)
+    gl.useProgram(partProg);
+    gl.uniformMatrix4fv(partLocs.u.uProj, false, proj);
+    gl.uniformMatrix4fv(partLocs.u.uView, false, v);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    gl.depthMask(false);
+    gl.bindVertexArray(partVAO);
+    // particles are stored as offsets from player for culling, but we need world positions; update: actually they're world positions now.
+    gl.drawArrays(gl.POINTS, 0, MAX_PARTICLES);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+  };
+
+  if (xrSession && views.length > 0) {
+    // bind XR framebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
+    gl.viewport(0, 0, glLayer.framebufferWidth, glLayer.framebufferHeight);
+    // Actually we need per-view viewport
+    for (const view of views) {
+      const vp = glLayer.getViewport(view);
+      if (vp) gl.viewport(vp.x, vp.y, vp.width, vp.height);
+      else gl.viewport(0,0, glLayer.framebufferWidth, glLayer.framebufferHeight);
+      renderForView(view, view.projectionMatrix);
+    }
+  } else {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    const w = canvas.width, h = canvas.height;
+    gl.viewport(0,0,w,h);
+    const aspect = w/h;
+    const proj = M.perspective(70 * Math.PI/180, aspect, 0.05, 500);
+    renderForView(null, proj);
+  }
+}
+
+// Controller rendering (simple stylized hands)
+let controllerMesh = null;
+function buildControllerMesh() {
+  // Simple hand-like shape: palm (box) + cylinder for pointing
+  const palm = boxGeom(0,0,0, 0.04, 0.12, 0.1, [0.3,0.3,0.35], 0);
+  const shaft = cylinderGeom(0, 0.02, -0.08, 0.02, 0.14, 6, [0.2,0.2,0.25], 0);
+  const glow = boxGeom(0, 0.03, -0.14, 0.03, 0.03, 0.03, [0.3, 0.9, 1.0], 1.5);
+  controllerMesh = buildMesh([{verts:palm, idx:null}, shaft, {verts:glow, idx:null}]);
+}
+function drawController(mat, idx) {
+  if (!controllerMesh) buildControllerMesh();
+  drawMesh(controllerMesh, mat);
+}
+
+// -------------------------------------------------------------------------
+// Resize
+// -------------------------------------------------------------------------
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  if (xrSession) return;
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+}
+window.addEventListener('resize', resize);
+resize();
+
+// -------------------------------------------------------------------------
+// Populate + init particles
+// -------------------------------------------------------------------------
+populateWorld();
+initParticles();
+// Start at a good height (feet position — slightly above terrain to fall in)
+const startSample = sampleHeight(0,0);
+player.pos = [0, startSample.h + 3, 0];
+computePlayerTransform();
+
+// Pre-generate initial chunks
+updateChunks();
+
+// -------------------------------------------------------------------------
+// WebXR entry
+// -------------------------------------------------------------------------
+const enterXRBtn = document.getElementById('enterXR');
+
+async function enterXR() {
+  if (!navigator.xr) {
+    enterXRBtn.textContent = 'WebXR not supported — click for desktop';
+    enterXRBtn.onclick = () => {
+      enterXRBtn.style.display = 'none';
+      document.getElementById('hud').classList.add('visible');
+      requestAnimationFrame(desktopLoop);
+    };
+    return;
+  }
+  try {
+    const supported = await navigator.xr.isSessionSupported('immersive-vr');
+    if (!supported) {
+      enterXRBtn.textContent = 'No VR headset — Desktop mode';
+      enterXRBtn.onclick = () => {
+        enterXRBtn.style.display = 'none';
+        document.getElementById('hud').classList.add('visible');
+        requestAnimationFrame(desktopLoop);
+      };
+      return;
+    }
+    const session = await navigator.xr.requestSession('immersive-vr', {
+      optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
+    });
+    xrSession = session;
+    glLayer = new XRWebGLLayer(session, gl);
+    session.updateRenderState({ baseLayer: glLayer });
+    let refType = 'local-floor';
+    try {
+      xrRefSpace = await session.requestReferenceSpace('local-floor');
+    } catch (e) {
+      try {
+        xrRefSpace = await session.requestReferenceSpace('bounded-floor');
+        refType = 'bounded-floor';
+      } catch (e2) {
+        xrRefSpace = await session.requestReferenceSpace('local');
+        refType = 'local';
+      }
+    }
+    // If reference space is head-locked (local), add a floor offset via the player transform
+    xrRefSpaceIsFloor = (refType !== 'local');
+    session.requestAnimationFrame(onFrame);
+    enterXRBtn.style.display = 'none';
+    document.getElementById('hud').classList.add('visible');
+    document.getElementById('hint').style.display = 'block';
+    session.addEventListener('end', () => {
+      xrSession = null;
+      enterXRBtn.style.display = 'block';
+      enterXRBtn.textContent = 'Re-enter VR';
+    });
+  } catch (err) {
+    console.error(err);
+    enterXRBtn.textContent = 'Error — try desktop mode';
+    enterXRBtn.onclick = () => {
+      enterXRBtn.style.display = 'none';
+      document.getElementById('hud').classList.add('visible');
+      requestAnimationFrame(desktopLoop);
+    };
+  }
+}
+enterXRBtn.addEventListener('click', enterXR);
+
+// Make sure gl context has correct pixel reading
+// Disable color clamping weirdness? gl is fine.
+
+// Start desktop loop automatically if no WebXR (after a short delay, just in case)
+if (!navigator.xr) {
+  enterXRBtn.textContent = 'Enter Desktop Mode';
+}
+</script>
+</body>
+</html>

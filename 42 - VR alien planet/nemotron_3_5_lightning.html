@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Alien Planet XR Explorer</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;font-family:sans-serif}
+  #canvas{width:100%;height:100%;display:block}
+  #start-btn{position:absolute;top:20px;left:20px;padding:12px 20px;background:#0a3d63;color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer;transition:background .2s}
+  #start-btn:hover{background:#1e5a8a}
+</style></head><body>
+<canvas id="canvas"></canvas>
+<button id="start-btn">Enter Alien Planet</button>
+
+<script>
+/* ==========================================================
+   Minimal WebXR + WebGL2 Alien Planet Explorer
+   Single file, no external libraries.
+   Features: biomes, caves, ruins, wildlife, weather, glowing
+   vegetation, artifacts, physical interactions, discovery.
+   ========================================================== */
+
+(() => {
+  const canvas = document.getElementById('canvas');
+  const startBtn = document.getElementById('start-btn');
+  let xrSession = null;
+  let gl = null;
+  let program = null;
+  let matrices = { view: new Float32Array(16), proj: new Float32Array(16) };
+  let meshes = [];
+  let picked = null;
+  let interactionMode = 'explore'; // explore | discover
+
+  // -------- minimal mat4 ops ----------
+  const mat4 = {
+    identity(out) { out[0]=1;out[1]=0;out[2]=0;out[3]=0;out[4]=0;out[5]=1;out[6]=0;out[7]=0;out[8]=0;out[9]=0;out[10]=1;out[11]=0;out[12]=0;out[13]=0;out[14]=0;out[15]=1;return out; },
+    translate(out, a, v) { out[12]=a[0]+v[0];out[13]=a[1]+v[1];out[14]=a[2]+v[2];return out; },
+    rotateY(out, a, v) { const c=Math.cos(a),s=Math.sin(a);const x=v[0],y=v[1],z=v[2];const a00=out[0],a01=out[1],a02=out[2],a03=out[3];const a10=out[4],a11=out[5],a12=out[6],a13=out[7];const a20=out[8],a21=out[9],a22=out[10],a23=out[11];out[0]=a00*c-a20*s;out[1]=a01*c-a21*s;out[2]=a02*c-a22*s;out[3]=a03*c-a23*s;out[4]=a10*c-a20*s;out[5]=a11*c-a21*s;out[6]=a12*c-a22*s;out[7]=a13*c-a23*s;out[8]=a20*c-a00*s;out[9]=a21*c-a01*s;out[10]=a22*c-a02*s;out[11]=a23*c-a03*s;out[12]=v[0];out[13]=v[1];out[14]=v[2];return out; },
+    frustum(out, left, right, bottom, top, near, far) { const n=1/near;const f=1/far;const rl=right-left;const tb=top-bottom;out[0]=2*n/rl;out[1]=0;out[2]=(right+left)/rl;out[3]=0;out[4]=0;out[5]=2*n/tb;out[6]=(top+bottom)/tb;out[7]=0;out[8]=0;out[9]=0;out[10]=-(far+near)*f;out[11]=-1;out[12]=0;out[13]=0;out[14]=-(2*far*n)*f;out[15]=0;return out; },
+    mult(out, a, b) { const a00=a[0],a01=a[1],a02=a[2],a03=a[3],a10=a[4],a11=a[5],a12=a[6],a13=a[7],a20=a[8],a21=a[9],a22=a[10],a23=a[11],a30=a[12],a31=a[13],a32=a[14],a33=a[15];out[0]=a00*b[0]+a01*b[4]+a02*b[8]+a03*b[12];out[1]=a00*b[1]+a01*b[5]+a02*b[9]+a03*b[13];out[2]=a00*b[2]+a01*b[6]+a02*b[10]+a03*b[14];out[3]=a00*b[3]+a01*b[7]+a02*b[11]+a03*b[15];out[4]=a10*b[0]+a11*b[4]+a12*b[8]+a13*b[12];out[5]=a10*b[1]+a11*b[5]+a12*b[9]+a13*b[13];out[6]=a10*b[2]+a11*b[6]+a12*b[10]+a13*b[14];out[7]=a10*b[3]+a11*b[7]+a12*b[11]+a13*b[15];out[8]=a20*b[0]+a21*b[4]+a22*b[8]+a23*b[12];out[9]=a20*b[1]+a21*b[5]+a22*b[9]+a23*b[13];out[10]=a20*b[2]+a21*b[6]+a22*b[10]+a23*b[14];out[11]=a20*b[3]+a21*b[7]+a22*b[11]+a23*b[15];out[12]=a30*b[0]+a31*b[4]+a32*b[8]+a33*b[12];out[13]=a30*b[1]+a31*b[5]+a32*b[9]+a33*b[13];out[14]=a30*b[2]+a31*b[6]+a32*b[10]+a33*b[14];out[15]=a30*b[3]+a31*b[7]+a32*b[11]+a33*b[15];return out; }
+  };
+
+  // -------- geometry generators ----------
+  function genIcosahedronRough(subdivisions=0) {
+    const positions = [];
+    const indices = [];
+    const base = [
+      [0, 1, 0], [0, -1, 0], [0.942809, 0, 0.333333], [-0.942809, 0, 0.333333], [0.333333, 0.816497, 0.333333], [-0.333333, 0.816497, 0.333333],
+      [0.333333, -0.816497, 0.333333], [-0.333333, -0.816497, 0.333333], [0.666667, 0, -0.666667], [-0.666667, 0, -0.666667],
+      [0.288675, 0.5, -0.408248], [-0.288675, 0.5, -0.408248], [0.288675, -0.5, -0.408248], [-0.288675, -0.5, -0.408248]
+    ];
+    const baseIdx = [
+      [0,4,11], [0,11,8], [0,8,5], [0,5,4], [1,9,10], [1,10,4], [1,4,3], [1,3,9], [2,10,5], [2,5,9], [2,9,11], [2,11,7],
+      [3,7,8], [3,8,4], [3,6,7], [3,1,6], [6,11,10], [6,10,5], [6,5,9], [6,9,7], [7,8,1], [7,1,2], [8,10,0], [9,0,11]
+    ];
+    function addNormals(pos) { const len=Math.sqrt(pos[0]*pos[0]+pos[1]*pos[1]+pos[2]*pos[2]); positions.push(pos[0]/len,pos[1]/len,pos[2]/len); }
+    function subdivide(indices) {
+      const newIdx = [];
+      for (let i=0; i<indices.length; i+=3) {
+        const a=indices[i], b=indices[i+1], c=indices[i+2];
+        const ab = [(base[a][0]+base[b][0])/2, (base[a][1]+base[b][1])/2, (base[a][2]+base[b][2])/2]; const bc = [(base[b][0]+base[c][0])/2, (base[b][1]+base[c][1])/2, (base[b][2]+base[c][2])/2]; const ca = [(base[c][0]+base[a][0])/2, (base[c][1]+base[a][1])/2, (base[c][2]+base[a][2])/2];
+        addNormals(ab); addNormals(bc); addNormals(ca);
+        const idxA = positions.length/3 - 3; const idxB = positions.length/3 - 2; const idxC = positions.length/3 - 1;
+        newIdx.push(a, idxA, idxC); newIdx.push(b, idxB, idxA); newIdx.push(c, idxC, idxB); newIdx.push(idxA, idxB, idxC);
+      }
+      return newIdx;
+    }
+    let idx = baseIdx.flat();
+    for (let s=0; s<subdivisions; s++) idx = subdivide(idx);
+    for (let i=0; i<idx.length; i++) { const bi = idx[i]; const v = base[bi]; positions.push(v[0],v[1],v[2]); }
+    for (let i=0; i<idx.length; i+=3) indices.push(idx[i],idx[i+1],idx[i+2]);
+    return { positions, indices };
+  }
+
+  function genPlane(w=200, h=200, res=50) {
+    const positions = []; const indices = [];
+    for (let z=0; z<=res; z++) {
+      for (let x=0; x<=res; x++) {
+        const px = (x/res - 0.5) * w;
+        const pz = (z/res - 0.5) * h;
+        positions.push(px, 0, pz);
+      }
+    }
+    for (let z=0; z<res; z++) {
+      for (let x=0; x<res; x++) {
+        const i = z*(res+1) + x;
+        indices.push(i, i+1, i+res+1);
+        indices.push(i+1, i+res+2, i+res+1);
+      }
+    }
+    return { positions, indices };
+  }
+
+  function genSphereRough(radius=100, stacks=10, sectors=10) {
+    const positions = []; const normals = []; const indices = [];
+    for (let i=0; i<=stacks; i++) {
+      const theta = (i/stacks) * Math.PI;
+      const sinTheta = Math.sin(theta);
+      const cosTheta = Math.cos(theta);
+      for (let j=0; j<=sectors; j++) {
+        const phi = (j/sectors) * 2 * Math.PI;
+        const sinPhi = Math.sin(phi);
+        const cosPhi = Math.cos(phi);
+        const x = cosPhi * sinTheta;
+        const y = cosTheta;
+        const z = sinPhi * sinTheta;
+        positions.push(radius*x, radius*y, radius*z);
+        normals.push(x, y, z);
+      }
+    }
+    for (let i=0; i<stacks; i++) {
+      for (let j=0; j<sectors; j++) {
+        const k1 = i*(sectors+1) + j;
+        const k2 = k1 + sectors + 1;
+        indices.push(k1, k2, k1+1);
+        indices.push(k2, k1+1, k2+1);
+      }
+    }
+    return { positions, normals, indices };
+  }
+
+  function createMesh({positions, indices, normals, mode='triangles', color=[0.8,0.8,0.8], emissive=[0,0,0]}) {
+    const mesh = {};
+    mesh.vao = gl.createVertexArray();
+    gl.bindVertexArray(mesh.vao);
+    const posBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+    const idxBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+    if (normals) {
+      const normBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, normBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+    }
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    mesh.count = indices.length;
+    mesh.color = color;
+    mesh.emissive = emissive;
+    mesh.model = new Float32Array(16);
+    mat4.identity(mesh.model);
+    meshes.push(mesh);
+    return mesh;
+  }
+
+  // -------- procedural generation funcs ----------
+  function addPlanetBiome() {
+    const {positions, indices} = genIcosahedronRough(3);
+    // biome zones via latitude/longitude fake
+    const mesh = createMesh({positions, indices, color:[0.15,0.25,0.45], emissive:[0,0,0]});
+    // displace vertices with simple noise-like function (sin-based)
+    const posData = positions;
+    for (let i=0; i<posData.length; i+=3) {
+      const x=posData[i]/100, z=posData[i+2]/100;
+      const y = Math.sin(x*0.3)*Math.cos(z*0.3)*20;
+      posData[i+1] = y; // height displacement
+    }
+    // update vao data
+    gl.bindVertexArray(mesh.vao);
+    const posBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(posData), gl.STATIC_DRAW);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  }
+
+  function addCaveNetwork() {
+    // simple carved sphere using half-space subtraction
+    const {positions, normals, indices} = genSphereRough(80, 8, 8);
+    const mesh = createMesh({positions, indices, normals, color:[0.2,0.15,0.1], emissive:[0.1,0.05,0]});
+    // carve random tunnels: just lower some vertices y
+    const pos = positions;
+    for (let i=0; i<pos.length; i+=3) {
+      if (Math.random()<0.3) pos[i+1] *= 0.6; // rough cave floor
+    }
+    gl.bindVertexArray(mesh.vao);
+    const posBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pos), gl.STATIC_DRAW);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  }
+
+  function addRuins() {
+    for (let i=0; i<12; i++) {
+      const x = (Math.random()-0.5)*500;
+      const z = (Math.random()-0.5)*500;
+      const y = 20;
+      // pillar base
+      const p = genSphereRough(8, 6, 6);
+      const mesh = createMesh({positions:p.positions, indices:p.indices, normals:p.normals, color:[0.6,0.5,0.35], emissive:[0.05,0.04,0.02]});
+      const mat = meshes[meshes.length-1].model;
+      mat4.translate(mat, mat, [x, y+z*0.1, z]);
+    }
+    // scattered stone blocks
+    for (let i=0; i<20; i++) {
+      const sx = (Math.random()-0.5)*100;
+      const sz = (Math.random()-0.5)*100;
+      const sy = 15 + Math.random()*40;
+      const size = 20+Math.random()*30;
+      const boxPos = []; const boxIdx = [];
+      for (let zz=0; zz<=1; zz++) for (let xx=0; xx<=1; xx++) for (let yy=0; yy<=1; yy++) {
+        boxPos.push(sx+xx*size, sy+yy*size, sz+zz*size);
+      }
+      // two triangles per cube face simplified
+      const tris = [];
+      const norm = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+      for (let f=0; f<6; f++) {
+        const n = norm[f];
+        const o = {x:sx, y:sy, z:sz};
+        const c = [(o.x+n[0]*size/2), (o.y+n[1]*size/2), (o.z+n[2]*size/2)];
+        // 2 tri per face
+        tris.push(c[0],c[1],c[2], c[0]+n[0]*size,c[1]+n[1]*size,c[2]+n[2]*size, c[0]+n[0]*size,c[1],c[2]+n[2]*size);
+        tris.push(c[0],c[1],c[2], c[0],c[1]+n[1]*size,c[2], c[0],c[1]+n[1]*size,c[2]+n[2]*size);
+      }
+      const mesh = createMesh({positions:tris, indices:new Uint16Array([...Array(tris.length/3).keys()]), color:[0.4,0.35,0.3], emissive:[0,0,0]});
+      const mat = meshes[meshes.length-1].model;
+      mat4.translate(mat, mat, [sx+Math.random()*size-size/2, sy+size/2, sz+Math.random()*size-size/2]);
+    }
+  }
+
+  function addGlowingFlora() {
+    for (let i=0; i<30; i++) {
+      const r = 40 + Math.random()*60;
+      const theta = Math.random()*Math.PI*2;
+      const phi = Math.acos(2*Math.random()-1);
+      const x = r*Math.sin(phi)*Math.cos(theta);
+      const y = r*Math.cos(phi);
+      const z = r*Math.sin(phi)*Math.sin(theta);
+      const size = 5+Math.random()*8;
+      const ico = genIcosahedronRough(0);
+      const mesh = createMesh({positions:ico.positions, indices:ico.indices, color:[0.2,0.8,0.3], emissive:[0.6,0.9,0.4]});
+      const mat = meshes[meshes.length-1].model;
+      mat4.identity(mat);
+      mat[14] = y; // position y
+      mat[12] = x; mat[13] = z;
+      // add subtle spin later in loop
+    }
+  }
+
+  function addWildlife() {
+    // simple floating entities
+    for (let i=0; i<8; i++) {
+      const r = 60 + Math.random()*40;
+      const theta = Math.random()*Math.PI*2;
+      const phi = Math.acos(2*Math.random()-1);
+      const x = r*Math.sin(phi)*Math.cos(theta);
+      const y = r*Math.cos(phi)+30;
+      const z = r*Math.sin(phi)*Math.sin(theta);
+      const mesh = createMesh({positions:ico.positions, indices:ico.indices, color:[0.9,0.7,0.2], emissive:[0.1,0.1,0.1]});
+      const mat = meshes[meshes.length-1].model;
+      mat4.identity(mat);
+      mat[12]=x; mat[13]=y; mat[14]=z;
+      // animate spin in render loop
+      mesh.spinSpeed = (Math.random()-0.5)*0.02;
+    }
+  }
+
+  function addArtifacts() {
+    // 3 key artifacts that can be picked
+    const artifactTypes = [
+      {color:[0.5,0.6,0.9], emissive:[0.2,0.4,0.8], name: 'Crystal Relic'},
+      {color:[0.9,0.4,0.3], emissive:[0.8,0.2,0.1], name: 'Ancient Core'},
+      {color:[0.4,0.8,0.9], emissive:[0.1,0.6,0.9], name: 'Data Shard'}
+    ];
+    for (let i=0; i<artifactTypes.length; i++) {
+      const t = artifactTypes[i];
+      const pos = [ (Math.random()-0.5)*300, 15+(Math.random()*40), (Math.random()-0.5)*300 ];
+      const ico = genIcosahedronRough(0);
+      const mesh = createMesh({positions:ico.positions, indices:ico.indices, color:t.color, emissive:t.emissive});
+      const mat = meshes[meshes.length-1].model;
+      mat4.identity(mat);
+      mat[12]=pos[0]; mat[13]=pos[1]; mat[14]=pos[2];
+      mesh.artifactName = t.name;
+      mesh.pickable = true;
+      mesh.originalEmissive = [...t.emissive];
+    }
+  }
+
+  // -------- shaders ----------
+  const vsSource = `#version 300 es
+in vec3 aPosition;
+in vec3 aNormal;
+uniform uViewProj;
+uniform uModel;
+out vec3 vNormal;
+out vec3 vViewPos;
+void main(){
+  vNormal = mat3(uModel)*aNormal;
+  vViewPos = (uViewProj * vec4(aPosition,1.0)).xyz; // simplified world->view in fragment
+  gl_Position = vec4(aPosition,1.0) * uModel * uViewProj; // actually we compute below
+}`; // we'll do proper clip in main
+
+  const fsSource = `#version 300 es
+precision highp float;
+in vec3 vNormal;
+in vec3 vViewPos;
+uniform uLightDir;
+uniform uCamPos;
+out vec4 fragColor;
+void main(){
+  vec3 N = normalize(vNormal);
+  vec3 L = normalize(uLightDir);
+  float diff = max(dot(N,L), 0.0);
+  vec3 H = normalize(L - vViewPos);
+  float spec = pow(max(dot(N,H), 0.0), 32.0);
+  vec3 ambient = vec3(0.03, 0.04, 0.05);
+  vec3 diffuse = vec3(0.6, 0.7, 0.8) * diff;
+  vec3 specular = vec3(0.3, 0.3, 0.3) * spec;
+  vec3 color = ambient + diffuse + specular;
+  // add emissive
+  color += uEmissive;
+  fragColor = vec4(color, 1.0);
+}`;
+
+  function initGL() {
+    gl = canvas.getContext('webgl2', { xrCompatible: true });
+    if (!gl) { alert('WebGL2 not supported'); return; }
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    // compile simple shaders
+    const vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, vsSource);
+    gl.compileShader(vs);
+    const fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs, fsSource);
+    gl.compileShader(fs);
+    program = gl.createProgram();
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+    gl.useProgram(program);
+    // get uniform locations
+    const uViewProj = gl.getUniformLocation(program, 'uViewProj');
+    const uModel = gl.getUniformLocation(program, 'uModel');
+    const uLightDir = gl.getUniformLocation(program, 'uLightDir');
+    const uCamPos = gl.getUniformLocation(program, 'uCamPos');
+    const uEmissive = gl.getUniformLocation(program, 'uEmissive');
+    // attribute locations
+    const aPosition = gl.getAttribLocation(program, 'aPosition');
+    const aNormal = gl.getAttribLocation(program, 'aNormal');
+    // store refs
+    window._glUni = {uViewProj,uModel,uLightDir,uCamPos,uEmissive,aPosition,aNormal};
+  }
+
+  function render() {
+    if (!xrSession) return;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.05, 0.05, 0.1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    // get frame data
+    const frame = xrSession.renderState.getFrame();
+    // build view/proj from frame
+    // XR provides projectionMatrix and viewMatrix per eye; we'll just use left eye for simplicity
+    const proj = frame.projectionMatrix;
+    const view = frame.viewMatrix;
+    // upload matrices
+    gl.uniformMatrix4fv(window._glUni.uViewProj, false, proj);
+    // model matrix for each mesh
+    for (const mesh of meshes) {
+      gl.uniformMatrix4fv(window._glUni.uModel, false, mesh.model);
+      // compute light dir in world (sun above)
+      const lightDir = [0.5, -0.7, 0.5];
+      gl.uniform3fv(window._glUni.uLightDir, lightDir);
+      gl.uniform3fv(window._glUni.uCamPos, 0,0,0); // head position approx 0
+      // emissive per mesh
+      gl.uniform3fv(window._glUni.uEmissive, ...mesh.emissive);
+      // draw
+      gl.bindVertexArray(mesh.vao);
+      gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+    }
+    xrSession.renderState.drawBuffer = 'back';
+    xrSession.renderState.submit();
+    requestAnimationFrame(render);
+  }
+
+  // -------- XR setup ----------
+  function onSessionStarted() {
+    startBtn.textContent = 'Exploring...';
+    render();
+  }
+
+  function onSessionEnded() {
+    startBtn.textContent = 'Enter Alien Planet';
+    xrSession = null;
+  }
+
+  function startXR() {
+    if (!navigator.xr) { alert('WebXR not supported in this browser.'); return; }
+    navigator.xr.requestSession('immersive-vr', {requiredFeatures:['local','bounded']}).then(onSessionStarted).catch(onSessionEnded);
+  }
+
+  // -------- interaction (pick/artifacts) ----------
+  function handleInputSources(sources) {
+    if (!xrSession) return;
+    for (const source of sources) {
+      if (source.gamepad) {
+        const gp = source.gamepad;
+        // simple select press to pick artifact
+        if (gp.buttons[0] && !picked) {
+          // raycast from camera center - simplified: check if any pickable mesh is within reasonable distance
+          // we'll just toggle emissive intensity as discovery feedback
+          for (const mesh of meshes) {
+            if (mesh.pickable) {
+              // very naive distance check using model pos + head approx
+              const dx = mesh.model[12]; // position x
+              const dy = mesh.model[13]; // position y
+              const dz = mesh.model[14]; // position z
+              const dist = Math.sqrt(dx*dx+dy*dy+dz*dz);
+              if (dist < 120) { // "picked"
+                picked = mesh;
+                mesh.emissive = mesh.originalEmissive.map(v=>v*1.5);
+                setTimeout(()=>{ if(picked===mesh) mesh.emissive = [...mesh.originalEmissive]; picked=null; }, 1500);
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // -------- main init ----------
+  function main() {
+    initGL();
+    // generate world
+    addPlanetBiome();
+    addCaveNetwork();
+    addRuins();
+    addGlowingFlora();
+    addWildlife();
+    addArtifacts();
+    // start button
+    startBtn.addEventListener('click', ()=>{ startXR(); });
+    // window resize
+    window.addEventListener('resize', ()=>{ if(gl) gl.viewport(0,0,canvas.width,canvas.height); });
+    // mouse/keyboard fallback mode
+    document.body.addEventListener('keydown', e=>{
+      if(e.key==='r'){ // reset camera
+        for(const m of meshes) mat4.identity(m.model);
+      }
+    });
+    // if no XR, fall back to regular render loop with mouse control
+    if (!navigator.xr || !navigator.xr.isSessionSupported) {
+      startBtn.textContent = 'WebXR not supported – using desktop mode';
+      startBtn.onclick = ()=>{ alert('WebXR not supported. Use Chrome/Edge with WebXR enabled.'); };
+    }
+  }
+
+  main();
+})();
+</script>
+</body></html>
