@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aetherweave Rogue</title>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.167.1/build/three.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: 'Arial', sans-serif; }
+        #hud { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 100; }
+        #health-bar { position: absolute; top: 20px; left: 20px; width: 200px; height: 20px; background: rgba(0,0,0,0.5); border: 2px solid #fff; border-radius: 10px; overflow: hidden; }
+        #health { height: 100%; background: linear-gradient(90deg, #ff4444, #ff8888); transition: width 0.3s; }
+        #mana-bar { position: absolute; top: 50px; left: 20px; width: 200px; height: 20px; background: rgba(0,0,0,0.5); border: 2px solid #fff; border-radius: 10px; overflow: hidden; }
+        #mana { height: 100%; background: linear-gradient(90deg, #4444ff, #8888ff); transition: width 0.3s; }
+        #wave-info { position: absolute; top: 20px; right: 20px; color: #fff; font-size: 24px; text-shadow: 2px 2px 4px #000; }
+        #crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 20px; height: 20px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 10px #fff; pointer-events: none; }
+        #spell-hud { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; }
+        .spell-slot { width: 60px; height: 60px; background: rgba(0,0,0,0.5); border: 2px solid #fff; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; text-align: center; cursor: pointer; pointer-events: auto; transition: all 0.2s; }
+        .spell-slot.active { border-color: #ffff00; box-shadow: 0 0 20px #ffff00; }
+        .spell-slot.selected { background: rgba(255,255,0,0.3); }
+        #upgrade-screen, #death-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: none; flex-direction: column; align-items: center; justify-content: center; color: #fff; font-size: 24px; z-index: 200; pointer-events: none; }
+        .upgrade-btn, .restart-btn { pointer-events: auto; margin: 10px; padding: 15px 30px; background: linear-gradient(45deg, #4444ff, #8888ff); border: none; border-radius: 10px; color: #fff; font-size: 18px; cursor: pointer; transition: all 0.2s; box-shadow: 0 0 20px rgba(68,68,255,0.5); }
+        .upgrade-btn:hover, .restart-btn:hover { transform: scale(1.05); box-shadow: 0 0 30px rgba(68,68,255,0.8); }
+        #damage-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,0,0,0); pointer-events: none; transition: background 0.3s; z-index: 150; }
+        #instructions { position: absolute; bottom: 20px; right: 20px; color: #aaa; font-size: 14px; text-align: right; pointer-events: none; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        <div id="health-bar"><div id="health" style="width:100%"></div></div>
+        <div id="mana-bar"><div id="mana" style="width:100%"></div></div>
+        <div id="wave-info">Wave: <span id="wave-num">1</span></div>
+        <div id="crosshair"></div>
+        <div id="spell-hud"></div>
+        <div id="instructions">
+            WASD: Move | Mouse: Look | Space: Jump | Shift: Dash | 1-5: Spells | R: Restart
+        </div>
+        <div id="damage-overlay"></div>
+    </div>
+    <div id="upgrade-screen">
+        <h2>Choose Upgrade</h2>
+        <div id="upgrade-options"></div>
+    </div>
+    <div id="death-screen">
+        <h2>Run Ended</h2>
+        <p id="final-wave">Final Wave: 1</p>
+        <p id="stars-earned">Stars: 0</p>
+        <button class="restart-btn" onclick="game.restartRun()">New Run</button>
+    </div>
+
+    <script>
+        // Game Core
+        class AetherweaveRogue {
+            constructor() {
+                this.scene = new THREE.Scene();
+                this.scene.fog = new THREE.Fog(0x111133, 50, 300);
+                this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.shadowMap.enabled = true;
+                this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+                this.renderer.toneMappingExposure = 1.2;
+                document.body.appendChild(this.renderer.domElement);
+
+                this.clock = new THREE.Clock();
+                this.time = 0;
+
+                // Game State
+                this.state = 'playing'; // playing, upgrading, dead
+                this.wave = 1;
+                this.score = 0;
+                this.stars = 0; // meta progression
+                this.enemiesKilled = 0;
+                this.nextWaveEnemies = 5;
+                this.enemiesLeft = 5;
+                this.unlockSpells = new Set(['ember', 'frost', 'thunder']); // permanent unlocks start with these
+
+                // Player
+                this.player = {
+                    position: new THREE.Vector3(0, 5, 0),
+                    velocity: new THREE.Vector3(),
+                    rotation: new THREE.Vector2(),
+                    health: 100,
+                    maxHealth: 100,
+                    mana: 100,
+                    maxMana: 100,
+                    speed: 20,
+                    dashSpeed: 50,
+                    jumpPower: 15,
+                    onGround: false,
+                    dashCooldown: 0,
+                    size: 1.8,
+                    spells: [], // current run spells
+                    currentSpell: 0
+                };
+
+                // Systems
+                this.hands = new THREE.Group();
+                this.scene.add(this.hands);
+                this.projectiles = [];
+                this.particles = [];
+                this.enemies = [];
+                this.pickups = [];
+                this.obstacles = [];
+                this.spellHistory = [];
+
+                // Input
+                this.keys = {};
+                this.mouse = { x: 0, y: 0, buttons: 0 };
+                this.spellSlots = 5;
+
+                this.init();
+                this.resize();
+                this.animate();
+            }
+
+            init() {
+                // Lights
+                const ambient = new THREE.AmbientLight(0x404040, 0.4);
+                this.scene.add(ambient);
+                const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+                dirLight.position.set(10, 20, 5);
+                dirLight.castShadow = true;
+                dirLight.shadow.mapSize.width = 2048;
+                dirLight.shadow.mapSize.height = 2048;
+                dirLight.shadow.camera.near = 0.5;
+                dirLight.shadow.camera.far = 500;
+                dirLight.shadow.camera.left = -50;
+                dirLight.shadow.camera.right = 50;
+                dirLight.shadow.camera.top = 50;
+                dirLight.shadow.camera.bottom = -50;
+                this.scene.add(dirLight);
+
+                // Stylized Materials
+                this.toonMat = {
+                    base: new THREE.MeshToonMaterial({ color: 0xaaaaaa }),
+                    ember: new THREE.MeshToonMaterial({ color: 0xff6600, emissive: 0x440000 }),
+                    frost: new THREE.MeshToonMaterial({ color: 0x66ddff, emissive: 0x004488 }),
+                    thunder: new THREE.MeshToonMaterial({ color: 0xffff88, emissive: 0x444400 }),
+                    arcane: new THREE.MeshToonMaterial({ color: 0xaa88ff, emissive: 0x440088 }),
+                    enemy: new THREE.MeshToonMaterial({ color: 0x882222 }),
+                    elite: new THREE.MeshToonMaterial({ color: 0xff4444, emissive: 0x440000 }),
+                    boss: new THREE.MeshToonMaterial({ color: 0x4444ff, emissive: 0x000044 })
+                };
+
+                // Arena
+                this.arenaRadius = 30;
+                this.generateArena();
+
+                // Hands
+                this.createHands();
+
+                // Spells
+                this.defineSpells();
+                this.player.spells = ['ember', 'frost', 'thunder']; // start with basics
+                this.updateSpellHUD();
+
+                // Input Events
+                document.addEventListener('click', () => this.renderer.domElement.requestPointerLock());
+                document.addEventListener('pointerlockchange', () => {
+                    if (document.pointerLockElement !== this.renderer.domElement) this.state = 'paused';
+                });
+                document.addEventListener('mousemove', (e) => {
+                    if (document.pointerLockElement === this.renderer.domElement) {
+                        this.mouse.x += e.movementX * 0.002;
+                        this.mouse.y += e.movementY * 0.002;
+                        this.mouse.y = Math.max(-Math.PI/2, Math.min(Math.PI/2, this.mouse.y));
+                    }
+                });
+                document.addEventListener('mousedown', (e) => {
+                    this.mouse.buttons |= 1 << (e.button);
+                    if (e.button === 0) this.castSpell(false);
+                    if (e.button === 2) this.castSpell(true);
+                });
+                document.addEventListener('mouseup', (e) => {
+                    this.mouse.buttons &= ~(1 << (e.button));
+                });
+                document.addEventListener('contextmenu', e => e.preventDefault());
+                document.addEventListener('keydown', (e) => {
+                    this.keys[e.code] = true;
+                    if (e.code === 'KeyR') this.restartRun();
+                    if (e.code >= 'Digit1' && e.code <= 'Digit5') {
+                        this.player.currentSpell = parseInt(e.code[5]) - 1;
+                        this.updateSpellHUD();
+                    }
+                });
+                document.addEventListener('keyup', (e) => this.keys[e.code] = false);
+                window.addEventListener('wheel', (e) => {
+                    this.player.currentSpell = (this.player.currentSpell + (e.deltaY > 0 ? 1 : -1) + this.player.spells.length) % this.player.spells.length;
+                    this.updateSpellHUD();
+                });
+
+                // UI Events
+                document.getElementById('upgrade-options').addEventListener('click', (e) => {
+                    if (e.target.classList.contains('upgrade-btn')) {
+                        this.selectUpgrade(e.target.dataset.id);
+                    }
+                });
+
+                this.spawnWave();
+            }
+
+            defineSpells() {
+                this.spells = {
+                    ember: {
+                        name: 'Ember Spark',
+                        mana: 15,
+                        projSpeed: 40,
+                        dmg: 25,
+                        vfx: 'ember',
+                        chargeDmg: 40,
+                        gesture: 'throw'
+                    },
+                    frost: {
+                        name: 'Frostbind',
+                        mana: 20,
+                        projSpeed: 25,
+                        dmg: 20,
+                        slow: 0.5,
+                        vfx: 'frost',
+                        chargeFreeze: true,
+                        gesture: 'push'
+                    },
+                    thunder: {
+                        name: 'Thunder Lash',
+                        mana: 25,
+                        range: 10,
+                        dmg: 35,
+                        chain: 3,
+                        vfx: 'thunder',
+                        gesture: 'lash'
+                    },
+                    arcane: {
+                        name: 'Arcane Bolt',
+                        mana: 10,
+                        projSpeed: 50,
+                        dmg: 15,
+                        homing: 0.1,
+                        vfx: 'arcane',
+                        gesture: 'point'
+                    },
+                    void: {
+                        name: 'Void Grasp',
+                        mana: 30,
+                        pullForce: 20,
+                        dmg: 30,
+                        vfx: 'arcane',
+                        gesture: 'pull'
+                    }
+                };
+            }
+
+            createHands() {
+                const armGeo = new THREE.CylinderGeometry(0.15, 0.2, 1.2, 8);
+                const palmGeo = new THREE.BoxGeometry(0.4, 0.3, 0.8);
+                const fingerGeo = new THREE.CylinderGeometry(0.05, 0.08, 0.4, 6);
+
+                // Left Arm
+                const leftArm = new THREE.Mesh(armGeo, this.toonMat.base.clone());
+                leftArm.rotation.z = Math.PI / 4;
+                leftArm.position.set(-0.5, -0.8, -0.5);
+                leftArm.castShadow = true;
+                const leftPalm = new THREE.Mesh(palmGeo, this.toonMat.arcane.clone());
+                leftPalm.position.set(-0.3, -0.3, 0);
+                leftArm.add(leftPalm);
+                this.hands.add(leftArm);
+
+                // Fingers (simplified)
+                for (let i = 0; i < 4; i++) {
+                    const finger = new THREE.Mesh(fingerGeo, this.toonMat.base.clone());
+                    finger.position.set(-0.2 + i*0.08, 0, 0.3);
+                    finger.rotation.x = 0.2;
+                    leftPalm.add(finger);
+                }
+                const thumb = new THREE.Mesh(fingerGeo, this.toonMat.base.clone());
+                thumb.position.set(-0.1, -0.1, 0.2);
+                thumb.rotation.z = -0.5;
+                leftPalm.add(thumb);
+
+                // Right Arm (mirror)
+                const rightArm = leftArm.clone();
+                rightArm.scale.x = -1;
+                rightArm.position.x = -rightArm.position.x;
+                this.hands.add(rightArm);
+            }
+
+            animateHands(gesture, charging) {
+                this.hands.children.forEach((arm, idx) => {
+                    arm.rotation.y = Math.sin(this.time * 3) * 0.1 * (idx === 0 ? 1 : -1);
+                    if (gesture === 'throw') {
+                        arm.position.z = Math.sin(this.time * 10) * 0.2 - 0.3;
+                    } else if (gesture === 'push') {
+                        arm.rotation.x = charging ? -0.5 : 0;
+                    } else if (gesture === 'lash') {
+                        arm.rotation.z = Math.sin(this.time * 15) * 0.3;
+                    } else if (gesture === 'point') {
+                        arm.children[0].rotation.x = -0.3;
+                    } else if (gesture === 'pull') {
+                        arm.position.z = -0.8 + Math.sin(this.time * 5) * 0.1;
+                    }
+                    if (charging) {
+                        arm.scale.set(1.1, 1.1, 1.1);
+                    } else {
+                        arm.scale.set(1,1,1);
+                    }
+                });
+            }
+
+            generateArena() {
+                // Ground
+                const groundGeo = new THREE.CircleGeometry(this.arenaRadius, 64);
+                const groundMat = new THREE.MeshToonMaterial({ color: 0x334455 });
+                const ground = new THREE.Mesh(groundGeo, groundMat);
+                ground.rotation.x = -Math.PI / 2;
+                ground.receiveShadow = true;
+                this.scene.add(ground);
+
+                // Procedural Obstacles
+                for (let i = 0; i < 20 + this.wave * 2; i++) {
+                    const obs = new THREE.Mesh(
+                        new THREE.CylinderGeometry(1 + Math.random(), 2 + Math.random(), 5 + Math.random() * 10, 8),
+                        this.toonMat.base.clone()
+                    );
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 10 + Math.random() * (this.arenaRadius - 15);
+                    obs.position.set(Math.cos(angle) * dist, obs.geometry.parameters.height / 2, Math.sin(angle) * dist);
+                    obs.castShadow = true;
+                    obs.receiveShadow = true;
+                    this.obstacles.push(obs);
+                    this.scene.add(obs);
+                }
+            }
+
+            spawnEnemy(isElite = false, isBoss = false) {
+                const enemy = {
+                    mesh: new THREE.Mesh(new THREE.IcosahedronGeometry(1.5 + Math.random(), 1), isBoss ? this.toonMat.boss : isElite ? this.toonMat.elite : this.toonMat.enemy),
+                    health: (isBoss ? 500 : isElite ? 100 : 50) * (1 + this.wave * 0.2),
+                    maxHealth: (isBoss ? 500 : isElite ? 100 : 50) * (1 + this.wave * 0.2),
+                    position: new THREE.Vector3(),
+                    velocity: new THREE.Vector3(),
+                    size: 1.5,
+                    speed: (isBoss ? 8 : isElite ? 12 : 6) * (1 + this.wave * 0.1),
+                    dmg: isBoss ? 40 : isElite ? 25 : 15,
+                    attackCooldown: 0,
+                    type: isElite ? 'elite' : isBoss ? 'boss' : 'basic'
+                };
+                enemy.mesh.castShadow = true;
+                enemy.mesh.receiveShadow = true;
+
+                // Random spawn position
+                const angle = Math.random() * Math.PI * 2;
+                enemy.position.set(Math.cos(angle) * (this.arenaRadius - 5), 2, Math.sin(angle) * (this.arenaRadius - 5));
+                enemy.mesh.position.copy(enemy.position);
+
+                // Animate idle
+                const pulse = new THREE.Mesh(new THREE.SphereGeometry(0.3), new THREE.MeshToonMaterial({ color: 0xff0000, emissive: 0x440000 }));
+                enemy.mesh.add(pulse);
+
+                this.enemies.push(enemy);
+                this.scene.add(enemy.mesh);
+            }
+
+            spawnWave() {
+                this.enemies = [];
+                this.enemiesLeft = this.nextWaveEnemies;
+                const elites = Math.floor(this.wave / 5);
+                const boss = this.wave % 10 === 0;
+                this.nextWaveEnemies += 3 + Math.floor(this.wave / 3);
+                for (let i = 0; i < this.nextWaveEnemies; i++) {
+                    if (boss && i === 0) {
+                        this.spawnEnemy(false, true);
+                    } else if (i < elites) {
+                        this.spawnEnemy(true);
+                    } else {
+                        this.spawnEnemy();
+                    }
+                }
+                document.getElementById('wave-num').textContent = this.wave;
+            }
+
+            castSpell(charged = false) {
+                const spellId = this.player.spells[this.player.currentSpell];
+                const spell = this.spells[spellId];
+                if (this.player.mana < spell.mana) return;
+
+                this.player.mana -= spell.mana;
+                this.updateUI();
+
+                // Gesture
+                this.animateHands(spell.gesture, charged);
+
+                // Check combo synergies
+                this.checkSynergies(spellId);
+
+                // Cast effects
+                const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+                if (spellId === 'thunder') {
+                    this.thunderLash(spell, dir);
+                } else if (spellId === 'void') {
+                    this.voidGrasp(spell, dir);
+                } else {
+                    // Projectile
+                    const proj = {
+                        position: this.player.position.clone().add(new THREE.Vector3(0, 1.6, 0)).add(dir.clone().multiplyScalar(1)),
+                        velocity: dir.clone().multiplyScalar(charged ? spell.projSpeed * 1.5 : spell.projSpeed),
+                        life: 3,
+                        spellId,
+                        charged,
+                        size: 0.3,
+                        dmg: charged ? spell.chargeDmg || spell.dmg * 1.5 : spell.dmg,
+                        slow: spell.slow || 0,
+                        homing: spell.homing || 0,
+                        mesh: new THREE.Mesh(new THREE.SphereGeometry(0.3), this.toonMat[spell.vfx].clone())
+                    };
+                    proj.mesh.material.emissiveIntensity = charged ? 2 : 1;
+                    proj.mesh.position.copy(proj.position);
+                    this.projectiles.push(proj);
+                    this.scene.add(proj.mesh);
+                }
+
+                // VFX particles
+                this.createParticles(proj.position || this.player.position.clone().add(dir), spell.vfx, 20, charged ? 2 : 1);
+            }
+
+            thunderLash(spell, dir) {
+                const hits = [];
+                this.enemies.forEach((enemy, idx) => {
+                    if (enemy.position.distanceTo(this.player.position) < spell.range) {
+                        hits.push(idx);
+                        this.damageEnemy(enemy, spell.dmg);
+                    }
+                });
+                // Chain
+                for (let i = 0; i < Math.min(spell.chain, hits.length); i++) {
+                    const target = this.enemies[hits[i]];
+                    this.createParticles(target.position, 'thunder', 10);
+                }
+            }
+
+            voidGrasp(spell, dir) {
+                this.enemies.forEach(enemy => {
+                    const pullDir = this.player.position.clone().sub(enemy.position).normalize();
+                    enemy.velocity.add(pullDir.multiplyScalar(spell.pullForce * 0.01));
+                    if (enemy.position.distanceTo(this.player.position) < 5) {
+                        this.damageEnemy(enemy, spell.dmg);
+                    }
+                });
+            }
+
+            checkSynergies(spellId) {
+                if (this.spellHistory.length > 0) {
+                    const last = this.spellHistory[this.spellHistory.length - 1];
+                    if (last === 'ember' && spellId === 'frost') {
+                        // Steam synergy: AoE blind/slow
+                        this.createParticles(this.player.position, 'frost', 50, 3);
+                        this.enemies.forEach(enemy => {
+                            if (enemy.position.distanceTo(this.player.position) < 8) {
+                                enemy.velocity.multiplyScalar(0.7);
+                            }
+                        });
+                    }
+                }
+                this.spellHistory.push(spellId);
+                if (this.spellHistory.length > 5) this.spellHistory.shift();
+            }
+
+            updateProjectiles(dt) {
+                for (let i = this.projectiles.length - 1; i >= 0; i--) {
+                    const proj = this.projectiles[i];
+                    proj.position.add(proj.velocity.clone().multiplyScalar(dt));
+                    proj.life -= dt;
+                    proj.mesh.position.copy(proj.position);
+
+                    if (proj.homing) {
+                        let closestEnemy = null;
+                        let minDist = Infinity;
+                        this.enemies.forEach(enemy => {
+                            const dist = enemy.position.distanceTo(proj.position);
+                            if (dist < minDist) {
+                                minDist = dist;
+                                closestEnemy = enemy;
+                            }
+                        });
+                        if (closestEnemy && minDist < 20) {
+                            const homeDir = closestEnemy.position.clone().sub(proj.position).normalize();
+                            proj.velocity.lerp(homeDir.multiplyScalar(proj.velocity.length()), proj.homing);
+                        }
+                    }
+
+                    // Collision with enemies
+                    for (let j = this.enemies.length - 1; j >= 0; j--) {
+                        const enemy = this.enemies[j];
+                        if (proj.position.distanceTo(enemy.position) < proj.size + enemy.size) {
+                            this.damageEnemy(enemy, proj.dmg, proj.slow);
+                            this.createParticles(enemy.position, proj.spellId, 30);
+                            if (proj.charged) this.createParticles(enemy.position, proj.spellId, 50, 2);
+                            this.scene.remove(proj.mesh);
+                            this.projectiles.splice(i, 1);
+                            break;
+                        }
+                    }
+
+                    // Remove
+                    if (proj.life <= 0 || proj.position.length() > this.arenaRadius * 2) {
+                        this.scene.remove(proj.mesh);
+                        this.projectiles.splice(i, 1);
+                    }
+                }
+            }
+
+            damageEnemy(enemy, dmg, slow = 0) {
+                enemy.health -= dmg;
+                this.enemiesKilled++;
+                this.score += 10;
+                if (slow > 0) enemy.speed *= (1 - slow);
+                if (enemy.health <= 0) {
+                    this.createParticles(enemy.position, 'arcane', 40);
+                    // Pickup chance
+                    if (Math.random() < 0.3) {
+                        this.pickups.push({
+                            position: enemy.position.clone(),
+                            type: Math.random() < 0.5 ? 'health' : 'mana',
+                            mesh: new THREE.Mesh(new THREE.OctahedronGeometry(0.5), new THREE.MeshToonMaterial({ color: 0x00ff00 }))
+                        });
+                        this.pickups[this.pickups.length - 1].mesh.position.copy(enemy.position);
+                        this.scene.add(this.pickups[this.pickups.length - 1].mesh);
+                    }
+                    this.scene.remove(enemy.mesh);
+                    const idx = this.enemies.indexOf(enemy);
+                    this.enemies.splice(idx, 1);
+                    this.enemiesLeft--;
+                    if (this.enemiesLeft <= 0) {
+                        this.waveComplete();
+                    }
+                }
+            }
+
+            updateEnemies(dt) {
+                this.enemies.forEach(enemy => {
+                    // Seek player
+                    const dir = this.player.position.clone().sub(enemy.position).normalize();
+                    enemy.velocity.lerp(dir.multiplyScalar(enemy.speed), 2 * dt);
+
+                    // Attack
+                    enemy.attackCooldown -= dt;
+                    if (enemy.position.distanceTo(this.player.position) < enemy.size + this.player.size + 1 && enemy.attackCooldown <= 0) {
+                        this.player.health -= enemy.dmg * dt;
+                        this.screenShake(0.5);
+                        enemy.attackCooldown = 2;
+                        document.getElementById('damage-overlay').style.background = 'rgba(255,50,50,0.5)';
+                        setTimeout(() => document.getElementById('damage-overlay').style.background = 'rgba(255,0,0,0)', 200);
+                    }
+
+                    // Move
+                    enemy.position.add(enemy.velocity.clone().multiplyScalar(dt));
+                    enemy.velocity.multiplyScalar(0.9);
+                    enemy.mesh.position.copy(enemy.position);
+                    enemy.mesh.rotation.y += dt * 2;
+
+                    // Bounce arena
+                    if (enemy.position.length() > this.arenaRadius - 5) {
+                        enemy.position.normalize().multiplyScalar(this.arenaRadius - 5);
+                        enemy.velocity.reflect(enemy.position.clone().normalize());
+                    }
+                });
+            }
+
+            createParticles(pos, type, count = 20, scale = 1) {
+                const colors = {
+                    ember: 0xff6600,
+                    frost: 0x66ddff,
+                    thunder: 0xffff88,
+                    arcane: 0xaa88ff
+                };
+                for (let i = 0; i < count; i++) {
+                    const particle = {
+                        position: pos.clone(),
+                        velocity: new THREE.Vector3(
+                            (Math.random() - 0.5) * 20,
+                            Math.random() * 10 + 5,
+                            (Math.random() - 0.5) * 20
+                        ),
+                        life: 1 + Math.random(),
+                        decay: 1 + Math.random() * 2,
+                        size: 0.1 + Math.random() * 0.2,
+                        color: colors[type] || 0xffffff,
+                        mesh: new THREE.Mesh(new THREE.SphereGeometry(0.1), new THREE.MeshBasicMaterial({ color: particle.color }))
+                    };
+                    particle.mesh.scale.multiplyScalar(scale);
+                    this.particles.push(particle);
+                    this.scene.add(particle.mesh);
+                }
+            }
+
+            updateParticles(dt) {
+                for (let i = this.particles.length - 1; i >= 0; i--) {
+                    const p = this.particles[i];
+                    p.position.add(p.velocity.clone().multiplyScalar(dt));
+                    p.velocity.multiplyScalar(0.98);
+                    p.life -= p.decay * dt;
+                    p.mesh.position.copy(p.position);
+                    p.mesh.material.opacity = p.life;
+                    p.mesh.scale.multiplyScalar(p.life);
+                    if (p.life <= 0) {
+                        this.scene.remove(p.mesh);
+                        this.particles.splice(i, 1);
+                    }
+                }
+            }
+
+            updatePickups() {
+                for (let i = this.pickups.length - 1; i >= 0; i--) {
+                    const pickup = this.pickups[i];
+                    pickup.mesh.rotation.y += 0.05;
+                    pickup.mesh.position.y += Math.sin(this.time * 3) * 0.01;
+                    if (pickup.position.distanceTo(this.player.position) < 2) {
+                        if (pickup.type === 'health') {
+                            this.player.health = Math.min(this.player.maxHealth, this.player.health + 25);
+                        } else {
+                            this.player.mana = Math.min(this.player.maxMana, this.player.mana + 50);
+                        }
+                        this.updateUI();
+                        this.scene.remove(pickup.mesh);
+                        this.pickups.splice(i, 1);
+                    }
+                }
+            }
+
+            playerMovement(dt) {
+                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+                forward.y = 0; forward.normalize();
+                right.y = 0; right.normalize();
+
+                let wishDir = new THREE.Vector3();
+                if (this.keys['KeyW']) wishDir.add(forward);
+                if (this.keys['KeyS']) wishDir.sub(forward);
+                if (this.keys['KeyD']) wishDir.add(right);
+                if (this.keys['KeyA']) wishDir.sub(right);
+                if (wishDir.length() > 0) wishDir.normalize();
+
+                // Acceleration
+                const accel = this.onGround ? 50 : 30;
+                this.player.velocity.lerp(wishDir.multiplyScalar(this.player.speed), accel * dt);
+
+                // Dash
+                if (this.keys['ShiftLeft'] && this.player.dashCooldown <= 0) {
+                    this.player.velocity.copy(wishDir.multiplyScalar(this.player.dashSpeed));
+                    this.player.dashCooldown = 1;
+                    this.createParticles(this.player.position, 'arcane', 15);
+                }
+                this.player.dashCooldown -= dt;
+
+                // Jump
+                if (this.keys['Space'] && this.player.onGround) {
+                    this.player.velocity.y = this.player.jumpPower;
+                    this.player.onGround = false;
+                }
+
+                // Gravity
+                this.player.velocity.y -= 25 * dt;
+
+                // Ground collision (simple raycast approx)
+                this.player.position.add(this.player.velocity.clone().multiplyScalar(dt));
+                if (this.player.position.y < 1) {
+                    this.player.position.y = 1;
+                    this.player.velocity.y = 0;
+                    this.player.onGround = true;
+                } else {
+                    this.player.onGround = false;
+                }
+
+                // Arena boundary
+                if (this.player.position.length() > this.arenaRadius - 5) {
+                    this.player.position.normalize().multiplyScalar(this.arenaRadius - 5);
+                }
+            }
+
+            screenShake(intensity) {
+                this.camera.position.x += (Math.random() - 0.5) * intensity;
+                this.camera.position.y += (Math.random() - 0.5) * intensity;
+            }
+
+            updatePlayer() {
+                this.camera.rotation.order = 'YXZ';
+                this.camera.rotation.y = -this.mouse.x;
+                this.camera.rotation.x = -this.mouse.y;
+                this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, 1.6, 0));
+
+                // Hands follow
+                this.hands.position.copy(this.player.position);
+                this.hands.position.add(new THREE.Vector3(0.3, -0.3, -0.6));
+                this.hands.rotation.copy(this.camera.rotation);
+                this.hands.rotation.x -= 0.2;
+                this.hands.rotation.y += Math.PI;
+
+                // Regen
+                this.player.mana = Math.min(this.player.maxMana, this.player.mana + 20 * 0.016);
+                if (this.player.health < this.player.maxHealth) {
+                    this.player.health += 10 * 0.016;
+                }
+
+                // Death check
+                if (this.player.health <= 0) {
+                    this.endRun();
+                }
+            }
+
+            waveComplete() {
+                this.wave++;
+                this.stars += this.wave;
+                this.player.health = this.player.maxHealth;
+                this.player.mana = this.player.maxMana;
+                this.showUpgrades();
+            }
+
+            showUpgrades() {
+                this.state = 'upgrading';
+                const options = document.getElementById('upgrade-options');
+                options.innerHTML = '';
+                const choices = ['ember', 'frost', 'thunder', 'arcane', 'void'].filter(s => Math.random() < 0.6 || this.unlockSpells.has(s));
+                for (let i = 0; i < 3; i++) {
+                    const spellId = choices[Math.floor(Math.random() * choices.length)];
+                    const btn = document.createElement('button');
+                    btn.className = 'upgrade-btn';
+                    btn.dataset.id = spellId;
+                    btn.textContent = `+ ${this.spells[spellId].name}`;
+                    options.appendChild(btn);
+                }
+                document.getElementById('upgrade-screen').style.display = 'flex';
+            }
+
+            selectUpgrade(id) {
+                if (!this.player.spells.includes(id)) {
+                    this.player.spells.push(id);
+                } else {
+                    // Upgrade existing: increase dmg etc.
+                    // Simplified: add to unlocks for next runs
+                    this.unlockSpells.add(id);
+                }
+                this.updateSpellHUD();
+                document.getElementById('upgrade-screen').style.display = 'none';
+                this.state = 'playing';
+                // Expand arena
+                this.arenaRadius += 10;
+                this.generateArena();
+                this.spawnWave();
+            }
+
+            endRun() {
+                this.state = 'dead';
+                document.getElementById('final-wave').textContent = `Final Wave: ${this.wave}`;
+                document.getElementById('stars-earned').textContent = `Stars Earned: ${this.stars}`;
+                document.getElementById('death-screen').style.display = 'flex';
+            }
+
+            restartRun() {
+                this.wave = 1;
+                this.score = 0;
+                this.stars = 0;
+                this.enemiesKilled = 0;
+                this.nextWaveEnemies = 5;
+                this.player.health = 100;
+                this.player.mana = 100;
+                this.player.position.set(0, 5, 0);
+                this.player.spells = Array.from(this.unlockSpells).slice(0, 5); // reset to unlocks
+                this.player.currentSpell = 0;
+                this.projectiles = [];
+                this.particles = [];
+                this.enemies = [];
+                this.pickups = [];
+                this.obstacles.forEach(obs => this.scene.remove(obs));
+                this.obstacles = [];
+                this.scene.children = this.scene.children.filter(child => 
+                    child !== this.camera && !child.geometry?.isGeometry // keep essentials
+                );
+                this.hands.children.forEach(child => child.material?.dispose?.());
+                this.init(); // Re-init
+                document.getElementById('death-screen').style.display = 'none';
+                this.updateSpellHUD();
+            }
+
+            updateSpellHUD() {
+                const hud = document.getElementById('spell-hud');
+                hud.innerHTML = '';
+                this.player.spells.forEach((spellId, idx) => {
+                    const div = document.createElement('div');
+                    div.className = `spell-slot ${idx === this.player.currentSpell ? 'selected' : ''}`;
+                    div.textContent = spellId.slice(0,3).toUpperCase();
+                    hud.appendChild(div);
+                });
+            }
+
+            updateUI() {
+                document.getElementById('health').style.width = (this.player.health / this.player.maxHealth * 100) + '%';
+                document.getElementById('mana').style.width = (this.player.mana / this.player.maxMana * 100) + '%';
+            }
+
+            update(dt) {
+                if (this.state !== 'playing') return;
+
+                this.playerMovement(dt);
+                this.updateProjectiles(dt);
+                this.updateEnemies(dt);
+                this.updateParticles(dt);
+                this.updatePickups(dt);
+                this.updatePlayer();
+
+                this.animateHands(this.spells[this.player.spells[this.player.currentSpell]]?.gesture || 'idle', false);
+            }
+
+            resize() {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+                const delta = Math.min(0.05, this.clock.getDelta());
+                this.time += delta;
+                this.update(delta);
+                this.updateUI();
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+
+        // Start Game
+        const game = new AetherweaveRogue();
+        window.addEventListener('resize', () => game.resize());
+
+        // Expose for UI
+        window.game = game;
+    </script>
+</body>
+</html>

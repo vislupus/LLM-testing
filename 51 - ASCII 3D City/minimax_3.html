@@ -1,0 +1,1160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>NEONDRIFT // Living ASCII City</title>
+<style>
+  html,body { margin:0; padding:0; height:100%; background:#000; color:#9ef; font-family: 'Courier New', monospace; overflow:hidden; }
+  #wrap { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  #c { display:block; image-rendering: pixelated; background:#000; cursor:crosshair; }
+  #hud { position:fixed; inset:0; pointer-events:none; color:#7ff; font-size:12px; text-shadow: 0 0 4px #0ff, 0 0 8px #08f; }
+  .panel { position:absolute; padding:6px 10px; border:1px solid #0ff55; background:rgba(0,8,16,0.55); backdrop-filter: blur(2px); letter-spacing:1px; }
+  #topL { top:8px; left:8px; }
+  #topR { top:8px; right:8px; text-align:right; }
+  #botL { bottom:8px; left:8px; max-width:340px; }
+  #botR { bottom:8px; right:8px; text-align:right; }
+  #center { top:50%; left:50%; transform:translate(-50%,-50%); opacity:0.85; }
+  #center::before { content:"+"; font-size:18px; color:#7ff; }
+  #title { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:48px; letter-spacing:12px; color:#fff; text-shadow: 0 0 8px #f0f, 0 0 18px #80f, 0 0 32px #08f; text-align:center; pointer-events:none; }
+  #title small { display:block; font-size:12px; letter-spacing:6px; color:#7ff; margin-top:14px; opacity:0.85; }
+  #sub { position:absolute; top: calc(50% + 90px); left:50%; transform:translateX(-50%); font-size:11px; color:#9ef; letter-spacing:3px; opacity:0.8; }
+  .blink { animation: blink 1.2s infinite; }
+  @keyframes blink { 0%,50%{opacity:1} 51%,100%{opacity:0.25} }
+  .flicker { animation: flick 3s infinite; }
+  @keyframes flick { 0%,100%{opacity:1} 47%{opacity:1} 48%{opacity:.3} 49%{opacity:1} 73%{opacity:1} 74%{opacity:.5} 75%{opacity:1} }
+  .scan { position:absolute; inset:0; background: repeating-linear-gradient(0deg, rgba(0,255,255,0.03) 0 1px, transparent 1px 3px); pointer-events:none; mix-blend-mode:screen; }
+  .vignette { position:absolute; inset:0; background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.85) 100%); pointer-events:none; }
+  #msg { position:absolute; left:50%; top:62%; transform:translateX(-50%); color:#fff; font-size:14px; letter-spacing:2px; text-shadow:0 0 8px #f0f; opacity:0; transition:opacity .4s; text-align:center; pointer-events:none; max-width:80%; }
+  #msg.show { opacity:1; }
+  #mapBox { position:absolute; right:8px; top:50%; transform:translateY(-50%); width:160px; height:160px; border:1px solid #0ff55; background:rgba(0,8,16,0.6); }
+  #mapBox canvas { width:100%; height:100%; display:block; }
+  .key { display:inline-block; padding:1px 5px; border:1px solid #0ff; border-radius:2px; color:#aff; margin:0 2px; font-size:10px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div class="scan"></div>
+  <div class="vignette"></div>
+  <div id="hud">
+    <div id="topL" class="panel">// NEONDRIFT v1.0 — DISTRICT <span id="dist">??</span> <span class="blink">●</span></div>
+    <div id="topR" class="panel"><span id="clock">00:00</span> · <span id="weather">CLEAR</span><br>FPS <span id="fps">--</span> · X<span id="posX">0.0</span> Y<span id="posY">0.0</span></div>
+    <div id="center"></div>
+    <div id="botL" class="panel">
+      <span class="key">WASD</span> move · <span class="key">SHIFT</span> sprint · <span class="key">SPACE</span> jump<br>
+      <span class="key">E</span> interact · <span class="key">F</span> toggle map · <span class="key">R</span> rain · <span class="key">T</span> time<br>
+      <span class="key">M</span> mute · <span class="key">H</span> hide HUD
+    </div>
+    <div id="botR" class="panel"><span id="story">AWAITING INPUT</span></div>
+    <div id="mapBox" style="display:none"><canvas id="mp" width="160" height="160"></canvas></div>
+  </div>
+  <div id="title">NEONDRIFT<small>// A LIVING ASCII CITY</small></div>
+  <div id="sub" class="blink">[ CLICK TO ENTER THE CITY ]</div>
+  <div id="msg"></div>
+</div>
+<audio id="amb" loop>
+  <!-- Procedurally generated via WebAudio; this is just a fallback path -->
+</audio>
+<script>
+"use strict";
+/* =====================================================================
+   NEONDRIFT — A Living ASCII 3D City
+   - Custom raycaster with DDA
+   - Procedural city: grid of blocks, plazas, alleys, train rails, river
+   - Animated ASCII glyphs respond to distance, light, motion
+   - Day/night cycle, weather, neon signs, vehicles, pedestrians, trains
+   - Interactive locations & narrative discoveries
+   ===================================================================== */
+
+// ----------- Canvas setup -----------
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d', { alpha:false });
+let W=0, H=0, COLS=0, ROWS=0;
+let dpr = 1;
+const FONT_W = 8;   // approximate glyph aspect
+const FONT_H = 14;  // we'll render glyphs at cell size
+let CELL = 14;
+
+function resize(){
+  dpr = Math.min(2, window.devicePixelRatio||1);
+  W = window.innerWidth; H = window.innerHeight;
+  cvs.width  = Math.floor(W*dpr);
+  cvs.height = Math.floor(H*dpr);
+  cvs.style.width  = W+'px';
+  cvs.style.height = H+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.font = CELL+'px "Courier New", monospace';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'center';
+  // determine grid
+  COLS = Math.ceil(W / (CELL*0.62));
+  ROWS = Math.ceil(H / CELL);
+  ctx.imageSmoothingEnabled = false;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ----------- Utility / RNG -----------
+function mulberry32(a){return function(){let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;}}
+let rng = mulberry32(20260524);
+function rnd(a=1,b=0){ return b + (a-b)*rng(); }
+function irnd(a,b){ return Math.floor(rnd(a+1,b)); }
+function pick(arr){ return arr[Math.floor(rng()*arr.length)]; }
+function clamp(v,a,b){ return v<a?a:v>b?b:v; }
+function lerp(a,b,t){ return a+(b-a)*t; }
+function smooth(t){ return t*t*(3-2*t); }
+
+// ----------- World map -----------
+// Legend: 0=empty, 1=wall (building), 2=sign, 3=door, 4=window, 5=plaza floor, 6=road, 7=sidewalk, 8=rail, 9=water, A=tree, B=park
+const MAP_W = 96, MAP_H = 96;
+const world = new Uint8Array(MAP_W*MAP_H);
+const meta  = new Uint8Array(MAP_W*MAP_H); // type, sign color, etc.
+const heightMap = new Float32Array(MAP_W*MAP_H); // for building tops
+
+// Districts center coordinates (grid cells)
+const districts = {
+  downtown: { cx:48, cy:48, name:"NEO-CORE" },
+  harbor:   { cx:18, cy:78, name:"IRON HARBOR" },
+  market:   { cx:74, cy:30, name:"GLITCH MARKET" },
+  cathedral:{ cx:30, cy:22, name:"NULL CATHEDRAL" },
+  industrial:{cx:80, cy:78, name:"STEEL RING" },
+  park:     { cx:60, cy:60, name:"HUSH GARDEN" }
+};
+
+function idx(x,y){ return y*MAP_W + x; }
+function inBounds(x,y){ return x>=0 && y>=0 && x<MAP_W && y<MAP_H; }
+
+// Generate procedural city using a block subdivision approach
+function generateCity(){
+  // Reset
+  world.fill(0); meta.fill(0); heightMap.fill(0);
+  // Define block grid - 8x8 cells blocks with 2 cell streets
+  const BLOCK = 7, ROAD = 2;
+  for (let by=0; by<MAP_H; by+=BLOCK+ROAD){
+    for (let bx=0; bx<MAP_W; bx+=BLOCK+ROAD){
+      // Skip some blocks for plazas/parks
+      const isPlaza = rng() < 0.08;
+      const isPark  = rng() < 0.06;
+      const isRiver = (bx>=22 && bx<=26 && by>=40 && by<=70) || (bx>=70 && bx<=74 && by>=10 && by<=40);
+      // Building height varies by district
+      const dx = bx-BLOCK/2, dy = by-BLOCK/2;
+      let dist = Math.hypot(dx-MAP_W/2, dy-MAP_H/2);
+      let baseH = 1 + (1 - clamp(dist/50,0,1))*4;
+      baseH += (rng()-0.5)*2;
+      // Draw block
+      for (let y=by; y<by+BLOCK; y++){
+        for (let x=bx; x<bx+BLOCK; x++){
+          if (!inBounds(x,y)) continue;
+          if (isRiver){ world[idx(x,y)] = 9; continue; }
+          if (isPlaza){ world[idx(x,y)] = 5; meta[idx(x,y)]=5; continue; }
+          if (isPark){  world[idx(x,y)] = 11; meta[idx(x,y)]=11; continue; }
+          // Per-building footprint
+          const innerX = x-bx, innerY = y-by;
+          // L-shaped or full block
+          const h = Math.max(1, baseH + (rng()-0.5)*2);
+          if (innerX===0 || innerY===0 || innerX===BLOCK-1 || innerY===BLOCK-1){
+            // Building wall on perimeter; interior hollow
+            if (rng() < 0.7){
+              world[idx(x,y)] = 1; // wall
+              heightMap[idx(x,y)] = h;
+            } else {
+              world[idx(x,y)] = 7; // sidewalk
+            }
+          } else {
+            // interior courtyard sometimes
+            if (rng() < 0.15){ world[idx(x,y)] = 7; }
+            else if (rng() < 0.5){ world[idx(x,y)] = 1; heightMap[idx(x,y)] = h*0.6; }
+            else { world[idx(x,y)] = 0; }
+          }
+        }
+      }
+    }
+  }
+  // Roads: every (BLOCK+ROAD) interval
+  for (let y=0; y<MAP_H; y++){
+    for (let x=0; x<MAP_W; x++){
+      const mx = x % (BLOCK+ROAD);
+      const my = y % (BLOCK+ROAD);
+      if (mx < ROAD || my < ROAD){
+        // mark as road
+        world[idx(x,y)] = 6;
+        // sometimes sidewalk on edges
+        if (mx===0 || my===0 || mx===ROAD-1 || my===ROAD-1) {
+          world[idx(x,y)] = 7;
+        }
+      }
+    }
+  }
+  // Train rails along main avenues
+  for (let y=0; y<MAP_H; y++){
+    for (let x=0; x<MAP_W; x++){
+      const mx = x % (BLOCK+ROAD);
+      const my = y % (BLOCK+ROAD);
+      if ((my===1 && mx < ROAD) || (mx===1 && my < ROAD)){
+        world[idx(x,y)] = 8;
+        meta[idx(x,y)] = 8;
+      }
+    }
+  }
+  // Add doors and signs on building walls
+  for (let y=1; y<MAP_H-1; y++){
+    for (let x=1; x<MAP_W-1; x++){
+      if (world[idx(x,y)]===1){
+        // check if facing road
+        const left = world[idx(x-1,y)], right = world[idx(x+1,y)];
+        const up = world[idx(x,y-1)], down = world[idx(x,y+1)];
+        if (left===7 || right===7 || up===7 || down===7){
+          if (rng() < 0.18){ world[idx(x,y)] = 3; meta[idx(x,y)] = 3; } // door
+          else if (rng() < 0.25){ world[idx(x,y)] = 2; meta[idx(x,y)] = 2; } // sign
+        }
+        // windows on tall buildings
+        if (heightMap[idx(x,y)] > 1.5 && rng() < 0.6){
+          // overlay window as meta only (rendered into building face)
+          meta[idx(x,y)] = 4;
+        }
+      }
+    }
+  }
+  // Ensure starting area is clear
+  for (let dy=-2; dy<=2; dy++) for (let dx=-2; dx<=2; dx++){
+    const x=48+dx, y=48+dy;
+    if (inBounds(x,y)){ world[idx(x,y)]=7; heightMap[idx(x,y)]=0; }
+  }
+}
+generateCity();
+
+// ----------- Entities -----------
+// Simple entity system: position (world units), angle, type, state
+const entities = [];
+function addEntity(e){ entities.push(e); return e; }
+
+// Player
+const player = {
+  x: 48.5, y: 48.5, z: 0.5,
+  ang: 0, pitch: 0,
+  vx: 0, vy: 0,
+  speed: 2.6, sprint: 4.2,
+  onGround: true, jumpVel: 0,
+  interacting: null,
+  bobT: 0
+};
+
+// Vehicles
+function spawnVehicles(n){
+  for (let i=0;i<n;i++){
+    // pick a road cell
+    let x,y,tries=0;
+    do {
+      x = irnd(2,MAP_W-3); y = irnd(2,MAP_H-3); tries++;
+    } while (world[idx(x,y)]!==6 && tries<200);
+    addEntity({
+      type:'car', x:x+0.5, y:y+0.5, z:0.4,
+      ang: rng()<0.5?0:Math.PI/2,
+      v: 0.5+rng()*0.4,
+      color: pick([0xff5fa8,0x6ff,0xffa040,0xb08cff,0x50ff90,0xfff070]),
+      len: 1.4+rng()*0.6, wid: 0.7,
+      laneOffset: rng()<0.5?-0.15:0.15,
+      honkT: 0
+    });
+  }
+}
+spawnVehicles(38);
+
+// Pedestrians
+function spawnPeds(n){
+  for (let i=0;i<n;i++){
+    let x,y,tries=0;
+    do { x=irnd(1,MAP_W-2); y=irnd(1,MAP_H-2); tries++; } while ((world[idx(x,y)]!==7 && world[idx(x,y)]!==5) && tries<200);
+    addEntity({
+      type:'ped', x:x+0.5+rnd(-0.4,0.4), y:y+0.5+rnd(-0.4,0.4), z:0.4,
+      ang: rng()*Math.PI*2,
+      v: 0.25+rng()*0.2,
+      wanderT: rnd(2,6),
+      color: pick([0xff80c0,0x80ffd0,0xfff0a0,0xa0c0ff,0xffa080,0xc0ff80]),
+      gait: rnd(0,1)
+    });
+  }
+}
+spawnPeds(48);
+
+// Trains (one per rail direction)
+addEntity({ type:'train', x:10, y:48.5, z:0.5, dir:'h', v:0, base:0, t:rng()*100 });
+addEntity({ type:'train', x:48.5, y:10, z:0.5, dir:'v', v:0, base:0, t:rng()*100 });
+
+// Interactive hotspots — discoverable locations
+const hotspots = [
+  { x:18.5, y:78.5, name:"IRON HARBOR // ferry dock", glyph:'F', key:'FERRY' },
+  { x:74.5, y:30.5, name:"GLITCH MARKET // black bazaar", glyph:'$', key:'BAZAAR' },
+  { x:30.5, y:22.5, name:"NULL CATHEDRAL // echoes", glyph:'†', key:'CATHEDRAL' },
+  { x:80.5, y:78.5, name:"STEEL RING // factory floor", glyph:'⚙', key:'FACTORY' },
+  { x:60.5, y:60.5, name:"HUSH GARDEN // silent pool", glyph:'~', key:'GARDEN' },
+  { x:48.5, y:48.5, name:"NEO-CORE // central plaza", glyph:'◆', key:'CORE' },
+  { x:8.5, y:48.5, name:"GHOST TERMINAL // hidden stop", glyph:'☠', key:'GHOST' },
+  { x:48.5, y:8.5, name:"SKY ANTENNA // broadcast tower", glyph:'Y', key:'ANTENNA' },
+  { x:88.5, y:88.5, name:"DRIFT GATE // city edge", glyph:'>', key:'GATE' }
+];
+hotspots.forEach(h => addEntity({type:'hotspot', x:h.x, y:h.y, z:0.5, info:h}));
+
+// Secrets (rare, hidden)
+const secrets = [
+  { x:42.3, y:42.3, name:"A WHISPER: 'They built the river first.'", glyph:'*' },
+  { x:66.7, y:14.1, name:"A WHISPER: 'Listen at 03:33.'", glyph:'*' },
+  { x:11.2, y:88.5, name:"A WHISPER: 'The bazaar remembers you.'", glyph:'*' },
+  { x:88.0, y:33.0, name:"A WHISPER: 'Do not trust the signs.'", glyph:'*' }
+];
+
+// ----------- Audio (procedural ambient) -----------
+let audioCtx=null, masterGain=null, muted=false;
+function initAudio(){
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.15;
+    masterGain.connect(audioCtx.destination);
+    // pink noise
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate*2, audioCtx.sampleRate);
+    const d = buf.getChannelData(0);
+    let b0=0,b1=0,b2=0;
+    for (let i=0;i<d.length;i++){
+      const w = Math.random()*2-1;
+      b0 = 0.99765*b0 + w*0.0990460;
+      b1 = 0.96300*b1 + w*0.2965164;
+      b2 = 0.57000*b2 + w*1.0526913;
+      d[i] = (b0+b1+b2+w*0.1848)*0.05;
+    }
+    const src = audioCtx.createBufferSource(); src.buffer=buf; src.loop=true;
+    const lp = audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=400;
+    src.connect(lp).connect(masterGain); src.start();
+    // gentle sub drone
+    const osc = audioCtx.createOscillator(); osc.frequency.value=55;
+    const og = audioCtx.createGain(); og.gain.value=0.04;
+    osc.connect(og).connect(masterGain); osc.start();
+  } catch(e){}
+}
+function honk(){
+  if(!audioCtx||muted) return;
+  const o=audioCtx.createOscillator(); const g=audioCtx.createGain();
+  o.type='square'; o.frequency.value=440+rng()*120;
+  g.gain.value=0.05; g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+0.25);
+  o.connect(g).connect(masterGain); o.start(); o.stop(audioCtx.currentTime+0.3);
+}
+
+// ----------- Input -----------
+const keys = {};
+window.addEventListener('keydown', e=>{
+  keys[e.code]=true;
+  if (e.code==='KeyM'){ muted=!muted; if(masterGain) masterGain.gain.value = muted?0:0.15; flash(muted?'MUTED':'UNMUTED'); }
+  if (e.code==='KeyT'){ timeOfDay = (timeOfDay+0.25)%1; flash('TIME SHIFTED'); }
+  if (e.code==='KeyR'){ rain=!rain; flash(rain?'RAIN ENGAGED':'RAIN STOPPED'); }
+  if (e.code==='KeyF'){ document.getElementById('mapBox').style.display = (document.getElementById('mapBox').style.display==='none'?'block':'none'); }
+  if (e.code==='KeyH'){ const h=document.getElementById('hud'); h.style.display = h.style.display==='none'?'block':'none'; }
+  if (e.code==='KeyE'){ tryInteract(); }
+});
+window.addEventListener('keyup', e=>{ keys[e.code]=false; });
+let mouseLocked = false;
+document.addEventListener('pointerlockchange', ()=>{ mouseLocked = (document.pointerLockElement===cvs); });
+document.addEventListener('mousemove', e=>{
+  if (!mouseLocked) return;
+  player.ang += e.movementX*0.0025;
+  player.pitch = clamp(player.pitch - e.movementY*0.002, -0.5, 0.5);
+});
+// Touch / drag look for mobile
+let touchId=null, lastTX=0, lastTY=0;
+cvs.addEventListener('touchstart', e=>{ const t=e.changedTouches[0]; touchId=t.identifier; lastTX=t.clientX; lastTY=t.clientY; initAudio(); });
+cvs.addEventListener('touchmove', e=>{
+  if (touchId===null) return;
+  for (const t of e.changedTouches){
+    if (t.identifier===touchId){
+      const dx = t.clientX-lastTX, dy=t.clientY-lastTY;
+      player.ang += dx*0.004;
+      player.pitch = clamp(player.pitch - dy*0.004, -0.5, 0.5);
+      lastTX=t.clientX; lastTY=t.clientY;
+    }
+  }
+}, {passive:true});
+cvs.addEventListener('touchend', ()=>{ touchId=null; });
+
+// Start screen
+let started = false;
+cvs.addEventListener('click', ()=>{
+  if (!started){
+    started = true;
+    document.getElementById('title').style.display='none';
+    document.getElementById('sub').style.display='none';
+    initAudio();
+    flash('NEONDRIFT ONLINE — WELCOME TO THE CITY');
+  }
+  cvs.requestPointerLock();
+});
+
+// ----------- Game state -----------
+let timeOfDay = 0.62; // 0..1 (0=midnight, 0.5=noon)
+let rain = false;
+let raindrops = [];
+for (let i=0;i<160;i++) raindrops.push({x:rng(),y:rng(),s:rng()});
+let story = ["AWAITING INPUT","WHISPERS FROM THE STREET","","A SIGNAL IN THE NOISE","","THE CITY REMEMBERS","","STAND BY..."];
+let storyIdx = 0;
+let lastFlash = 0;
+function flash(txt, dur=2200){
+  const m = document.getElementById('msg');
+  m.textContent = txt; m.classList.add('show');
+  clearTimeout(flash._t);
+  flash._t = setTimeout(()=>m.classList.remove('show'), dur);
+}
+
+// ----------- Raycasting / Rendering -----------
+// We render to a low-res ASCII grid (COLS x ROWS), then upscale.
+// Per cell we compute a column: depth, glyph, fg color, bg color, glow.
+
+let Zbuf = new Float32Array(COLS);
+let Glyph = new Uint8Array(COLS*ROWS);
+let Depth = new Float32Array(COLS*ROWS);
+let FG    = new Uint32Array(COLS*ROWS);
+let BG    = new Uint32Array(COLS*ROWS);
+let Glow  = new Float32Array(COLS*ROWS);
+let Flags = new Uint8Array(COLS*ROWS); // 1=lit window, 2=sign, 4=light cone
+
+function allocBuffers(){
+  Zbuf = new Float32Array(COLS);
+  Glyph = new Uint8Array(COLS*ROWS);
+  Depth = new Float32Array(COLS*ROWS);
+  FG    = new Uint32Array(COLS*ROWS);
+  BG    = new Uint32Array(COLS*ROWS);
+  Glow  = new Float32Array(COLS*ROWS);
+  Flags = new Uint8Array(COLS*ROWS);
+}
+allocBuffers();
+window.addEventListener('resize', ()=>{ setTimeout(()=>{ resize(); allocBuffers(); },50); });
+
+// glyph atlas: code -> char
+const G = {
+  EMPTY: 0, WALL: 1, WALL2: 2, WINDOW: 3, WINDOW2: 4, DOOR: 5,
+  SIGN1: 6, SIGN2: 7, SIGN3: 8, SIGN4: 9,
+  PILLAR: 10, ROAD: 11, ROAD2: 12, SIDEWALK: 13, WATER: 14, WATER2: 15,
+  PLAZA: 16, TREE: 17, PARK: 18, RAIL: 19, RAIL2: 20,
+  CAR: 30, CAR2: 31, CAR3: 32, PED: 33, PED2: 34,
+  TRAIN: 35, TRAIN2: 36, TRAIN3: 37,
+  LIGHT: 50, GLOW: 51,
+  RAIN: 60, RAIN2: 61,
+  HOTSPOT: 70, SECRET: 71,
+  SKY: 80, MOON: 81, SUN: 82, STAR: 83, CLOUD: 84, CLOUD2: 85
+};
+const GCHR = {
+  0:' ', 1:'█', 2:'▓', 3:'▒', 4:'░', 5:'│',
+  6:'¶', 7:'§', 8:'¤', 9:'◊', 10:'║',
+  11:'═', 12:'─', 13:'·', 14:'~', 15:'≈',
+  16:'·', 17:'♣', 18:'"', 19:'═', 20:'─',
+  30:'█', 31:'▀', 32:'▄', 33:'@', 34:'@',
+  35:'▓', 36:'█', 37:'▒',
+  50:'*', 51:'°',
+  60:'|', 61:'/',
+  70:'◆', 71:'*',
+  80:' ', 81:'◉', 82:'☼', 83:'·', 84:'_', 85:'.'
+};
+
+// Palette helpers
+function rgba(r,g,b,a=1){ return `rgba(${r|0},${g|0},${b|0},${a})`; }
+function rgb(r,g,b){ return `rgb(${r|0},${g|0},${b|0})`; }
+function hsv(h,s,v){
+  const i=Math.floor(h*6); const f=h*6-i; const p=v*(1-s); const q=v*(1-f*s); const t=v*(1-(1-f)*s);
+  let r,g,b;
+  switch(i%6){
+    case 0: r=v;g=q;b=p; break; case 1: r=q;g=v;b=p; break;
+    case 2: r=p;g=v;b=q; break; case 3: r=p;g=q;b=v; break;
+    case 4: r=q;g=p;b=v; break; case 5: r=v;g=p;b=q;
+  }
+  return [r*255,g*255,b*255];
+}
+
+// Convert to packed 0xRRGGBB
+function pack(r,g,b){ return ((r&0xff)<<16)|((g&0xff)<<8)|(b&0xff); }
+function unpack(p, ch){ return (p>>ch)&0xff; }
+
+// Time of day -> sky colors
+function getSkyColors(t){
+  // night=0.7..0.95, dawn=0.05..0.2, noon=0.45..0.55
+  // We'll blend night -> dawn -> day -> dusk -> night
+  const dayBlend = clamp(1 - Math.abs(t-0.5)*2.4, 0, 1); // 1 at noon, 0 at night
+  const dusk = clamp(1 - Math.abs(t-0.78)*3, 0, 1);
+  const dawn = clamp(1 - Math.abs(t-0.22)*3, 0, 1);
+  // base night
+  let top = [4,6,18], mid=[10,14,38], bot=[22,18,50];
+  // mix with day
+  top = [lerp(top[0],20,dayBlend), lerp(top[1],80,dayBlend), lerp(top[2],140,dayBlend)];
+  mid = [lerp(mid[0],80,dayBlend), lerp(mid[1],150,dayBlend), lerp(mid[2],200,dayBlend)];
+  bot = [lerp(bot[0],200,dayBlend*0.7+dawn*0.3), lerp(bot[1],140,dayBlend*0.6+dawn*0.4), lerp(bot[2],120,dayBlend*0.5+dawn*0.5)];
+  // sunset tint
+  const sun = Math.max(dawn, dusk);
+  bot[0] = lerp(bot[0], 255, sun*0.4);
+  bot[1] = lerp(bot[1], 110, sun*0.4);
+  bot[2] = lerp(bot[2], 80, sun*0.5);
+  return { top, mid, bot, dayBlend, dawn, dusk };
+}
+
+// ---------------- DDA ray ----------------
+function castRay(ox, oy, dx, dy){
+  let mapX = Math.floor(ox), mapY = Math.floor(oy);
+  const deltaDistX = Math.abs(1/dx), deltaDistY = Math.abs(1/dy);
+  let stepX, stepY, sideDistX, sideDistY;
+  if (dx < 0){ stepX=-1; sideDistX = (ox - mapX)*deltaDistX; } else { stepX=1; sideDistX = (mapX+1 - ox)*deltaDistX; }
+  if (dy < 0){ stepY=-1; sideDistY = (oy - mapY)*deltaDistY; } else { stepY=1; sideDistY = (mapY+1 - oy)*deltaDistY; }
+  let side=0, hit=0, steps=0;
+  while (!hit && steps < 64){
+    if (sideDistX < sideDistY){ sideDistX += deltaDistX; mapX += stepX; side=0; }
+    else { sideDistY += deltaDistY; mapY += stepY; side=1; }
+    if (!inBounds(mapX, mapY)){ return null; }
+    const c = world[idx(mapX,mapY)];
+    if (c===1 || c===2 || c===3 || c===4){ hit=1; }
+    steps++;
+  }
+  if (!hit) return null;
+  let perpWallDist;
+  if (side===0) perpWallDist = (mapX - ox + (1-stepX)/2) / dx;
+  else perpWallDist = (mapY - oy + (1-stepY)/2) / dy;
+  if (perpWallDist < 0.01) perpWallDist = 0.01;
+  return { dist:perpWallDist, side, mx:mapX, my:mapY, cell:world[idx(mapX,mapY)], meta:meta[idx(mapX,mapY)] };
+}
+
+// ---------------- Sprite renderer (entities) ----------------
+// Sorted list of sprites
+let spriteList = [];
+
+function projectSprite(e, dist){
+  const dx = e.x - player.x, dy = e.y - player.y;
+  const invDet = 1.0 / (Math.cos(player.ang)*(-Math.sin(player.ang)) - (-Math.sin(player.ang))*Math.cos(player.ang)); // identity for axis-aligned
+  // simpler: rotate by -player.ang
+  const cs = Math.cos(-player.ang), sn = Math.sin(-player.ang);
+  const tx = dx*cs - dy*sn;
+  const ty = dx*sn + dy*cs;
+  if (ty <= 0.05) return null;
+  const fov = 1.1; // ~63deg
+  const sx = (W*0.5) + (tx/ty) * (W*0.5/Math.tan(fov*0.5));
+  const spriteH = (H) / ty;
+  return { x:sx, dist:ty, h:spriteH };
+}
+
+function drawEntitySprite(e){
+  // Render as a small ASCII sprite centered on sx
+  const dx = e.x - player.x, dy = e.y - player.y;
+  const cs = Math.cos(-player.ang), sn = Math.sin(-player.ang);
+  const tx = dx*cs - dy*sn;
+  const ty = dx*sn + dy*cs;
+  if (ty <= 0.1) return;
+  const fov = 1.1;
+  const sx = (W*0.5) + (tx/ty) * (W*0.5/Math.tan(fov*0.5));
+  const cellW = CELL*0.62;
+  const colC = Math.floor(sx / cellW);
+  const halfRows = 3;
+  if (colC+2 < 0 || colC-2 >= COLS) return;
+  for (let dc=-2; dc<=2; dc++){
+    const col = colC + dc;
+    if (col<0||col>=COLS) continue;
+    if (ty >= Zbuf[col]) continue;
+    // compute per-row glyph
+    for (let dr=-halfRows; dr<=halfRows; dr++){
+      const row = Math.floor(ROWS*0.5 + player.pitch*ROWS*0.4) + dr + (e.z||0)*4;
+      if (row<0||row>=ROWS) continue;
+      let g = G.EMPTY;
+      if (e.type==='car'){
+        if ((dr===-2 && (dc===-1||dc===0)) || (dr===-1 && (dc===-1||dc===1))) g=G.CAR2;
+        else if ((dr===2 && (dc===-1||dc===0)) || (dr===1 && (dc===-1||dc===1))) g=G.CAR3;
+        else if (dr>= -1 && dr<=1) g=G.CAR;
+      } else if (e.type==='ped'){
+        if (dr<=-1) g=G.PED2; else g=G.PED;
+      } else if (e.type==='train'){
+        if (dr<=-2) g=G.TRAIN2;
+        else if (dr>=2) g=G.TRAIN3;
+        else g=G.TRAIN;
+      } else if (e.type==='hotspot'){
+        g=G.HOTSPOT;
+      }
+      if (!g) continue;
+      const idx2 = row*COLS + col;
+      Glyph[idx2] = g;
+      FG[idx2] = e.color || 0xffffff;
+      Glow[idx2] = Math.max(Glow[idx2], e.type==='hotspot'?0.8:0.4);
+      Depth[idx2] = ty;
+    }
+  }
+}
+
+// ---------------- Main render ----------------
+let lastT = performance.now();
+let fps = 60, fpsT=0, fpsN=0;
+
+function frame(now){
+  const dt = Math.min(0.05, (now-lastT)/1000);
+  lastT = now;
+  fpsN++; fpsT+=dt;
+  if (fpsT>0.5){ fps = Math.round(fpsN/fpsT); fpsN=0; fpsT=0; document.getElementById('fps').textContent=fps; }
+
+  // -------- Update player --------
+  const sprint = keys['ShiftLeft']||keys['ShiftRight'];
+  const speed = sprint?player.sprint:player.speed;
+  let mvF=0, mvS=0;
+  if (keys['KeyW']) mvF += 1;
+  if (keys['KeyS']) mvF -= 1;
+  if (keys['KeyA']) mvS -= 1;
+  if (keys['KeyD']) mvS += 1;
+  if (mvF!==0 || mvS!==0){
+    const len = Math.hypot(mvF,mvS);
+    mvF/=len; mvS/=len;
+    const cosA = Math.cos(player.ang), sinA = Math.sin(player.ang);
+    const dx = mvF*cosA + mvS*sinA;
+    const dy = mvF*sinA - mvS*cosA;
+    const nx = player.x + dx*speed*dt;
+    const ny = player.y + dy*speed*dt;
+    // collision: only collide with walls (1,2,3,4)
+    const cx = Math.floor(nx), cy = Math.floor(ny);
+    const c = inBounds(cx,cy)?world[idx(cx,cy)]:1;
+    if (c!==1 && c!==2 && c!==3 && c!==4){
+      player.x = nx; player.y = ny;
+      player.bobT += dt*speed*1.4;
+    } else {
+      // slide
+      const cx2 = Math.floor(player.x + dx*speed*dt);
+      const c2 = inBounds(cx2, Math.floor(player.y))?world[idx(cx2, Math.floor(player.y))]:1;
+      if (c2!==1 && c2!==2 && c2!==3 && c2!==4) player.x += dx*speed*dt;
+      const cy2 = Math.floor(player.y + dy*speed*dt);
+      const c3 = inBounds(Math.floor(player.x), cy2)?world[idx(Math.floor(player.x), cy2)]:1;
+      if (c3!==1 && c3!==2 && c3!==3 && c3!==4) player.y += dy*speed*dt;
+    }
+  }
+  // jump
+  if (keys['Space'] && player.onGround){ player.jumpVel = 4.5; player.onGround=false; }
+  player.z += player.jumpVel*dt;
+  player.jumpVel -= 9.8*dt;
+  if (player.z <= 0.5){ player.z = 0.5; player.jumpVel = 0; player.onGround = true; }
+  // pitch recovery
+  if (!mouseLocked && touchId===null) player.pitch *= 0.92;
+
+  // -------- Time & weather --------
+  timeOfDay = (timeOfDay + dt*0.0007) % 1; // full cycle ~ 24 min
+  if (rain){
+    for (const r of raindrops){ r.x += 0.04; r.y += 0.18; if (r.y>1){ r.y=0; r.x=rng(); } }
+  }
+  // district
+  let district = 'UNKNOWN';
+  let bestD = 1e9;
+  for (const k in districts){
+    const d = districts[k];
+    const dd = Math.hypot(player.x-d.cx, player.y-d.cy);
+    if (dd<bestD){ bestD=dd; district=d.name; }
+  }
+  document.getElementById('dist').textContent = district;
+  document.getElementById('clock').textContent = ((Math.floor((timeOfDay*24+0)%24))+'').padStart(2,'0')+':'+((Math.floor((timeOfDay*1440)%60))+'').padStart(2,'0');
+  document.getElementById('weather').textContent = rain?'RAIN':(timeOfDay>0.7||timeOfDay<0.2?'NIGHT':'CLEAR');
+  document.getElementById('posX').textContent = player.x.toFixed(1);
+  document.getElementById('posY').textContent = player.y.toFixed(1);
+
+  // -------- Update entities --------
+  for (const e of entities){
+    if (e.type==='car'){
+      // move along direction
+      e.x += Math.cos(e.ang)*e.v*dt;
+      e.y += Math.sin(e.ang)*e.v*dt;
+      // bounce off walls
+      const cx = Math.floor(e.x), cy = Math.floor(e.y);
+      if (inBounds(cx,cy) && (world[idx(cx,cy)]===1 || world[idx(cx,cy)]===2)){
+        e.ang += Math.PI/2;
+      }
+      // stay on roads roughly
+      if (inBounds(cx,cy) && world[idx(cx,cy)]!==6){
+        // drift back toward road
+        e.ang += (rng()-0.5)*1.2;
+      }
+      // occasionally honk
+      if (rng()<0.0005){ e.honkT = 0.4; honk(); }
+    } else if (e.type==='ped'){
+      e.wanderT -= dt;
+      if (e.wanderT<=0){
+        e.ang = rng()*Math.PI*2;
+        e.wanderT = 2+rng()*5;
+      }
+      const nx = e.x + Math.cos(e.ang)*e.v*dt;
+      const ny = e.y + Math.sin(e.ang)*e.v*dt;
+      const cx = Math.floor(nx), cy = Math.floor(ny);
+      if (inBounds(cx,cy) && (world[idx(cx,cy)]===7 || world[idx(cx,cy)]===5 || world[idx(cx,cy)]===11)){
+        e.x = nx; e.y = ny;
+      } else {
+        e.ang += Math.PI/2;
+      }
+      // avoid cars
+      for (const o of entities){
+        if (o.type==='car' && Math.hypot(o.x-e.x, o.y-e.y)<1.2){
+          e.ang = Math.atan2(e.y-o.y, e.x-o.x);
+          e.wanderT = 0.6;
+        }
+      }
+    } else if (e.type==='train'){
+      // train runs along main rail
+      e.t += dt*0.08;
+      const speedT = 0.02;
+      if (e.dir==='h'){
+        e.x += speedT*60*dt;
+        if (e.x>MAP_W-2) e.x = 2;
+      } else {
+        e.y += speedT*60*dt;
+        if (e.y>MAP_H-2) e.y = 2;
+      }
+    }
+  }
+
+  // Hotspot proximity
+  let nearHS = null;
+  for (const e of entities){
+    if (e.type==='hotspot'){
+      if (Math.hypot(e.x-player.x, e.y-player.y) < 1.8){ nearHS = e.info; }
+    }
+  }
+  // Secret proximity (smaller radius, silent until interact)
+  let nearSecret = null;
+  for (const s of secrets){
+    if (Math.hypot(s.x-player.x, s.y-player.y) < 1.0){ nearSecret = s; }
+  }
+  if (nearHS && nearHS.key !== player.interacting){
+    flash('NEAR: '+nearHS.name+'  [E] INTERACT');
+    player.interacting = nearHS.key;
+    document.getElementById('story').textContent = 'NEAR: '+nearHS.name;
+  } else if (nearSecret && player.interacting !== 'SECRET_'+nearSecret.name){
+    player.interacting = 'SECRET_'+nearSecret.name;
+    document.getElementById('story').textContent = 'A WHISPER DETECTED [E]';
+  } else if (!nearHS && !nearSecret){
+    if (player.interacting){ player.interacting = null; }
+    // ambient story
+    if (rng() < 0.0015){
+      storyIdx = (storyIdx+1)%story.length;
+      const s = story[storyIdx];
+      if (s){ flash(s); document.getElementById('story').textContent = s; }
+    }
+  }
+
+  // -------- Render --------
+  // Sky / background
+  const sky = getSkyColors(timeOfDay);
+  // Clear ASCII buffers
+  for (let i=0;i<Glyph.length;i++){ Glyph[i]=0; Depth[i]=1e9; FG[i]=0; BG[i]=0; Glow[i]=0; Flags[i]=0; }
+  Zbuf.fill(1e9);
+
+  // Sky gradient on cells
+  const horizon = Math.floor(ROWS*0.5 + player.pitch*ROWS*0.4);
+  for (let r=0; r<ROWS; r++){
+    let c;
+    if (r < horizon){
+      const t = (horizon - r) / horizon;
+      c = hsv(0.6, 0.5, 0.05 + t*0.3);
+    } else {
+      const t = (r - horizon) / (ROWS - horizon);
+      c = [sky.bot[0]*(1-t*0.3), sky.bot[1]*(1-t*0.3), sky.bot[2]*(1-t*0.3)];
+    }
+    const col = pack(c[0],c[1],c[2]);
+    for (let x=0;x<COLS;x++){
+      const i = r*COLS + x;
+      BG[i] = col;
+    }
+  }
+  // Moon / sun
+  const celestialY = Math.floor(ROWS*0.18 - player.pitch*ROWS*0.3);
+  const celestialX = Math.floor(COLS*(0.2 + timeOfDay*0.7));
+  if (celestialY>=0 && celestialY<ROWS && celestialX>=0 && celestialX<COLS){
+    if (timeOfDay>0.7 || timeOfDay<0.2){
+      Glyph[celestialY*COLS + celestialX] = G.MOON;
+      FG[celestialY*COLS + celestialX] = 0xeeeeff;
+      Glow[celestialY*COLS + celestialX] = 0.6;
+    } else {
+      Glyph[celestialY*COLS + celestialX] = G.SUN;
+      FG[celestialY*COLS + celestialX] = 0xffeeaa;
+      Glow[celestialY*COLS + celestialX] = 0.4;
+    }
+  }
+  // Stars (only night)
+  if (timeOfDay>0.65 || timeOfDay<0.25){
+    const starSeed = Math.floor(timeOfDay*1000);
+    const rng2 = mulberry32(starSeed);
+    for (let i=0;i<60;i++){
+      const sx = Math.floor(rng2()*COLS);
+      const sy = Math.floor(rng2()*horizon);
+      const idx2 = sy*COLS+sx;
+      if (Glyph[idx2]===0){ Glyph[idx2]=G.STAR; FG[idx2]=0xffffff; Glow[idx2]=0.3*rng2(); }
+    }
+  }
+  // Clouds (day)
+  if (sky.dayBlend > 0.3){
+    const rng3 = mulberry32(12345 + Math.floor(timeOfDay*10));
+    for (let i=0;i<6;i++){
+      const cx = Math.floor(rng3()*COLS);
+      const cy = Math.floor(rng3()*horizon*0.6);
+      const w = 4+Math.floor(rng3()*8);
+      for (let dx=0;dx<w;dx++){
+        const xx = cx+dx; if (xx<0||xx>=COLS) continue;
+        const idx2 = cy*COLS+xx;
+        if (Glyph[idx2]===0){ Glyph[idx2] = (dx%2?G.CLOUD:G.CLOUD2); FG[idx2]=0xddddff; }
+      }
+    }
+  }
+
+  // -------- Walls (DDA per column) --------
+  const fov = 1.1;
+  for (let col=0; col<COLS; col++){
+    const camX = (2*col/COLS) - 1;
+    // forward = (cos a, sin a); right = (-sin a, cos a)
+    const fX = Math.cos(player.ang), fY = Math.sin(player.ang);
+    const rX = -Math.sin(player.ang), rY = Math.cos(player.ang);
+    const dX = fX + camX * Math.tan(fov*0.5) * rX;
+    const dY = fY + camX * Math.tan(fov*0.5) * rY;
+    const r = castRay(player.x, player.y, dX, dY);
+    if (!r){ Zbuf[col]=1e9; continue; }
+    Zbuf[col] = r.dist;
+    // compute wall column height (cap to avoid overflow)
+    const lineH = Math.min(H*4, H / Math.max(r.dist, 0.05));
+    const pitchOffset = player.pitch * H * 0.5;
+    const y0 = Math.floor((H - lineH)*0.5 - pitchOffset);
+    const y1 = Math.floor((H + lineH)*0.5 - pitchOffset);
+    // shade by distance and side
+    const shade = clamp(1.0 - r.dist/22, 0.05, 1);
+    let r0,g0,b0;
+    // Night tint
+    const night = clamp(1 - sky.dayBlend - sky.dawn*0.5 - sky.dusk*0.5, 0, 1);
+    if (r.cell===3){ // door
+      r0=200; g0=120; b0=60;
+    } else if (r.cell===2){ // sign
+      // determine sign color by position hash
+      const h = ((r.mx*73856093) ^ (r.my*19349663)) >>> 0;
+      const hue = ((h%1000)/1000);
+      [r0,g0,b0] = hsv(hue, 0.9, 1.0);
+    } else {
+      // wall
+      const baseR = r.side===0?90:60, baseG=r.side===0?90:60, baseB=r.side===0?110:80;
+      r0=baseR; g0=baseG; b0=baseB;
+      // random building color variation
+      const h2 = ((r.mx*2246822519) ^ (r.my*374761393)) >>> 0;
+      const t2 = ((h2%1000)/1000);
+      r0 = lerp(r0, 40, t2*0.5);
+      g0 = lerp(g0, 50, t2*0.5);
+      b0 = lerp(b0, 80, t2*0.7);
+    }
+    r0*=shade; g0*=shade; b0*=shade;
+    // night darkening (less for signs so they remain visible)
+    const nightFactor = (r.cell===2) ? 0.2 : 0.7;
+    r0 *= (1 - night*nightFactor);
+    g0 *= (1 - night*nightFactor);
+    b0 *= (1 - night*nightFactor);
+    const wallCol = pack(r0,g0,b0);
+    // light cones from hotspots
+    let lightBoost = 0;
+    for (const h of hotspots){
+      const dxh = h.x - player.x, dyh = h.y - player.y;
+      const d = Math.hypot(dxh, dyh);
+      if (d<8){
+        const ang = Math.atan2(dyh, dxh);
+        let diff = ang - player.ang;
+        while (diff>Math.PI) diff-=2*Math.PI;
+        while (diff<-Math.PI) diff+=2*Math.PI;
+        if (Math.abs(diff) < fov*0.5){
+          const lx = (diff/(fov*0.5)) * (COLS*0.5) + COLS*0.5;
+          const fall = 1 - d/8;
+          const lateral = 1 - Math.abs(lx - col)/4;
+          if (lateral>0){
+            const ll = fall*lateral*0.6;
+            if (ll>lightBoost) lightBoost=ll;
+          }
+        }
+      }
+    }
+    // sign glow contribution
+    if (r.cell===2){
+      lightBoost = Math.max(lightBoost, 0.8*(1 - r.dist/10));
+    }
+    // render column into cell grid
+    for (let y = Math.max(0,y0); y < Math.min(H, y1); y++){
+      const row = Math.floor(y / CELL);
+      if (row<0||row>=ROWS) continue;
+      const idx2 = row*COLS + col;
+      // pick wall glyph based on y within wall
+      const t = (y - y0) / Math.max(1, y1-y0);
+      let g;
+      if (r.cell===3){ g = G.DOOR; }
+      else if (r.cell===2){
+        // sign glyph varies
+        const h = ((r.mx*73856093) ^ (r.my*19349663) ^ (Math.floor(t*6)*101)) >>> 0;
+        const arr = [G.SIGN1,G.SIGN2,G.SIGN3,G.SIGN4];
+        g = arr[h%4];
+      } else {
+        if (t<0.05) g = G.WALL2;
+        else if (t>0.95) g = G.WALL2;
+        else if (r.meta===4){ g = (Math.floor(t*6)%2===0) ? G.WINDOW : G.WINDOW2; }
+        else g = (r.side===0) ? G.WALL : G.WALL2;
+      }
+      // Lit window: if meta is window and inside night, with random flicker
+      if (r.meta===4 && (timeOfDay>0.6 || timeOfDay<0.2)){
+        const flick = (Math.sin(performance.now()*0.003 + r.mx*0.5 + r.my*0.3) > -0.7) ? 1 : 0;
+        if (flick){
+          // light up
+          const wr = clamp(255,0,255), wg = lerp(180,255,rng()), wb = lerp(60,180,rng());
+          FG[idx2] = pack(wr,wg,wb);
+          Glow[idx2] = 0.4;
+          // also light nearby floor
+        } else {
+          FG[idx2] = pack(20,20,40);
+        }
+      } else {
+        FG[idx2] = wallCol;
+      }
+      if (lightBoost>0){
+        // brighten
+        const rr = unpack(FG[idx2],16), gg = unpack(FG[idx2],8), bb = unpack(FG[idx2],0);
+        FG[idx2] = pack(
+          clamp(rr + lightBoost*80 + (r.cell===2?100:0), 0, 255),
+          clamp(gg + lightBoost*70 + (r.cell===2?60:0), 0, 255),
+          clamp(bb + lightBoost*100 + (r.cell===2?100:0), 0, 255)
+        );
+        Glow[idx2] = Math.max(Glow[idx2], lightBoost);
+      }
+      Glyph[idx2] = g;
+      // Sign: override FG with bright sign color and add glow
+      if (r.cell===2){
+        const hh = ((r.mx*73856093) ^ (r.my*19349663)) >>> 0;
+        const hue = ((hh%1000)/1000);
+        const [sr,sg,sb] = hsv(hue, 0.95, 1.0);
+        FG[idx2] = pack(sr,sg,sb);
+        Glow[idx2] = Math.max(Glow[idx2], 0.6 * (1 - r.dist/14));
+      }
+      Depth[idx2] = r.dist;
+      // BG (floor) below
+      if (row >= horizon){
+        const ft = (row - horizon)/(ROWS-horizon);
+        const fcol = [
+          sky.bot[0]*(1-ft*0.4)*(1-night*0.3) + (rain?20:0),
+          sky.bot[1]*(1-ft*0.4)*(1-night*0.3),
+          sky.bot[2]*(1-ft*0.4)*(1-night*0.3) + (rain?20:0)
+        ];
+        BG[idx2] = pack(fcol[0],fcol[1],fcol[2]);
+      }
+    }
+  }
+
+  // -------- Floor / road details as glyph overlay (zebra crossings, lane marks) --------
+  // We render these as additional glyphs into BG/FG on floor cells based on world coords
+  for (let row=horizon; row<ROWS; row++){
+    for (let col=0; col<COLS; col++){
+      // ray direction for this column
+      const camX = (2*col/COLS) - 1;
+      const fX = Math.cos(player.ang), fY = Math.sin(player.ang);
+      const rX = -Math.sin(player.ang), rY = Math.cos(player.ang);
+      const dX = fX + camX * Math.tan(fov*0.5) * rX;
+      const dY = fY + camX * Math.tan(fov*0.5) * rY;
+      // floor distance for this row (perspective)
+      const rowT = (row - (ROWS*0.5 + player.pitch*ROWS*0.4)) / (ROWS*0.5);
+      if (rowT <= 0) continue;
+      const dist = (0.5 - player.z) / rowT;
+      if (dist<=0) continue;
+      const fx = player.x + dX*dist;
+      const fy = player.y + dY*dist;
+      const cx = Math.floor(fx), cy = Math.floor(fy);
+      if (!inBounds(cx,cy)) continue;
+      const cell = world[idx(cx,cy)];
+      const idx2 = row*COLS+col;
+      let g = 0, col2 = 0, glow = 0;
+      if (cell===6){
+        // road
+        const fxa = (fx - Math.floor(fx)) - 0.5;
+        const fya = (fy - Math.floor(fy)) - 0.5;
+        if (Math.abs(fya) < 0.04){ g=G.ROAD; col2=0xffff80; glow=0.2; } // lane center
+        else if (Math.abs(fxa) < 0.04){ g=G.ROAD2; col2=0xffff80; glow=0.15; }
+        // zebra crossings
+        const blockSize = 9;
+        const bx = cx%blockSize, by = cy%blockSize;
+        if ((bx===2 || bx===3) && Math.abs(fya)<0.4){ g=G.ROAD2; col2=0xeeeeee; }
+        // streetlights at intersections
+        if ((cx%9===0 && cy%9===0)){
+          const flick = (Math.sin(now*0.005 + cx*0.7) > -0.4)?1:0;
+          if (flick){ g=G.LIGHT; col2=0xffeeaa; glow=0.7; }
+        }
+        // random neon puddles
+        const puddle = (Math.sin(cx*12.9898 + cy*78.233 + now*0.001) > 0.985);
+        if (puddle && dist<8){ g=G.GLOW; col2=0xff40c0; glow=0.5; }
+      } else if (cell===7){
+        // sidewalk
+        const fxa = (fx - Math.floor(fx)) - 0.5;
+        const fya = (fy - Math.floor(fy)) - 0.5;
+        if (Math.abs(fxa)<0.02 || Math.abs(fya)<0.02){ g=G.SIDEWALK; col2=0x6688aa; }
+        else g=G.SIDEWALK;
+      } else if (cell===8){
+        g = (Math.floor(fx*3+fy*5)%2===0)?G.RAIL:G.RAIL2;
+        col2 = 0xaaaaaa;
+      } else if (cell===9){
+        // water
+        const wave = Math.sin(fx*0.6 + now*0.003) + Math.cos(fy*0.7 + now*0.0024);
+        g = wave>0 ? G.WATER : G.WATER2;
+        col2 = 0x3080d0;
+        glow = 0.15;
+      } else if (cell===11){
+        // park
+        const fxa = (fx - Math.floor(fx)) - 0.5;
+        const fya = (fy - Math.floor(fy)) - 0.5;
+        if (fxa*fxa + fya*fya < 0.02){ g=G.TREE; col2=0x40c060; }
+        else g=G.PARK;
+      } else if (cell===5){
+        // plaza
+        const blockSize = 9;
+        const bx = cx%blockSize, by = cy%blockSize;
+        if (bx===4 && by===4){ g=G.PLAZA; col2=0xff80ff; glow=0.3; }
+      }
+      if (g){
+        Glyph[idx2] = g;
+        FG[idx2] = col2 || FG[idx2];
+        Glow[idx2] = Math.max(Glow[idx2], glow);
+      }
+    }
+  }
+
+  // -------- Entities (sprites) --------
+  // Build sorted list (far to near)
+  const sprites = [];
+  for (const e of entities){
+    const dx = e.x - player.x, dy = e.y - player.y;
+    const d2 = dx*dx + dy*dy;
+    sprites.push({e, d2});
+  }
+  sprites.sort((a,b)=>b.d2 - a.d2);
+  for (const s of sprites){
+    drawEntitySprite(s.e);
+  }
+
+  // -------- Atmospheric rain overlay --------
+  if (rain){
+    for (let i=0;i<200;i++){
+      const r = raindrops[i];
+      // project to screen
+      const fX = Math.cos(player.ang), fY = Math.sin(player.ang);
+      const rX = -Math.sin(player.ang), rY = Math.cos(player.ang);
+      const wx = player.x + (r.x-0.5)*30 + Math.cos(player.ang)*8;
+      const wy = player.y + (r.y-0.5)*30 + Math.sin(player.ang)*8;
+      const dx = wx - player.x, dy = wy - player.y;
+      const tx = dx*Math.cos(-player.ang) - dy*Math.sin(-player.ang);
+      const ty = dx*Math.sin(-player.ang) + dy*Math.cos(-player.ang);
+      if (ty<=0.1) continue;
+      const sx = (W*0.5) + (tx/ty) * (W*0.5/Math.tan(fov*0.5));
+      const col = Math.floor(sx / (CELL*0.62));
+      const row = Math.floor((H*0.5 + (r.y*2-0.3)*H*0.4));
+      if (col<0||col>=COLS||row<0||row>=ROWS) continue;
+      const idx2 = row*COLS+col;
+      Glyph[idx2] = (i%2?G.RAIN:G.RAIN2);
+      FG[idx2] = 0x88ccff;
+    }
+  }
+
+  // -------- Final composite to canvas --------
+  // We draw BG then glyph FG with glow
+  // Use a single pass per cell
+  const cellW = CELL*0.62;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0,0,W,H);
+  for (let r=0; r<ROWS; r++){
+    for (let c=0; c<COLS; c++){
+      const i = r*COLS + c;
+      const x = c*cellW;
+      const y = r*CELL;
+      // BG
+      if (BG[i]){
+        const rr = unpack(BG[i],16), gg = unpack(BG[i],8), bb = unpack(BG[i],0);
+        ctx.fillStyle = `rgb(${rr},${gg},${bb})`;
+        ctx.fillRect(x, y, cellW+1, CELL+1);
+      }
+      // FG glyph
+      if (Glyph[i]){
+        const ch = GCHR[Glyph[i]] || '?';
+        if (Glow[i]>0){
+          // soft glow
+          const g = Glow[i];
+          ctx.fillStyle = `rgba(${unpack(FG[i],16)},${unpack(FG[i],8)},${unpack(FG[i],0)},${0.18*g})`;
+          ctx.fillRect(x-1, y-1, cellW+3, CELL+3);
+        }
+        ctx.fillStyle = FG[i] ? `rgb(${unpack(FG[i],16)},${unpack(FG[i],8)},${unpack(FG[i],0)})` : '#fff';
+        ctx.fillText(ch, x + cellW*0.5, y);
+      }
+    }
+  }
+
+  // -------- Minimap --------
+  if (document.getElementById('mapBox').style.display !== 'none'){
+    drawMap();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+function drawMap(){
+  const mp = document.getElementById('mp');
+  const m = mp.getContext('2d');
+  m.fillStyle = '#000814'; m.fillRect(0,0,160,160);
+  const s = 1.5;
+  for (let y=0;y<MAP_H;y++){
+    for (let x=0;x<MAP_W;x++){
+      const c = world[idx(x,y)];
+      let col = '#001020';
+      if (c===1) col = '#224488';
+      else if (c===6) col = '#112233';
+      else if (c===7) col = '#334455';
+      else if (c===9) col = '#1060c0';
+      else if (c===11) col = '#205030';
+      else if (c===5) col = '#553366';
+      else if (c===2) col = '#ff60c0';
+      else if (c===3) col = '#ffa040';
+      m.fillStyle = col;
+      m.fillRect(x*s, y*s, s, s);
+    }
+  }
+  // entities
+  for (const e of entities){
+    if (e.type==='car'){ m.fillStyle='#ff80c0'; m.fillRect(e.x*s-1, e.y*s-1, 2, 2); }
+    else if (e.type==='ped'){ m.fillStyle='#80ff80'; m.fillRect(e.x*s, e.y*s, 1, 1); }
+    else if (e.type==='train'){ m.fillStyle='#ff4040'; m.fillRect(e.x*s-2, e.y*s-2, 4, 4); }
+    else if (e.type==='hotspot'){ m.fillStyle='#ffff00'; m.fillRect(e.x*s-1, e.y*s-1, 3, 3); }
+  }
+  // player
+  m.fillStyle='#fff';
+  m.fillRect(player.x*s-1, player.y*s-1, 3, 3);
+  m.strokeStyle='#fff'; m.beginPath();
+  m.moveTo(player.x*s, player.y*s);
+  m.lineTo(player.x*s + Math.cos(player.ang)*6, player.y*s + Math.sin(player.ang)*6);
+  m.stroke();
+}
+
+// -------- Interaction --------
+function tryInteract(){
+  for (const h of hotspots){
+    if (Math.hypot(h.x-player.x, h.y-player.y) < 1.8){
+      const messages = {
+        FERRY:"// FERRY: 'The river runs to a city that doesn't exist on any map.'",
+        BAZAAR:"// BAZAAR: 'Trade memory for memory. The merchant's eyes are mirrors.'",
+        CATHEDRAL:"// CATHEDRAL: 'A bell tolls in a language of static. You feel seen.'",
+        FACTORY:"// FACTORY: 'The machines hum a lullaby for the city. The city hums back.'",
+        GARDEN:"// GARDEN: 'A single tree grows from a crack in the neon. It remembers sunlight.'",
+        CORE:"// NEO-CORE: 'You are the center of the simulation. Or so it tells you.'",
+        GHOST:"// GHOST TERMINAL: 'The last train left in 1999. Some nights, it returns.'",
+        ANTENNA:"// ANTENNA: 'From here the city broadcasts dreams to the stars.'",
+        GATE:"// DRIFT GATE: 'Beyond this, only the open neon sea. Few return.'"
+      };
+      flash(messages[h.key] || h.name, 4000);
+      document.getElementById('story').textContent = messages[h.key] || h.name;
+      return;
+    }
+  }
+  // Secret proximity
+  for (const s of secrets){
+    if (Math.hypot(s.x-player.x, s.y-player.y) < 1.2){
+      flash('SECRET: '+s.name, 4000);
+      document.getElementById('story').textContent = 'SECRET: '+s.name;
+      return;
+    }
+  }
+}
+
+// Start loop
+requestAnimationFrame(frame);
+
+</script>
+</body>
+</html>

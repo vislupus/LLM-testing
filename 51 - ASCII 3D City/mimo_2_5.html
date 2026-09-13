@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEON CITADEL // Living ASCII 3D City</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;font-family:monospace;cursor:none}
+canvas{display:block;width:100vw;height:100vh;image-rendering:pixelated}
+.crt{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2;
+background:repeating-linear-gradient(0deg,rgba(0,0,0,0) 0px,rgba(0,0,0,0) 2px,rgba(0,0,0,0.1) 2px,rgba(0,0,0,0.1) 4px)}
+.crt::after{content:'';position:fixed;top:0;left:0;width:100%;height:100%;
+background:radial-gradient(ellipse at center,transparent 50%,rgba(0,0,0,0.55) 100%);
+pointer-events:none}
+</style>
+</head>
+<body>
+<div class="crt"></div>
+<canvas id="game"></canvas>
+<script>
+'use strict';
+// ═══════════════════════════════════════════════════════════════
+//  NEON CITADEL — A Living ASCII 3D City
+//  Fully explorable procedural cyberpunk city rendered in ASCII
+//  Features: 7 districts, 120+ entities, weather, secrets, audio
+// ═══════════════════════════════════════════════════════════════
+
+// ─── CONFIG ──────────────────────────────────────────────────
+const MAP_SZ = 128;
+const FOV = 1.1;
+const MAX_D = 30;
+const FONT_SZ = 14;
+const MOVE_SPD = 3.5;
+const SPRINT_M = 2.2;
+const MOUSE_S = 0.0018;
+const PLYR_H = 0.5;
+const PED_N = 100;
+const VEH_N = 40;
+const SIGN_N = 24;
+const SECRETS_N = 12;
+
+// ─── STATE ───────────────────────────────────────────────────
+const C = document.getElementById('game');
+const X = C.getContext('2d');
+let COLS, ROWS, CW, CH, FONT;
+let cBuf, fBuf, zBuf;
+let started = false, demo = true;
+let gt = 0, frm = 0, fps = 0, fpsC = 0, fpsT = 0;
+let mX = 0, mY = 0;
+let disc = new Set();
+let msgs = [];
+let iCd = 0;
+let lightning = 0, lt = 0;
+
+// ─── PLAYER ──────────────────────────────────────────────────
+const P = { x: 66, y: 66, a: 0, h: PLYR_H, bob: 0, bobT: 0 };
+
+// ─── MAPS ────────────────────────────────────────────────────
+let city = [], dMap = [], wSeed = [], heightMap = [];
+
+// ─── DISTRICTS ───────────────────────────────────────────────
+const DS = {
+  NEON:  { n:'NEON CORE',          c1:'#00ffff',c2:'#ff00ff',hMn:5,hMx:9,sign:'neon' },
+  MKT:   { n:'MARKET ALLEY',       c1:'#00ff66',c2:'#eeff00',hMn:2,hMx:4,sign:'mkt' },
+  IND:   { n:'INDUSTRIAL SECTOR',  c1:'#ff8800',c2:'#ff2200',hMn:3,hMx:6,sign:'ind' },
+  RES:   { n:'RESIDENTIAL BLOCK',  c1:'#7744ff',c2:'#4488ff',hMn:3,hMx:5,sign:'res' },
+  OLD:   { n:'OLD QUARTER',        c1:'#ffaa44',c2:'#ff6622',hMn:2,hMx:3,sign:'old' },
+  WTR:   { n:'WATERFRONT',         c1:'#4488ff',c2:'#00ccee',hMn:3,hMx:5,sign:'wtr' },
+  FRB:   { n:'██ FORBIDDEN ██',    c1:'#ff0044',c2:'#880022',hMn:6,hMx:10,sign:'frb' },
+  UND:   { n:'UNDERCITY',          c1:'#ff2200',c2:'#cc0000',hMn:4,hMx:8,sign:'und' }
+};
+
+function getD(x, y) {
+  let dx = x / MAP_SZ, dy = y / MAP_SZ;
+  // Central ring
+  if (dx > .3 && dx < .7 && dy > .3 && dy < .7) return 'NEON';
+  // Surrounding areas
+  if (dx < .35 && dy < .35) return 'OLD';
+  if (dx >= .35 && dx < .65 && dy < .35) return 'MKT';
+  if (dx >= .65 && dy < .35) return 'IND';
+  if (dx < .35 && dy >= .35 && dy < .65) return 'RES';
+  if (dx >= .65 && dy >= .35 && dy < .65) return 'IND';
+  if (dx < .35 && dy >= .65) return 'WTR';
+  if (dx >= .35 && dx < .65 && dy >= .65) return 'UND';
+  return 'FRB';
+}
+
+// ─── UTILITIES ───────────────────────────────────────────────
+function H(x, y) { let n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return n - Math.floor(n); }
+function HI(x, y) { let n = ((x|0)*374761393+(y|0)*668265263)|0; n=((n^(n>>13))*1274126177)|0; return((n^(n>>16))>>>0)/4294967296; }
+function N(x, y) {
+  let ix=Math.floor(x),iy=Math.floor(y),fx=x-ix,fy=y-iy;
+  let ux=fx*fx*(3-2*fx),uy=fy*fy*(3-2*fy);
+  let a=H(ix,iy),b=H(ix+1,iy),c=H(ix,iy+1),d=H(ix+1,iy+1);
+  return a+(b-a)*ux+(c-a)*uy+(a-b-c+d)*ux*uy;
+}
+function fbm(x, y, o) { let v=0,a=.5,f=1; for(let i=0;i<o;i++){v+=a*N(x*f,y*f);a*=.5;f*=2;} return v; }
+
+function hR(h){return parseInt(h.slice(1,3),16)}
+function hG(h){return parseInt(h.slice(3,5),16)}
+function hB(h){return parseInt(h.slice(5,7),16)}
+function dC(c,f) {
+  f=Math.max(0,Math.min(1,f));
+  let r=Math.round(hR(c)*f),g=Math.round(hG(c)*f),b=Math.round(hB(c)*f);
+  return '#'+((1<<24)|(r<<16)|(g<<8)|b).toString(16).slice(1);
+}
+function mC(a,b,t) {
+  t=Math.max(0,Math.min(1,t));
+  let r=Math.round(hR(a)+(hR(b)-hR(a))*t),g=Math.round(hG(a)+(hG(b)-hG(a))*t),bl=Math.round(hB(a)+(hB(b)-hB(a))*t);
+  return '#'+((1<<24)|(r<<16)|(g<<8)|bl).toString(16).slice(1);
+}
+
+// ─── CANVAS & BUFFER ─────────────────────────────────────────
+function resize() {
+  C.width = window.innerWidth; C.height = window.innerHeight;
+  X.font = FONT_SZ + 'px monospace';
+  CW = X.measureText('M').width;
+  CH = FONT_SZ * 1.2;
+  FONT = FONT_SZ + 'px monospace';
+  COLS = Math.floor(C.width / CW);
+  ROWS = Math.floor(C.height / CH);
+  cBuf = new Array(ROWS * COLS);
+  fBuf = new Array(ROWS * COLS);
+  zBuf = new Float32Array(COLS);
+}
+function clr() { cBuf.fill(' '); fBuf.fill('#000'); }
+function sc(x, y, ch, fg) {
+  x |= 0; y |= 0;
+  if (x >= 0 && x < COLS && y >= 0 && y < ROWS) { let i = y * COLS + x; cBuf[i] = ch; fBuf[i] = fg; }
+}
+
+// ─── SIGN TEXTS ──────────────────────────────────────────────
+const SIGN_TEXTS = [
+  'N O O D L E','H O T E L','C Y B E R B A R','D A T A M O D S',
+  'N E O N','V O I D','P U L S E','S I G N A L','F L U X','Z E N',
+  'R A M E N','S Y N T H','M O D S','C L I N I C','G A T E','L A B',
+  'T O W E R','S H O P','B A Z A A R','D E P O T','C A F E','M A R K E T','S T A T I O N','T E R M I N A L'
+];
+
+// ─── CITY GENERATION ─────────────────────────────────────────
+function genCity() {
+  city = []; dMap = []; wSeed = []; heightMap = [];
+  for (let y = 0; y < MAP_SZ; y++) {
+    city[y] = new Uint8Array(MAP_SZ);
+    dMap[y] = []; wSeed[y] = new Float32Array(MAP_SZ);
+    heightMap[y] = new Float32Array(MAP_SZ);
+    for (let x = 0; x < MAP_SZ; x++) {
+      dMap[y][x] = getD(x, y);
+      wSeed[y][x] = HI(x * 17 + 3, y * 31 + 7);
+      let sx = x % 14, sy = y % 14;
+      let mainRd = sx < 3 || sy < 3;
+      let alley = (sx === 7 && HI(x, y) > .5) || (sy === 7 && HI(x + 50, y + 50) > .5);
+      let bvd = (x % 42 < 4 && sx < 3) || (y % 42 < 4 && sy < 3);
+
+      if (mainRd || alley || bvd) {
+        city[y][x] = 0;
+      } else {
+        let dn = dMap[y][x], d = DS[dn];
+        let n = fbm(x * .12, y * .12, 3);
+        let h = d.hMn + Math.floor(n * (d.hMx - d.hMn + 1));
+        let ex = Math.min(sx - 3, 13 - sx), ey = Math.min(sy - 3, 13 - sy);
+        if (ex <= 0 || ey <= 0) h = Math.max(1, h - 2);
+        // Supertall in neon
+        if (dn === 'NEON' && HI(x * 3, y * 7) > .82) h = Math.min(14, h + 4);
+        // Variety in industrial
+        if (dn === 'IND' && HI(x, y) > .7) h = Math.max(1, h - 2);
+        // Keep spawn clear
+        if (Math.abs(x - P.x) < 5 && Math.abs(y - P.y) < 5) { city[y][x] = 0; continue; }
+        h = Math.max(1, Math.min(14, h));
+        city[y][x] = h;
+        heightMap[y][x] = h;
+      }
+    }
+  }
+  // Ensure player on road
+  while (city[Math.floor(P.y)] && city[Math.floor(P.y)][Math.floor(P.x)] > 0) P.x += 1;
+  for (let dy = -3; dy <= 3; dy++)
+    for (let dx = -3; dx <= 3; dx++) {
+      let mx = Math.floor(P.x)+dx, my = Math.floor(P.y)+dy;
+      if (mx >= 0 && mx < MAP_SZ && my >= 0 && my < MAP_SZ) city[my][mx] = 0;
+    }
+}
+
+// ─── SIGNS ───────────────────────────────────────────────────
+let signs = [];
+function genSigns() {
+  signs = [];
+  for (let i = 0; i < SIGN_N; i++) {
+    let x, y, ct = 0;
+    do { x = 3 + (Math.random() * (MAP_SZ - 6)) | 0; y = 3 + (Math.random() * (MAP_SZ - 6)) | 0; ct++; }
+    while (ct < 300 && city[y][x] === 0);
+    for (let [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      let nx = x+dx, ny = y+dy;
+      if (nx >= 0 && nx < MAP_SZ && ny >= 0 && ny < MAP_SZ && city[ny][nx] === 0) {
+        signs.push({
+          x: nx+.5, y: ny+.5, bx: x, by: y,
+          text: SIGN_TEXTS[i % SIGN_TEXTS.length],
+          col: ['#00ffff','#ff00ff','#ffff00','#00ff66','#ff8800','#ff4488'][i % 6],
+          fl: Math.random() * 6.28,
+          h: .3 + Math.random() * .4
+        });
+        break;
+      }
+    }
+  }
+}
+
+// ─── SECRETS ─────────────────────────────────────────────────
+const SECRETS = [
+  {x:10,y:10,r:2.5,m:'Graffiti reads: "WAKE UP, DREAMER"',c:'#ff0044'},
+  {x:110,y:110,r:2.5,m:'Terminal display: "SECTOR 7 — ACTIVE"',c:'#00ff66'},
+  {x:64,y:18,r:2.5,m:'Faded poster: "REMEMBER THE SIGNAL"',c:'#ffff00'},
+  {x:18,y:90,r:2.5,m:'Scratched: "BELOW THE CITY, SOMETHING STIRS"',c:'#ff00ff'},
+  {x:95,y:38,r:2.5,m:'Neon tag: "∅ RESIST ∅"',c:'#00ffff'},
+  {x:50,y:100,r:2.5,m:'Hidden alcove with old circuit boards and wires',c:'#ff8800'},
+  {x:85,y:85,r:2.5,m:'Door marked: "LEVEL 8 ACCESS ONLY"',c:'#ff0044'},
+  {x:30,y:60,r:2.5,m:'Whispering vents: "...the citadel dreams..."',c:'#aa44ff'},
+  {x:22,y:22,r:2.5,m:'A shrine of flickering candles behind a dumpster',c:'#ffaa44'},
+  {x:105,y:55,r:2.5,m:'>>SIGNAL TRACE: 42.77.31.0<<',c:'#00ff66'},
+  {x:45,y:80,r:2.5,m:'Old mural: a city before the fall, bathed in sunlight',c:'#ffcc44'},
+  {x:75,y:35,r:2.5,m:'Rusted plaque: "NEON CITADEL FOUNDED 2077"',c:'#8888aa'}
+];
+
+// ─── ENTITIES ────────────────────────────────────────────────
+let ents = [];
+let trainEnts = [];
+
+function spawnE() {
+  ents = [];
+  // Pedestrians
+  for (let i = 0; i < PED_N; i++) {
+    let x, y, ct = 0;
+    do { x = Math.random() * MAP_SZ; y = Math.random() * MAP_SZ; ct++; }
+    while (ct < 150 && city[Math.floor(y)][Math.floor(x)] > 0);
+    ents.push({
+      tp: 'ped', x, y,
+      a: Math.random() * 6.28,
+      sp: .3 + Math.random() * 1.3,
+      cl: ['#00ffff','#ff00ff','#ffff00','#00ff66','#ff8800','#8844ff','#ff4488','#44ffff'][i % 8],
+      t: Math.random() * 10, wb: Math.random() * 6.28,
+      pause: 0, dir: Math.random() * 6.28
+    });
+  }
+  // Vehicles
+  for (let i = 0; i < VEH_N; i++) {
+    let x, y, ct = 0;
+    do { x = Math.random() * MAP_SZ; y = Math.random() * MAP_SZ; ct++; }
+    while (ct < 150 && city[Math.floor(y)][Math.floor(x)] > 0);
+    let horiz = Math.floor(y) % 14 < 3;
+    let a = horiz ? (Math.random()>.5?0:Math.PI) : (Math.random()>.5?Math.PI/2:-Math.PI/2);
+    ents.push({
+      tp: 'veh', x, y, a,
+      sp: 1.5 + Math.random() * 3,
+      cl: ['#ff3333','#ffff33','#ffffff','#33ff33','#3388ff','#ff88ff','#ffaa33'][i % 7],
+      t: 0, hl: true, w: 2 + (Math.random() * 2 | 0)
+    });
+  }
+  // Trains
+  trainEnts = [
+    { x: Math.random() * MAP_SZ, y: 42, a: 0, sp: 16, cl: '#ffffff', ln: 10, t: 0 },
+    { x: 80, y: Math.random() * MAP_SZ, a: Math.PI/2, sp: 14, cl: '#ffff44', ln: 8, t: 5 }
+  ];
+}
+
+function updateE(dt) {
+  for (let e of ents) {
+    e.t += dt; e.wb += dt * 3;
+    if (e.tp === 'ped') {
+      e.pause -= dt;
+      if (e.pause > 0) continue;
+      // Walk
+      let nx = e.x + Math.cos(e.a) * e.sp * dt;
+      let ny = e.y + Math.sin(e.a) * e.sp * dt;
+      let mx = Math.floor(nx), my = Math.floor(ny);
+      if (mx >= 0 && mx < MAP_SZ && my >= 0 && my < MAP_SZ && city[my][mx] === 0) {
+        e.x = nx; e.y = ny;
+      } else {
+        e.a += Math.PI * (.5 + Math.random());
+      }
+      if (Math.random() < dt * .3) e.a += (Math.random() - .5) * 1;
+      // Occasional pause
+      if (Math.random() < dt * .05) e.pause = .5 + Math.random() * 2;
+    }
+    if (e.tp === 'veh') {
+      let nx = e.x + Math.cos(e.a) * e.sp * dt;
+      let ny = e.y + Math.sin(e.a) * e.sp * dt;
+      let mx = Math.floor(nx), my = Math.floor(ny);
+      if (mx >= 0 && mx < MAP_SZ && my >= 0 && my < MAP_SZ && city[my][mx] === 0) {
+        e.x = nx; e.y = ny;
+      } else {
+        e.a += Math.PI;
+      }
+    }
+    if (e.x < 0) e.x += MAP_SZ; if (e.x >= MAP_SZ) e.x -= MAP_SZ;
+    if (e.y < 0) e.y += MAP_SZ; if (e.y >= MAP_SZ) e.y -= MAP_SZ;
+  }
+  // Trains
+  for (let t of trainEnts) {
+    t.t += dt;
+    t.x += Math.cos(t.a) * t.sp * dt;
+    t.y += Math.sin(t.a) * t.sp * dt;
+    if (t.x > MAP_SZ + 25) t.x = -25;
+    if (t.x < -25) t.x = MAP_SZ + 25;
+    if (t.y > MAP_SZ + 25) t.y = -25;
+    if (t.y < -25) t.y = MAP_SZ + 25;
+  }
+}
+
+// ─── RAIN ────────────────────────────────────────────────────
+let rain = [];
+function initRain() {
+  rain = [];
+  for (let i = 0; i < 500; i++)
+    rain.push({ x: Math.random(), y: Math.random(), s: .6 + Math.random() * .5, l: 1 + (Math.random() * 2 | 0) });
+}
+
+// ─── AUDIO ───────────────────────────────────────────────────
+let actx, rGain;
+function initAudio() {
+  try {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    // Rain
+    let bs = actx.sampleRate * 2;
+    let buf = actx.createBuffer(1, bs, actx.sampleRate);
+    let d = buf.getChannelData(0);
+    for (let i = 0; i < bs; i++) d[i] = Math.random() * 2 - 1;
+    let src = actx.createBufferSource(); src.buffer = buf; src.loop = true;
+    let f = actx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 500;
+    rGain = actx.createGain(); rGain.gain.value = .035;
+    src.connect(f); f.connect(rGain); rGain.connect(actx.destination); src.start();
+    // City hum
+    let o1 = actx.createOscillator(); o1.frequency.value = 44; o1.type = 'sine';
+    let g1 = actx.createGain(); g1.gain.value = .012;
+    o1.connect(g1); g1.connect(actx.destination); o1.start();
+    let o2 = actx.createOscillator(); o2.frequency.value = 28; o2.type = 'sine';
+    let g2 = actx.createGain(); g2.gain.value = .008;
+    o2.connect(g2); g2.connect(actx.destination); o2.start();
+  } catch(e) {}
+}
+
+// ─── INPUT ───────────────────────────────────────────────────
+let keys = {};
+document.addEventListener('keydown', e => { keys[e.code] = true; });
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+document.addEventListener('mousemove', e => { if (document.pointerLockElement === C) { mX += e.movementX; mY += e.movementY; } });
+C.addEventListener('click', () => {
+  if (!started) { started = true; demo = false; initAudio(); }
+  C.requestPointerLock();
+});
+
+// ─── RAYCASTER (DDA) ─────────────────────────────────────────
+function castR(ang) {
+  let dx = Math.cos(ang), dy = Math.sin(ang);
+  let mx = Math.floor(P.x), my = Math.floor(P.y);
+  let ddx = Math.abs(1 / (dx || 1e-10)), ddy = Math.abs(1 / (dy || 1e-10));
+  let sx, sy, sdx, sdy;
+  if (dx < 0) { sx = -1; sdx = (P.x - mx) * ddx; } else { sx = 1; sdx = (mx + 1 - P.x) * ddx; }
+  if (dy < 0) { sy = -1; sdy = (P.y - my) * ddy; } else { sy = 1; sdy = (my + 1 - P.y) * ddy; }
+  let side = 0, st = 0, hit = false;
+  while (st < 80) {
+    if (sdx < sdy) { sdx += ddx; mx += sx; side = 0; } else { sdy += ddy; my += sy; side = 1; }
+    st++;
+    if (mx < 0 || mx >= MAP_SZ || my < 0 || my >= MAP_SZ) { hit = true; break; }
+    if (city[my][mx] > 0) { hit = true; break; }
+  }
+  let pd;
+  if (side === 0) pd = (mx - P.x + (1 - sx) / 2) / (dx || 1e-10);
+  else pd = (my - P.y + (1 - sy) / 2) / (dy || 1e-10);
+  pd = Math.max(.05, pd);
+  let wx = side === 0 ? P.y + pd * dy : P.x + pd * dx;
+  wx -= Math.floor(wx);
+  let wt = (mx >= 0 && mx < MAP_SZ && my >= 0 && my < MAP_SZ) ? city[my][mx] : 1;
+  let dn = (mx >= 0 && mx < MAP_SZ && my >= 0 && my < MAP_SZ) ? dMap[my][mx] : 'NEON';
+  return { d: pd, mx, my, side, wx, wt, dn };
+}
+
+// ─── WALL CHARACTER ──────────────────────────────────────────
+function wCh(dist, wx, row, side, dn, mapX, mapY) {
+  let d = DS[dn] || DS.NEON;
+  let base = side ? d.c1 : d.c2;
+  let fog = Math.min(1, dist / MAX_D);
+  let br = Math.max(.02, (1 - fog) * (1 - fog)); // Exponential falloff
+
+  // Very far: dots and haze
+  if (dist > 24) return { ch: ' ', c: dC(base, .01) };
+  if (dist > 18) return { ch: '·', c: dC(base, .04) };
+  if (dist > 14) return { ch: '·', c: dC(base, .08) };
+  if (dist > 10) return { ch: '░', c: dC(base, .18) };
+  if (dist > 7) return { ch: '▒', c: dC(base, .32) };
+  if (dist > 5) return { ch: '▓', c: dC(base, .48) };
+
+  // Close: detailed facade
+  let lx = (wx * 10 | 0) % 10;
+  let ly = row % 7;
+  let ws = wSeed[mapY] ? wSeed[mapY][mapX] || 0 : 0;
+  let wt2 = city[mapY] ? city[mapY][mapX] : 1;
+
+  // Supertall buildings get extra detail
+  if (wt2 >= 10) {
+    // Modern glass facade pattern
+    if (ly >= 1 && ly <= 5 && lx >= 1 && lx <= 8) {
+      if ((lx === 2 || lx === 5) && (ly === 2 || ly === 4)) {
+        let lit = ws > .2;
+        if (lit) {
+          let flk = Math.sin(gt * (1.5 + ws * 5) + ws * 80) * .25 + .75;
+          let wc = ['#ffff88','#88ffff','#ff88ff','#88ff88','#ffaa44','#44aaff'][(ws * 10 | 0) % 6];
+          return { ch: '◈', c: dC(wc, br * flk) };
+        }
+        return { ch: '□', c: dC(base, .08) };
+      }
+      if (ly === 1 || ly === 5) return { ch: '─', c: dC(base, br * .5) };
+      if (lx === 1 || lx === 8) return { ch: '│', c: dC(base, br * .5) };
+      return { ch: '░', c: dC(base, br * .2) };
+    }
+  }
+
+  // Normal building facade
+  if (ly >= 1 && ly <= 5 && lx >= 2 && lx <= 7) {
+    // Window
+    if ((lx === 3 || lx === 6) && (ly === 2 || ly === 3 || ly === 4)) {
+      let lit = ws > .25;
+      if (lit) {
+        let flk = Math.sin(gt * (2 + ws * 6) + ws * 50) * .3 + .7;
+        // Occasional off
+        if (Math.sin(ws * 100 + gt * .1) > .85) flk = .05;
+        let wc = ['#ffff88','#88ffff','#ff88ff','#88ff88','#ffaa44'][(ws * 10 | 0) % 5];
+        return { ch: '◈', c: dC(wc, br * flk) };
+      }
+      return { ch: '□', c: dC(base, .06) };
+    }
+    // Frame
+    if (lx === 2 || lx === 7) return { ch: '│', c: dC(base, br * .6) };
+    if (ly === 1 || ly === 5) return { ch: '─', c: dC(base, br * .55) };
+    // Interior visible through glass
+    return { ch: '·', c: dC(base, .04) };
+  }
+
+  // Wall borders
+  if (ly === 0 || ly === 6) return { ch: '═', c: dC(base, br * .55) };
+  if (lx === 0 || lx === 9) return { ch: '║', c: dC(base, br * .55) };
+
+  // Wall body with texture variation
+  if (wt2 >= 8) return { ch: '█', c: dC(base, br * .5) };
+  if (wt2 >= 5) return { ch: '▓', c: dC(base, br * .55) };
+  return { ch: '█', c: dC(base, br * .6) };
+}
+
+// ─── RENDERING ───────────────────────────────────────────────
+function render() {
+  clr();
+  let hF = FOV / 2, hR2 = ROWS / 2;
+  let bobOff = Math.sin(P.bob) * .3;
+
+  // ═══════ SKY ═══════
+  for (let y = 0; y < Math.ceil(hR2); y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (HI(x * 7 + 1, y * 13 + 3) > .994) {
+        let tw = Math.sin(gt * 1.5 + H(x, y) * 20) * .3 + .7;
+        sc(x, y, '*', dC('#aaccff', .15 * tw));
+      } else if (HI(x * 3 + 7, y * 5 + 11) > .9985) {
+        sc(x, y, '✦', dC('#ffffff', .12));
+      } else {
+        sc(x, y, ' ', '#030308');
+      }
+    }
+  }
+
+  // ═══════ RAYCAST ═══════
+  // Pre-calculate sign map for quick lookup
+  let signMap = new Map();
+  for (let s of signs) {
+    let key = s.bx + ',' + s.by;
+    signMap.set(key, s);
+  }
+
+  for (let x = 0; x < COLS; x++) {
+    let ra = P.a - hF + (x / COLS) * FOV;
+    let res = castR(ra);
+    let pd = res.d * Math.cos(ra - P.a);
+    pd = Math.max(.05, pd);
+    zBuf[x] = pd;
+
+    let wh = ROWS / pd;
+    let wt = Math.max(0, (hR2 - wh / 2 + bobOff * pd) | 0);
+    let wb = Math.min(ROWS - 1, (hR2 + wh / 2 + bobOff * pd) | 0);
+
+    // ──── WALL ────
+    let wallBase = res.side ? DS[res.dn].c1 : DS[res.dn].c2;
+
+    for (let y = wt; y <= wb; y++) {
+      let wr = y - wt;
+      let wc = wCh(pd, res.wx, wr, res.side, res.dn, res.mx, res.my);
+
+      // Quick sign check using pre-built map
+      let sk = res.mx + ',' + res.my;
+      let sign = signMap.get(sk);
+      if (sign && pd < 15) {
+        let signRow = wh * sign.h;
+        if (Math.abs(wr - signRow) < Math.max(1, wh * .06)) {
+          let ci = (res.wx * sign.text.length) | 0;
+          if (ci >= 0 && ci < sign.text.length && sign.text[ci] !== ' ') {
+            let flk = Math.sin(gt * 4 + sign.fl) > -.15 ? 1 : .15;
+            wc = { ch: sign.text[ci], c: dC(sign.col, flk * Math.max(.05, 1 - pd / MAX_D)) };
+          }
+        }
+      }
+
+      // Lightning flash on walls
+      if (lightning > .5) {
+        wc = { ch: wc.ch, c: mC(wc.c, '#ffffff', (lightning - .5) * .4) };
+      }
+
+      sc(x, y, wc.ch, wc.c);
+    }
+
+    // ──── FLOOR ────
+    let rdx = Math.cos(ra), rdy = Math.sin(ra);
+    for (let y = wb + 1; y < ROWS; y++) {
+      let p = y - hR2 - bobOff;
+      if (p <= 0) continue;
+      let rd = (P.h * ROWS) / (2 * p);
+      let fog = Math.min(1, rd / MAX_D);
+      let fb = Math.max(.01, (1 - fog) * (1 - fog));
+
+      let fwx = P.x + rd * rdx;
+      let fwy = P.y + rd * rdy;
+      let cx = Math.floor(fwx), cy = Math.floor(fwy);
+      let fx = fwx - cx, fy = fwy - cy;
+
+      let ch = '·', col = '#1a1a28';
+
+      // Road markings (center lines)
+      let isCenterX = Math.abs(fx - .5) < .02;
+      let isCenterY = Math.abs(fy - .5) < .02;
+      if (isCenterX || isCenterY) {
+        ch = isCenterX ? '│' : '─';
+        col = dC('#3a3a55', fb);
+      }
+      // Train tracks
+      else if ((cy === 42 || cy === 41 || cy === 43) && rd < 12) {
+        ch = '═'; col = dC('#555566', fb);
+      }
+      else if ((cx === 80 || cx === 79 || cx === 81) && rd < 12) {
+        ch = '║'; col = dC('#555566', fb);
+      }
+      // Crosswalk pattern
+      else if (rd < 3 && ((Math.abs(fx - .5) < .15 && fy > .3 && fy < .7) || (Math.abs(fy - .5) < .15 && fx > .3 && fx < .7))) {
+        ch = '█'; col = dC('#333340', fb);
+      }
+      // Puddles
+      else if (N(cx * .35, cy * .35) > .6) {
+        let sh = Math.sin(gt * 2.5 + cx * 4 + cy * 6) * .15 + .85;
+        ch = '~';
+        let dn = (cx >= 0 && cx < MAP_SZ && cy >= 0 && cy < MAP_SZ) ? dMap[cy][cx] : 'NEON';
+        let dd = DS[dn];
+        col = dC(dd ? dd.c1 : '#00ffff', fb * sh * .2);
+      }
+      // Sidewalk edge
+      else if (rd < 2.5 && N(fwx * 3, fwy * 3) > .8) {
+        ch = '▒'; col = dC('#2a2a38', fb);
+      }
+      else {
+        // Distance-based floor character
+        if (rd < 1.5) ch = '·';
+        else if (rd < 3) ch = '·';
+        else if (rd < 6) ch = '.';
+        else if (rd < 10) ch = '·';
+        else ch = '·';
+        col = dC('#222233', fb);
+      }
+
+      // Neon reflections on wet ground
+      if (rd < 8) {
+        let rn = N(fwx * 1.2 + gt * .2, fwy * 1.2);
+        if (rn > .55) {
+          let dn2 = (cx >= 0 && cx < MAP_SZ && cy >= 0 && cy < MAP_SZ) ? dMap[cy][cx] : 'NEON';
+          let dd = DS[dn2];
+          if (dd) {
+            let rb = (rn - .55) / .45 * fb * .25;
+            col = mC(col, dd.c1, rb);
+          }
+        }
+      }
+
+      // Lightning flash
+      if (lightning > .3) col = mC(col, '#ffffff', lightning * fb * .2);
+
+      sc(x, y, ch, col);
+    }
+  }
+
+  // ═══════ ENTITIES ═══════
+  renderEnts();
+  renderTrains();
+
+  // ═══════ RAIN ═══════
+  renderRain();
+
+  // ═══════ LIGHTNING FADE ═══════
+  if (lightning > 0) lightning = Math.max(0, lightning - .04);
+
+  // ═══════ MINIMAP ═══════
+  renderMM();
+
+  // ═══════ HUD ═══════
+  renderHUD();
+
+  // ═══════ FLUSH ═══════
+  flush();
+}
+
+// ─── ENTITY RENDERING ───────────────────────────────────────
+function renderEnts() {
+  let all = [];
+  let hft = Math.tan(FOV / 2);
+
+  for (let e of ents) {
+    let dx = e.x - P.x, dy = e.y - P.y;
+    let d = Math.sqrt(dx * dx + dy * dy);
+    if (d < MAX_D) all.push({ e, d, is: false });
+  }
+  for (let s of signs) {
+    let dx = s.x - P.x, dy = s.y - P.y;
+    let d = Math.sqrt(dx * dx + dy * dy);
+    if (d < MAX_D) all.push({ e: s, d, is: true });
+  }
+
+  all.sort((a, b) => b.d - a.d);
+  let hR2 = ROWS / 2;
+
+  for (let { e, d, is } of all) {
+    let dx = e.x - P.x, dy = e.y - P.y;
+    let co = Math.cos(-P.a), si = Math.sin(-P.a);
+    let tx = dx * co - dy * si;
+    let ty = dx * si + dy * co;
+    if (ty <= .15) continue;
+
+    let sx = (COLS / 2 * (1 + tx / (ty * hft))) | 0;
+    let sz = Math.max(1, (ROWS / ty * .4) | 0);
+    if (sx < -sz * 3 || sx >= COLS + sz * 3) continue;
+
+    let zci = Math.max(0, Math.min(COLS - 1, sx));
+    if (ty > zBuf[zci] + .05) continue;
+
+    let by = (hR2 + sz / 3 + Math.sin(P.bob) * .2) | 0;
+
+    // ═══ SIGNS ═══
+    if (is) {
+      let text = e.text;
+      let flk = Math.sin(gt * 3.5 + e.fl) > -.12 ? 1 : .1;
+      // Occasional rapid flicker
+      if (Math.sin(e.fl * 50 + gt * 20) > .9) flk *= .3;
+      let fc = dC(e.col, flk * Math.max(.05, 1 - d / MAX_D));
+      let charW = Math.max(1, (sz * .7 / text.length));
+      let startX = sx - (text.length * charW) / 2;
+      for (let i = 0; i < text.length; i++) {
+        let px = (startX + i * charW) | 0;
+        let py = by - sz;
+        if (text[i] !== ' ' && px >= 0 && px < COLS && py >= 0 && py < ROWS) {
+          let pzi = Math.max(0, Math.min(COLS - 1, px));
+          if (ty < zBuf[pzi] + .05) sc(px, py, text[i], fc);
+        }
+      }
+      // Sign glow on ground
+      let gc = dC(e.col, .06 * flk);
+      for (let gx = -3; gx <= 3; gx++) {
+        let px = sx + gx;
+        if (px >= 0 && px < COLS && by + 1 < ROWS) {
+          let pzi = Math.max(0, Math.min(COLS - 1, px));
+          if (ty < zBuf[pzi] + .05) sc(px, by + 1, '·', gc);
+        }
+      }
+      continue;
+    }
+
+    // ═══ PEDESTRIANS ═══
+    if (e.tp === 'ped') {
+      if (d < 5) {
+        sc(sx, by, '█', e.cl);
+        sc(sx, by - 1, '▲', dC(e.cl, .9));
+        if (by + 1 < ROWS) sc(sx, by + 1, '▄', dC(e.cl, .45));
+        if (by + 2 < ROWS) sc(sx, by + 2, '·', dC('#111', .25));
+      } else if (d < 12) {
+        sc(sx, by, 'A', dC(e.cl, .65));
+        sc(sx, by - 1, '·', dC(e.cl, .3));
+      } else {
+        sc(sx, by, '·', dC(e.cl, .3));
+      }
+    }
+
+    // ═══ VEHICLES ═══
+    if (e.tp === 'veh') {
+      let vw = Math.max(1, (e.w * sz / 6) | 0);
+      if (d < 10) {
+        for (let vx = -vw; vx <= vw; vx++) {
+          let px = sx + vx;
+          if (px >= 0 && px < COLS) {
+            let pzi = Math.max(0, Math.min(COLS - 1, px));
+            if (ty < zBuf[pzi] + .05) {
+              if (vx === -vw) sc(px, by, '╔', dC(e.cl, .8));
+              else if (vx === vw) sc(px, by, '╗', dC(e.cl, .8));
+              else sc(px, by, '█', dC(e.cl, .55));
+              if (by - 1 >= 0) sc(px, by - 1, vx === 0 ? '▓' : '═', dC(e.cl, .45));
+            }
+          }
+        }
+        // Headlights
+        if (e.hl) {
+          for (let vx = -1; vx <= 1; vx++) {
+            let px = sx + vx;
+            if (px >= 0 && px < COLS && by + 1 < ROWS) {
+              let pzi = Math.max(0, Math.min(COLS - 1, px));
+              if (ty < zBuf[pzi]) sc(px, by + 1, '░', dC('#ffff88', .12));
+            }
+          }
+        }
+      } else {
+        sc(sx, by, '■', dC(e.cl, .35));
+      }
+    }
+  }
+}
+
+// ─── TRAIN RENDERING ────────────────────────────────────────
+function renderTrains() {
+  let hft = Math.tan(FOV / 2);
+  let hR2 = ROWS / 2;
+  for (let t of trainEnts) {
+    for (let car = 0; car < t.ln; car++) {
+      let cx = t.x + Math.cos(t.a) * car * 1.8;
+      let cy = t.y + Math.sin(t.a) * car * 1.8;
+      let dx = cx - P.x, dy = cy - P.y;
+      let co = Math.cos(-P.a), si = Math.sin(-P.a);
+      let tx = dx * co - dy * si, ty = dx * si + dy * co;
+      if (ty <= .3) continue;
+      let sx = (COLS / 2 * (1 + tx / (ty * hft))) | 0;
+      let sz = Math.max(1, (ROWS / ty * .45) | 0);
+      let zci = Math.max(0, Math.min(COLS - 1, sx));
+      if (ty > zBuf[zci]) continue;
+      let by = (hR2 + sz / 4) | 0;
+      let cw = Math.max(1, (sz * .55) | 0);
+      for (let vx = -cw; vx <= cw; vx++) {
+        let px = sx + vx;
+        if (px >= 0 && px < COLS && ty < (zBuf[Math.max(0, Math.min(COLS-1, px))] || MAX_D)) {
+          if (vx === -cw) sc(px, by, '╠', dC(t.cl, .8));
+          else if (vx === cw) sc(px, by, '╣', dC(t.cl, .8));
+          else sc(px, by, '█', dC(t.cl, .55));
+          if (by - 1 >= 0) sc(px, by - 1, '═', dC(t.cl, .45));
+          if (by + 1 < ROWS) sc(px, by + 1, '═', dC(t.cl, .35));
+        }
+      }
+      // Windows
+      for (let w = -cw + 2; w < cw; w += 2) {
+        let px = sx + w;
+        if (px >= 0 && px < COLS && by - 1 >= 0) {
+          let pzi = Math.max(0, Math.min(COLS - 1, px));
+          if (ty < zBuf[pzi]) sc(px, by - 1, '◈', dC('#ffff88', .65));
+        }
+      }
+      // Headlight glow on first car
+      if (car === 0) {
+        let hlx = sx + (Math.cos(t.a) > 0 ? cw + 1 : -cw - 1);
+        if (hlx >= 0 && hlx < COLS && by >= 0 && by < ROWS)
+          sc(hlx, by, '◉', dC('#ffff44', .8));
+      }
+    }
+  }
+}
+
+// ─── RAIN RENDERING ─────────────────────────────────────────
+function renderRain() {
+  let windX = .003 + Math.sin(gt * .08) * .002;
+  for (let i = 0; i < rain.length; i++) {
+    let r = rain[i];
+    r.y += r.s * .02;
+    r.x += windX * r.s;
+    if (r.y > 1) { r.y -= 1; r.x = Math.random(); }
+    if (r.x > 1) r.x -= 1; if (r.x < 0) r.x += 1;
+    let sx = (r.x * COLS) | 0, sy = (r.y * ROWS) | 0;
+    if (sx >= 0 && sx < COLS && sy >= 0 && sy < ROWS) {
+      let ci = sy * COLS + sx;
+      let ex = cBuf[ci];
+      if (ex === ' ' || ex === '·' || ex === '.' || ex === '~') {
+        let a = .08 + HI(i, (gt * 15) | 0) * .12;
+        sc(sx, sy, '|', dC('#6688cc', a));
+      }
+    }
+    // Trail
+    if (r.l > 1) {
+      let sx2 = ((r.x + windX * 3) * COLS) | 0, sy2 = ((r.y - .008) * ROWS) | 0;
+      if (sx2 >= 0 && sx2 < COLS && sy2 >= 0 && sy2 < ROWS) {
+        let ci = sy2 * COLS + sx2;
+        let ex = cBuf[ci];
+        if (ex === ' ' || ex === '·' || ex === '.') sc(sx2, sy2, ':', dC('#5566aa', .04));
+      }
+    }
+  }
+}
+
+// ─── MINIMAP ────────────────────────────────────────────────
+function renderMM() {
+  let ms = 16, ox = COLS - ms - 3, oy = 1;
+  // Border
+  sc(ox-1,oy-1,'┌','#334455'); sc(ox+ms,oy-1,'┐','#334455');
+  sc(ox-1,oy+ms,'└','#334455'); sc(ox+ms,oy+ms,'┘','#334455');
+  for(let x=0;x<ms;x++){sc(ox+x,oy-1,'─','#334455');sc(ox+x,oy+ms,'─','#334455');}
+  for(let y=0;y<ms;y++){sc(ox-1,oy+y,'│','#334455');sc(ox+ms,oy+y,'│','#334455');}
+
+  let sc2 = 5;
+  let offX = P.x - ms * sc2 / 2, offY = P.y - ms * sc2 / 2;
+
+  for (let y = 0; y < ms; y++) {
+    for (let x = 0; x < ms; x++) {
+      let wx = Math.floor(offX + x * sc2), wy = Math.floor(offY + y * sc2);
+      if (wx < 0 || wx >= MAP_SZ || wy < 0 || wy >= MAP_SZ) { sc(ox+x,oy+y,'·','#0a0a12'); continue; }
+      if (city[wy][wx] > 0) {
+        let dn = dMap[wy][wx], d = DS[dn];
+        sc(ox+x,oy+y,'█',dC(d.c1,.35));
+      } else {
+        sc(ox+x,oy+y,'·','#0e1520');
+      }
+    }
+  }
+
+  // Entities
+  for (let e of ents) {
+    let ex = ((e.x - offX) / sc2) | 0, ey = ((e.y - offY) / sc2) | 0;
+    if (ex >= 0 && ex < ms && ey >= 0 && ey < ms)
+      sc(ox+ex,oy+ey, e.tp === 'veh' ? '■' : '∘', dC(e.cl,.5));
+  }
+
+  // Player
+  let px = ((P.x - offX) / sc2) | 0, py = ((P.y - offY) / sc2) | 0;
+  if (px >= 0 && px < ms && py >= 0 && py < ms) {
+    sc(ox+px,oy+py,'@','#00ffff');
+    let ddx = Math.round(Math.cos(P.a)), ddy = Math.round(Math.sin(P.a));
+    let dpx = px+ddx, dpy = py+ddy;
+    if (dpx >= 0 && dpx < ms && dpy >= 0 && dpy < ms) sc(ox+dpx,oy+dpy,'·','#00cccc');
+  }
+}
+
+// ─── HUD ────────────────────────────────────────────────────
+function renderHUD() {
+  let ci = Math.floor(P.x), cj = Math.floor(P.y);
+  let dn = (ci >= 0 && ci < MAP_SZ && cj >= 0 && cj < MAP_SZ) ? dMap[cj][ci] : 'NEON';
+  let d = DS[dn];
+  let dName = d ? d.n : 'UNKNOWN';
+
+  // District discovery
+  let dk = dn + ':' + ((ci / 15) | 0) + ':' + ((cj / 15) | 0);
+  if (!disc.has(dk) && started) {
+    disc.add(dk);
+    msgs.push({ t: '▸ Entering ' + dName, c: d.c1, timer: 4.5 });
+  }
+
+  // District label top center
+  let nl = dName.length, nx = ((COLS - nl) / 2) | 0;
+  for (let i = 0; i < nl; i++) sc(nx + i, 0, dName[i], dC(d.c1, .85));
+
+  // Compass
+  let dirs = ['E','SE','S','SW','W','NW','N','NE'];
+  let di = (((P.a % 6.283) + 6.283) % 6.283) / 6.283 * 8;
+  let comp = dirs[((di + .5) | 0) % 8];
+  for (let i = 0; i < comp.length; i++) sc(1 + i, 0, comp[i], '#445566');
+
+  // Coordinates
+  let coord = 'X:' + ci + ' Y:' + cj;
+  for (let i = 0; i < coord.length; i++) sc(1 + i, ROWS - 1, coord[i], '#3a4a5a');
+
+  // Sprint
+  if (keys['ShiftLeft'] || keys['ShiftRight']) {
+    let sp = '»SPRINT«';
+    let spx = ((COLS - sp.length) / 2) | 0;
+    for (let i = 0; i < sp.length; i++) sc(spx + i, ROWS - 1, sp[i], '#dddd44');
+  }
+
+  // FPS
+  let fpsStr = fps + '';
+  for (let i = 0; i < fpsStr.length; i++) sc(COLS - fpsStr.length - 1 + i, ROWS - 1, fpsStr[i], '#2a3a4a');
+
+  // Crosshair
+  let chx = (COLS / 2) | 0, chy = (ROWS / 2) | 0;
+  sc(chx, chy, '+', dC('#ffffff', .35));
+  sc(chx-1, chy, '·', dC('#ffffff', .15));
+  sc(chx+1, chy, '·', dC('#ffffff', .15));
+  sc(chx, chy-1, '·', dC('#ffffff', .15));
+  sc(chx, chy+1, '·', dC('#ffffff', .15));
+
+  // Messages
+  let my = 2;
+  msgs = msgs.filter(m => { m.timer -= .016; return m.timer > 0; });
+  for (let m of msgs) {
+    let a = Math.min(1, m.timer * .5);
+    let mx = ((COLS - m.t.length) / 2) | 0;
+    for (let i = 0; i < m.t.length; i++) sc(mx + i, my, m.t[i], dC(m.c, a));
+    my++;
+  }
+
+  // Interaction prompt
+  let nearS = false;
+  for (let s of SECRETS) {
+    let dx = P.x - s.x, dy = P.y - s.y;
+    if (Math.sqrt(dx * dx + dy * dy) < s.r + 2.5) { nearS = true; break; }
+  }
+  if (nearS) {
+    let pr = '[ E ] INSPECT';
+    let ppx = ((COLS - pr.length) / 2) | 0;
+    let pa = .6 + Math.sin(gt * 3) * .3;
+    for (let i = 0; i < pr.length; i++) sc(ppx + i, ROWS - 3, pr[i], dC('#00ffff', pa));
+  }
+
+  // Controls hint (bottom center, dim)
+  let hint = 'WASD · Mouse · SHIFT · E';
+  let hx = ((COLS - hint.length) / 2) | 0;
+  for (let i = 0; i < hint.length; i++) sc(hx + i, ROWS - 2, hint[i], '#1a2a3a');
+}
+
+// ─── BUFFER FLUSH ───────────────────────────────────────────
+function flush() {
+  X.fillStyle = '#000';
+  X.fillRect(0, 0, C.width, C.height);
+  X.font = FONT;
+  X.textBaseline = 'top';
+
+  // Batch by color
+  let groups = new Map();
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      let i = y * COLS + x;
+      let ch = cBuf[i];
+      if (ch && ch !== ' ') {
+        let col = fBuf[i];
+        let arr = groups.get(col);
+        if (!arr) { arr = []; groups.set(col, arr); }
+        arr.push(x * CW, y * CH, ch);
+      }
+    }
+  }
+
+  for (let [col, items] of groups) {
+    X.fillStyle = col;
+    for (let j = 0; j < items.length; j += 3) {
+      X.fillText(items[j + 2], items[j], items[j + 1]);
+    }
+  }
+}
+
+// ─── PLAYER UPDATE ──────────────────────────────────────────
+function updateP(dt) {
+  P.a += mX * MOUSE_S;
+  mX = 0;
+
+  let mx = 0, my = 0;
+  let sp = MOVE_SPD * (keys['ShiftLeft'] || keys['ShiftRight'] ? SPRINT_M : 1);
+  let co = Math.cos(P.a), si = Math.sin(P.a);
+
+  if (keys['KeyW'] || keys['ArrowUp'])    { mx += co; my += si; }
+  if (keys['KeyS'] || keys['ArrowDown'])  { mx -= co; my -= si; }
+  if (keys['KeyA'] || keys['ArrowLeft'])  { mx += si; my -= co; }
+  if (keys['KeyD'] || keys['ArrowRight']) { mx -= si; my += co; }
+
+  let len = Math.sqrt(mx * mx + my * my);
+  let moving = len > 0;
+  if (moving) { mx = mx / len * sp * dt; my = my / len * sp * dt; }
+
+  // Head bob
+  if (moving) {
+    P.bobT += dt * sp * 1.5;
+    P.bob = Math.sin(P.bobT) * .6;
+  } else {
+    P.bob *= .9;
+  }
+
+  // Collision X
+  let mg = .2;
+  let nx = P.x + mx;
+  let tx = nx + (mx > 0 ? mg : -mg);
+  let ty1 = Math.floor(P.y + mg), ty2 = Math.floor(P.y - mg);
+  if (tx >= 0 && tx < MAP_SZ && ty1 >= 0 && ty1 < MAP_SZ && ty2 >= 0 && ty2 < MAP_SZ) {
+    if (city[ty1] && city[ty1][Math.floor(tx)] === 0 && city[ty2] && city[ty2][Math.floor(tx)] === 0) P.x = nx;
+  }
+  // Collision Y
+  let ny = P.y + my;
+  let tyy = ny + (my > 0 ? mg : -mg);
+  let tx1 = Math.floor(P.x + mg), tx2 = Math.floor(P.x - mg);
+  if (tyy >= 0 && tyy < MAP_SZ && tx1 >= 0 && tx1 < MAP_SZ && tx2 >= 0 && tx2 < MAP_SZ) {
+    if (city[Math.floor(tyy)] && city[Math.floor(tyy)][tx1] === 0 && city[Math.floor(tyy)][tx2] === 0) P.y = ny;
+  }
+
+  // Wrap
+  if (P.x < 0) P.x += MAP_SZ; if (P.x >= MAP_SZ) P.x -= MAP_SZ;
+  if (P.y < 0) P.y += MAP_SZ; if (P.y >= MAP_SZ) P.y -= MAP_SZ;
+
+  // Interact
+  iCd -= dt;
+  if (keys['KeyE'] && iCd <= 0) {
+    iCd = .6;
+    for (let s of SECRETS) {
+      let dx = P.x - s.x, dy = P.y - s.y;
+      if (Math.sqrt(dx * dx + dy * dy) < s.r + 2.5) {
+        msgs.push({ t: s.m, c: s.c, timer: 7 });
+        break;
+      }
+    }
+  }
+
+  // Ambient events
+  if (Math.random() < dt * .04) {
+    let evts = [
+      { t: '⚡ Lightning arcs across distant towers', c: '#aabbdd' },
+      { t: '♪ Synth music echoes through the alleys', c: '#ff88ff' },
+      { t: 'A hovercar hums overhead, trailing neon', c: '#88aacc' },
+      { t: '>> SIGNAL TRACE: 42.77.31.0 — ACTIVE <<', c: '#00ff66' },
+      { t: 'The neon flickers... something moves below', c: '#ff0044' },
+      { t: 'A holographic billboard shimmers and shifts', c: '#ffff00' },
+      { t: 'Rain intensifies. The city glows brighter.', c: '#6688cc' },
+      { t: '>> CITADEL SYSTEMS: ALL SECTORS NOMINAL <<', c: '#00ffaa' },
+      { t: 'Distant rumble. The ground trembles slightly.', c: '#886644' },
+      { t: 'A figure watches from a rooftop, then vanishes', c: '#aa44ff' }
+    ];
+    let ev = evts[(Math.random() * evts.length) | 0];
+    msgs.push({ t: ev.t, c: ev.c, timer: 5 });
+  }
+
+  // Lightning
+  if (Math.random() < dt * .015) { lightning = 1; lt = gt; }
+}
+
+// ─── GAME LOOP ──────────────────────────────────────────────
+let lastT = 0;
+function loop(ts) {
+  let dt = Math.min(.05, (ts - lastT) / 1000);
+  lastT = ts;
+  gt += dt; frm++;
+
+  fpsC++;
+  if (ts - fpsT > 1000) { fps = fpsC; fpsC = 0; fpsT = ts; }
+
+  if (demo) {
+    // Demo mode: cruise through city
+    P.a += dt * .1;
+    let dx = Math.cos(P.a) * dt * .6;
+    let dy = Math.sin(P.a) * dt * .6;
+    let nx = P.x + dx, ny = P.y + dy;
+    let mx2 = Math.floor(nx), my2 = Math.floor(ny);
+    if (mx2 >= 0 && mx2 < MAP_SZ && my2 >= 0 && my2 < MAP_SZ && city[my2][mx2] === 0) {
+      P.x = nx; P.y = ny;
+    } else {
+      P.a += 1.2 + Math.random();
+    }
+    updateE(dt);
+    render();
+    renderTitle();
+  } else {
+    updateP(dt);
+    updateE(dt);
+    render();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// ─── TITLE OVERLAY ──────────────────────────────────────────
+function renderTitle() {
+  X.save();
+  X.fillStyle = 'rgba(0,0,0,0.5)';
+  X.fillRect(0, 0, C.width, C.height);
+
+  X.textAlign = 'center'; X.textBaseline = 'middle';
+
+  // Title
+  let tl = [
+    '███╗   ██╗███████╗ ██████╗ ███╗   ██╗',
+    '████╗  ██║██╔════╝██╔═══██╗████╗  ██║',
+    '██╔██╗ ██║█████╗  ██║   ██║██╔██╗ ██║',
+    '██║╚██╗██║██╔══╝  ██║   ██║██║╚██╗██║',
+    '██║ ╚████║███████╗╚██████╔╝██║ ╚████║',
+    '╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═══╝'
+  ];
+  let fs = Math.max(8, Math.min(16, C.width / 60));
+  X.font = 'bold ' + fs + 'px monospace';
+  let ty = C.height * .2;
+  let gw = Math.sin(gt * 2) * .3 + .7;
+
+  for (let i = 0; i < tl.length; i++) {
+    X.fillStyle = dC('#00ffff', gw);
+    X.fillText(tl[i], C.width / 2, ty + i * (fs + 4));
+  }
+
+  // Subtitle
+  X.font = Math.max(10, Math.min(18, C.width / 50)) + 'px monospace';
+  X.fillStyle = '#ff00ff';
+  X.fillText('C I T A D E L  //  L I V I N G  A S C I I  3 D', C.width / 2, ty + tl.length * (fs + 4) + 25);
+
+  // Separator
+  let sep = '';
+  for (let i = 0; i < 50; i++) sep += (gt * 3 + i * .2) % 6.28 < 3.14 ? '▓' : '░';
+  X.fillStyle = dC('#00ffff', .4);
+  X.fillText(sep, C.width / 2, ty + tl.length * (fs + 4) + 55);
+
+  // Blink prompt
+  if (Math.sin(gt * 3) > 0) {
+    X.font = Math.max(12, Math.min(16, C.width / 60)) + 'px monospace';
+    X.fillStyle = '#ffffff';
+    X.fillText('[ CLICK TO ENTER THE CITY ]', C.width / 2, C.height * .55);
+  }
+
+  // Controls
+  X.font = Math.max(9, Math.min(13, C.width / 80)) + 'px monospace';
+  X.fillStyle = '#667788';
+  X.fillText('WASD — Move  •  Mouse — Look  •  SHIFT — Sprint  •  E — Interact', C.width / 2, C.height * .64);
+  X.fillText('Explore the neon-lit streets. Discover secrets. Survive the night.', C.width / 2, C.height * .69);
+
+  // Features
+  X.fillStyle = '#334455';
+  X.fillText('7 districts  •  100 pedestrians  •  40 vehicles  •  trains  •  rain  •  neon signs', C.width / 2, C.height * .77);
+  X.fillText('procedural generation  •  12 hidden secrets  •  ambient events  •  fog & lightning', C.width / 2, C.height * .81);
+
+  // Version
+  X.fillStyle = '#223344';
+  X.fillText('v1.0 — A self-contained procedural world', C.width / 2, C.height * .9);
+
+  X.textAlign = 'left';
+  X.restore();
+}
+
+// ─── INIT ───────────────────────────────────────────────────
+function init() {
+  resize();
+  genCity();
+  genSigns();
+  spawnE();
+  initRain();
+  window.addEventListener('resize', resize);
+  requestAnimationFrame(loop);
+}
+
+init();
+</script>
+</body>
+</html>
