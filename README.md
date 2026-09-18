@@ -56,6 +56,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **2/10** |
 | **Claude Opus 4.1**   | **2/10** |
 | **Claude Opus 3**     | **2/10** |
+| **Glm 5.3 flash**     | **6/10** |
 | **Glm 5.3**           | **6/10** |
 | **Glm 5.2**           | **2/10** |
 | **Glm 5.1**           | **6/10** |
@@ -67,6 +68,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **7/10** |
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **2/10** |
+| **Deepseek 4.1 flash**| **7/10** |
 | **Deepseek 4 flash**  | **1/10** |
 | **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **3/10** |
@@ -102,6 +104,7 @@ Testing different LLMs to do software tasks
 | **Mistral Large 3**   | **2/10** |
 | **Mistral Medium 3.5**| **1/10** |
 | **Seed 2.1**          | **3/10** |
+| **Solar Pro 4**       | **3/10** |
 
 ---
 
@@ -143,6 +146,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **1/10** |
 | **Claude Opus 3**     | **2/10** |
+| **Glm 5.3 flash**     | **1/10** |
 | **Glm 5.3**           | **1/10** |
 | **Glm 5.2**           | **2/10** |
 | **Glm 5.1**           | **6/10** |
@@ -154,6 +158,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **4/10** |
 | **Kimi K2 Turbo**     | **3/10** |
+| **Deepseek 4.1 flash**| **4/10** |
 | **Deepseek 4 flash**  | **1/10** |
 | **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **5/10** |
@@ -189,6 +194,7 @@ Testing different LLMs to do software tasks
 | **Mistral Large 3**   | **1/10** |
 | **Mistral Medium 3.5**| **1/10** |
 | **Seed 2.1**          | **1/10** |
+| **Solar Pro 4**       | **1/10** |
 
 ---
 
@@ -230,6 +236,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **7/10** |
 | **Claude Opus 4.1**   | **1/10** |
 | **Claude Opus 3**     | **3/10** |
+| **Glm 5.3 flash**     | **6/10** |
 | **Glm 5.3**           | **8/10** |
 | **Glm 5.2**           | **5/10** |
 | **Glm 5.1**           | **1/10** |
@@ -241,6 +248,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **5/10** |
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 4.1 flash**| **1/10** |
 | **Deepseek 4 flash**  | **1/10** |
 | **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **4/10** |
@@ -276,6 +284,7 @@ Testing different LLMs to do software tasks
 | **Mistral Large 3**   | **1/10** |
 | **Mistral Medium 3.5**| **1/10** |
 | **Seed 2.1**          | **1/10** |
+| **Solar Pro 4**       | **1/10** |
 
 ---
 
@@ -317,6 +326,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **5/10** |
 | **Claude Opus 4.1**   | **2/10** |
 | **Claude Opus 3**     | **1/10** |
+| **Glm 5.3 flash**     | **1/10** |
 | **Glm 5.3**           | **9/10** |
 | **Glm 5.2**           | **9/10** |
 | **Glm 5.1**           | **5/10** |
@@ -328,6 +338,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **5/10** |
 | **Kimi K2 Turbo**     | **2/10** |
+| **Deepseek 4.1 flash**| **5/10** |
 | **Deepseek 4 flash**  | **6/10** |
 | **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **3/10** |
@@ -363,6 +374,7 @@ Testing different LLMs to do software tasks
 | **Mistral Large 3**   | **1/10** |
 | **Mistral Medium 3.5**| **1/10** |
 | **Seed 2.1**          | **2/10** |
+| **Solar Pro 4**       | **1/10** |
 
 ---
 
@@ -404,6 +416,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **2/10** |
+| **Glm 5.3 flash**     | **4/10** |
 | **Glm 5.3**           | **4/10** |
 | **Glm 5.2**           | **4/10** |
 | **Glm 5.1**           | **3/10** |
@@ -415,6 +428,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **4/10** |
 | **Kimi K2.5**         | **3/10** |
 | **Kimi K2 Turbo**     | **3/10** |
+| **Deepseek 4.1 flash**| **4/10** |
 | **Deepseek 4 flash**  | **3/10** |
 | **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **2/10** |
@@ -450,6 +464,7 @@ Testing different LLMs to do software tasks
 | **Mistral Large 3**   | **2/10** |
 | **Mistral Medium 3.5**| **3/10** |
 | **Seed 2.1**          | **4/10** |
+| **Solar Pro 4**       | **3/10** |
 
 ---
 
@@ -491,6 +506,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **2/10** |
+| **Glm 5.3 flash**     | **7/10** |
 | **Glm 5.3**           | **4/10** |
 | **Glm 5.2**           | **5/10** |
 | **Glm 5.1**           | **4/10** |
@@ -502,6 +518,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **3/10** |
 | **Kimi K2.5**         | **4/10** |
 | **Kimi K2 Turbo**     | **3/10** |
+| **Deepseek 4.1 flash**| **5/10** |
 | **Deepseek 4 flash**  | **3/10** |
 | **Deepseek 4**        | **3/10** |
 | **Deepseek 3.2**      | **2/10** |
@@ -537,6 +554,7 @@ Testing different LLMs to do software tasks
 | **Mistral Large 3**   | **3/10** |
 | **Mistral Medium 3.5**| **2/10** |
 | **Seed 2.1**          | **4/10** |
+| **Solar Pro 4**       | **3/10** |
 
 ---
 
@@ -578,6 +596,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **2/10** |
+| **Glm 5.3 flash**     | **6/10** |
 | **Glm 5.3**           | **5/10** |
 | **Glm 5.2**           | **5/10** |
 | **Glm 5.1**           | **3/10** |
@@ -589,6 +608,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **4/10** |
 | **Kimi K2.5**         | **2/10** |
 | **Kimi K2 Turbo**     | **3/10** |
+| **Deepseek 4.1 flash**| **7/10** |
 | **Deepseek 4 flash**  | **4/10** |
 | **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **3/10** |
@@ -624,6 +644,7 @@ Testing different LLMs to do software tasks
 | **Mistral Large 3**   | **1/10** |
 | **Mistral Medium 3.5**| **1/10** |
 | **Seed 2.1**          | **4/10** |
+| **Solar Pro 4**       | **3/10** |
 
 ---
 
@@ -665,6 +686,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **1/10** |
+| **Glm 5.3 flash**     | **1/10** |
 | **Glm 5.3**           | **1/10** |
 | **Glm 5.2**           | **1/10** |
 | **Glm 5.1**           | **1/10** |
@@ -676,6 +698,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 4.1 flash**| **1/10** |
 | **Deepseek 4 flash**  | **1/10** |
 | **Deepseek 4**        | **1/10** |
 | **Deepseek 3.2**      | **1/10** |
@@ -711,6 +734,7 @@ Testing different LLMs to do software tasks
 | **Mistral Large 3**   | **1/10** |
 | **Mistral Medium 3.5**| **1/10** |
 | **Seed 2.1**          | **1/10** |
+| **Solar Pro 4**       | **1/10** |
 
 ---
 
@@ -752,6 +776,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **1/10** |
+| **Glm 5.3 flash**     | **1/10** |
 | **Glm 5.3**           | **1/10** |
 | **Glm 5.2**           | **1/10** |
 | **Glm 5.1**           | **1/10** |
@@ -763,6 +788,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **2/10** |
 | **Kimi K2.5**         | **1/10** |
 | **Kimi K2 Turbo**     | **1/10** |
+| **Deepseek 4.1 flash**| **1/10** |
 | **Deepseek 4 flash**  | **1/10** |
 | **Deepseek 4**        | **1/10** |
 | **Deepseek 3.2**      | **2/10** |
@@ -798,6 +824,7 @@ Testing different LLMs to do software tasks
 | **Mistral Large 3**   | **1/10** |
 | **Mistral Medium 3.5**| **1/10** |
 | **Seed 2.1**          | **1/10** |
+| **Solar Pro 4**       | **1/10** |
 
 ---
 
@@ -839,6 +866,7 @@ Testing different LLMs to do software tasks
 | **Claude Opus 4.5**   | **0/10** |
 | **Claude Opus 4.1**   | **0/10** |
 | **Claude Opus 3**     | **3/10** |
+| **Glm 5.3 flash**     | **5/10** |
 | **Glm 5.3**           | **5/10** |
 | **Glm 5.2**           | **5/10** |
 | **Glm 5.1**           | **1/10** |
@@ -850,6 +878,7 @@ Testing different LLMs to do software tasks
 | **Kimi K2.6**         | **1/10** |
 | **Kimi K2.5**         | **3/10** |
 | **Kimi K2 Turbo**     | **3/10** |
+| **Deepseek 4.1 flash**| **7/10** |
 | **Deepseek 4 flash**  | **4/10** |
 | **Deepseek 4**        | **4/10** |
 | **Deepseek 3.2**      | **3/10** |
@@ -885,3 +914,94 @@ Testing different LLMs to do software tasks
 | **Mistral Large 3**   | **2/10** |
 | **Mistral Medium 3.5**| **3/10** |
 | **Seed 2.1**          | **5/10** |
+| **Solar Pro 4**       | **3/10** |
+
+---
+
+### 50 - 3D Fantasy Survival RTS
+**Create a complete, original Stylized 3D Fantasy Survival RTS as ONE playable HTML file. External CDN libraries such as Three.js may be used, but all custom HTML, CSS, JavaScript, shaders, UI, gameplay systems, procedural assets and configuration must remain inside the single file. Take inspiration only from the elegant readability, survival pressure and large-scale battles of Thronefall, Age of Darkness: Final Stand and Diplomacy is Not an Option, combined with the polished, colorful, highly stylized 3D look of premium modern mobile strategy games. Do NOT copy their factions, buildings, units, maps, names or assets. Create an original fantasy kingdom with beautiful miniature-like terrain, buildings and detailed stylized units. The player must gather resources, assign workers, expand territory, construct and upgrade buildings, research improvements, recruit different unit classes and command armies in real-time battles against an intelligent computer-controlled enemy. Include resource nodes, economy, population, fog of war, enemy bases, tactical unit control, formations, defensive structures, raids, escalating attacks, elite units, large enemy waves, heroes or commanders, day/night progression, victory/defeat conditions and difficulty scaling. Prioritize strategic depth, satisfying battles, readable UI, beautiful lighting, particles, animations, strong silhouettes, performance and replayability. The game must run immediately when the HTML file is opened.**
+
+| Model                 | Score    |
+| --------------------- | -------- |
+| **Gemini 3.8 flash**  | **4/10** |
+| **Gemini 3.7 flash**  | **4/10** |
+| **Gemini 3.6 flash**  | **1/10** |
+| **Gemini 3.5 flash**  | **3/10** |
+| **Gemini 3.1**        | **4/10** |
+| **Gemini 3 flash**    | **1/10** |
+| **Gemini 2.5**        | **1/10** |
+| **Gemma 4 31B**       | **2/10** |
+| **ChatGPT 6**         | **9/10** |
+| **ChatGPT 5.6**       | **3/10** |
+| **ChatGPT 5.5**       | **1/10** |
+| **ChatGPT 5.4**       | **1/10** |
+| **ChatGPT 5.3**       | **1/10** |
+| **ChatGPT 5.2**       | **1/10** |
+| **ChatGPT 5.1**       | **1/10** |
+| **ChatGPT 5**         | **1/10** |
+| **ChatGPT o3**        | **1/10** |
+| **ChatGPT 4.1**       | **1/10** |
+| **ChatGPT 3.5**       | **0/10** |
+| **GPT-OSS-120b**      | **1/10** |
+| **Grok 4.6**          | **4/10** |
+| **Grok 4.5**          | **4/10** |
+| **Grok 4.3**          | **2/10** |
+| **Grok 4.2**          | **1/10** |
+| **Grok 4.1**          | **1/10** |
+| **Claude Fable 5**    | **0/10** |
+| **Claude Opus 5**     | **7/10** |
+| **Claude Opus 4.8**   | **5/10** |
+| **Claude Opus 4.7**   | **5/10** |
+| **Claude Opus 4.6**   | **1/10** |
+| **Claude Opus 4.5**   | **0/10** |
+| **Claude Opus 4.1**   | **0/10** |
+| **Claude Opus 3**     | **1/10** |
+| **Glm 5.3 flash**     | **1/10** |
+| **Glm 5.3**           | **1/10** |
+| **Glm 5.2**           | **4/10** |
+| **Glm 5.1**           | **2/10** |
+| **Glm 5**             | **1/10** |
+| **Glm 4.7**           | **1/10** |
+| **Glm 4.6**           | **0/10** |
+| **Kimi K3**           | **0/10** |
+| **Kimi K2.7 code**    | **0/10** |
+| **Kimi K2.6**         | **3/10** |
+| **Kimi K2.5**         | **0/10** |
+| **Kimi K2 Turbo**     | **0/10** |
+| **Deepseek 4.1 flash**| **1/10** |
+| **Deepseek 4 flash**  | **2/10** |
+| **Deepseek 4**        | **1/10** |
+| **Deepseek 3.2**      | **1/10** |
+| **Мinimax m3**        | **3/10** |
+| **Мinimax m2.7**      | **1/10** |
+| **Мinimax m2.5**      | **1/10** |
+| **Мinimax m2.1**      | **2/10** |
+| **Мinimax m2**        | **1/10** |
+| **Мinimax m1**        | **1/10** |
+| **Qwen 3.8 Max**      | **3/10** |
+| **Qwen 3.7 Max**      | **3/10** |
+| **Qwen 3.6 Max**      | **3/10** |
+| **Qwen 3.6**          | **0/10** |
+| **Qwen 3.5 Max**      | **0/10** |
+| **Qwen 3.5**          | **0/10** |
+| **Qwen 3 Max**        | **1/10** |
+| **Qwen 3.5 122b a10b**| **1/10** |
+| **Qwen 3.5 35b a3b**  | **1/10** |
+| **Qwen 3.6 27b**      | **1/10** |
+| **MiMo 2.5**          | **3/10** |
+| **MiMo 2**            | **0/10** |
+| **LongCat 2**         | **2/10** |
+| **Nemotron 3.5**      | **1/10** |
+| **Nemotron 3 ultra**  | **1/10** |
+| **Trinity**           | **1/10** |
+| **HY3**               | **2/10** |
+| **Laguna S 2.1**      | **1/10** |
+| **Muse Spark 1.3**    | **3/10** |
+| **Muse Spark 1.1**    | **0/10** |
+| **Muse Glimmer**      | **0/10** |
+| **Llama 4 Maverick**  | **1/10** |
+| **Inkling**           | **1/10** |
+| **Mistral Large 3**   | **1/10** |
+| **Mistral Medium 3.5**| **1/10** |
+| **Seed 2.1**          | **4/10** |
+| **Solar Pro 4**       | **1/10** |

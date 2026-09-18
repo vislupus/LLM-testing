@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Emberfall Kingdom</title>
+<style>
+  body { margin:0; overflow:hidden; background:#0a0a0a; font-family: system-ui, sans-serif; }
+  #ui { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+  .panel { position:absolute; background:rgba(20,18,15,0.92); border:2px solid #d4af77; border-radius:8px; color:#f4e9c8; padding:10px; font-size:14px; pointer-events:auto; }
+  #resources { top:10px; left:10px; width:260px; }
+  #commands { bottom:10px; left:10px; width:320px; }
+  #minimap { top:10px; right:10px; width:180px; height:180px; border:3px solid #d4af77; }
+  #info { top:10px; left:50%; transform:translateX(-50%); text-align:center; width:420px; }
+  button { background:#3a2f1f; color:#f4e9c8; border:2px solid #d4af77; padding:6px 12px; margin:3px; cursor:pointer; font-size:13px; border-radius:4px; }
+  button:hover { background:#5c4730; }
+  .stat { display:flex; justify-content:space-between; margin:4px 0; }
+  .bar { height:8px; background:#3a2f1f; border:1px solid #d4af77; margin-top:2px; }
+  .fill { height:100%; background:#d4af77; transition:width 0.2s; }
+</style>
+</head>
+<body>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<div id="ui">
+  <div id="resources" class="panel">
+    <div class="stat"><span>Gold</span><span id="gold">120</span></div>
+    <div class="stat"><span>Food</span><span id="food">85</span></div>
+    <div class="stat"><span>Wood</span><span id="wood">64</span></div>
+    <div class="stat"><span>Population</span><span id="pop">8/20</span></div>
+    <div class="stat"><span>Day</span><span id="day">1</span></div>
+  </div>
+
+  <div id="info" class="panel">
+    <b>Emberfall Kingdom</b><br>
+    <span id="status">Build your kingdom • Survive the night raids</span>
+  </div>
+
+  <div id="commands" class="panel">
+    <div style="margin-bottom:6px"><b>Actions</b></div>
+    <button onclick="build('house')">Build House (40g)</button>
+    <button onclick="build('barracks')">Build Barracks (90g)</button>
+    <button onclick="build('tower')">Build Watchtower (70g)</button>
+    <button onclick="recruit('peasant')">Recruit Peasant (15g)</button>
+    <button onclick="recruit('spear')">Recruit Spearman (35g)</button>
+    <button onclick="recruit('archer')">Recruit Archer (45g)</button>
+    <button onclick="summonHero()">Summon Commander (180g)</button>
+  </div>
+
+  <canvas id="minimap" width="180" height="180"></canvas>
+</div>
+
+<script>
+// ==================== THREE.JS SETUP ====================
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 1, 300);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const light = new THREE.DirectionalLight(0xfff4d9, 1.1);
+light.position.set(40, 60, 30);
+light.castShadow = true;
+scene.add(light);
+scene.add(new THREE.AmbientLight(0x334455, 0.4));
+
+camera.position.set(25, 38, 32);
+camera.lookAt(0, 0, 0);
+
+// ==================== GAME STATE ====================
+let gold = 120, food = 85, wood = 64, population = 8, maxPop = 20;
+let day = 1;
+let timeOfDay = 0.25; // 0-1 (0.25 = morning)
+let wave = 1;
+let gameOver = false;
+
+const resources = { gold, food, wood };
+const buildings = [];
+const units = [];
+const enemies = [];
+const projectiles = [];
+
+let selectedUnits = [];
+
+// ==================== TERRAIN ====================
+const terrainGeo = new THREE.PlaneGeometry(80, 80, 64, 64);
+const terrainMat = new THREE.MeshLambertMaterial({color: 0x3a5f3a, flatShading: true});
+const terrain = new THREE.Mesh(terrainGeo, terrainMat);
+terrain.rotation.x = -Math.PI/2;
+terrain.receiveShadow = true;
+scene.add(terrain);
+
+// Add some stylized hills
+for (let i = 0; i < 12; i++) {
+  const hill = new THREE.Mesh(
+    new THREE.ConeGeometry(3 + Math.random()*4, 2.5, 5),
+    new THREE.MeshLambertMaterial({color: 0x2f4f2f, flatShading:true})
+  );
+  hill.position.set(Math.random()*60-30, 1.2, Math.random()*60-30);
+  hill.castShadow = true;
+  scene.add(hill);
+}
+
+// ==================== RESOURCE NODES ====================
+function createResourceNode(x, z, type) {
+  let color, size;
+  if (type === 'gold') { color = 0xffd700; size = 1.2; }
+  else if (type === 'wood') { color = 0x8b5a2b; size = 1.8; }
+  
+  const node = new THREE.Mesh(
+    new THREE.CylinderGeometry(size, size*0.8, 2.5, 5),
+    new THREE.MeshLambertMaterial({color})
+  );
+  node.position.set(x, 1.25, z);
+  node.userData = {type, amount: 80};
+  node.castShadow = true;
+  scene.add(node);
+  return node;
+}
+
+const resourceNodes = [
+  createResourceNode(-22, -18, 'gold'),
+  createResourceNode(24, -20, 'wood'),
+  createResourceNode(-18, 22, 'wood'),
+  createResourceNode(19, 18, 'gold')
+];
+
+// ==================== BUILDINGS ====================
+function createBuilding(type, x, z) {
+  let mesh;
+  if (type === 'house') {
+    mesh = new THREE.Mesh(new THREE.BoxGeometry(3.5,4,3.5), new THREE.MeshLambertMaterial({color:0xc49a6c}));
+    mesh.position.y = 2;
+  } else if (type === 'barracks') {
+    mesh = new THREE.Mesh(new THREE.BoxGeometry(6,3.5,5), new THREE.MeshLambertMaterial({color:0x8b6f47}));
+    mesh.position.y = 1.75;
+  } else if (type === 'tower') {
+    mesh = new THREE.Mesh(new THREE.CylinderGeometry(1.8,2.2,6,6), new THREE.MeshLambertMaterial({color:0x6b5b4f}));
+    mesh.position.y = 3;
+  }
+  mesh.position.x = x;
+  mesh.position.z = z;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData = {type, hp: type==='tower'?120:80, maxHp: type==='tower'?120:80};
+  scene.add(mesh);
+  buildings.push(mesh);
+  return mesh;
+}
+
+// Starting buildings
+createBuilding('house', -8, -6);
+createBuilding('barracks', 10, -4);
+
+// ==================== UNITS ====================
+function createUnit(type, x, z, isEnemy = false) {
+  let mesh, color, hp, dmg, speed;
+  
+  if (type === 'peasant') { color = 0x9c8a6e; hp=30; dmg=3; speed=0.12; }
+  else if (type === 'spear') { color = 0x6b8e6b; hp=65; dmg=9; speed=0.11; }
+  else if (type === 'archer') { color = 0x8b7b5c; hp=40; dmg=7; speed=0.13; }
+  else if (type === 'commander') { color = 0x4a6fa5; hp=180; dmg=18; speed=0.14; }
+  
+  if (isEnemy) color = 0x6b3a3a;
+  
+  mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.6,0.6,1.8,5), new THREE.MeshLambertMaterial({color}));
+  mesh.position.set(x, 0.9, z);
+  mesh.castShadow = true;
+  mesh.userData = {type, hp, maxHp:hp, dmg, speed, isEnemy, target:null, lastAttack:0};
+  scene.add(mesh);
+  
+  if (isEnemy) enemies.push(mesh);
+  else units.push(mesh);
+  return mesh;
+}
+
+// Starting units
+for (let i=0; i<4; i++) createUnit('peasant', -4 + i*2, 8);
+createUnit('spear', -2, 5);
+createUnit('archer', 3, 6);
+
+// ==================== ENEMY SPAWNING ====================
+function spawnEnemyWave() {
+  const count = Math.min(6 + wave*2, 18);
+  const spawnX = 35 + Math.random()*8;
+  
+  for (let i=0; i<count; i++) {
+    const type = Math.random() < 0.4 ? 'spear' : 'peasant';
+    const e = createUnit(type, spawnX + (Math.random()-0.5)*6, -25 + Math.random()*50, true);
+    e.userData.target = units[Math.floor(Math.random()*units.length)] || null;
+  }
+  
+  // Elite unit every 3 waves
+  if (wave % 3 === 0) {
+    const elite = createUnit('commander', spawnX+2, 0, true);
+    elite.userData.hp = 220;
+    elite.userData.dmg = 22;
+  }
+  
+  wave++;
+  document.getElementById('status').innerText = `Wave ${wave} incoming!`;
+}
+
+// ==================== UPDATE UI ====================
+function updateUI() {
+  document.getElementById('gold').innerText = Math.floor(gold);
+  document.getElementById('food').innerText = Math.floor(food);
+  document.getElementById('wood').innerText = Math.floor(wood);
+  document.getElementById('pop').innerText = `${population}/${maxPop}`;
+  document.getElementById('day').innerText = day;
+}
+
+// ==================== GAME LOOP ====================
+let lastTime = Date.now();
+function gameLoop() {
+  if (gameOver) return;
+  
+  const now = Date.now();
+  const delta = (now - lastTime) / 1000;
+  lastTime = now;
+  
+  timeOfDay += delta * 0.04;
+  if (timeOfDay > 1) {
+    timeOfDay = 0;
+    day++;
+    if (day % 2 === 0) spawnEnemyWave();
+  }
+  
+  // Day/night lighting
+  const sunAngle = timeOfDay * Math.PI * 2;
+  light.position.x = Math.cos(sunAngle) * 50;
+  light.position.z = Math.sin(sunAngle) * 30;
+  light.intensity = 0.6 + Math.sin(sunAngle) * 0.6;
+  
+  // Simple unit AI
+  units.forEach(u => {
+    if (!u.userData.target || u.userData.target.userData.hp <= 0) {
+      u.userData.target = enemies.find(e => e.userData.hp > 0) || null;
+    }
+    if (u.userData.target) {
+      const dir = new THREE.Vector3().subVectors(u.userData.target.position, u.position);
+      if (dir.length() > 2.5) {
+        u.position.x += dir.x * u.userData.speed * 0.8;
+        u.position.z += dir.z * u.userData.speed * 0.8;
+      } else {
+        if (now - u.userData.lastAttack > 1200) {
+          u.userData.target.userData.hp -= u.userData.dmg;
+          u.userData.lastAttack = now;
+          if (u.userData.target.userData.hp <= 0) {
+            scene.remove(u.userData.target);
+            enemies.splice(enemies.indexOf(u.userData.target), 1);
+            u.userData.target = null;
+          }
+        }
+      }
+    }
+  });
+  
+  // Enemy AI
+  enemies.forEach(e => {
+    if (!e.userData.target || e.userData.target.userData.hp <= 0) {
+      e.userData.target = units.find(u => u.userData.hp > 0) || buildings[0];
+    }
+    if (e.userData.target) {
+      const dir = new THREE.Vector3().subVectors(e.userData.target.position, e.position);
+      if (dir.length() > 2.2) {
+        e.position.x += dir.x * e.userData.speed * 0.9;
+        e.position.z += dir.z * e.userData.speed * 0.9;
+      } else {
+        if (now - e.userData.lastAttack > 1100) {
+          e.userData.target.userData.hp -= e.userData.dmg;
+          e.userData.lastAttack = now;
+          if (e.userData.target.userData.hp <= 0) {
+            scene.remove(e.userData.target);
+            if (units.includes(e.userData.target)) units.splice(units.indexOf(e.userData.target),1);
+            else if (buildings.includes(e.userData.target)) buildings.splice(buildings.indexOf(e.userData.target),1);
+            e.userData.target = null;
+          }
+        }
+      }
+    }
+  });
+  
+  // Cleanup dead units
+  for (let i = units.length-1; i>=0; i--) {
+    if (units[i].userData.hp <= 0) {
+      scene.remove(units[i]);
+      units.splice(i,1);
+    }
+  }
+  for (let i = enemies.length-1; i>=0; i--) {
+    if (enemies[i].userData.hp <= 0) {
+      scene.remove(enemies[i]);
+      enemies.splice(i,1);
+      gold += 8;
+    }
+  }
+  
+  // Win/lose conditions
+  if (units.length === 0 && population < 3) {
+    gameOver = true;
+    document.getElementById('status').innerText = "Your kingdom has fallen...";
+  }
+  if (wave > 12 && enemies.length === 0) {
+    gameOver = true;
+    document.getElementById('status').innerText = "Victory! The darkness has been repelled.";
+  }
+  
+  updateUI();
+  requestAnimationFrame(gameLoop);
+  renderer.render(scene, camera);
+}
+
+// ==================== CONTROLS ====================
+function build(type) {
+  if (gameOver) return;
+  const cost = {house:40, barracks:90, tower:70}[type];
+  if (gold < cost) return;
+  gold -= cost;
+  
+  const x = (Math.random()-0.5)*30;
+  const z = (Math.random()-0.5)*30;
+  createBuilding(type, x, z);
+  
+  if (type === 'house') maxPop += 6;
+  updateUI();
+}
+
+function recruit(type) {
+  if (gameOver || population >= maxPop) return;
+  const cost = {peasant:15, spear:35, archer:45}[type];
+  if (gold < cost) return;
+  gold -= cost;
+  population++;
+  
+  const spawnX = -10 + Math.random()*6;
+  createUnit(type, spawnX, 10);
+  updateUI();
+}
+
+function summonHero() {
+  if (gold < 180 || population + 2 > maxPop) return;
+  gold -= 180;
+  population += 2;
+  createUnit('commander', -5, 4);
+  updateUI();
+}
+
+// Click to select units
+window.addEventListener('click', (e) => {
+  if (gameOver) return;
+  const mouse = new THREE.Vector2(
+    (e.clientX / window.innerWidth) * 2 - 1,
+    -(e.clientY / window.innerHeight) * 2 + 1
+  );
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(units);
+  
+  if (intersects.length > 0) {
+    const unit = intersects[0].object;
+    if (!selectedUnits.includes(unit)) selectedUnits = [unit];
+  } else {
+    selectedUnits = [];
+  }
+});
+
+// Right click to move selected
+window.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  if (selectedUnits.length === 0) return;
+  
+  const mouse = new THREE.Vector2(
+    (e.clientX / window.innerWidth) * 2 - 1,
+    -(e.clientY / window.innerHeight) * 2 + 1
+  );
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(mouse, camera);
+  const groundHit = raycaster.intersectObject(terrain);
+  
+  if (groundHit.length > 0) {
+    const targetPos = groundHit[0].point;
+    selectedUnits.forEach(u => {
+      u.userData.target = null;
+      u.position.x = targetPos.x + (Math.random()-0.5)*3;
+      u.position.z = targetPos.z + (Math.random()-0.5)*3;
+    });
+  }
+});
+
+// Start game
+setTimeout(() => {
+  updateUI();
+  gameLoop();
+  // First wave
+  setTimeout(spawnEnemyWave, 25000);
+}, 500);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+console.log('%c[Emberfall] Stylized 3D RTS prototype ready. Click units, right-click to move, use buttons to build/recruit.', 'color:#d4af77');
+</script>
+</body>
+</html>

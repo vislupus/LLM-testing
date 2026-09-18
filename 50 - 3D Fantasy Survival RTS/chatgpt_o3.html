@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Arcane Frontier – Mini-RTS</title>
+<style>
+html,body{margin:0;padding:0;overflow:hidden;background:#000;font-family:Segoe UI,Tahoma,sans-serif;color:#eee;}
+#ui{position:absolute;top:0;left:0;width:100%;pointer-events:none;}
+#bar{display:flex;gap:12px;padding:8px;background:rgba(0,0,0,.4);}
+.res{min-width:90px;text-shadow:0 0 4px #000;}
+#panel{position:absolute;right:8px;bottom:8px;display:flex;flex-wrap:wrap;gap:4px;max-width:240px}
+.btn{pointer-events:auto;background:#222;border:1px solid #666;color:#ddd;padding:4px 8px;font-size:12px;cursor:pointer;border-radius:4px}
+.btn:hover{background:#444}
+#msg{position:absolute;left:50%;transform:translateX(-50%);bottom:48px;font-size:32px;font-weight:bold;text-shadow:0 0 6px #000;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+ <div id="bar">
+  <div class="res" id="wood">🌳 0</div>
+  <div class="res" id="stone">🪨 0</div>
+  <div class="res" id="gold">🪙 0</div>
+  <div class="res" id="food">🍖 0 / 0</div>
+  <div class="res" id="day">🌞 Day 1 – Dawn</div>
+ </div>
+ <div id="panel"></div>
+ <div id="msg"></div>
+</div>
+
+<script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
+<script>
+// ==== CONFIG & CONSTANTS ====================================================
+const CFG={
+ size:200,          // half-size of square map
+ popCap:40,
+ fov:55,camH:80,camD:140,
+ resStart:{wood:100,stone:80,gold:40,food:0,pop:0},
+ costs:{
+  TownHall:{wood:0,stone:0,gold:0,food:0},
+  LumberMill:{wood:80,stone:20,gold:0,food:0},
+  Quarry:{wood:60,stone:0,gold:0,food:0},
+  Farm:{wood:40,stone:0,gold:0,food:0},
+  Barracks:{wood:100,stone:60,gold:0,food:0},
+  Tower:{wood:60,stone:80,gold:0,food:0},
+  Worker:{wood:40,food:1},
+  Soldier:{wood:20,gold:40,food:1},
+  Archer:{wood:40,gold:30,food:1},
+  Knight:{wood:0,stone:40,gold:60,food:2},
+ },
+ waveInterval:60,           // seconds between waves
+ nightLength:45,dayLength:75,
+ fogRadius:28,
+};
+
+// ==== STATE =================================================================
+let S={
+ time:0, dt:0, day:1, isNight:false, wave:0,
+ res:JSON.parse(JSON.stringify(CFG.resStart)),
+ buildings:[], units:[], enemies:[], bullets:[],
+ selections:[], marker:null, gameOver:false,
+};
+
+// ==== THREE.JS SCENE SETUP ==================================================
+const renderer=new THREE.WebGLRenderer({canvas:c,antialias:true});
+renderer.setPixelRatio(devicePixelRatio);
+const scene=new THREE.Scene();
+scene.fog=new THREE.Fog(0x000000,CFG.size*1.2,CFG.size*1.8);
+const cam=new THREE.PerspectiveCamera(CFG.fov,innerWidth/innerHeight,0.1,1000);
+cam.position.set(0,CFG.camH,CFG.camD);
+cam.lookAt(0,0,0);
+
+// resize
+addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+dispatchEvent(new Event('resize'));
+
+// lights
+const amb=new THREE.AmbientLight(0xb0b0ff,1.1);scene.add(amb);
+const sun=new THREE.DirectionalLight(0xffffff,1.2);sun.position.set(100,150,80);scene.add(sun);
+const moon=new THREE.DirectionalLight(0x99bbff,0);moon.position.set(-120,150,-90);scene.add(moon);
+
+// ground
+const g=new THREE.Mesh(new THREE.PlaneGeometry(CFG.size*2,CFG.size*2,1,1),
+  new THREE.MeshStandardMaterial({color:0x436d3d}));
+g.rotation.x=-Math.PI/2;scene.add(g);
+
+// ==== HELPERS ===============================================================
+const $=id=>document.getElementById(id);
+const panel=$('panel'), msg=$('msg');
+function updateBar(){
+ $('wood').textContent='🌳 '+S.res.wood;
+ $('stone').textContent='🪨 '+S.res.stone;
+ $('gold').textContent='🪙 '+S.res.gold;
+ $('food').textContent='🍖 '+S.res.food+' / '+CFG.popCap;
+ $('day').textContent=(S.isNight?'🌜 Night ':'🌞 Day ')+S.day+' – '+(S.isNight?'Nightfall':'Dawn');
+}
+function canAfford(cost){for(let k in cost){if(k==='food')continue;if(S.res[k]<cost[k])return false;}return S.res.food+ (cost.food||0)<=CFG.popCap;}
+function pay(cost){for(let k in cost){if(k==='food'){S.res.food+=cost[k];continue;}S.res[k]-=cost[k];}updateBar();}
+function addBtn(txt,cb){const b=document.createElement('div');b.className='btn';b.textContent=txt;b.onclick=cb;panel.appendChild(b);}
+function rand(a,b){return a+Math.random()*(b-a);}
+function dist(a,b){return a.position.distanceTo(b.position);}
+function lookAt2D(obj,tar){obj.lookAt(new THREE.Vector3(tar.x,obj.position.y,tar.z));}
+
+// ==== GEOMETRY POOL =========================================================
+const Geom={
+ unit:new THREE.SphereGeometry(1,12,12),
+ worker:new THREE.CapsuleGeometry(0.6,1.2,4,8),
+ building:new THREE.BoxGeometry(4,4,4),
+ tower:new THREE.CylinderGeometry(2,2,8,6),
+ }
+
+function make(mat,geo){return new THREE.Mesh(geo,mat);}
+
+// ==== ENTITY CLASSES ========================================================
+class Building{
+ constructor(type,pos){
+  this.type=type;
+  this.hp= type==='Tower'?600:400;
+  this.loc=pos.clone();
+  this.obj=make(new THREE.MeshStandardMaterial({color:0x8f6d3a}),
+                type==='Tower'?Geom.tower:Geom.building);
+  this.obj.position.copy(pos);scene.add(this.obj);
+  if(type==='Quarry'||type==='LumberMill'||type==='Farm')this.workerSlots=3;
+  S.buildings.push(this);
+ }
+}
+class Unit{
+ constructor(role,pos,isEnemy=false){
+  this.role=role;this.isEnemy=isEnemy;
+  this.hp= role==='Worker'?60:100+(role==='Knight'?60:0);
+  this.speed= role==='Worker'?6:4;
+  this.obj=make(new THREE.MeshStandardMaterial({color:isEnemy?0xcc4444:0x3366dd}),
+                role==='Worker'?Geom.worker:Geom.unit);
+  this.obj.position.copy(pos);scene.add(this.obj);
+  this.target=null;
+  if(isEnemy)S.enemies.push(this);else S.units.push(this);
+ }
+}
+
+// ==== GAMEPLAY ==============================================================
+
+// Spawner functions ----------------------------------------------------------
+function spawnBuilding(type,pos){
+ const cost=CFG.costs[type];if(!canAfford(cost))return;
+ pay(cost); new Building(type,pos);
+}
+function spawnUnit(role){
+ const cost=CFG.costs[role];if(!canAfford(cost))return;
+ pay(cost); const p=S.buildings.find(b=>b.type==='TownHall').loc;
+ new Unit(role,new THREE.Vector3(p.x+rand(-6,6),0,p.z+rand(-6,6)));
+}
+
+// Initial TownHall + hero ----------------------------------------------------
+spawnBuilding('TownHall',new THREE.Vector3(0,2,0));
+new Unit('Hero',new THREE.Vector3(4,0,0));
+
+// Build menu -----------------------------------------------------------------
+addBtn('Worker (40w)',()=>spawnUnit('Worker'));
+addBtn('Soldier (20w40g)',()=>spawnUnit('Soldier'));
+addBtn('Archer (40w30g)',()=>spawnUnit('Archer'));
+addBtn('Knight (40s60g)',()=>spawnUnit('Knight'));
+addBtn('Barracks 100w60s',()=>placementMode('Barracks'));
+addBtn('Tower 60w80s',()=>placementMode('Tower'));
+addBtn('LumberMill 80w20s',()=>placementMode('LumberMill'));
+addBtn('Quarry 60w',()=>placementMode('Quarry'));
+addBtn('Farm 40w',()=>placementMode('Farm'));
+
+// Placement ------------------------------------------------------------------
+let placing=null;
+function placementMode(type){placing=type;msg.textContent='Click ground to place '+type;}
+renderer.domElement.addEventListener('click',e=>{
+ if(!placing)return;
+ const m=mousePosToWorld(e);
+ spawnBuilding(placing,m);placing=null;msg.textContent='';
+});
+
+// Mouse to world -------------------------------------------------------------
+const raycaster=new THREE.Raycaster(),mouse=new THREE.Vector2();
+function mousePosToWorld(ev){
+ mouse.x=(ev.clientX/innerWidth)*2-1;
+ mouse.y=-(ev.clientY/innerHeight)*2+1;
+ raycaster.setFromCamera(mouse,cam);
+ const i=raycaster.intersectObject(g)[0];
+ return i?i.point:new THREE.Vector3();
+}
+
+// Selection & command --------------------------------------------------------
+renderer.domElement.addEventListener('pointerdown',(e)=>{
+ if(e.button===0&&!placing){
+   const p=mousePosToWorld(e);
+   S.selections.length=0;
+   for(let u of S.units)if(dist(u,{position:p})<4)S.selections.push(u);
+ }
+ if(e.button===2&&!placing&&S.selections.length){
+   const dest=mousePosToWorld(e);
+   for(let [i,u] of S.selections.entries()){
+    u.target=dest.clone().add(new THREE.Vector3((i%3)*2,0,Math.floor(i/3)*2));
+   }
+ }
+});
+
+// Enemy wave spawner ---------------------------------------------------------
+function spawnWave(){
+ S.wave++;
+ const n=3+S.wave*2;
+ for(let i=0;i<n;i++){
+  const p=new THREE.Vector3(rand(-CFG.size+10,-CFG.size+40),0,rand(-CFG.size+10,CFG.size-10));
+  new Unit(['Soldier','Archer','Knight'][i%3],p,true);
+ }
+ msg.textContent='⚔️ Enemy wave '+S.wave+'!';
+ setTimeout(()=>msg.textContent='',3000);
+}
+
+// ==== MAIN LOOP =============================================================
+let lastT=performance.now();
+function loop(now){
+ S.dt=(now-lastT)/1000;lastT=now;S.time+=S.dt;
+
+ // day/night ---------------------------------------------------------------
+ const dayDur=CFG.dayLength+CFG.nightLength;
+ const cycle=S.time%dayDur;
+ S.isNight=cycle>CFG.dayLength;
+ sun.intensity=S.isNight?0:1.2;moon.intensity=S.isNight?0.6:0;
+ scene.background=new THREE.Color(S.isNight?0x0c0d16:0x87b4ff);
+
+ // wave timer --------------------------------------------------------------
+ if(!S.isNight&&Math.floor(S.time)%CFG.waveInterval===0&&Math.floor(lastT/1000)!==Math.floor((lastT-S.dt*1000)/1000)) spawnWave();
+
+ // units update ------------------------------------------------------------
+ for(let u of [...S.units,...S.enemies]){
+  if(u.hp<=0){scene.remove(u.obj);removeFromArr(u.isEnemy?S.enemies:S.units,u);continue;}
+  if(u.target){
+   const dir=u.target.clone().sub(u.obj.position);if(dir.length()>0.3){dir.y=0;dir.normalize();u.obj.position.addScaledVector(dir,u.speed*S.dt);}
+   else u.target=null;
+  }
+ }
+
+ // combat simple -----------------------------------------------------------
+ for(let e of S.enemies){
+  const tar= nearest(e,S.buildings.concat(S.units));
+  if(tar)attack(e,tar);
+ }
+ for(let p of S.units.filter(u=>u.role!=='Worker')){
+   const tar=nearest(p,S.enemies); if(tar)attack(p,tar);
+ }
+
+ // render & next
+ renderer.render(scene,cam);
+ requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ==== UTILITY FUNCS =========================================================
+function removeFromArr(o,a){const i=a.indexOf(o);if(i>-1)a.splice(i,1);}
+function nearest(src,list){
+ let best=null,d=1e9;
+ for(let t of list){const di=dist(src,t);if(di<20&&di<d){d=di;best=t;}}
+ return best;
+}
+function attack(a,b){
+ if(dist(a,b)<2){
+   b.hp-=40*S.dt;
+ }else if(!a.target){a.target=b.obj.position.clone();}
+}
+updateBar();
+</script>
+</body>
+</html>
